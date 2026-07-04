@@ -32,6 +32,8 @@ export interface ClothMeshOptions {
 
 export interface ClothMeshData {
   readonly resolution: number;
+  /** Rest distance between grid neighbours (world units) — used by rendering. */
+  readonly spacing: number;
   readonly count: number;
   /** count × 4 floats (xyz + unused w), grid rest pose. */
   readonly positions: Float32Array;
@@ -154,6 +156,7 @@ export function generateClothGrid(opts: ClothMeshOptions): ClothMeshData {
 
   return {
     resolution: n,
+    spacing: size / (n - 1),
     count,
     positions,
     invMasses,
@@ -185,6 +188,25 @@ export interface SeamedPanelsOptions {
   gap?: number;
   /** World Y of the top edge. */
   topY?: number;
+  /**
+   * Pattern outline. 'rect' keeps the full grid. 'aline' cuts an A-line dress
+   * piece: fitted at the top, flared at the hem, with a scooped neckline that
+   * leaves two shoulder straps.
+   */
+  shape?: 'rect' | 'aline';
+}
+
+/** True when grid cell (u,v) ∈ [0,1]² lies inside the A-line pattern piece. */
+function alineShape(u: number, v: number): boolean {
+  const x = Math.abs(u - 0.5);
+  const halfWidth = 0.26 + (0.5 - 0.26) * v; // fitted top → full hem
+  if (x > halfWidth) return false;
+  // Elliptical neckline scoop, leaving straps on both sides.
+  if (v < 0.14) {
+    const scoop = 0.13 * Math.sqrt(1 - (v / 0.14) ** 2);
+    if (x < scoop) return false;
+  }
+  return true;
 }
 
 /**
@@ -200,22 +222,41 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
   const height = opts.height ?? 1.2;
   const gap = opts.gap ?? 1.3;
   const topY = opts.topY ?? 1.9;
+  const shape = opts.shape ?? 'rect';
   const panelSize = n * n;
   const count = 2 * panelSize;
+
+  // Pattern mask: particles outside the outline are cut from the garment —
+  // pinned (inverse mass 0), parked far below, referenced by no constraint or
+  // triangle. Keeping the grid regular keeps the GPU normals pass trivial.
+  const inside = (u: number, v: number): boolean =>
+    shape === 'aline' ? alineShape(u / (n - 1), v / (n - 1)) : true;
+  const kept = new Array<boolean>(panelSize);
+  for (let v = 0; v < n; v++) for (let u = 0; u < n; u++) kept[v * n + u] = inside(u, v);
 
   const positions = new Float32Array(count * 4);
   const invMasses = new Float32Array(count).fill(1.0);
 
   const index = (p: number, u: number, v: number): number => p * panelSize + v * n + u;
+  // Same outline on both panels, so the panel index is irrelevant to the mask.
+  const isKept = (_p: number, u: number, v: number): boolean => kept[v * n + u]!;
 
   for (let p = 0; p < 2; p++) {
     const z = (p === 0 ? 1 : -1) * (gap / 2);
     for (let v = 0; v < n; v++) {
       for (let u = 0; u < n; u++) {
         const i = index(p, u, v);
-        positions[i * 4 + 0] = (u / (n - 1) - 0.5) * width;
-        positions[i * 4 + 1] = topY - (v / (n - 1)) * height;
-        positions[i * 4 + 2] = z;
+        if (kept[v * n + u]) {
+          positions[i * 4 + 0] = (u / (n - 1) - 0.5) * width;
+          positions[i * 4 + 1] = topY - (v / (n - 1)) * height;
+          positions[i * 4 + 2] = z;
+        } else {
+          // Cut from the pattern: parked out of the scene, immovable.
+          positions[i * 4 + 0] = 0;
+          positions[i * 4 + 1] = -10;
+          positions[i * 4 + 2] = 0;
+          invMasses[i] = 0;
+        }
       }
     }
   }
@@ -238,28 +279,57 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
     kind,
   });
 
-  // In-panel constraints, identical topology to the single sheet.
+  // In-panel constraints, identical topology to the single sheet, restricted
+  // to particles inside the pattern (bending also requires the middle particle
+  // so it never bridges across a cut).
   for (let p = 0; p < 2; p++) {
     for (let v = 0; v < n; v++) {
       for (let u = 0; u < n; u++) {
-        if (u + 1 < n) structural.push(edge(index(p, u, v), index(p, u + 1, v), ConstraintKind.Structural));
-        if (v + 1 < n) structural.push(edge(index(p, u, v), index(p, u, v + 1), ConstraintKind.Structural));
+        if (!isKept(p, u, v)) continue;
+        if (u + 1 < n && isKept(p, u + 1, v))
+          structural.push(edge(index(p, u, v), index(p, u + 1, v), ConstraintKind.Structural));
+        if (v + 1 < n && isKept(p, u, v + 1))
+          structural.push(edge(index(p, u, v), index(p, u, v + 1), ConstraintKind.Structural));
         if (u + 1 < n && v + 1 < n) {
-          shear.push(edge(index(p, u, v), index(p, u + 1, v + 1), ConstraintKind.Shear));
-          shear.push(edge(index(p, u + 1, v), index(p, u, v + 1), ConstraintKind.Shear));
+          if (isKept(p, u + 1, v + 1))
+            shear.push(edge(index(p, u, v), index(p, u + 1, v + 1), ConstraintKind.Shear));
+          if (isKept(p, u + 1, v) && isKept(p, u, v + 1))
+            shear.push(edge(index(p, u + 1, v), index(p, u, v + 1), ConstraintKind.Shear));
         }
-        if (u + 2 < n) bending.push(edge(index(p, u, v), index(p, u + 2, v), ConstraintKind.Bending));
-        if (v + 2 < n) bending.push(edge(index(p, u, v), index(p, u, v + 2), ConstraintKind.Bending));
+        if (u + 2 < n && isKept(p, u + 1, v) && isKept(p, u + 2, v))
+          bending.push(edge(index(p, u, v), index(p, u + 2, v), ConstraintKind.Bending));
+        if (v + 2 < n && isKept(p, u, v + 1) && isKept(p, u, v + 2))
+          bending.push(edge(index(p, u, v), index(p, u, v + 2), ConstraintKind.Bending));
       }
     }
   }
 
-  // Side seams: stitch matching rows of both panels along u=0 and u=n-1.
+  // Side seams: stitch matching rows of both panels along the pattern's own
+  // shaped edges (leftmost/rightmost kept particle per row).
   // Rest length ≈ the fabric spacing so the closed seam reads as one weave.
   const seamRest = width / (n - 1);
   for (let v = 0; v < n; v++) {
-    seams.push({ i: index(0, 0, v), j: index(1, 0, v), rest: seamRest, kind: ConstraintKind.Seam });
-    seams.push({ i: index(0, n - 1, v), j: index(1, n - 1, v), rest: seamRest, kind: ConstraintKind.Seam });
+    let uMin = -1;
+    let uMax = -1;
+    for (let u = 0; u < n; u++) {
+      if (kept[v * n + u]) {
+        if (uMin < 0) uMin = u;
+        uMax = u;
+      }
+    }
+    if (uMin < 0) continue; // fully cut row
+    seams.push({ i: index(0, uMin, v), j: index(1, uMin, v), rest: seamRest, kind: ConstraintKind.Seam });
+    if (uMax !== uMin)
+      seams.push({ i: index(0, uMax, v), j: index(1, uMax, v), rest: seamRest, kind: ConstraintKind.Seam });
+  }
+
+  // Shoulder seams (shaped pieces only): stitch the top edge of both panels so
+  // the straps close over the shoulders and the garment hangs from them.
+  if (shape !== 'rect') {
+    for (let u = 0; u < n; u++) {
+      if (kept[u]) // row v = 0
+        seams.push({ i: index(0, u, 0), j: index(1, u, 0), rest: seamRest, kind: ConstraintKind.Seam });
+    }
   }
 
   const all = structural.concat(shear, bending, seams);
@@ -276,28 +346,45 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
     dv.setUint32(base + 12, c.kind, true);
   }
 
-  // Triangles for both panels.
-  const triangleIndices = new Uint32Array(2 * (n - 1) * (n - 1) * 6);
-  let ti = 0;
+  // Triangles for both panels — a cell renders only if its 4 corners exist.
+  const tris: number[] = [];
   for (let p = 0; p < 2; p++) {
     for (let v = 0; v < n - 1; v++) {
       for (let u = 0; u < n - 1; u++) {
+        if (!isKept(p, u, v) || !isKept(p, u + 1, v) || !isKept(p, u, v + 1) || !isKept(p, u + 1, v + 1))
+          continue;
         const i00 = index(p, u, v);
         const i10 = index(p, u + 1, v);
         const i01 = index(p, u, v + 1);
         const i11 = index(p, u + 1, v + 1);
-        triangleIndices[ti++] = i00;
-        triangleIndices[ti++] = i01;
-        triangleIndices[ti++] = i10;
-        triangleIndices[ti++] = i10;
-        triangleIndices[ti++] = i01;
-        triangleIndices[ti++] = i11;
+        tris.push(i00, i01, i10, i10, i01, i11);
+      }
+    }
+  }
+  const triangleIndices = new Uint32Array(tris);
+
+  // Anchor corners for the P-pin toggle: outermost kept particles of the
+  // first non-empty row of the front panel.
+  let cornerA = 0;
+  let cornerB = 0;
+  outer: for (let v = 0; v < n; v++) {
+    for (let u = 0; u < n; u++) {
+      if (kept[v * n + u]) {
+        cornerA = index(0, u, v);
+        for (let u2 = n - 1; u2 >= 0; u2--) {
+          if (kept[v * n + u2]) {
+            cornerB = index(0, u2, v);
+            break;
+          }
+        }
+        break outer;
       }
     }
   }
 
   return {
     resolution: n,
+    spacing: width / (n - 1),
     count,
     positions,
     invMasses,
@@ -309,7 +396,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
     shearCount: shear.length,
     bendingCount: bending.length,
     seamCount: seams.length,
-    cornerIndices: [index(0, 0, 0), index(0, n - 1, 0)],
+    cornerIndices: [cornerA, cornerB],
     triangleIndices,
   };
 }

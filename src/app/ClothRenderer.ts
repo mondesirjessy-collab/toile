@@ -12,10 +12,17 @@
 import { SCENE_VERTEX_FLOATS, type SceneMesh } from './SceneGeometry';
 
 const NORMALS_SHADER = /* wgsl */ `
-struct GridInfo { n: u32, count: u32, _p0: u32, _p1: u32 };
+struct GridInfo { n: u32, count: u32, spacing: f32, _p0: u32 };
 @group(0) @binding(0) var<uniform> grid: GridInfo;
 @group(0) @binding(1) var<storage, read> positions: array<vec4f>;
 @group(0) @binding(2) var<storage, read_write> normals: array<vec4f>;
+
+// A neighbour much farther than the fabric spacing is not real cloth — it is a
+// particle cut from the pattern and parked out of the scene. Fall back to the
+// centre so shaped edges get one-sided differences instead of garbage normals.
+fn valid(nb: vec3f, x: vec3f, limit: f32) -> vec3f {
+  return select(x, nb, distance(nb, x) < limit);
+}
 
 // Per-vertex normal from central differences over the grid neighbours.
 // Supports multiple stacked n×n panels (seamed garments): neighbour lookups
@@ -34,8 +41,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let um1 = select(u - 1u, 0u, u == 0u);
   let vp1 = min(v + 1u, n - 1u);
   let vm1 = select(v - 1u, 0u, v == 0u);
-  let tu = positions[base + v * n + up1].xyz - positions[base + v * n + um1].xyz;
-  let tv = positions[base + vp1 * n + u].xyz - positions[base + vm1 * n + u].xyz;
+  let x = positions[i].xyz;
+  let limit = grid.spacing * 4.0;
+  let tu = valid(positions[base + v * n + up1].xyz, x, limit)
+         - valid(positions[base + v * n + um1].xyz, x, limit);
+  let tv = valid(positions[base + vp1 * n + u].xyz, x, limit)
+         - valid(positions[base + vm1 * n + u].xyz, x, limit);
   var nor = cross(tv, tu); // +Y for the flat rest pose
   let len = length(nor);
   if (len < 1e-8) { nor = vec3f(0.0, 1.0, 0.0); } else { nor = nor / len; }
@@ -161,6 +172,7 @@ export class ClothRenderer {
     positionBuffer: GPUBuffer,
     count: number,
     resolution: number,
+    spacing: number,
     triangleIndices: Uint32Array,
     scene: SceneMesh,
   ) {
@@ -193,7 +205,12 @@ export class ClothRenderer {
       size: 16,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    device.queue.writeBuffer(this.gridInfoBuffer, 0, new Uint32Array([resolution, count, 0, 0]));
+    const gridInfo = new ArrayBuffer(16);
+    const gi = new DataView(gridInfo);
+    gi.setUint32(0, resolution, true);
+    gi.setUint32(4, count, true);
+    gi.setFloat32(8, spacing, true);
+    device.queue.writeBuffer(this.gridInfoBuffer, 0, gridInfo);
 
     const normalsModule = device.createShaderModule({ code: NORMALS_SHADER, label: 'normals' });
     this.normalsPipeline = device.createComputePipeline({

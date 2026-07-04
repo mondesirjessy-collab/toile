@@ -119,7 +119,14 @@ async function main(): Promise<void> {
       sceneMode === 'couture'
         ? generateSeamedPanels({ resolution, width: 1.2, height: 1.2, gap: 1.3, topY: 1.9 })
         : sceneMode === 'robe'
-          ? generateSeamedPanels({ resolution, width: 0.9, height: 1.7, gap: 1.1, topY: 1.75 })
+          ? generateSeamedPanels({
+              resolution,
+              width: 1.1,
+              height: 1.45,
+              gap: 1.1,
+              topY: 1.78,
+              shape: 'aline', // real pattern piece: fitted, flared, scooped neckline
+            })
           : generateClothGrid({ resolution, size: CLOTH_SIZE, topY: CLOTH_TOP_Y, pin: 'none' });
     system = new ParticleSystem(device, mesh, {
       colliders,
@@ -136,6 +143,7 @@ async function main(): Promise<void> {
       system.positionBuffer,
       system.count,
       mesh.resolution,
+      mesh.spacing,
       mesh.triangleIndices,
       sceneMesh,
     );

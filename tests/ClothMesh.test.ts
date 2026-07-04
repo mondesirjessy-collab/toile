@@ -235,3 +235,60 @@ describe('generateSeamedPanels (phase 1)', () => {
     for (const idx of mesh.triangleIndices) expect(idx).toBeLessThan(mesh.count);
   });
 });
+
+describe("generateSeamedPanels shape 'aline' (pattern cutting)", () => {
+  const n = 16;
+  const mesh = generateSeamedPanels({
+    resolution: n,
+    width: 1.1,
+    height: 1.6,
+    gap: 1.1,
+    topY: 1.78,
+    shape: 'aline',
+  });
+  const kept = (i: number): boolean => mesh.invMasses[i] === 1;
+
+  it('cuts particles outside the pattern (parked, immovable, out of scene)', () => {
+    const cut = [...mesh.invMasses].filter((w) => w === 0).length;
+    expect(cut).toBeGreaterThan(0);
+    expect(cut).toBeLessThan(mesh.count); // and plenty of fabric remains
+    for (let i = 0; i < mesh.count; i++) {
+      if (!kept(i)) expect(mesh.positions[i * 4 + 1]).toBe(-10); // parked below
+    }
+  });
+
+  it('is narrower at the top than at the hem (A-line) with a neckline scoop', () => {
+    const rowKept = (v: number): number => {
+      let c = 0;
+      for (let u = 0; u < n; u++) if (kept(v * n + u)) c++;
+      return c;
+    };
+    expect(rowKept(n - 1)).toBeGreaterThan(rowKept(2)); // flare
+    // Top row splits into two straps: kept particles but a gap in the middle.
+    let topRun = 0;
+    let runs = 0;
+    for (let u = 0; u <= n; u++) {
+      const k = u < n && kept(u);
+      if (k) topRun++;
+      else if (topRun > 0) {
+        runs++;
+        topRun = 0;
+      }
+    }
+    expect(runs).toBe(2);
+  });
+
+  it('references only kept particles from constraints and triangles', () => {
+    const dv = new DataView(mesh.constraintData);
+    for (let k = 0; k < mesh.constraintCount; k++) {
+      expect(kept(dv.getUint32(k * 16, true))).toBe(true);
+      expect(kept(dv.getUint32(k * 16 + 4, true))).toBe(true);
+    }
+    for (const idx of mesh.triangleIndices) expect(kept(idx)).toBe(true);
+  });
+
+  it('anchors the P-pin corners on kept particles', () => {
+    expect(kept(mesh.cornerIndices[0])).toBe(true);
+    expect(kept(mesh.cornerIndices[1])).toBe(true);
+  });
+});
