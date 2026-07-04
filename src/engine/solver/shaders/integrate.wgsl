@@ -5,18 +5,20 @@
 // (position-based) rather than an explicit integrator.
 
 struct SimParams {
-  dt: f32,           // substep duration (seconds)
-  gravity: f32,      // signed Y acceleration (m/s^2), typically -9.81
-  ground_y: f32,     // ground plane height (used in updateVelocity)
-  compliance: f32,   // XPBD compliance α for distance constraints
+  dt: f32,
+  gravity: f32,
+  ground_y: f32,
+  friction: f32,
   ray_origin: vec3f, // cursor pick ray origin (camera eye), world space
   mouse_force: f32,  // signed peak accel: >0 attract, <0 repel, 0 idle
   ray_dir: vec3f,    // cursor pick ray direction (normalized), world space
   mouse_radius: f32, // radial falloff radius (world units)
+  sphere_center: vec3f,
+  sphere_radius: f32,
   particle_count: u32,
-  damping: f32,      // linear velocity drag rate (1/s, used in updateVelocity)
-  max_speed: f32,    // hard speed cap (m/s, used in updateVelocity)
-  _pad: f32,
+  damping: f32,
+  max_speed: f32,
+  cloth_thickness: f32,
 };
 
 @group(0) @binding(0) var<uniform> params: SimParams;

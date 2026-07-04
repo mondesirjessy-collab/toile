@@ -1,17 +1,17 @@
 /**
- * ClothMesh — CPU generation of a regular cloth grid and its distance-constraint
- * topology (brief §2 engine/cloth, §3.3 constraints). The engine never imports
- * Three.js: this produces raw typed arrays + a color-sorted constraint buffer
- * that the GPU solver uploads directly.
+ * ClothMesh — CPU generation of a regular cloth grid and its constraint topology
+ * (brief §2 engine/cloth, §3.3 constraints). The engine never imports Three.js:
+ * this produces raw typed arrays + a color-sorted constraint buffer that the GPU
+ * solver uploads directly.
  *
- * Grid is laid out flat in the horizontal XZ plane at height `topY`. Pinning two
- * corners of the v = 0 edge lets gravity (perpendicular to the sheet) drape the
- * rest downward into a curved hanging cloth — the weeks 3-4 validation. A fully
- * triangulated grid pinned in its own vertical plane would instead start already
- * at equilibrium and never move, so the horizontal rest pose is deliberate.
+ * Grid is laid out flat in the horizontal XZ plane at height `topY`. Left
+ * unpinned it falls under gravity and drapes over the scene sphere (weeks 5-6);
+ * pinning corners of the v = 0 edge instead holds it as a hanging cloth.
  * Constraints:
- *   - structural: horizontal + vertical grid edges (stretch)
- *   - shear:      both diagonals of every cell
+ *   - structural: horizontal + vertical grid edges (stretch, α ≈ 0 → rigid)
+ *   - shear:      both diagonals of every cell (stretch compliance)
+ *   - bending:    "skip-2" distance edges i↔i+2 (brief §3.3 Phase-0 alternative
+ *                 to true dihedral bending), soft α_bend so the sheet folds
  */
 import { colorConstraints, type Edge } from '../solver/ConstraintGraph';
 
@@ -20,14 +20,18 @@ export interface ClothMeshOptions {
   resolution: number;
   /** Physical side length in meters (brief §4: 1 m × 1 m). */
   size?: number;
-  /** World Y of the top row. */
+  /** World Y of the rest plane. */
   topY?: number;
   /**
    * Pin mode for immovable particles (inverse mass 0). Anchors sit on the
-   * v = 0 edge: 'corners' pins its two ends (cloth held at two corners),
-   * 'edge' pins the whole edge (curtain hung from a rod).
+   * v = 0 edge: 'corners' pins its two ends, 'edge' the whole edge, 'none'
+   * leaves the sheet free to fall.
    */
   pin?: 'corners' | 'edge' | 'none';
+  /** XPBD compliance for structural + shear (distance) constraints; ~0 = inextensible. */
+  stretchCompliance?: number;
+  /** XPBD compliance for bending (skip-2) constraints; larger = floppier cloth. */
+  bendCompliance?: number;
 }
 
 export interface ClothMeshData {
@@ -37,13 +41,17 @@ export interface ClothMeshData {
   readonly positions: Float32Array;
   /** count floats; 0 for pinned particles. */
   readonly invMasses: Float32Array;
-  /** Packed constraints sorted by color: {i:u32, j:u32, rest:f32, _pad:f32}. */
+  /** Packed constraints sorted by color: {i:u32, j:u32, rest:f32, compliance:f32}. */
   readonly constraintData: ArrayBuffer;
   readonly constraintCount: number;
   readonly colorOffsets: number[];
   readonly colorCounts: number[];
-  /** Structural edge count (for the HUD); shear is the remainder. */
+  /** Edge counts by kind (for the HUD and tests). */
   readonly structuralCount: number;
+  readonly shearCount: number;
+  readonly bendingCount: number;
+  /** Indices of the two v=0 corners, for runtime pin/release. */
+  readonly cornerIndices: [number, number];
 }
 
 const CONSTRAINT_STRIDE = 16; // bytes: 2×u32 + 2×f32
@@ -53,6 +61,8 @@ export function generateClothGrid(opts: ClothMeshOptions): ClothMeshData {
   const size = opts.size ?? 1.0;
   const topY = opts.topY ?? 1.8;
   const pin = opts.pin ?? 'corners';
+  const stretchCompliance = opts.stretchCompliance ?? 0.0;
+  const bendCompliance = opts.bendCompliance ?? 2.0e-6;
   const count = n * n;
 
   const positions = new Float32Array(count * 4);
@@ -81,29 +91,38 @@ export function generateClothGrid(opts: ClothMeshOptions): ClothMeshData {
     for (let u = 0; u < n; u++) pinIndex(index(u, 0));
   }
 
-  // --- Build distance constraints ---
+  // --- Build constraints ---
   const dist = (a: number, b: number): number => {
     const dx = positions[a * 4 + 0]! - positions[b * 4 + 0]!;
     const dy = positions[a * 4 + 1]! - positions[b * 4 + 1]!;
     const dz = positions[a * 4 + 2]! - positions[b * 4 + 2]!;
     return Math.hypot(dx, dy, dz);
   };
-  const edge = (a: number, b: number): Edge => ({ i: a, j: b, rest: dist(a, b) });
+  const edge = (a: number, b: number, compliance: number): Edge => ({
+    i: a,
+    j: b,
+    rest: dist(a, b),
+    compliance,
+  });
 
   const structural: Edge[] = [];
   const shear: Edge[] = [];
+  const bending: Edge[] = [];
   for (let v = 0; v < n; v++) {
     for (let u = 0; u < n; u++) {
-      if (u + 1 < n) structural.push(edge(index(u, v), index(u + 1, v))); // horizontal
-      if (v + 1 < n) structural.push(edge(index(u, v), index(u, v + 1))); // vertical
+      if (u + 1 < n) structural.push(edge(index(u, v), index(u + 1, v), stretchCompliance));
+      if (v + 1 < n) structural.push(edge(index(u, v), index(u, v + 1), stretchCompliance));
       if (u + 1 < n && v + 1 < n) {
-        shear.push(edge(index(u, v), index(u + 1, v + 1))); // ╲ diagonal
-        shear.push(edge(index(u + 1, v), index(u, v + 1))); // ╱ diagonal
+        shear.push(edge(index(u, v), index(u + 1, v + 1), stretchCompliance)); // ╲
+        shear.push(edge(index(u + 1, v), index(u, v + 1), stretchCompliance)); // ╱
       }
+      // Bending: skip-2 distance edges (brief §3.3 Phase-0 alternative).
+      if (u + 2 < n) bending.push(edge(index(u, v), index(u + 2, v), bendCompliance));
+      if (v + 2 < n) bending.push(edge(index(u, v), index(u, v + 2), bendCompliance));
     }
   }
 
-  const all = structural.concat(shear);
+  const all = structural.concat(shear, bending);
   const { ordered, colorOffsets, colorCounts } = colorConstraints(all, count);
 
   // Pack color-sorted constraints for the GPU.
@@ -115,7 +134,7 @@ export function generateClothGrid(opts: ClothMeshOptions): ClothMeshData {
     dv.setUint32(base + 0, c.i, true);
     dv.setUint32(base + 4, c.j, true);
     dv.setFloat32(base + 8, c.rest, true);
-    dv.setFloat32(base + 12, 0.0, true);
+    dv.setFloat32(base + 12, c.compliance, true);
   }
 
   return {
@@ -128,5 +147,8 @@ export function generateClothGrid(opts: ClothMeshOptions): ClothMeshData {
     colorOffsets,
     colorCounts,
     structuralCount: structural.length,
+    shearCount: shear.length,
+    bendingCount: bending.length,
+    cornerIndices: [index(0, 0), index(n - 1, 0)],
   };
 }

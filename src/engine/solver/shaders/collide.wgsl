@@ -1,0 +1,67 @@
+// collide.wgsl — Milestone 5-6, contact resolution (brief §3.2 step 3, §3.3).
+// Runs after the constraint solve, before the velocity update, so contacts feed
+// back into velocity (a particle that hits the sphere is stopped there). Handles:
+//   - sphere: if |x - c| < r + thickness, project onto the surface (S4: no
+//     visible interpenetration), with simplified Coulomb friction
+//   - ground: a real collision plane (not just a clamp) with friction
+// Friction (brief §3.3, "statique simplifiée acceptable"): decompose the
+// substep displacement (x - x_prev) into normal + tangential and damp the
+// tangential part by `friction` ∈ [0,1].
+
+struct SimParams {
+  dt: f32,
+  gravity: f32,
+  ground_y: f32,
+  friction: f32,
+  ray_origin: vec3f,
+  mouse_force: f32,
+  ray_dir: vec3f,
+  mouse_radius: f32,
+  sphere_center: vec3f,
+  sphere_radius: f32,
+  particle_count: u32,
+  damping: f32,
+  max_speed: f32,
+  cloth_thickness: f32,
+};
+
+@group(0) @binding(0) var<uniform> params: SimParams;
+@group(0) @binding(1) var<storage, read_write> positions: array<vec4f>;
+@group(0) @binding(2) var<storage, read> prev_positions: array<vec4f>;
+@group(0) @binding(3) var<storage, read> inv_masses: array<f32>;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= params.particle_count) { return; }
+  if (inv_masses[i] == 0.0) { return; } // pinned
+
+  var x = positions[i].xyz;
+  let xp = prev_positions[i].xyz;
+
+  // --- Sphere contact ---
+  let dc = x - params.sphere_center;
+  let dist = length(dc);
+  let minDist = params.sphere_radius + params.cloth_thickness;
+  if (dist < minDist && dist > 1e-6) {
+    let nrm = dc / dist;
+    x = params.sphere_center + nrm * minDist; // project onto surface
+    // Friction: damp tangential part of this substep's motion.
+    let disp = x - xp;
+    let dispN = dot(disp, nrm) * nrm;
+    let dispT = disp - dispN;
+    x -= dispT * params.friction;
+  }
+
+  // --- Ground contact (plane y = ground_y) ---
+  let floorY = params.ground_y + params.cloth_thickness;
+  if (x.y < floorY) {
+    x.y = floorY;
+    // Tangential (XZ) friction against the floor.
+    let disp = x - xp;
+    x.x -= disp.x * params.friction;
+    x.z -= disp.z * params.friction;
+  }
+
+  positions[i] = vec4f(x, 0.0);
+}

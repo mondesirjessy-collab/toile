@@ -12,6 +12,8 @@ export interface Edge {
   i: number;
   j: number;
   rest: number;
+  /** XPBD compliance α for this constraint (0 = rigid). Carried through coloring. */
+  compliance: number;
 }
 
 export interface ColoringResult {

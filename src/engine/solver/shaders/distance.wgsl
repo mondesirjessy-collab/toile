@@ -1,35 +1,36 @@
-// distance.wgsl — Milestone 3, XPBD distance constraint projection
-// (brief §3.2 step 2, §3.3). One dispatch per graph color: all constraints in a
-// color are guaranteed vertex-disjoint, so their position writes never race.
+// distance.wgsl — Milestone 5-6, XPBD distance projection for BOTH the
+// structural/shear (stretch) and skip-2 (bending) constraints (brief §3.2 step 2,
+// §3.3). One dispatch per graph color: all constraints in a color are
+// vertex-disjoint, so their position writes never race.
 //
-// XPBD single-iteration form (brief §3.2 "small steps, 1 iteration"): with λ
-// reset to 0 each substep the α̃·λ term vanishes, leaving
+// Compliance is per-constraint (packed in the Constraint struct): structural/shear
+// use α ≈ 0 (quasi-inextensible), bending uses a larger α_bend so the sheet folds.
 //   Δλ = -C / (w_i + w_j + α̃),   α̃ = compliance / dt².
-// compliance → 0 gives quasi-inextensible cloth (brief §3.3, S6).
 
 struct SimParams {
   dt: f32,
   gravity: f32,
   ground_y: f32,
-  compliance: f32,
+  friction: f32,
   ray_origin: vec3f,
   mouse_force: f32,
   ray_dir: vec3f,
   mouse_radius: f32,
+  sphere_center: vec3f,
+  sphere_radius: f32,
   particle_count: u32,
   damping: f32,
   max_speed: f32,
-  _pad: f32,
+  cloth_thickness: f32,
 };
 
 struct Constraint {
   i: u32,
   j: u32,
   rest: f32,
-  _pad: f32,
+  compliance: f32,
 };
 
-// Color block within the sorted constraint array.
 struct Batch {
   offset: u32,
   count: u32,
@@ -62,7 +63,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   let n = d / len;
   let cval = len - c.rest;
-  let alpha = params.compliance / (params.dt * params.dt);
+  let alpha = c.compliance / (params.dt * params.dt);
   let dlambda = -cval / (wsum + alpha);
   let corr = dlambda * n;
 

@@ -12,6 +12,7 @@ interface DecodedEdge {
   i: number;
   j: number;
   rest: number;
+  compliance: number;
 }
 
 function decodeConstraints(data: ArrayBuffer, count: number): DecodedEdge[] {
@@ -22,6 +23,7 @@ function decodeConstraints(data: ArrayBuffer, count: number): DecodedEdge[] {
       i: dv.getUint32(k * 16, true),
       j: dv.getUint32(k * 16 + 4, true),
       rest: dv.getFloat32(k * 16 + 8, true),
+      compliance: dv.getFloat32(k * 16 + 12, true),
     });
   }
   return out;
@@ -39,22 +41,28 @@ describe('generateClothGrid topology', () => {
     expect(mesh.invMasses.length).toBe(n * n);
   });
 
-  it('counts structural and shear edges correctly', () => {
+  it('counts structural, shear, and bending edges correctly', () => {
     const structural = 2 * n * (n - 1); // horizontal + vertical
     const shear = 2 * (n - 1) * (n - 1); // both diagonals per cell
+    const bending = 2 * n * (n - 2); // skip-2 in each axis
     expect(mesh.structuralCount).toBe(structural);
-    expect(mesh.constraintCount).toBe(structural + shear);
+    expect(mesh.shearCount).toBe(shear);
+    expect(mesh.bendingCount).toBe(bending);
+    expect(mesh.constraintCount).toBe(structural + shear + bending);
     expect(mesh.constraintData.byteLength).toBe(mesh.constraintCount * 16);
   });
 
-  it('classifies rest lengths as structural spacing or shear diagonal', () => {
+  it('classifies rest lengths as structural, shear, or bending (skip-2)', () => {
     const edges = decodeConstraints(mesh.constraintData, mesh.constraintCount);
     const diag = spacing * Math.SQRT2;
+    const skip2 = spacing * 2;
     let structural = 0;
     let shear = 0;
+    let bending = 0;
     for (const e of edges) {
       if (Math.abs(e.rest - spacing) < 1e-5) structural++;
       else if (Math.abs(e.rest - diag) < 1e-5) shear++;
+      else if (Math.abs(e.rest - skip2) < 1e-5) bending++;
       else throw new Error(`unexpected rest length ${e.rest}`);
       expect(e.i).toBeGreaterThanOrEqual(0);
       expect(e.i).toBeLessThan(mesh.count);
@@ -63,6 +71,19 @@ describe('generateClothGrid topology', () => {
     }
     expect(structural).toBe(2 * n * (n - 1));
     expect(shear).toBe(2 * (n - 1) * (n - 1));
+    expect(bending).toBe(2 * n * (n - 2));
+  });
+
+  it('assigns per-constraint compliance: rigid stretch, soft bending', () => {
+    const stretchCompliance = 0;
+    const bendCompliance = 1e-5;
+    const m = generateClothGrid({ resolution: n, size, stretchCompliance, bendCompliance });
+    const edges = decodeConstraints(m.constraintData, m.constraintCount);
+    const skip2 = spacing * 2;
+    for (const e of edges) {
+      const isBending = Math.abs(e.rest - skip2) < 1e-5;
+      expect(e.compliance).toBeCloseTo(isBending ? bendCompliance : stretchCompliance, 9);
+    }
   });
 
   it('lays particles flat in the horizontal plane at topY', () => {

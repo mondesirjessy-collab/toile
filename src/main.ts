@@ -4,9 +4,15 @@ import { generateClothGrid } from './engine/cloth/ClothMesh';
 import { PointsRenderer } from './app/PointsRenderer';
 import { OrbitCamera } from './app/OrbitCamera';
 import { MouseForce } from './app/MouseForce';
+import { buildSceneMesh } from './app/SceneGeometry';
 
 const RESOLUTION = 64; // 64×64 = 4 096 particules (brief S1 baseline)
 const SUBSTEPS = 20;
+
+// Shared scene definition: the solver collides against these, the renderer draws them.
+const SPHERE_CENTER: [number, number, number] = [0, 0.8, 0];
+const SPHERE_RADIUS = 0.55;
+const GROUND_Y = 0;
 
 async function main(): Promise<void> {
   const canvas = document.getElementById('view') as HTMLCanvasElement;
@@ -33,17 +39,33 @@ async function main(): Promise<void> {
 
   const mesh = generateClothGrid({
     resolution: RESOLUTION,
-    size: 1.0, // 1 m × 1 m (brief §4)
-    topY: 1.8,
-    pin: 'corners', // held at two corners of the anchored edge (brief §3.3)
+    size: 1.6, // 1.6 m sheet draping over the sphere (brief §4 scene)
+    topY: 1.7, // starts flat above the sphere top, falls onto it
+    pin: 'none', // free fall + drape; press P to hold the two corners
   });
-  const system = new ParticleSystem(device, mesh);
+  const system = new ParticleSystem(device, mesh, {
+    sphereCenter: SPHERE_CENTER,
+    sphereRadius: SPHERE_RADIUS,
+    groundY: GROUND_Y,
+    friction: 0.5,
+  });
 
-  const renderer = new PointsRenderer(device, canvas, system.positionBuffer, system.count);
+  const scene = buildSceneMesh({
+    sphereCenter: SPHERE_CENTER,
+    sphereRadius: SPHERE_RADIUS,
+    groundY: GROUND_Y,
+  });
+  const renderer = new PointsRenderer(device, canvas, system.positionBuffer, system.count, scene);
   const camera = new OrbitCamera();
   camera.attach(canvas);
   const mouse = new MouseForce();
   mouse.attach(canvas);
+
+  // Interaction: R re-drops the cloth, P toggles holding the two corners.
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'r' || e.key === 'R') system.reset();
+    else if (e.key === 'p' || e.key === 'P') system.setCornerPins(!system.pinsHeld);
+  });
 
   const resize = (): void => {
     const dpr = Math.min(window.devicePixelRatio, 2);
@@ -80,7 +102,8 @@ async function main(): Promise<void> {
       const fps = Math.round(frames / fpsAccum);
       hud.textContent =
         `${fps} fps · ${system.count.toLocaleString('fr-FR')} particules · ` +
-        `${system.constraintCount.toLocaleString('fr-FR')} contraintes · ` +
+        `${system.constraintCount.toLocaleString('fr-FR')} contraintes ` +
+        `(${system.bendingCount.toLocaleString('fr-FR')} flexion) · ` +
         `${system.colorCount} couleurs · ${SUBSTEPS} substeps`;
       frames = 0;
       fpsAccum = 0;
