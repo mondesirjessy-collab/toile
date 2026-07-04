@@ -1,12 +1,12 @@
-// collide.wgsl — Milestone 5-6, contact resolution (brief §3.2 step 3, §3.3).
-// Runs after the constraint solve, before the velocity update, so contacts feed
-// back into velocity (a particle that hits the sphere is stopped there). Handles:
-//   - sphere: if |x - c| < r + thickness, project onto the surface (S4: no
-//     visible interpenetration), with simplified Coulomb friction
-//   - ground: a real collision plane (not just a clamp) with friction
-// Friction (brief §3.3, "statique simplifiée acceptable"): decompose the
-// substep displacement (x - x_prev) into normal + tangential and damp the
-// tangential part by `friction` ∈ [0,1].
+// collide.wgsl — contact resolution (brief §3.2 step 3, §3.3), phase 1 update:
+// the single analytic sphere became a LIST of sphere colliders so the scene can
+// host a dress form (stacked spheres) or any prop. Runs after the constraint
+// solve, before the velocity update. Handles:
+//   - spheres: if |x - c| < r + thickness, project onto the surface (S4),
+//     with simplified Coulomb friction
+//   - ground: collision plane with friction
+// Friction: decompose the substep displacement (x - x_prev) into normal +
+// tangential and damp the tangential part by `friction` ∈ [0,1].
 
 struct SimParams {
   dt: f32,
@@ -17,8 +17,10 @@ struct SimParams {
   mouse_force: f32,
   ray_dir: vec3f,
   mouse_radius: f32,
-  sphere_center: vec3f,
-  sphere_radius: f32,
+  collider_count: u32,
+  _c0: f32,
+  _c1: f32,
+  _c2: f32,
   drag_target: vec3f,
   drag_stiffness: f32,
   compliance_stretch: f32,
@@ -35,6 +37,7 @@ struct SimParams {
 @group(0) @binding(1) var<storage, read_write> positions: array<vec4f>;
 @group(0) @binding(2) var<storage, read> prev_positions: array<vec4f>;
 @group(0) @binding(3) var<storage, read> inv_masses: array<f32>;
+@group(0) @binding(4) var<storage, read> colliders: array<vec4f>; // xyz center, w radius
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
@@ -45,25 +48,27 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var x = positions[i].xyz;
   let xp = prev_positions[i].xyz;
 
-  // --- Sphere contact ---
-  let dc = x - params.sphere_center;
-  let dist = length(dc);
-  let minDist = params.sphere_radius + params.cloth_thickness;
-  if (dist < minDist && dist > 1e-6) {
-    let nrm = dc / dist;
-    x = params.sphere_center + nrm * minDist; // project onto surface
-    // Friction: damp tangential part of this substep's motion.
-    let disp = x - xp;
-    let dispN = dot(disp, nrm) * nrm;
-    let dispT = disp - dispN;
-    x -= dispT * params.friction;
+  // --- Sphere colliders ---
+  for (var s = 0u; s < params.collider_count; s++) {
+    let c = colliders[s];
+    let dc = x - c.xyz;
+    let dist = length(dc);
+    let minDist = c.w + params.cloth_thickness;
+    if (dist < minDist && dist > 1e-6) {
+      let nrm = dc / dist;
+      x = c.xyz + nrm * minDist; // project onto surface
+      // Friction: damp tangential part of this substep's motion.
+      let disp = x - xp;
+      let dispN = dot(disp, nrm) * nrm;
+      let dispT = disp - dispN;
+      x -= dispT * params.friction;
+    }
   }
 
   // --- Ground contact (plane y = ground_y) ---
   let floorY = params.ground_y + params.cloth_thickness;
   if (x.y < floorY) {
     x.y = floorY;
-    // Tangential (XZ) friction against the floor.
     let disp = x - xp;
     x.x -= disp.x * params.friction;
     x.z -= disp.z * params.friction;

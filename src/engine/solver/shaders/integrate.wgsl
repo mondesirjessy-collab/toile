@@ -13,8 +13,10 @@ struct SimParams {
   mouse_force: f32,  // signed peak accel: >0 attract, <0 repel, 0 idle
   ray_dir: vec3f,    // cursor pick ray direction (normalized), world space
   mouse_radius: f32, // radial falloff radius (world units)
-  sphere_center: vec3f,
-  sphere_radius: f32,
+  collider_count: u32,
+  _c0: f32,
+  _c1: f32,
+  _c2: f32,
   drag_target: vec3f,
   drag_stiffness: f32,
   compliance_stretch: f32,

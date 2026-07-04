@@ -22,11 +22,17 @@ export interface TimestampSpan {
   endIndex: number;
 }
 
+/** Analytic sphere collider: xyz center + radius. */
+export interface SphereCollider {
+  center: [number, number, number];
+  radius: number;
+}
+
 export interface SolverOptions {
   gravity?: number;
   groundY?: number;
-  sphereCenter?: [number, number, number];
-  sphereRadius?: number;
+  /** Sphere colliders (a dress form is a stack of these). */
+  colliders?: SphereCollider[];
   friction?: number;
   clothThickness?: number;
   complianceStretch?: number;
@@ -43,7 +49,7 @@ export interface SolverOptions {
 // SimParams std140-style layout, 112 bytes. Offsets (bytes):
 //  0 dt, 4 gravity, 8 ground_y, 12 friction,
 //  16 ray_origin.xyz, 28 mouse_force, 32 ray_dir.xyz, 44 mouse_radius,
-//  48 sphere_center.xyz, 60 sphere_radius, 64 drag_target.xyz, 76 drag_stiffness,
+//  48 collider_count (u32) + 3 pads, 64 drag_target.xyz, 76 drag_stiffness,
 //  80 compliance_stretch, 84 compliance_shear, 88 compliance_bend, 92 cloth_thickness,
 //  96 particle_count, 100 damping, 104 max_speed, 108 drag_index.
 const UNIFORM_SIZE = 112;
@@ -64,6 +70,7 @@ export class ParticleSystem {
   private readonly velocityBuffer: GPUBuffer;
   private readonly invMassBuffer: GPUBuffer;
   private readonly constraintBuffer: GPUBuffer;
+  private readonly colliderBuffer: GPUBuffer;
   private readonly uniformBuffer: GPUBuffer;
   private readonly batchBuffers: GPUBuffer[];
   private readonly readbackBuffer: GPUBuffer;
@@ -91,8 +98,7 @@ export class ParticleSystem {
 
   private readonly gravity: number;
   private readonly groundY: number;
-  private readonly sphereCenter: [number, number, number];
-  private readonly sphereRadius: number;
+  private readonly colliderCount: number;
   private readonly clothThickness: number;
   private readonly mouseStrength: number;
   private readonly mouseRadius: number;
@@ -126,8 +132,8 @@ export class ParticleSystem {
 
     this.gravity = opts.gravity ?? -9.81;
     this.groundY = opts.groundY ?? 0.0;
-    this.sphereCenter = opts.sphereCenter ?? [0, 0.8, 0];
-    this.sphereRadius = opts.sphereRadius ?? 0.55;
+    const colliders = opts.colliders ?? [{ center: [0, 0.8, 0] as [number, number, number], radius: 0.55 }];
+    this.colliderCount = colliders.length;
     this.friction = opts.friction ?? 0.5;
     this.clothThickness = opts.clothThickness ?? 0.01;
     this.complianceStretch = opts.complianceStretch ?? 0.0;
@@ -149,6 +155,9 @@ export class ParticleSystem {
     this.velocityBuffer = this.createBuffer(new Float32Array(this.count * 4), storage);
     this.invMassBuffer = this.createBuffer(mesh.invMasses, storage);
     this.constraintBuffer = this.createBufferRaw(mesh.constraintData, storage);
+    const colliderData = new Float32Array(this.colliderCount * 4);
+    colliders.forEach((c, k) => colliderData.set([...c.center, c.radius], k * 4));
+    this.colliderBuffer = this.createBuffer(colliderData, storage);
     this.readbackBuffer = device.createBuffer({
       size: this.count * 16,
       usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
@@ -206,6 +215,7 @@ export class ParticleSystem {
       this.positionBuffer,
       this.prevPositionBuffer,
       this.invMassBuffer,
+      this.colliderBuffer,
     ]);
     this.velocityBindGroup = bg(this.velocityPipeline, [
       this.uniformBuffer,
@@ -362,6 +372,7 @@ export class ParticleSystem {
     this.velocityBuffer.destroy();
     this.invMassBuffer.destroy();
     this.constraintBuffer.destroy();
+    this.colliderBuffer.destroy();
     this.uniformBuffer.destroy();
     this.readbackBuffer.destroy();
     for (const b of this.batchBuffers) b.destroy();
@@ -382,10 +393,10 @@ export class ParticleSystem {
     dv.setFloat32(36, this.mouseDir[1], LE);
     dv.setFloat32(40, this.mouseDir[2], LE);
     dv.setFloat32(44, this.mouseRadius, LE);
-    dv.setFloat32(48, this.sphereCenter[0], LE);
-    dv.setFloat32(52, this.sphereCenter[1], LE);
-    dv.setFloat32(56, this.sphereCenter[2], LE);
-    dv.setFloat32(60, this.sphereRadius, LE);
+    dv.setUint32(48, this.colliderCount, LE);
+    dv.setFloat32(52, 0, LE);
+    dv.setFloat32(56, 0, LE);
+    dv.setFloat32(60, 0, LE);
     dv.setFloat32(64, this.dragTarget[0], LE);
     dv.setFloat32(68, this.dragTarget[1], LE);
     dv.setFloat32(72, this.dragTarget[2], LE);

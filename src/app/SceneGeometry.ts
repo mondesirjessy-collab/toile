@@ -15,8 +15,8 @@ export interface SceneMesh {
 }
 
 export interface SceneParams {
-  sphereCenter: [number, number, number];
-  sphereRadius: number;
+  /** Sphere colliders to visualize (a dress form is a stack of them). */
+  spheres: { center: [number, number, number]; radius: number }[];
   groundY: number;
   groundHalfSize?: number;
 }
@@ -35,31 +35,33 @@ export function buildSceneMesh(p: SceneParams): SceneMesh {
     return idx;
   };
 
-  // --- UV sphere ---
-  const [cx, cy, cz] = p.sphereCenter;
-  const r = p.sphereRadius;
+  // --- UV spheres (one per collider) ---
   const rings = 32;
   const sectors = 48;
   const sphereColor: [number, number, number] = [0.45, 0.49, 0.58];
-  const base = vertices.length / SCENE_VERTEX_FLOATS;
-  for (let ring = 0; ring <= rings; ring++) {
-    const phi = (ring / rings) * Math.PI; // 0..π (pole to pole)
-    const sinP = Math.sin(phi);
-    const cosP = Math.cos(phi);
-    for (let sec = 0; sec <= sectors; sec++) {
-      const theta = (sec / sectors) * Math.PI * 2;
-      const nx = sinP * Math.cos(theta);
-      const ny = cosP;
-      const nz = sinP * Math.sin(theta);
-      push([cx + r * nx, cy + r * ny, cz + r * nz], [nx, ny, nz], sphereColor);
+  for (const sphere of p.spheres) {
+    const [cx, cy, cz] = sphere.center;
+    const r = sphere.radius;
+    const base = vertices.length / SCENE_VERTEX_FLOATS;
+    for (let ring = 0; ring <= rings; ring++) {
+      const phi = (ring / rings) * Math.PI; // 0..π (pole to pole)
+      const sinP = Math.sin(phi);
+      const cosP = Math.cos(phi);
+      for (let sec = 0; sec <= sectors; sec++) {
+        const theta = (sec / sectors) * Math.PI * 2;
+        const nx = sinP * Math.cos(theta);
+        const ny = cosP;
+        const nz = sinP * Math.sin(theta);
+        push([cx + r * nx, cy + r * ny, cz + r * nz], [nx, ny, nz], sphereColor);
+      }
     }
-  }
-  const stride = sectors + 1;
-  for (let ring = 0; ring < rings; ring++) {
-    for (let sec = 0; sec < sectors; sec++) {
-      const a = base + ring * stride + sec;
-      const b = a + stride;
-      indices.push(a, b, a + 1, a + 1, b, b + 1);
+    const stride = sectors + 1;
+    for (let ring = 0; ring < rings; ring++) {
+      for (let sec = 0; sec < sectors; sec++) {
+        const a = base + ring * stride + sec;
+        const b = a + stride;
+        indices.push(a, b, a + 1, a + 1, b, b + 1);
+      }
     }
   }
 

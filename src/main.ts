@@ -15,10 +15,16 @@ const DEFAULT_SUBSTEPS = 20;
 const CLOTH_SIZE = 1.6;
 const CLOTH_TOP_Y = 1.7;
 
-// Shared scene definition: the solver collides against these, the renderer draws them.
-const SPHERE_CENTER: [number, number, number] = [0, 0.8, 0];
-const SPHERE_RADIUS = 0.55;
+// Shared scene definitions: the solver collides against these, the renderer draws them.
 const GROUND_Y = 0;
+const SPHERE = [{ center: [0, 0.8, 0] as [number, number, number], radius: 0.55 }];
+// Dress form: stacked spheres — shoulders, chest, waist, hips.
+const BUST = [
+  { center: [0, 1.55, 0] as [number, number, number], radius: 0.13 },
+  { center: [0, 1.35, 0] as [number, number, number], radius: 0.21 },
+  { center: [0, 1.12, 0] as [number, number, number], radius: 0.17 },
+  { center: [0, 0.92, 0] as [number, number, number], radius: 0.22 },
+];
 
 let fatalShown = false;
 
@@ -80,7 +86,6 @@ async function main(): Promise<void> {
     showFatal('Erreur WebGPU', msg);
   });
 
-  const scene = buildSceneMesh({ sphereCenter: SPHERE_CENTER, sphereRadius: SPHERE_RADIUS, groundY: GROUND_Y });
   const camera = new OrbitCamera(); // attached below, once the grab test exists
   const mouse = new MouseForce();
   mouse.attach(canvas);
@@ -106,21 +111,25 @@ async function main(): Promise<void> {
   const build = (): void => {
     system?.dispose();
     renderer?.dispose();
-    // 'drapé': one sheet falling onto the sphere. 'couture' (phase 1): two flat
-    // pattern pieces stitched along their side seams, closing around the sphere.
+    // 'drapé': one sheet falling onto the sphere. 'couture': two pattern pieces
+    // stitched around the sphere. 'robe': the same seamed pieces closing around
+    // a dress form (stacked-sphere bust), falling to the floor.
+    const colliders = sceneMode === 'robe' ? BUST : SPHERE;
     const mesh =
       sceneMode === 'couture'
         ? generateSeamedPanels({ resolution, width: 1.2, height: 1.2, gap: 1.3, topY: 1.9 })
-        : generateClothGrid({ resolution, size: CLOTH_SIZE, topY: CLOTH_TOP_Y, pin: 'none' });
+        : sceneMode === 'robe'
+          ? generateSeamedPanels({ resolution, width: 0.9, height: 1.7, gap: 1.1, topY: 1.75 })
+          : generateClothGrid({ resolution, size: CLOTH_SIZE, topY: CLOTH_TOP_Y, pin: 'none' });
     system = new ParticleSystem(device, mesh, {
-      sphereCenter: SPHERE_CENTER,
-      sphereRadius: SPHERE_RADIUS,
+      colliders,
       groundY: GROUND_Y,
       friction,
       complianceStretch: compliance.stretch,
       complianceShear: compliance.shear,
       complianceBend: compliance.bend,
     });
+    const sceneMesh = buildSceneMesh({ spheres: colliders, groundY: GROUND_Y });
     renderer = new ClothRenderer(
       device,
       canvas,
@@ -128,7 +137,7 @@ async function main(): Promise<void> {
       system.count,
       mesh.resolution,
       mesh.triangleIndices,
-      scene,
+      sceneMesh,
     );
     renderer.setFabric(fabricStyle); // keep the preset's look across rebuilds
     renderer.resize(canvas.width, canvas.height);
