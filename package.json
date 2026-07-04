@@ -1,0 +1,18 @@
+{
+  "name": "toile",
+  "version": "0.1.0",
+  "description": "Real-time cloth simulation engine for the web. XPBD solver running on WebGPU compute shaders. Open engine for an open garment format.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.44",
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0"
+  }
+}
