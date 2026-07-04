@@ -19,6 +19,24 @@ const SPHERE_CENTER: [number, number, number] = [0, 0.8, 0];
 const SPHERE_RADIUS = 0.55;
 const GROUND_Y = 0;
 
+let fatalShown = false;
+
+/** Surface any startup/GPU error on screen instead of failing to a blank canvas. */
+function showFatal(title: string, detail: string): void {
+  if (fatalShown) return;
+  fatalShown = true;
+  const overlay = document.getElementById('overlay') as HTMLElement;
+  overlay.hidden = false;
+  overlay.innerHTML = '';
+  const h = document.createElement('h1');
+  h.textContent = title;
+  const p = document.createElement('p');
+  p.className = 'detail';
+  p.style.whiteSpace = 'pre-wrap';
+  p.textContent = detail;
+  overlay.append(h, p);
+}
+
 async function main(): Promise<void> {
   const canvas = document.getElementById('view') as HTMLCanvasElement;
   const hud = document.getElementById('hud') as HTMLElement;
@@ -41,6 +59,14 @@ async function main(): Promise<void> {
   }
 
   const { device } = gpu;
+  // Surface WebGPU validation/pipeline errors (e.g. a shader a browser rejects)
+  // on screen — otherwise they only blank the canvas silently.
+  device.addEventListener('uncapturederror', (e) => {
+    const msg = (e as GPUUncapturedErrorEvent).error.message;
+    console.error('[toile] WebGPU error:', msg);
+    showFatal('Erreur WebGPU', msg);
+  });
+
   const scene = buildSceneMesh({ sphereCenter: SPHERE_CENTER, sphereRadius: SPHERE_RADIUS, groundY: GROUND_Y });
   const camera = new OrbitCamera();
   camera.attach(canvas);
@@ -134,6 +160,13 @@ async function main(): Promise<void> {
     const dt = Math.min((now - last) / 1000, 1 / 30); // clamp tab-switch spikes
     last = now;
 
+    // Skip while the canvas has no size (some webviews report a 0×0 viewport
+    // until laid out) — rendering into a 0-sized surface errors.
+    if (canvas.width === 0 || canvas.height === 0) {
+      schedule();
+      return;
+    }
+
     const aspect = canvas.width / canvas.height;
     const ray = camera.pickRay(mouse.ndcX, mouse.ndcY, aspect);
 
@@ -214,4 +247,4 @@ async function main(): Promise<void> {
   schedule();
 }
 
-void main();
+main().catch((e) => showFatal('Erreur au démarrage', e?.stack ?? e?.message ?? String(e)));

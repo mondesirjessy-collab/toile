@@ -14,16 +14,19 @@ import { SCENE_VERTEX_FLOATS, type SceneMesh } from './SceneGeometry';
 const CLOTH_SHADER = /* wgsl */ `
 struct Camera { viewProj: mat4x4f };
 @group(0) @binding(0) var<uniform> camera: Camera;
-@group(0) @binding(1) var<storage, read> positions: array<vec4f>;
 
 struct VSOut {
   @builtin(position) clip: vec4f,
   @location(0) height: f32,
 };
 
+// Positions come in as a plain vertex buffer (the solver's position buffer,
+// vec4 per particle) rather than a storage buffer read in the vertex stage —
+// the latter isn't portable (Safari/Metal may expose 0 vertex-stage storage
+// buffers by default).
 @vertex
-fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
-  let p = positions[vi].xyz;
+fn vs(@location(0) pos: vec4f) -> VSOut {
+  let p = pos.xyz;
   var out: VSOut;
   out.clip = camera.viewProj * vec4f(p, 1.0);
   out.height = p.y;
@@ -76,6 +79,7 @@ export class PointsRenderer {
   private readonly scenePipeline: GPURenderPipeline;
   private readonly clothBindGroup: GPUBindGroup;
   private readonly sceneBindGroup: GPUBindGroup;
+  private readonly positionBuffer: GPUBuffer;
   private readonly cameraBuffer: GPUBuffer;
   private readonly sceneVertexBuffer: GPUBuffer;
   private readonly sceneIndexBuffer: GPUBuffer;
@@ -92,6 +96,7 @@ export class PointsRenderer {
   ) {
     this.device = device;
     this.count = count;
+    this.positionBuffer = positionBuffer;
 
     const ctx = canvas.getContext('webgpu');
     if (!ctx) throw new Error('Failed to acquire WebGPU canvas context');
@@ -110,22 +115,28 @@ export class PointsRenderer {
       depthCompare: 'less',
     };
 
-    // Cloth points.
+    // Cloth points — positions fed as a vertex buffer (vec4 stride 16).
     const clothModule = device.createShaderModule({ code: CLOTH_SHADER, label: 'cloth' });
     this.clothPipeline = device.createRenderPipeline({
       label: 'cloth-pipeline',
       layout: 'auto',
-      vertex: { module: clothModule, entryPoint: 'vs' },
+      vertex: {
+        module: clothModule,
+        entryPoint: 'vs',
+        buffers: [
+          {
+            arrayStride: 16,
+            attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x4' }],
+          },
+        ],
+      },
       fragment: { module: clothModule, entryPoint: 'fs', targets: [{ format: this.format }] },
       primitive: { topology: 'point-list' },
       depthStencil,
     });
     this.clothBindGroup = device.createBindGroup({
       layout: this.clothPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.cameraBuffer } },
-        { binding: 1, resource: { buffer: positionBuffer } },
-      ],
+      entries: [{ binding: 0, resource: { buffer: this.cameraBuffer } }],
     });
 
     // Scene colliders (lit triangles).
@@ -220,6 +231,7 @@ export class PointsRenderer {
 
     pass.setPipeline(this.clothPipeline);
     pass.setBindGroup(0, this.clothBindGroup);
+    pass.setVertexBuffer(0, this.positionBuffer);
     pass.draw(this.count);
 
     pass.end();
