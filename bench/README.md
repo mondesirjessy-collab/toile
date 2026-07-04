@@ -38,12 +38,26 @@ HUD (`npm run dev`, then read the fps / particle / substep line).
 4. Note the GPU (S1 = recent integrated GPU, e.g. Apple M1 / Iris Xe;
    S2 = mid-range discrete).
 
-### Results template
+### Results
 
-| Date | Milestone | Grid | Particles | Constraints | Substeps | GPU | fps | Criterion | Pass |
-|------|-----------|------|-----------|-------------|----------|-----|-----|-----------|------|
-| —    | M3        | 64²  | 4 096     | ~16 000     | 20       | _fill_ | _fill_ | S1 ≥ 60 fps | _?_ |
-| —    | M3        | 128² | 16 384    | ~65 000     | 20       | _fill_ | _fill_ | S2 ≥ 60 fps | _?_ |
+GPU sim time per frame (timestamp queries, 20 substeps). The 60 fps budget is
+16.7 ms/frame; sim must share it with rendering (< 1 ms here).
+
+| Date | Milestone | Grid | Particles | Constraints | GPU | sim ms (in-app) | sim ms (saturated) | Criterion | Pass |
+|------|-----------|------|-----------|-------------|-----|-----------------|--------------------|-----------|------|
+| 2026-07-04 | M9-10 (multi-pass, before) | 64²  | 4 096  | 23 938 | Apple (metal-3) | 3.08 | — | S1 ≥ 60 fps | ✅ |
+| 2026-07-04 | M9-10 (multi-pass, before) | 128² | 16 384 | 97 026 | Apple (metal-3) | 4.98 | — | S2 ≥ 60 fps | ✅ |
+| 2026-07-04 | M9-10 (single-pass) | 64²  | 4 096  | 23 938 | Apple (metal-3) | —    | 0.98 | S1 ≥ 60 fps | ✅ |
+| 2026-07-04 | M9-10 (single-pass) | 128² | 16 384 | 97 026 | Apple (metal-3) | 3.47 | 0.66 | S2 ≥ 60 fps | ✅ |
+
+Notes:
+- *in-app*: read from the HUD during normal interactive use. Includes GPU
+  power-management downclocking at low utilization, so it overstates the cost.
+- *saturated*: median of 60 back-to-back `step()` calls (harness driven by
+  `onSubmittedWorkDone`), GPU at boost clocks — the intrinsic solver cost.
+- The M9-10 optimization collapsed ~16×substeps compute passes per frame into
+  ONE pass (WebGPU synchronizes storage writes between dispatches of a pass);
+  at 128² the in-app cost dropped 4.98 → 3.47 ms (−30 %).
 
 Add a new row per milestone/hardware rather than overwriting, so regressions
 across milestones stay visible for the NGI dossier.

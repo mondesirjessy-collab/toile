@@ -306,46 +306,53 @@ export class ParticleSystem {
     }
   }
 
-  /** Advance the simulation by one frame, split into `substeps` substeps. */
+  /**
+   * Advance the simulation by one frame, split into `substeps` substeps.
+   * All dispatches share ONE compute pass: WebGPU guarantees that storage
+   * writes from a dispatch are visible to the following dispatches of the same
+   * pass, and collapsing ~16×substeps passes into one removes the per-pass
+   * encoder overhead that dominated the frame at high substep counts
+   * (milestone 9-10 optimization for the S1 integrated-GPU target).
+   */
   step(frameDt: number, substeps: number, ts?: TimestampSpan): void {
     const dt = frameDt / substeps;
     this.writeUniforms(dt);
 
     const encoder = this.device.createCommandEncoder({ label: 'sim-frame' });
     const particleGroups = Math.ceil(this.count / WORKGROUP);
-    const lastSub = substeps - 1;
 
-    const dispatch = (
-      pipeline: GPUComputePipeline,
-      group: GPUBindGroup,
-      groups: number,
-      writes?: GPUComputePassTimestampWrites,
-    ): void => {
-      const pass = encoder.beginComputePass(writes ? { timestampWrites: writes } : undefined);
+    const pass = encoder.beginComputePass(
+      ts
+        ? {
+            timestampWrites: {
+              querySet: ts.querySet,
+              beginningOfPassWriteIndex: ts.beginIndex,
+              endOfPassWriteIndex: ts.endIndex,
+            },
+          }
+        : undefined,
+    );
+    const dispatch = (pipeline: GPUComputePipeline, group: GPUBindGroup, groups: number): void => {
       pass.setPipeline(pipeline);
       pass.setBindGroup(0, group);
       pass.dispatchWorkgroups(groups);
-      pass.end();
     };
 
     for (let s = 0; s < substeps; s++) {
-      const beginWrites =
-        ts && s === 0 ? { querySet: ts.querySet, beginningOfPassWriteIndex: ts.beginIndex } : undefined;
-      dispatch(this.integratePipeline, this.integrateBindGroup, particleGroups, beginWrites);
+      dispatch(this.integratePipeline, this.integrateBindGroup, particleGroups);
 
       for (let c = 0; c < this.colorCounts.length; c++) {
         const groups = Math.ceil(this.colorCounts[c]! / WORKGROUP);
         if (groups > 0) dispatch(this.solvePipeline, this.solveBindGroups[c]!, groups);
       }
 
-      dispatch(this.dragPipeline, this.dragBindGroup, 1);
+      // The drag constraint costs a dispatch only while a particle is grabbed.
+      if (this.dragIndex !== DRAG_NONE) dispatch(this.dragPipeline, this.dragBindGroup, 1);
       dispatch(this.collidePipeline, this.collideBindGroup, particleGroups);
-
-      const endWrites =
-        ts && s === lastSub ? { querySet: ts.querySet, endOfPassWriteIndex: ts.endIndex } : undefined;
-      dispatch(this.velocityPipeline, this.velocityBindGroup, particleGroups, endWrites);
+      dispatch(this.velocityPipeline, this.velocityBindGroup, particleGroups);
     }
 
+    pass.end();
     this.device.queue.submit([encoder.finish()]);
   }
 
