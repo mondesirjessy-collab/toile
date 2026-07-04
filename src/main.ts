@@ -17,13 +17,17 @@ const CLOTH_TOP_Y = 1.7;
 
 // Shared scene definitions: the solver collides against these, the renderer draws them.
 const GROUND_Y = 0;
-const SPHERE = [{ center: [0, 0.8, 0] as [number, number, number], radius: 0.55 }];
-// Dress form: stacked spheres — shoulders, chest, waist, hips.
-const BUST = [
-  { center: [0, 1.55, 0] as [number, number, number], radius: 0.13 },
-  { center: [0, 1.35, 0] as [number, number, number], radius: 0.21 },
-  { center: [0, 1.12, 0] as [number, number, number], radius: 0.17 },
-  { center: [0, 0.92, 0] as [number, number, number], radius: 0.22 },
+type V3 = [number, number, number];
+const SPHERE = [{ a: [0, 0.8, 0] as V3, radius: 0.55 }];
+// Full mannequin, capsule silhouette: head, neck, shoulders, torso, hips, legs.
+const MANNEQUIN = [
+  { a: [0, 1.62, 0] as V3, radius: 0.11 }, // head
+  { a: [0, 1.46, 0] as V3, b: [0, 1.54, 0] as V3, radius: 0.05 }, // neck
+  { a: [-0.16, 1.4, 0] as V3, b: [0.16, 1.4, 0] as V3, radius: 0.07 }, // shoulders
+  { a: [0, 1.16, 0] as V3, b: [0, 1.38, 0] as V3, radius: 0.155 }, // torso
+  { a: [-0.05, 0.94, 0] as V3, b: [0.05, 0.94, 0] as V3, radius: 0.15 }, // hips
+  { a: [-0.08, 0.9, 0] as V3, b: [-0.085, 0.08, 0] as V3, radius: 0.065 }, // left leg
+  { a: [0.08, 0.9, 0] as V3, b: [0.085, 0.08, 0] as V3, radius: 0.065 }, // right leg
 ];
 
 let fatalShown = false;
@@ -115,17 +119,17 @@ async function main(): Promise<void> {
     // 'drapé': one sheet falling onto the sphere. 'couture': two pattern pieces
     // stitched around the sphere. 'robe': the same seamed pieces closing around
     // a dress form (stacked-sphere bust), falling to the floor.
-    const colliders = sceneMode === 'robe' ? BUST : SPHERE;
+    const colliders = sceneMode === 'robe' ? MANNEQUIN : SPHERE;
     const mesh =
       sceneMode === 'couture'
         ? generateSeamedPanels({ resolution, width: 1.2, height: 1.2, gap: 1.3, topY: 1.9 })
         : sceneMode === 'robe'
           ? generateSeamedPanels({
               resolution,
-              width: 1.1,
-              height: 1.45,
-              gap: 1.1,
-              topY: 1.78,
+              width: 0.95,
+              height: 1.3,
+              gap: 1.0,
+              topY: 1.6,
               shape: 'aline', // real pattern piece: fitted, flared, scooped neckline
             })
           : generateClothGrid({ resolution, size: CLOTH_SIZE, topY: CLOTH_TOP_Y, pin: 'none' });
@@ -138,7 +142,7 @@ async function main(): Promise<void> {
       complianceBend: compliance.bend,
       selfCollision,
     });
-    const sceneMesh = buildSceneMesh({ spheres: colliders, groundY: GROUND_Y });
+    const sceneMesh = buildSceneMesh({ colliders, groundY: GROUND_Y });
     renderer = new ClothRenderer(
       device,
       canvas,

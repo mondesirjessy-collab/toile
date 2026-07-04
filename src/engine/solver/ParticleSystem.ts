@@ -23,17 +23,18 @@ export interface TimestampSpan {
   endIndex: number;
 }
 
-/** Analytic sphere collider: xyz center + radius. */
-export interface SphereCollider {
-  center: [number, number, number];
+/** Analytic capsule collider: segment a→b swept by a radius (sphere when b is omitted). */
+export interface Collider {
+  a: [number, number, number];
+  b?: [number, number, number];
   radius: number;
 }
 
 export interface SolverOptions {
   gravity?: number;
   groundY?: number;
-  /** Sphere colliders (a dress form is a stack of these). */
-  colliders?: SphereCollider[];
+  /** Capsule/sphere colliders (a mannequin is a handful of these). */
+  colliders?: Collider[];
   friction?: number;
   clothThickness?: number;
   complianceStretch?: number;
@@ -149,7 +150,7 @@ export class ParticleSystem {
 
     this.gravity = opts.gravity ?? -9.81;
     this.groundY = opts.groundY ?? 0.0;
-    const colliders = opts.colliders ?? [{ center: [0, 0.8, 0] as [number, number, number], radius: 0.55 }];
+    const colliders = opts.colliders ?? [{ a: [0, 0.8, 0] as [number, number, number], radius: 0.55 }];
     this.colliderCount = colliders.length;
     this.friction = opts.friction ?? 0.5;
     this.clothThickness = opts.clothThickness ?? 0.01;
@@ -176,8 +177,12 @@ export class ParticleSystem {
     this.velocityBuffer = this.createBuffer(new Float32Array(this.count * 4), storage);
     this.invMassBuffer = this.createBuffer(mesh.invMasses, storage);
     this.constraintBuffer = this.createBufferRaw(mesh.constraintData, storage);
-    const colliderData = new Float32Array(this.colliderCount * 4);
-    colliders.forEach((c, k) => colliderData.set([...c.center, c.radius], k * 4));
+    // Capsule packing: {a.xyz, radius, b.xyz, pad} — 32 bytes per collider.
+    const colliderData = new Float32Array(this.colliderCount * 8);
+    colliders.forEach((c, k) => {
+      const b = c.b ?? c.a; // sphere: degenerate capsule
+      colliderData.set([...c.a, c.radius, ...b, 0], k * 8);
+    });
     this.colliderBuffer = this.createBuffer(colliderData, storage);
 
     // Self-collision spatial hash: cell heads + per-particle next links.

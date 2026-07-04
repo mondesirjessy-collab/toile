@@ -33,11 +33,17 @@ struct SimParams {
   drag_index: u32,
 };
 
+// Capsule collider: segment a→b swept by a radius. A sphere is a=b.
+struct Capsule {
+  a_r: vec4f,   // a.xyz, radius
+  b_pad: vec4f, // b.xyz, unused
+};
+
 @group(0) @binding(0) var<uniform> params: SimParams;
 @group(0) @binding(1) var<storage, read_write> positions: array<vec4f>;
 @group(0) @binding(2) var<storage, read> prev_positions: array<vec4f>;
 @group(0) @binding(3) var<storage, read> inv_masses: array<f32>;
-@group(0) @binding(4) var<storage, read> colliders: array<vec4f>; // xyz center, w radius
+@group(0) @binding(4) var<storage, read> colliders: array<Capsule>;
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
@@ -48,15 +54,23 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var x = positions[i].xyz;
   let xp = prev_positions[i].xyz;
 
-  // --- Sphere colliders ---
+  // --- Capsule colliders ---
   for (var s = 0u; s < params.collider_count; s++) {
-    let c = colliders[s];
-    let dc = x - c.xyz;
+    let cap = colliders[s];
+    let a = cap.a_r.xyz;
+    let ab = cap.b_pad.xyz - a;
+    let ab2 = dot(ab, ab);
+    var closest = a;
+    if (ab2 > 1e-8) {
+      let t = clamp(dot(x - a, ab) / ab2, 0.0, 1.0);
+      closest = a + ab * t;
+    }
+    let dc = x - closest;
     let dist = length(dc);
-    let minDist = c.w + params.cloth_thickness;
+    let minDist = cap.a_r.w + params.cloth_thickness;
     if (dist < minDist && dist > 1e-6) {
       let nrm = dc / dist;
-      x = c.xyz + nrm * minDist; // project onto surface
+      x = closest + nrm * minDist; // project onto surface
       // Friction: damp tangential part of this substep's motion.
       let disp = x - xp;
       let dispN = dot(disp, nrm) * nrm;
