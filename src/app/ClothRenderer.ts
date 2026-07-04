@@ -40,7 +40,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
 const CLOTH_SHADER = /* wgsl */ `
 struct Camera { viewProj: mat4x4f };
+// Per-fabric look: face rgb + shading exponent, back rgb + ambient floor.
+// A high exponent reads as sheen (silk), a low one as matte weave (denim).
+struct Fabric {
+  face: vec4f,
+  back: vec4f,
+};
 @group(0) @binding(0) var<uniform> camera: Camera;
+@group(0) @binding(1) var<uniform> fabric: Fabric;
 
 struct VSOut {
   @builtin(position) clip: vec4f,
@@ -62,10 +69,9 @@ fn fs(in: VSOut, @builtin(front_facing) front: bool) -> @location(0) vec4f {
   let L = normalize(vec3f(0.4, 0.9, 0.35));
   // Wrap ("half-lambert") diffuse keeps folds readable in the shadowed side.
   let wrap = clamp(dot(n, L) * 0.5 + 0.5, 0.0, 1.0);
-  let face_col = vec3f(0.87, 0.82, 0.72); // ecru face
-  let back_col = vec3f(0.66, 0.55, 0.47); // darker reverse, garment-tool style
-  let base = select(back_col, face_col, front);
-  let shade = 0.22 + 0.85 * wrap * wrap;
+  let base = select(fabric.back.rgb, fabric.face.rgb, front);
+  let ambient = fabric.back.a;
+  let shade = ambient + (1.0 - ambient) * pow(wrap, fabric.face.a);
   return vec4f(base * shade, 1.0);
 }
 `;
@@ -104,6 +110,23 @@ interface TimestampSpan {
   endIndex: number;
 }
 
+/** Visual identity of a fabric preset (colors + shading response). */
+export interface FabricStyle {
+  face: [number, number, number];
+  back: [number, number, number];
+  /** Shading exponent: high = sheen (silk), low = matte weave (denim). */
+  exponent: number;
+  /** Ambient floor [0,1]: how bright the shadowed side stays. */
+  ambient: number;
+}
+
+export const DEFAULT_FABRIC: FabricStyle = {
+  face: [0.87, 0.82, 0.72], // ecru jersey
+  back: [0.66, 0.55, 0.47],
+  exponent: 2.0,
+  ambient: 0.22,
+};
+
 export class ClothRenderer {
   private readonly device: GPUDevice;
   private readonly context: GPUCanvasContext;
@@ -118,6 +141,7 @@ export class ClothRenderer {
   private readonly normalsBuffer: GPUBuffer;
   private readonly gridInfoBuffer: GPUBuffer;
   private readonly cameraBuffer: GPUBuffer;
+  private readonly fabricBuffer: GPUBuffer;
   private readonly clothIndexBuffer: GPUBuffer;
   private readonly clothIndexCount: number;
   private readonly sceneVertexBuffer: GPUBuffer;
@@ -149,6 +173,11 @@ export class ClothRenderer {
       size: 64,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    this.fabricBuffer = device.createBuffer({
+      size: 32, // Fabric: 2 × vec4f
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.setFabric(DEFAULT_FABRIC);
 
     // --- Normals compute pass ---
     this.normalsBuffer = device.createBuffer({
@@ -201,7 +230,10 @@ export class ClothRenderer {
     });
     this.clothBindGroup = device.createBindGroup({
       layout: this.clothPipeline.getBindGroupLayout(0),
-      entries: [{ binding: 0, resource: { buffer: this.cameraBuffer } }],
+      entries: [
+        { binding: 0, resource: { buffer: this.cameraBuffer } },
+        { binding: 1, resource: { buffer: this.fabricBuffer } },
+      ],
     });
 
     this.clothIndexBuffer = device.createBuffer({
@@ -266,6 +298,24 @@ export class ClothRenderer {
     this.depthTexture = this.createDepthTexture(width, height);
   }
 
+  /** Apply a fabric preset's visual identity (live, no rebuild). */
+  setFabric(style: FabricStyle): void {
+    this.device.queue.writeBuffer(
+      this.fabricBuffer,
+      0,
+      new Float32Array([
+        style.face[0],
+        style.face[1],
+        style.face[2],
+        style.exponent,
+        style.back[0],
+        style.back[1],
+        style.back[2],
+        style.ambient,
+      ]),
+    );
+  }
+
   render(viewProj: Float32Array, ts?: TimestampSpan): void {
     this.device.queue.writeBuffer(this.cameraBuffer, 0, viewProj.buffer, viewProj.byteOffset, 64);
 
@@ -328,6 +378,7 @@ export class ClothRenderer {
     this.sceneVertexBuffer.destroy();
     this.sceneIndexBuffer.destroy();
     this.cameraBuffer.destroy();
+    this.fabricBuffer.destroy();
   }
 
   private createDepthTexture(width: number, height: number): GPUTexture {

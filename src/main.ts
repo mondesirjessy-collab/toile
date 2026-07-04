@@ -1,7 +1,7 @@
 import { initGpu, WebGPUNotSupportedError } from './engine/gpu/Device';
 import { ParticleSystem } from './engine/solver/ParticleSystem';
 import { generateClothGrid } from './engine/cloth/ClothMesh';
-import { ClothRenderer } from './app/ClothRenderer';
+import { ClothRenderer, DEFAULT_FABRIC } from './app/ClothRenderer';
 import { OrbitCamera } from './app/OrbitCamera';
 import { MouseForce } from './app/MouseForce';
 import { buildSceneMesh } from './app/SceneGeometry';
@@ -88,6 +88,7 @@ async function main(): Promise<void> {
   // Fabric params kept across rebuilds (a resolution change recreates the sim).
   let compliance = { stretch: 1e-7, shear: 1e-6, bend: 2e-5 };
   let friction = 0.5;
+  let fabricStyle = DEFAULT_FABRIC;
 
   let system!: ParticleSystem;
   let renderer!: ClothRenderer;
@@ -121,6 +122,7 @@ async function main(): Promise<void> {
       mesh.triangleIndices,
       scene,
     );
+    renderer.setFabric(fabricStyle); // keep the preset's look across rebuilds
     renderer.resize(canvas.width, canvas.height);
     posCache = null; // stale cache belongs to the previous system
     dragIndex = null;
@@ -154,6 +156,10 @@ async function main(): Promise<void> {
       onFriction: (v) => {
         friction = v;
         system.setFriction(v);
+      },
+      onStyle: (style) => {
+        fabricStyle = style;
+        renderer.setFabric(style);
       },
       onPins: (held) => system.setCornerPins(held),
       onReset: () => {

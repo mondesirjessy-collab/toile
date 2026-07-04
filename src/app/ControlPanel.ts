@@ -6,11 +6,13 @@
  * a rebuild.
  */
 import GUI from 'lil-gui';
+import type { FabricStyle } from './ClothRenderer';
 
 export interface PanelCallbacks {
   onResolution(resolution: number): void;
   onCompliance(c: { stretch: number; shear: number; bend: number }): void;
   onFriction(mu: number): void;
+  onStyle(style: FabricStyle): void;
   onPins(held: boolean): void;
   onReset(): void;
 }
@@ -26,11 +28,43 @@ interface Settings {
   preset: string;
 }
 
-// Fabric presets as real compliance values + friction (brief §4: Jersey/Denim/Soie).
-const PRESETS: Record<string, { stretch: number; shear: number; bend: number; friction: number }> = {
-  Jersey: { stretch: 1e-7, shear: 1e-6, bend: 2e-5, friction: 0.5 }, // soft knit, floppy
-  Denim: { stretch: 1e-8, shear: 1e-8, bend: 1e-7, friction: 0.6 }, // stiff, holds folds
-  Soie: { stretch: 1e-8, shear: 1e-7, bend: 3e-6, friction: 0.3 }, // fine drape, slippery
+// Fabric presets (brief §4: Jersey/Denim/Soie — the seed of the fabric library).
+// Physics: compliance (stretch/shear/bend) + Coulomb friction. Look: face/back
+// colors + shading response, so switching presets is instantly recognizable.
+interface FabricPreset {
+  stretch: number;
+  shear: number;
+  bend: number;
+  friction: number;
+  style: FabricStyle;
+}
+
+const PRESETS: Record<string, FabricPreset> = {
+  // Knit: stretches a little, floppy, matte ecru.
+  Jersey: {
+    stretch: 1e-6,
+    shear: 3e-6,
+    bend: 3e-5,
+    friction: 0.55,
+    style: { face: [0.87, 0.82, 0.72], back: [0.66, 0.55, 0.47], exponent: 2.0, ambient: 0.22 },
+  },
+  // Stiff heavy twill: inextensible, holds big folds, grippy; indigo with the
+  // washed-out lighter reverse denim is known for.
+  Denim: {
+    stretch: 1e-8,
+    shear: 5e-8,
+    bend: 5e-7,
+    friction: 0.7,
+    style: { face: [0.23, 0.29, 0.45], back: [0.52, 0.58, 0.7], exponent: 1.4, ambient: 0.3 },
+  },
+  // Silk: inextensible but extremely floppy (fine wrinkles), slippery, sheeny.
+  Soie: {
+    stretch: 1e-8,
+    shear: 8e-7,
+    bend: 1e-4,
+    friction: 0.15,
+    style: { face: [0.93, 0.87, 0.78], back: [0.8, 0.68, 0.58], exponent: 3.5, ambient: 0.12 },
+  },
 };
 
 export class ControlPanel {
@@ -111,5 +145,6 @@ export class ControlPanel {
     for (const c of this.controllers) c.updateDisplay();
     this.cb.onCompliance({ stretch: p.stretch, shear: p.shear, bend: p.bend });
     this.cb.onFriction(p.friction);
+    this.cb.onStyle(p.style);
   }
 }
