@@ -39,8 +39,20 @@ function showFatal(title: string, detail: string): void {
 
 async function main(): Promise<void> {
   const canvas = document.getElementById('view') as HTMLCanvasElement;
+  const mirror = document.getElementById('mirror') as HTMLCanvasElement;
   const hud = document.getElementById('hud') as HTMLElement;
   const overlay = document.getElementById('overlay') as HTMLElement;
+  // 2D mirror of the WebGPU canvas — some systems never present WebGPU frames
+  // to screen even though the content is rendered; a 2D canvas always shows.
+  const mirrorCtx = mirror.getContext('2d');
+  const blit = (): void => {
+    if (!mirrorCtx || canvas.width === 0) return;
+    try {
+      mirrorCtx.drawImage(canvas, 0, 0, mirror.width, mirror.height);
+    } catch {
+      /* source not drawable yet — skip this frame */
+    }
+  };
 
   let gpu;
   try {
@@ -143,6 +155,8 @@ async function main(): Promise<void> {
     const dpr = Math.min(window.devicePixelRatio, 2);
     canvas.width = Math.floor(canvas.clientWidth * dpr);
     canvas.height = Math.floor(canvas.clientHeight * dpr);
+    mirror.width = canvas.width;
+    mirror.height = canvas.height;
     renderer.resize(canvas.width, canvas.height);
   };
   window.addEventListener('resize', resize);
@@ -214,6 +228,7 @@ async function main(): Promise<void> {
     const substeps = panel.substeps;
     system.step(dt, substeps, profiler.simSpan());
     renderer.render(camera.matrix(aspect), profiler.renderSpan());
+    blit();
     profiler.resolve();
 
     frames++;
@@ -251,6 +266,7 @@ async function main(): Promise<void> {
 
   // Draw the initial state once so the scene shows immediately, before the loop.
   renderer.render(camera.matrix(canvas.width / canvas.height));
+  blit();
   document.addEventListener('visibilitychange', schedule);
   schedule();
 }

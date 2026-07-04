@@ -16,6 +16,14 @@
     }
     #view { width: 100vw; height: 100vh; display: block; touch-action: none; cursor: grab; }
     #view:active { cursor: grabbing; }
+    /* 2D mirror of the WebGPU canvas: some systems fail to present WebGPU
+       frames to screen while the content is correct — a plain 2D canvas
+       always composites. Clicks pass through to #view underneath. */
+    #mirror {
+      position: fixed; inset: 0; width: 100vw; height: 100vh;
+      pointer-events: none; z-index: 1;
+    }
+    header { z-index: 5; }
     header {
       position: fixed; top: 0; left: 0; right: 0;
       display: flex; justify-content: space-between; align-items: baseline;
@@ -40,6 +48,7 @@
 </head>
 <body>
   <canvas id="view"></canvas>
+  <canvas id="mirror"></canvas>
   <header>
     <span class="title">TOILE<small>jalon 7-8 — surface de tissu · interaction + UI</small></span>
     <span class="hud-col">
