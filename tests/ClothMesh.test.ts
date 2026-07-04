@@ -93,6 +93,23 @@ describe('generateClothGrid topology', () => {
     expect(byKind[2]).toBe(mesh.bendingCount);
   });
 
+  it('emits two triangles per cell with in-range indices', () => {
+    expect(mesh.triangleIndices.length).toBe((n - 1) * (n - 1) * 6);
+    for (const idx of mesh.triangleIndices) {
+      expect(idx).toBeGreaterThanOrEqual(0);
+      expect(idx).toBeLessThan(mesh.count);
+    }
+    // Every triangle is non-degenerate (three distinct vertices).
+    for (let t = 0; t < mesh.triangleIndices.length; t += 3) {
+      const a = mesh.triangleIndices[t]!;
+      const b = mesh.triangleIndices[t + 1]!;
+      const c = mesh.triangleIndices[t + 2]!;
+      expect(a).not.toBe(b);
+      expect(b).not.toBe(c);
+      expect(a).not.toBe(c);
+    }
+  });
+
   it('lays particles flat in the horizontal plane at topY', () => {
     for (let i = 0; i < mesh.count; i++) {
       expect(mesh.positions[i * 4 + 1]).toBeCloseTo(1.8, 6); // constant y

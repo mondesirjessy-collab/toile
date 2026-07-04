@@ -40,7 +40,7 @@ export function buildSceneMesh(p: SceneParams): SceneMesh {
   const r = p.sphereRadius;
   const rings = 32;
   const sectors = 48;
-  const sphereColor: [number, number, number] = [0.34, 0.37, 0.44];
+  const sphereColor: [number, number, number] = [0.45, 0.49, 0.58];
   const base = vertices.length / SCENE_VERTEX_FLOATS;
   for (let ring = 0; ring <= rings; ring++) {
     const phi = (ring / rings) * Math.PI; // 0..π (pole to pole)
@@ -67,7 +67,7 @@ export function buildSceneMesh(p: SceneParams): SceneMesh {
   const h = p.groundHalfSize ?? 4.0;
   const g = p.groundY;
   const up: [number, number, number] = [0, 1, 0];
-  const groundColor: [number, number, number] = [0.1, 0.11, 0.13];
+  const groundColor: [number, number, number] = [0.18, 0.19, 0.22];
   const g0 = push([-h, g, -h], up, groundColor);
   const g1 = push([h, g, -h], up, groundColor);
   const g2 = push([h, g, h], up, groundColor);

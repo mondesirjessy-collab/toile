@@ -48,6 +48,8 @@ export interface ClothMeshData {
   readonly bendingCount: number;
   /** Indices of the two v=0 corners, for runtime pin/release. */
   readonly cornerIndices: [number, number];
+  /** Triangle indices (2 per grid cell) for surface rendering. */
+  readonly triangleIndices: Uint32Array;
 }
 
 const CONSTRAINT_STRIDE = 16; // bytes: 2×u32 + 2×f32
@@ -131,6 +133,24 @@ export function generateClothGrid(opts: ClothMeshOptions): ClothMeshData {
     dv.setUint32(base + 12, c.kind, true);
   }
 
+  // Triangle indices for surface rendering: two triangles per grid cell.
+  const triangleIndices = new Uint32Array((n - 1) * (n - 1) * 6);
+  let ti = 0;
+  for (let v = 0; v < n - 1; v++) {
+    for (let u = 0; u < n - 1; u++) {
+      const i00 = index(u, v);
+      const i10 = index(u + 1, v);
+      const i01 = index(u, v + 1);
+      const i11 = index(u + 1, v + 1);
+      triangleIndices[ti++] = i00;
+      triangleIndices[ti++] = i01;
+      triangleIndices[ti++] = i10;
+      triangleIndices[ti++] = i10;
+      triangleIndices[ti++] = i01;
+      triangleIndices[ti++] = i11;
+    }
+  }
+
   return {
     resolution: n,
     count,
@@ -144,5 +164,6 @@ export function generateClothGrid(opts: ClothMeshOptions): ClothMeshData {
     shearCount: shear.length,
     bendingCount: bending.length,
     cornerIndices: [index(0, 0), index(n - 1, 0)],
+    triangleIndices,
   };
 }

@@ -1,15 +1,42 @@
 /**
- * PointsRenderer — milestone 5-6 visualization.
- * Two pipelines sharing one camera uniform + depth buffer, drawn in a single
- * render pass:
- *   - a lit triangle pass for the static scene colliders (sphere + ground),
- *     so the drape is readable against what it lands on
- *   - the cloth point pass, reading the engine's live position buffer directly
- *     (zero CPU copies)
- * Three.js integration (lit cloth surface + shadows) is still deferred; points
- * are enough to validate the solver.
+ * ClothRenderer — CLO3D-style surface visualization.
+ * The cloth is drawn as a lit triangle mesh (not points): a small compute pass
+ * derives per-vertex normals from the live position buffer each frame, then a
+ * two-sided fabric shader renders the sheet — ecru on the face, a darker weft
+ * tone on the reverse, the way garment tools distinguish fabric sides.
+ * Scene colliders (sphere + ground) share the camera and depth buffer.
+ *
+ * The engine stays renderer-agnostic: this reads the solver's position buffer
+ * directly (zero CPU copies) and owns everything visual.
  */
 import { SCENE_VERTEX_FLOATS, type SceneMesh } from './SceneGeometry';
+
+const NORMALS_SHADER = /* wgsl */ `
+struct GridInfo { n: u32, count: u32, _p0: u32, _p1: u32 };
+@group(0) @binding(0) var<uniform> grid: GridInfo;
+@group(0) @binding(1) var<storage, read> positions: array<vec4f>;
+@group(0) @binding(2) var<storage, read_write> normals: array<vec4f>;
+
+// Per-vertex normal from central differences over the grid neighbours.
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= grid.count) { return; }
+  let n = grid.n;
+  let u = i % n;
+  let v = i / n;
+  let up1 = min(u + 1u, n - 1u);
+  let um1 = select(u - 1u, 0u, u == 0u);
+  let vp1 = min(v + 1u, n - 1u);
+  let vm1 = select(v - 1u, 0u, v == 0u);
+  let tu = positions[v * n + up1].xyz - positions[v * n + um1].xyz;
+  let tv = positions[vp1 * n + u].xyz - positions[vm1 * n + u].xyz;
+  var nor = cross(tv, tu); // +Y for the flat rest pose
+  let len = length(nor);
+  if (len < 1e-8) { nor = vec3f(0.0, 1.0, 0.0); } else { nor = nor / len; }
+  normals[i] = vec4f(nor, 0.0);
+}
+`;
 
 const CLOTH_SHADER = /* wgsl */ `
 struct Camera { viewProj: mat4x4f };
@@ -17,29 +44,29 @@ struct Camera { viewProj: mat4x4f };
 
 struct VSOut {
   @builtin(position) clip: vec4f,
-  @location(0) height: f32,
+  @location(0) normal: vec3f,
 };
 
-// Positions come in as a plain vertex buffer (the solver's position buffer,
-// vec4 per particle) rather than a storage buffer read in the vertex stage —
-// the latter isn't portable (Safari/Metal may expose 0 vertex-stage storage
-// buffers by default).
 @vertex
-fn vs(@location(0) pos: vec4f) -> VSOut {
-  let p = pos.xyz;
+fn vs(@location(0) pos: vec4f, @location(1) nrm: vec4f) -> VSOut {
   var out: VSOut;
-  out.clip = camera.viewProj * vec4f(p, 1.0);
-  out.height = p.y;
+  out.clip = camera.viewProj * vec4f(pos.xyz, 1.0);
+  out.normal = nrm.xyz;
   return out;
 }
 
 @fragment
-fn fs(in: VSOut) -> @location(0) vec4f {
-  // Ecru cloth tone, slightly darker lower down for depth reading.
-  let t = clamp(in.height / 2.0, 0.0, 1.0);
-  let low = vec3f(0.62, 0.58, 0.50);
-  let high = vec3f(0.95, 0.92, 0.85);
-  return vec4f(mix(low, high, t), 1.0);
+fn fs(in: VSOut, @builtin(front_facing) front: bool) -> @location(0) vec4f {
+  var n = normalize(in.normal);
+  if (!front) { n = -n; }
+  let L = normalize(vec3f(0.4, 0.9, 0.35));
+  // Wrap ("half-lambert") diffuse keeps folds readable in the shadowed side.
+  let wrap = clamp(dot(n, L) * 0.5 + 0.5, 0.0, 1.0);
+  let face_col = vec3f(0.87, 0.82, 0.72); // ecru face
+  let back_col = vec3f(0.66, 0.55, 0.47); // darker reverse, garment-tool style
+  let base = select(back_col, face_col, front);
+  let shade = 0.22 + 0.85 * wrap * wrap;
+  return vec4f(base * shade, 1.0);
 }
 `;
 
@@ -66,21 +93,33 @@ fn vs(@location(0) pos: vec3f, @location(1) normal: vec3f, @location(2) color: v
 fn fs(in: VSOut) -> @location(0) vec4f {
   let L = normalize(vec3f(0.4, 0.9, 0.35));
   let diff = max(dot(normalize(in.normal), L), 0.0);
-  let shade = 0.25 + 0.75 * diff; // ambient + directional
+  let shade = 0.3 + 0.7 * diff;
   return vec4f(in.color * shade, 1.0);
 }
 `;
 
-export class PointsRenderer {
+interface TimestampSpan {
+  querySet: GPUQuerySet;
+  beginIndex: number;
+  endIndex: number;
+}
+
+export class ClothRenderer {
   private readonly device: GPUDevice;
   private readonly context: GPUCanvasContext;
   private readonly format: GPUTextureFormat;
+  private readonly normalsPipeline: GPUComputePipeline;
+  private readonly normalsBindGroup: GPUBindGroup;
   private readonly clothPipeline: GPURenderPipeline;
   private readonly scenePipeline: GPURenderPipeline;
   private readonly clothBindGroup: GPUBindGroup;
   private readonly sceneBindGroup: GPUBindGroup;
   private readonly positionBuffer: GPUBuffer;
+  private readonly normalsBuffer: GPUBuffer;
+  private readonly gridInfoBuffer: GPUBuffer;
   private readonly cameraBuffer: GPUBuffer;
+  private readonly clothIndexBuffer: GPUBuffer;
+  private readonly clothIndexCount: number;
   private readonly sceneVertexBuffer: GPUBuffer;
   private readonly sceneIndexBuffer: GPUBuffer;
   private readonly sceneIndexCount: number;
@@ -92,6 +131,8 @@ export class PointsRenderer {
     canvas: HTMLCanvasElement,
     positionBuffer: GPUBuffer,
     count: number,
+    resolution: number,
+    triangleIndices: Uint32Array,
     scene: SceneMesh,
   ) {
     this.device = device;
@@ -109,13 +150,39 @@ export class PointsRenderer {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
+    // --- Normals compute pass ---
+    this.normalsBuffer = device.createBuffer({
+      size: count * 16,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.VERTEX,
+    });
+    this.gridInfoBuffer = device.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(this.gridInfoBuffer, 0, new Uint32Array([resolution, count, 0, 0]));
+
+    const normalsModule = device.createShaderModule({ code: NORMALS_SHADER, label: 'normals' });
+    this.normalsPipeline = device.createComputePipeline({
+      label: 'normals-pipeline',
+      layout: 'auto',
+      compute: { module: normalsModule, entryPoint: 'main' },
+    });
+    this.normalsBindGroup = device.createBindGroup({
+      layout: this.normalsPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.gridInfoBuffer } },
+        { binding: 1, resource: { buffer: positionBuffer } },
+        { binding: 2, resource: { buffer: this.normalsBuffer } },
+      ],
+    });
+
     const depthStencil: GPUDepthStencilState = {
       format: 'depth24plus',
       depthWriteEnabled: true,
       depthCompare: 'less',
     };
 
-    // Cloth points — positions fed as a vertex buffer (vec4 stride 16).
+    // --- Cloth surface pipeline (two-sided) ---
     const clothModule = device.createShaderModule({ code: CLOTH_SHADER, label: 'cloth' });
     this.clothPipeline = device.createRenderPipeline({
       label: 'cloth-pipeline',
@@ -124,14 +191,12 @@ export class PointsRenderer {
         module: clothModule,
         entryPoint: 'vs',
         buffers: [
-          {
-            arrayStride: 16,
-            attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x4' }],
-          },
+          { arrayStride: 16, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x4' }] },
+          { arrayStride: 16, attributes: [{ shaderLocation: 1, offset: 0, format: 'float32x4' }] },
         ],
       },
       fragment: { module: clothModule, entryPoint: 'fs', targets: [{ format: this.format }] },
-      primitive: { topology: 'point-list' },
+      primitive: { topology: 'triangle-list', cullMode: 'none' }, // fabric is two-sided
       depthStencil,
     });
     this.clothBindGroup = device.createBindGroup({
@@ -139,7 +204,16 @@ export class PointsRenderer {
       entries: [{ binding: 0, resource: { buffer: this.cameraBuffer } }],
     });
 
-    // Scene colliders (lit triangles).
+    this.clothIndexBuffer = device.createBuffer({
+      size: triangleIndices.byteLength,
+      usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+      mappedAtCreation: true,
+    });
+    new Uint32Array(this.clothIndexBuffer.getMappedRange()).set(triangleIndices);
+    this.clothIndexBuffer.unmap();
+    this.clothIndexCount = triangleIndices.length;
+
+    // --- Scene colliders (lit triangles) ---
     const sceneModule = device.createShaderModule({ code: SCENE_SHADER, label: 'scene' });
     this.scenePipeline = device.createRenderPipeline({
       label: 'scene-pipeline',
@@ -192,15 +266,28 @@ export class PointsRenderer {
     this.depthTexture = this.createDepthTexture(width, height);
   }
 
-  render(viewProj: Float32Array, ts?: { querySet: GPUQuerySet; beginIndex: number; endIndex: number }): void {
+  render(viewProj: Float32Array, ts?: TimestampSpan): void {
     this.device.queue.writeBuffer(this.cameraBuffer, 0, viewProj.buffer, viewProj.byteOffset, 64);
 
     const encoder = this.device.createCommandEncoder({ label: 'render-frame' });
+
+    // 1. Refresh per-vertex normals from the live positions.
+    const normalsPass = encoder.beginComputePass(
+      ts
+        ? { timestampWrites: { querySet: ts.querySet, beginningOfPassWriteIndex: ts.beginIndex } }
+        : undefined,
+    );
+    normalsPass.setPipeline(this.normalsPipeline);
+    normalsPass.setBindGroup(0, this.normalsBindGroup);
+    normalsPass.dispatchWorkgroups(Math.ceil(this.count / 256));
+    normalsPass.end();
+
+    // 2. Scene + cloth surface, shared depth buffer.
     const pass = encoder.beginRenderPass({
       colorAttachments: [
         {
           view: this.context.getCurrentTexture().createView(),
-          clearValue: { r: 0.055, g: 0.06, b: 0.07, a: 1 },
+          clearValue: { r: 0.075, g: 0.08, b: 0.095, a: 1 },
           loadOp: 'clear',
           storeOp: 'store',
         },
@@ -212,17 +299,10 @@ export class PointsRenderer {
         depthStoreOp: 'store',
       },
       ...(ts
-        ? {
-            timestampWrites: {
-              querySet: ts.querySet,
-              beginningOfPassWriteIndex: ts.beginIndex,
-              endOfPassWriteIndex: ts.endIndex,
-            },
-          }
+        ? { timestampWrites: { querySet: ts.querySet, endOfPassWriteIndex: ts.endIndex } }
         : {}),
     });
 
-    // Scene colliders first, then cloth points (shared depth buffer).
     pass.setPipeline(this.scenePipeline);
     pass.setBindGroup(0, this.sceneBindGroup);
     pass.setVertexBuffer(0, this.sceneVertexBuffer);
@@ -232,7 +312,9 @@ export class PointsRenderer {
     pass.setPipeline(this.clothPipeline);
     pass.setBindGroup(0, this.clothBindGroup);
     pass.setVertexBuffer(0, this.positionBuffer);
-    pass.draw(this.count);
+    pass.setVertexBuffer(1, this.normalsBuffer);
+    pass.setIndexBuffer(this.clothIndexBuffer, 'uint32');
+    pass.drawIndexed(this.clothIndexCount);
 
     pass.end();
     this.device.queue.submit([encoder.finish()]);
@@ -240,6 +322,9 @@ export class PointsRenderer {
 
   dispose(): void {
     this.depthTexture.destroy();
+    this.normalsBuffer.destroy();
+    this.gridInfoBuffer.destroy();
+    this.clothIndexBuffer.destroy();
     this.sceneVertexBuffer.destroy();
     this.sceneIndexBuffer.destroy();
     this.cameraBuffer.destroy();

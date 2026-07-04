@@ -8,7 +8,7 @@
 export class OrbitCamera {
   private azimuth = Math.PI / 5;
   private elevation = Math.PI / 7;
-  private radius = 5.5;
+  private radius = 4.0; // framed on the draped cloth, CLO3D-style working distance
   private readonly target: [number, number, number] = [0, 0.8, 0];
   private readonly viewProj = new Float32Array(16);
   private readonly fov = Math.PI / 4;

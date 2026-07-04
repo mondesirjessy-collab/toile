@@ -1,7 +1,7 @@
 import { initGpu, WebGPUNotSupportedError } from './engine/gpu/Device';
 import { ParticleSystem } from './engine/solver/ParticleSystem';
 import { generateClothGrid } from './engine/cloth/ClothMesh';
-import { PointsRenderer } from './app/PointsRenderer';
+import { ClothRenderer } from './app/ClothRenderer';
 import { OrbitCamera } from './app/OrbitCamera';
 import { MouseForce } from './app/MouseForce';
 import { buildSceneMesh } from './app/SceneGeometry';
@@ -79,7 +79,7 @@ async function main(): Promise<void> {
   let friction = 0.5;
 
   let system!: ParticleSystem;
-  let renderer!: PointsRenderer;
+  let renderer!: ClothRenderer;
 
   const build = (resolution: number): void => {
     system?.dispose();
@@ -94,7 +94,15 @@ async function main(): Promise<void> {
       complianceShear: compliance.shear,
       complianceBend: compliance.bend,
     });
-    renderer = new PointsRenderer(device, canvas, system.positionBuffer, system.count, scene);
+    renderer = new ClothRenderer(
+      device,
+      canvas,
+      system.positionBuffer,
+      system.count,
+      mesh.resolution,
+      mesh.triangleIndices,
+      scene,
+    );
     renderer.resize(canvas.width, canvas.height);
   };
   build(DEFAULT_RESOLUTION);
