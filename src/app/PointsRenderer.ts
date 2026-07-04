@@ -181,7 +181,7 @@ export class PointsRenderer {
     this.depthTexture = this.createDepthTexture(width, height);
   }
 
-  render(viewProj: Float32Array): void {
+  render(viewProj: Float32Array, ts?: { querySet: GPUQuerySet; beginIndex: number; endIndex: number }): void {
     this.device.queue.writeBuffer(this.cameraBuffer, 0, viewProj.buffer, viewProj.byteOffset, 64);
 
     const encoder = this.device.createCommandEncoder({ label: 'render-frame' });
@@ -200,6 +200,15 @@ export class PointsRenderer {
         depthLoadOp: 'clear',
         depthStoreOp: 'store',
       },
+      ...(ts
+        ? {
+            timestampWrites: {
+              querySet: ts.querySet,
+              beginningOfPassWriteIndex: ts.beginIndex,
+              endOfPassWriteIndex: ts.endIndex,
+            },
+          }
+        : {}),
     });
 
     // Scene colliders first, then cloth points (shared depth buffer).
@@ -215,6 +224,13 @@ export class PointsRenderer {
 
     pass.end();
     this.device.queue.submit([encoder.finish()]);
+  }
+
+  dispose(): void {
+    this.depthTexture.destroy();
+    this.sceneVertexBuffer.destroy();
+    this.sceneIndexBuffer.destroy();
+    this.cameraBuffer.destroy();
   }
 
   private createDepthTexture(width: number, height: number): GPUTexture {

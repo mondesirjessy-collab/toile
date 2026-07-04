@@ -15,10 +15,16 @@ struct SimParams {
   mouse_radius: f32,
   sphere_center: vec3f,
   sphere_radius: f32,
+  drag_target: vec3f,
+  drag_stiffness: f32,
+  compliance_stretch: f32,
+  compliance_shear: f32,
+  compliance_bend: f32,
+  cloth_thickness: f32,
   particle_count: u32,
   damping: f32,
   max_speed: f32,
-  cloth_thickness: f32,
+  drag_index: u32,
 };
 
 @group(0) @binding(0) var<uniform> params: SimParams;

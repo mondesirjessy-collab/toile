@@ -12,7 +12,7 @@ interface DecodedEdge {
   i: number;
   j: number;
   rest: number;
-  compliance: number;
+  kind: number; // 0 structural, 1 shear, 2 bending
 }
 
 function decodeConstraints(data: ArrayBuffer, count: number): DecodedEdge[] {
@@ -23,7 +23,7 @@ function decodeConstraints(data: ArrayBuffer, count: number): DecodedEdge[] {
       i: dv.getUint32(k * 16, true),
       j: dv.getUint32(k * 16 + 4, true),
       rest: dv.getFloat32(k * 16 + 8, true),
-      compliance: dv.getFloat32(k * 16 + 12, true),
+      kind: dv.getUint32(k * 16 + 12, true),
     });
   }
   return out;
@@ -74,16 +74,23 @@ describe('generateClothGrid topology', () => {
     expect(bending).toBe(2 * n * (n - 2));
   });
 
-  it('assigns per-constraint compliance: rigid stretch, soft bending', () => {
-    const stretchCompliance = 0;
-    const bendCompliance = 1e-5;
-    const m = generateClothGrid({ resolution: n, size, stretchCompliance, bendCompliance });
-    const edges = decodeConstraints(m.constraintData, m.constraintCount);
+  it('tags each constraint with the kind matching its rest length', () => {
+    const edges = decodeConstraints(mesh.constraintData, mesh.constraintCount);
+    const diag = spacing * Math.SQRT2;
     const skip2 = spacing * 2;
+    const byKind = [0, 0, 0];
     for (const e of edges) {
-      const isBending = Math.abs(e.rest - skip2) < 1e-5;
-      expect(e.compliance).toBeCloseTo(isBending ? bendCompliance : stretchCompliance, 9);
+      let expectedKind: number;
+      if (Math.abs(e.rest - spacing) < 1e-5) expectedKind = 0; // structural
+      else if (Math.abs(e.rest - diag) < 1e-5) expectedKind = 1; // shear
+      else expectedKind = 2; // bending (skip-2)
+      expect(e.kind, `rest ${e.rest} should be kind ${expectedKind}`).toBe(expectedKind);
+      if (expectedKind === 2) expect(Math.abs(e.rest - skip2)).toBeLessThan(1e-5);
+      byKind[e.kind]!++;
     }
+    expect(byKind[0]).toBe(mesh.structuralCount);
+    expect(byKind[1]).toBe(mesh.shearCount);
+    expect(byKind[2]).toBe(mesh.bendingCount);
   });
 
   it('lays particles flat in the horizontal plane at topY', () => {

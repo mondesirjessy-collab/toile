@@ -13,7 +13,7 @@
  *   - bending:    "skip-2" distance edges i↔i+2 (brief §3.3 Phase-0 alternative
  *                 to true dihedral bending), soft α_bend so the sheet folds
  */
-import { colorConstraints, type Edge } from '../solver/ConstraintGraph';
+import { colorConstraints, ConstraintKind, type Edge } from '../solver/ConstraintGraph';
 
 export interface ClothMeshOptions {
   /** Particles per side; total = resolution². 64 → 4 096 (brief S1). */
@@ -28,10 +28,6 @@ export interface ClothMeshOptions {
    * leaves the sheet free to fall.
    */
   pin?: 'corners' | 'edge' | 'none';
-  /** XPBD compliance for structural + shear (distance) constraints; ~0 = inextensible. */
-  stretchCompliance?: number;
-  /** XPBD compliance for bending (skip-2) constraints; larger = floppier cloth. */
-  bendCompliance?: number;
 }
 
 export interface ClothMeshData {
@@ -41,7 +37,7 @@ export interface ClothMeshData {
   readonly positions: Float32Array;
   /** count floats; 0 for pinned particles. */
   readonly invMasses: Float32Array;
-  /** Packed constraints sorted by color: {i:u32, j:u32, rest:f32, compliance:f32}. */
+  /** Packed constraints sorted by color: {i:u32, j:u32, rest:f32, kind:u32}. */
   readonly constraintData: ArrayBuffer;
   readonly constraintCount: number;
   readonly colorOffsets: number[];
@@ -61,8 +57,6 @@ export function generateClothGrid(opts: ClothMeshOptions): ClothMeshData {
   const size = opts.size ?? 1.0;
   const topY = opts.topY ?? 1.8;
   const pin = opts.pin ?? 'corners';
-  const stretchCompliance = opts.stretchCompliance ?? 0.0;
-  const bendCompliance = opts.bendCompliance ?? 2.0e-6;
   const count = n * n;
 
   const positions = new Float32Array(count * 4);
@@ -98,11 +92,11 @@ export function generateClothGrid(opts: ClothMeshOptions): ClothMeshData {
     const dz = positions[a * 4 + 2]! - positions[b * 4 + 2]!;
     return Math.hypot(dx, dy, dz);
   };
-  const edge = (a: number, b: number, compliance: number): Edge => ({
+  const edge = (a: number, b: number, kind: ConstraintKind): Edge => ({
     i: a,
     j: b,
     rest: dist(a, b),
-    compliance,
+    kind,
   });
 
   const structural: Edge[] = [];
@@ -110,15 +104,15 @@ export function generateClothGrid(opts: ClothMeshOptions): ClothMeshData {
   const bending: Edge[] = [];
   for (let v = 0; v < n; v++) {
     for (let u = 0; u < n; u++) {
-      if (u + 1 < n) structural.push(edge(index(u, v), index(u + 1, v), stretchCompliance));
-      if (v + 1 < n) structural.push(edge(index(u, v), index(u, v + 1), stretchCompliance));
+      if (u + 1 < n) structural.push(edge(index(u, v), index(u + 1, v), ConstraintKind.Structural));
+      if (v + 1 < n) structural.push(edge(index(u, v), index(u, v + 1), ConstraintKind.Structural));
       if (u + 1 < n && v + 1 < n) {
-        shear.push(edge(index(u, v), index(u + 1, v + 1), stretchCompliance)); // ╲
-        shear.push(edge(index(u + 1, v), index(u, v + 1), stretchCompliance)); // ╱
+        shear.push(edge(index(u, v), index(u + 1, v + 1), ConstraintKind.Shear)); // ╲
+        shear.push(edge(index(u + 1, v), index(u, v + 1), ConstraintKind.Shear)); // ╱
       }
       // Bending: skip-2 distance edges (brief §3.3 Phase-0 alternative).
-      if (u + 2 < n) bending.push(edge(index(u, v), index(u + 2, v), bendCompliance));
-      if (v + 2 < n) bending.push(edge(index(u, v), index(u, v + 2), bendCompliance));
+      if (u + 2 < n) bending.push(edge(index(u, v), index(u + 2, v), ConstraintKind.Bending));
+      if (v + 2 < n) bending.push(edge(index(u, v), index(u, v + 2), ConstraintKind.Bending));
     }
   }
 
@@ -134,7 +128,7 @@ export function generateClothGrid(opts: ClothMeshOptions): ClothMeshData {
     dv.setUint32(base + 0, c.i, true);
     dv.setUint32(base + 4, c.j, true);
     dv.setFloat32(base + 8, c.rest, true);
-    dv.setFloat32(base + 12, c.compliance, true);
+    dv.setUint32(base + 12, c.kind, true);
   }
 
   return {

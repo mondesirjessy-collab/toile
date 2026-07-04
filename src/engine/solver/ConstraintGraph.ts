@@ -8,12 +8,19 @@
  * Greedy is sufficient for a regular grid (brief §3.4): it yields ~8 colors for
  * structural + shear edges and is deterministic. Computed once at init.
  */
+/** Constraint kind → selects which live compliance (stretch/shear/bend) applies. */
+export enum ConstraintKind {
+  Structural = 0,
+  Shear = 1,
+  Bending = 2,
+}
+
 export interface Edge {
   i: number;
   j: number;
   rest: number;
-  /** XPBD compliance α for this constraint (0 = rigid). Carried through coloring. */
-  compliance: number;
+  /** Constraint kind; carried through coloring so the GPU can pick its compliance. */
+  kind: ConstraintKind;
 }
 
 export interface ColoringResult {

@@ -1,50 +1,55 @@
 /**
- * ParticleSystem — milestone 5-6 XPBD cloth solver.
- * Owns the GPU buffers (positions, prev positions, velocities, inverse masses,
- * color-sorted constraints) and orchestrates the per-substep passes (brief §3.2):
- *   integrate (predict) → distance/bending solve, one dispatch per graph color
- *   → collide (sphere + ground, friction) → velocity.
- * Everything stays on the GPU; the renderer reads the position buffer directly,
- * there is no CPU round-trip per frame (brief §3.5).
- *
- * The mesh topology (grid + structural/shear/bending constraints + coloring) is
- * built on the CPU by ClothMesh/ConstraintGraph and handed in as ClothMeshData,
- * keeping engine/ free of any renderer dependency.
+ * ParticleSystem — XPBD cloth solver (milestones 3 → 7-8).
+ * Owns the GPU buffers and orchestrates the per-substep passes (brief §3.2):
+ *   integrate → distance/bending solve (one dispatch per graph color)
+ *   → drag → collide (sphere + ground, friction) → velocity.
+ * Everything stays on the GPU; the renderer reads the position buffer directly
+ * (brief §3.5). Compliance (stretch/shear/bend) and friction are live uniforms
+ * so the control panel retunes them without a rebuild; resolution changes
+ * rebuild the whole system (see dispose()).
  */
 import integrateWGSL from './shaders/integrate.wgsl?raw';
 import distanceWGSL from './shaders/distance.wgsl?raw';
+import dragWGSL from './shaders/drag.wgsl?raw';
 import collideWGSL from './shaders/collide.wgsl?raw';
 import updateVelocityWGSL from './shaders/updateVelocity.wgsl?raw';
 import type { ClothMeshData } from '../cloth/ClothMesh';
 
+/** Optional GPU-timestamp span attached to a phase's first/last pass. */
+export interface TimestampSpan {
+  querySet: GPUQuerySet;
+  beginIndex: number;
+  endIndex: number;
+}
+
 export interface SolverOptions {
-  gravity?: number; // m/s^2, default -9.81
+  gravity?: number;
   groundY?: number;
   sphereCenter?: [number, number, number];
   sphereRadius?: number;
-  /** Coulomb friction coefficient [0,1] for sphere + ground contacts. */
   friction?: number;
-  /** Cloth half-thickness kept off collider surfaces (world units). */
   clothThickness?: number;
-  /** Peak radial acceleration of the mouse force (m/s^2). */
+  complianceStretch?: number;
+  complianceShear?: number;
+  complianceBend?: number;
   mouseStrength?: number;
-  /** Falloff radius of the mouse force (world units). */
   mouseRadius?: number;
-  /** Linear velocity drag rate (1/s) — bleeds energy for stability. */
   damping?: number;
-  /** Hard cap on particle speed (m/s) to keep the sim from exploding. */
   maxSpeed?: number;
+  /** How hard the grabbed particle follows the cursor each substep [0,1]. */
+  dragStiffness?: number;
 }
 
-// SimParams std140-style layout, 80 bytes. Offsets (bytes):
+// SimParams std140-style layout, 112 bytes. Offsets (bytes):
 //  0 dt, 4 gravity, 8 ground_y, 12 friction,
-//  16 ray_origin.xyz, 28 mouse_force,
-//  32 ray_dir.xyz, 44 mouse_radius,
-//  48 sphere_center.xyz, 60 sphere_radius,
-//  64 particle_count, 68 damping, 72 max_speed, 76 cloth_thickness.
-const UNIFORM_SIZE = 80;
-const BATCH_SIZE = 16; // Batch uniform: offset,count + 2 pad (u32)
+//  16 ray_origin.xyz, 28 mouse_force, 32 ray_dir.xyz, 44 mouse_radius,
+//  48 sphere_center.xyz, 60 sphere_radius, 64 drag_target.xyz, 76 drag_stiffness,
+//  80 compliance_stretch, 84 compliance_shear, 88 compliance_bend, 92 cloth_thickness,
+//  96 particle_count, 100 damping, 104 max_speed, 108 drag_index.
+const UNIFORM_SIZE = 112;
+const BATCH_SIZE = 16;
 const WORKGROUP = 256;
+const DRAG_NONE = 0xffffffff;
 
 export class ParticleSystem {
   readonly count: number;
@@ -60,41 +65,52 @@ export class ParticleSystem {
   private readonly invMassBuffer: GPUBuffer;
   private readonly constraintBuffer: GPUBuffer;
   private readonly uniformBuffer: GPUBuffer;
+  private readonly batchBuffers: GPUBuffer[];
+  private readonly readbackBuffer: GPUBuffer;
   private readonly uniformData: ArrayBuffer;
 
   private readonly integratePipeline: GPUComputePipeline;
   private readonly solvePipeline: GPUComputePipeline;
+  private readonly dragPipeline: GPUComputePipeline;
   private readonly collidePipeline: GPUComputePipeline;
   private readonly velocityPipeline: GPUComputePipeline;
 
   private readonly integrateBindGroup: GPUBindGroup;
+  private readonly dragBindGroup: GPUBindGroup;
   private readonly collideBindGroup: GPUBindGroup;
   private readonly velocityBindGroup: GPUBindGroup;
   private readonly solveBindGroups: GPUBindGroup[];
 
   private readonly colorCounts: number[];
 
-  // Rest state kept for reset() and pin toggling.
   private readonly initialPositions: Float32Array<ArrayBuffer>;
   private readonly baseInvMasses: Float32Array<ArrayBuffer>;
   private readonly cornerIndices: [number, number];
   private pinned = false;
+  private readbackBusy = false;
 
   private readonly gravity: number;
   private readonly groundY: number;
   private readonly sphereCenter: [number, number, number];
   private readonly sphereRadius: number;
-  private readonly friction: number;
   private readonly clothThickness: number;
   private readonly mouseStrength: number;
   private readonly mouseRadius: number;
   private readonly damping: number;
   private readonly maxSpeed: number;
+  private readonly dragStiffness: number;
 
-  // Per-frame mouse state (world-space ray + signed strength).
+  // Live-tunable parameters.
+  private friction: number;
+  private complianceStretch: number;
+  private complianceShear: number;
+  private complianceBend: number;
+
   private mouseOrigin: [number, number, number] = [0, 0, 0];
   private mouseDir: [number, number, number] = [0, 0, 1];
-  private mouseForce = 0; // signed: >0 attract, <0 repel, 0 idle
+  private mouseForce = 0;
+  private dragTarget: [number, number, number] = [0, 0, 0];
+  private dragIndex = DRAG_NONE;
 
   constructor(device: GPUDevice, mesh: ClothMeshData, opts: SolverOptions = {}) {
     this.device = device;
@@ -114,18 +130,29 @@ export class ParticleSystem {
     this.sphereRadius = opts.sphereRadius ?? 0.55;
     this.friction = opts.friction ?? 0.5;
     this.clothThickness = opts.clothThickness ?? 0.01;
+    this.complianceStretch = opts.complianceStretch ?? 0.0;
+    this.complianceShear = opts.complianceShear ?? 0.0;
+    this.complianceBend = opts.complianceBend ?? 2.0e-6;
     this.mouseStrength = opts.mouseStrength ?? 45.0;
     this.mouseRadius = opts.mouseRadius ?? 1.5;
     this.damping = opts.damping ?? 0.8;
     this.maxSpeed = opts.maxSpeed ?? 12.0;
+    this.dragStiffness = opts.dragStiffness ?? 0.4;
 
     // --- Buffers ---
     const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
-    this.positionBuffer = this.createBuffer(mesh.positions, storage | GPUBufferUsage.VERTEX);
+    this.positionBuffer = this.createBuffer(
+      mesh.positions,
+      storage | GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_SRC,
+    );
     this.prevPositionBuffer = this.createBuffer(mesh.positions, storage);
     this.velocityBuffer = this.createBuffer(new Float32Array(this.count * 4), storage);
     this.invMassBuffer = this.createBuffer(mesh.invMasses, storage);
     this.constraintBuffer = this.createBufferRaw(mesh.constraintData, storage);
+    this.readbackBuffer = device.createBuffer({
+      size: this.count * 16,
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
 
     this.uniformData = new ArrayBuffer(UNIFORM_SIZE);
     this.uniformBuffer = device.createBuffer({
@@ -133,8 +160,7 @@ export class ParticleSystem {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    // Per-color batch uniforms (offset + count), written once.
-    const batchBuffers = mesh.colorOffsets.map((offset, c) => {
+    this.batchBuffers = mesh.colorOffsets.map((offset, c) => {
       const buf = device.createBuffer({
         size: BATCH_SIZE,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -152,6 +178,7 @@ export class ParticleSystem {
       });
     this.integratePipeline = pipeline(integrateWGSL, 'integrate');
     this.solvePipeline = pipeline(distanceWGSL, 'distance');
+    this.dragPipeline = pipeline(dragWGSL, 'drag');
     this.collidePipeline = pipeline(collideWGSL, 'collide');
     this.velocityPipeline = pipeline(updateVelocityWGSL, 'updateVelocity');
 
@@ -169,6 +196,11 @@ export class ParticleSystem {
       this.velocityBuffer,
       this.invMassBuffer,
     ]);
+    this.dragBindGroup = bg(this.dragPipeline, [
+      this.uniformBuffer,
+      this.positionBuffer,
+      this.invMassBuffer,
+    ]);
     this.collideBindGroup = bg(this.collidePipeline, [
       this.uniformBuffer,
       this.positionBuffer,
@@ -184,7 +216,7 @@ export class ParticleSystem {
     ]);
 
     const solveLayout = this.solvePipeline.getBindGroupLayout(0);
-    this.solveBindGroups = batchBuffers.map((batch) =>
+    this.solveBindGroups = this.batchBuffers.map((batch) =>
       device.createBindGroup({
         layout: solveLayout,
         entries: [
@@ -198,20 +230,16 @@ export class ParticleSystem {
     );
   }
 
-  /** Number of graph colors (one solve dispatch each per substep). */
   get colorCount(): number {
     return this.colorCounts.length;
   }
-
   get pinsHeld(): boolean {
     return this.pinned;
   }
+  get isDragging(): boolean {
+    return this.dragIndex !== DRAG_NONE;
+  }
 
-  /**
-   * Set the cursor interaction for the next `step`. `mode` is +1 (attract),
-   * -1 (repel), or 0 (idle); the ray is the world-space pick ray from the
-   * camera through the cursor.
-   */
   setMouse(
     origin: readonly [number, number, number],
     dir: readonly [number, number, number],
@@ -222,9 +250,25 @@ export class ParticleSystem {
     this.mouseForce = mode * this.mouseStrength;
   }
 
+  /** Set/clear the drag constraint. index === null releases the grab. */
+  setDrag(index: number | null, target: readonly [number, number, number]): void {
+    this.dragIndex = index ?? DRAG_NONE;
+    this.dragTarget = [target[0], target[1], target[2]];
+  }
+
+  setFriction(v: number): void {
+    this.friction = v;
+  }
+  setCompliance(c: { stretch?: number; shear?: number; bend?: number }): void {
+    if (c.stretch !== undefined) this.complianceStretch = c.stretch;
+    if (c.shear !== undefined) this.complianceShear = c.shear;
+    if (c.bend !== undefined) this.complianceBend = c.bend;
+  }
+
   /** Re-drop the cloth: restore the rest pose, zero velocities, release pins. */
   reset(): void {
     this.pinned = false;
+    this.dragIndex = DRAG_NONE;
     this.device.queue.writeBuffer(this.positionBuffer, 0, this.initialPositions);
     this.device.queue.writeBuffer(this.prevPositionBuffer, 0, this.initialPositions);
     this.device.queue.writeBuffer(this.velocityBuffer, 0, new Float32Array(this.count * 4));
@@ -242,15 +286,42 @@ export class ParticleSystem {
     this.device.queue.writeBuffer(this.invMassBuffer, 0, masses);
   }
 
+  /**
+   * Read the current positions back to the CPU (for cursor picking). Returns
+   * null if a read is already in flight. One-shot copy, not per-frame.
+   */
+  async readPositions(): Promise<Float32Array | null> {
+    if (this.readbackBusy) return null;
+    this.readbackBusy = true;
+    try {
+      const encoder = this.device.createCommandEncoder({ label: 'pick-readback' });
+      encoder.copyBufferToBuffer(this.positionBuffer, 0, this.readbackBuffer, 0, this.count * 16);
+      this.device.queue.submit([encoder.finish()]);
+      await this.readbackBuffer.mapAsync(GPUMapMode.READ);
+      const copy = new Float32Array(this.readbackBuffer.getMappedRange().slice(0));
+      this.readbackBuffer.unmap();
+      return copy;
+    } finally {
+      this.readbackBusy = false;
+    }
+  }
+
   /** Advance the simulation by one frame, split into `substeps` substeps. */
-  step(frameDt: number, substeps: number): void {
+  step(frameDt: number, substeps: number, ts?: TimestampSpan): void {
     const dt = frameDt / substeps;
     this.writeUniforms(dt);
 
     const encoder = this.device.createCommandEncoder({ label: 'sim-frame' });
     const particleGroups = Math.ceil(this.count / WORKGROUP);
-    const dispatch = (pipeline: GPUComputePipeline, group: GPUBindGroup, groups: number): void => {
-      const pass = encoder.beginComputePass();
+    const lastSub = substeps - 1;
+
+    const dispatch = (
+      pipeline: GPUComputePipeline,
+      group: GPUBindGroup,
+      groups: number,
+      writes?: GPUComputePassTimestampWrites,
+    ): void => {
+      const pass = encoder.beginComputePass(writes ? { timestampWrites: writes } : undefined);
       pass.setPipeline(pipeline);
       pass.setBindGroup(0, group);
       pass.dispatchWorkgroups(groups);
@@ -258,20 +329,35 @@ export class ParticleSystem {
     };
 
     for (let s = 0; s < substeps; s++) {
-      // 1. Predict under gravity + mouse force.
-      dispatch(this.integratePipeline, this.integrateBindGroup, particleGroups);
-      // 2. Distance + bending solve, one dispatch per vertex-disjoint color.
+      const beginWrites =
+        ts && s === 0 ? { querySet: ts.querySet, beginningOfPassWriteIndex: ts.beginIndex } : undefined;
+      dispatch(this.integratePipeline, this.integrateBindGroup, particleGroups, beginWrites);
+
       for (let c = 0; c < this.colorCounts.length; c++) {
         const groups = Math.ceil(this.colorCounts[c]! / WORKGROUP);
         if (groups > 0) dispatch(this.solvePipeline, this.solveBindGroups[c]!, groups);
       }
-      // 3. Resolve sphere + ground contacts (friction).
+
+      dispatch(this.dragPipeline, this.dragBindGroup, 1);
       dispatch(this.collidePipeline, this.collideBindGroup, particleGroups);
-      // 4. Derive velocities from the net displacement.
-      dispatch(this.velocityPipeline, this.velocityBindGroup, particleGroups);
+
+      const endWrites =
+        ts && s === lastSub ? { querySet: ts.querySet, endOfPassWriteIndex: ts.endIndex } : undefined;
+      dispatch(this.velocityPipeline, this.velocityBindGroup, particleGroups, endWrites);
     }
 
     this.device.queue.submit([encoder.finish()]);
+  }
+
+  dispose(): void {
+    this.positionBuffer.destroy();
+    this.prevPositionBuffer.destroy();
+    this.velocityBuffer.destroy();
+    this.invMassBuffer.destroy();
+    this.constraintBuffer.destroy();
+    this.uniformBuffer.destroy();
+    this.readbackBuffer.destroy();
+    for (const b of this.batchBuffers) b.destroy();
   }
 
   private writeUniforms(dt: number): void {
@@ -293,30 +379,30 @@ export class ParticleSystem {
     dv.setFloat32(52, this.sphereCenter[1], LE);
     dv.setFloat32(56, this.sphereCenter[2], LE);
     dv.setFloat32(60, this.sphereRadius, LE);
-    dv.setUint32(64, this.count, LE);
-    dv.setFloat32(68, this.damping, LE);
-    dv.setFloat32(72, this.maxSpeed, LE);
-    dv.setFloat32(76, this.clothThickness, LE);
+    dv.setFloat32(64, this.dragTarget[0], LE);
+    dv.setFloat32(68, this.dragTarget[1], LE);
+    dv.setFloat32(72, this.dragTarget[2], LE);
+    dv.setFloat32(76, this.dragStiffness, LE);
+    dv.setFloat32(80, this.complianceStretch, LE);
+    dv.setFloat32(84, this.complianceShear, LE);
+    dv.setFloat32(88, this.complianceBend, LE);
+    dv.setFloat32(92, this.clothThickness, LE);
+    dv.setUint32(96, this.count, LE);
+    dv.setFloat32(100, this.damping, LE);
+    dv.setFloat32(104, this.maxSpeed, LE);
+    dv.setUint32(108, this.dragIndex, LE);
     this.device.queue.writeBuffer(this.uniformBuffer, 0, this.uniformData);
   }
 
   private createBuffer(data: Float32Array, usage: GPUBufferUsageFlags): GPUBuffer {
-    const buffer = this.device.createBuffer({
-      size: data.byteLength,
-      usage,
-      mappedAtCreation: true,
-    });
+    const buffer = this.device.createBuffer({ size: data.byteLength, usage, mappedAtCreation: true });
     new Float32Array(buffer.getMappedRange()).set(data);
     buffer.unmap();
     return buffer;
   }
 
   private createBufferRaw(data: ArrayBuffer, usage: GPUBufferUsageFlags): GPUBuffer {
-    const buffer = this.device.createBuffer({
-      size: data.byteLength,
-      usage,
-      mappedAtCreation: true,
-    });
+    const buffer = this.device.createBuffer({ size: data.byteLength, usage, mappedAtCreation: true });
     new Uint8Array(buffer.getMappedRange()).set(new Uint8Array(data));
     buffer.unmap();
     return buffer;

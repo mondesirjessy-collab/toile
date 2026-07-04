@@ -5,9 +5,14 @@ import { PointsRenderer } from './app/PointsRenderer';
 import { OrbitCamera } from './app/OrbitCamera';
 import { MouseForce } from './app/MouseForce';
 import { buildSceneMesh } from './app/SceneGeometry';
+import { GpuProfiler } from './app/GpuProfiler';
+import { ControlPanel } from './app/ControlPanel';
+import { pickParticle } from './app/pick';
 
-const RESOLUTION = 64; // 64×64 = 4 096 particules (brief S1 baseline)
-const SUBSTEPS = 20;
+const DEFAULT_RESOLUTION = 64;
+const DEFAULT_SUBSTEPS = 20;
+const CLOTH_SIZE = 1.6;
+const CLOTH_TOP_Y = 1.7;
 
 // Shared scene definition: the solver collides against these, the renderer draws them.
 const SPHERE_CENTER: [number, number, number] = [0, 0.8, 0];
@@ -36,35 +41,68 @@ async function main(): Promise<void> {
   }
 
   const { device } = gpu;
-
-  const mesh = generateClothGrid({
-    resolution: RESOLUTION,
-    size: 1.6, // 1.6 m sheet draping over the sphere (brief §4 scene)
-    topY: 1.7, // starts flat above the sphere top, falls onto it
-    pin: 'none', // free fall + drape; press P to hold the two corners
-  });
-  const system = new ParticleSystem(device, mesh, {
-    sphereCenter: SPHERE_CENTER,
-    sphereRadius: SPHERE_RADIUS,
-    groundY: GROUND_Y,
-    friction: 0.5,
-  });
-
-  const scene = buildSceneMesh({
-    sphereCenter: SPHERE_CENTER,
-    sphereRadius: SPHERE_RADIUS,
-    groundY: GROUND_Y,
-  });
-  const renderer = new PointsRenderer(device, canvas, system.positionBuffer, system.count, scene);
+  const scene = buildSceneMesh({ sphereCenter: SPHERE_CENTER, sphereRadius: SPHERE_RADIUS, groundY: GROUND_Y });
   const camera = new OrbitCamera();
   camera.attach(canvas);
   const mouse = new MouseForce();
   mouse.attach(canvas);
+  const profiler = new GpuProfiler(device);
 
-  // Interaction: R re-drops the cloth, P toggles holding the two corners.
+  // Fabric params kept across rebuilds (a resolution change recreates the sim).
+  let compliance = { stretch: 1e-7, shear: 1e-6, bend: 2e-5 };
+  let friction = 0.5;
+
+  let system!: ParticleSystem;
+  let renderer!: PointsRenderer;
+
+  const build = (resolution: number): void => {
+    system?.dispose();
+    renderer?.dispose();
+    const mesh = generateClothGrid({ resolution, size: CLOTH_SIZE, topY: CLOTH_TOP_Y, pin: 'none' });
+    system = new ParticleSystem(device, mesh, {
+      sphereCenter: SPHERE_CENTER,
+      sphereRadius: SPHERE_RADIUS,
+      groundY: GROUND_Y,
+      friction,
+      complianceStretch: compliance.stretch,
+      complianceShear: compliance.shear,
+      complianceBend: compliance.bend,
+    });
+    renderer = new PointsRenderer(device, canvas, system.positionBuffer, system.count, scene);
+    renderer.resize(canvas.width, canvas.height);
+  };
+  build(DEFAULT_RESOLUTION);
+
+  const panel = new ControlPanel(
+    {
+      onResolution: (r) => build(r),
+      onCompliance: (c) => {
+        compliance = c;
+        system.setCompliance(c);
+      },
+      onFriction: (v) => {
+        friction = v;
+        system.setFriction(v);
+      },
+      onPins: (held) => system.setCornerPins(held),
+      onReset: () => {
+        system.reset();
+        panel.syncPins(false);
+      },
+    },
+    { resolution: DEFAULT_RESOLUTION, substeps: DEFAULT_SUBSTEPS },
+  );
+
+  // Keyboard shortcuts mirror the panel (brief §3.3 release flow).
   window.addEventListener('keydown', (e) => {
-    if (e.key === 'r' || e.key === 'R') system.reset();
-    else if (e.key === 'p' || e.key === 'P') system.setCornerPins(!system.pinsHeld);
+    if (e.key === 'r' || e.key === 'R') {
+      system.reset();
+      panel.syncPins(false);
+    } else if (e.key === 'p' || e.key === 'P') {
+      const held = !system.pinsHeld;
+      system.setCornerPins(held);
+      panel.syncPins(held);
+    }
   });
 
   const resize = (): void => {
@@ -76,37 +114,78 @@ async function main(): Promise<void> {
   window.addEventListener('resize', resize);
   resize();
 
-  // --- Loop with fps accounting ---
+  // --- Drag state (raycast grab; async position read-back at grab time) ---
+  let dragIndex: number | null = null;
+  let dragDepth = 0;
+  let prevLeft = false;
+  let picking = false;
+
+  // --- Loop with fps + timing accounting ---
   let last = performance.now();
   let frames = 0;
   let fpsAccum = 0;
+  let cpuAccum = 0;
 
   const frame = (now: number): void => {
-    const dt = Math.min((now - last) / 1000, 1 / 30); // clamp to avoid tab-switch spikes
+    const t0 = performance.now();
+    const dt = Math.min((now - last) / 1000, 1 / 30); // clamp tab-switch spikes
     last = now;
 
     const aspect = canvas.width / canvas.height;
-    if (mouse.mode !== 0) {
-      const { origin, dir } = camera.pickRay(mouse.ndcX, mouse.ndcY, aspect);
-      system.setMouse(origin, dir, mouse.mode);
-    } else {
-      system.setMouse([0, 0, 0], [0, 0, 1], 0);
+    const ray = camera.pickRay(mouse.ndcX, mouse.ndcY, aspect);
+
+    // Left press → raycast pick the nearest particle (async read-back).
+    if (mouse.leftDown && !prevLeft && !picking && dragIndex === null) {
+      picking = true;
+      void system.readPositions().then((pos) => {
+        picking = false;
+        if (!pos || !mouse.leftDown) return; // released before the read landed
+        const hit = pickParticle(pos, system.count, ray.origin, ray.dir);
+        if (hit) {
+          dragIndex = hit.index;
+          dragDepth = hit.depth;
+        }
+      });
+    }
+    prevLeft = mouse.leftDown;
+
+    // Drive or release the drag constraint.
+    if (dragIndex !== null) {
+      if (mouse.leftDown) {
+        system.setDrag(dragIndex, [
+          ray.origin[0] + ray.dir[0] * dragDepth,
+          ray.origin[1] + ray.dir[1] * dragDepth,
+          ray.origin[2] + ray.dir[2] * dragDepth,
+        ]);
+      } else {
+        system.setDrag(null, [0, 0, 0]);
+        dragIndex = null;
+      }
     }
 
-    system.step(dt, SUBSTEPS);
-    renderer.render(camera.matrix(aspect));
+    // Right button → radial repulsion force.
+    if (mouse.repelMode !== 0) system.setMouse(ray.origin, ray.dir, mouse.repelMode);
+    else system.setMouse([0, 0, 0], [0, 0, 1], 0);
+
+    const substeps = panel.substeps;
+    system.step(dt, substeps, profiler.simSpan());
+    renderer.render(camera.matrix(aspect), profiler.renderSpan());
+    profiler.resolve();
 
     frames++;
     fpsAccum += dt;
+    cpuAccum += performance.now() - t0;
     if (fpsAccum >= 0.5) {
       const fps = Math.round(frames / fpsAccum);
+      const timing = profiler.enabled
+        ? `sim ${profiler.simMs.toFixed(2)} ms · rendu ${profiler.renderMs.toFixed(2)} ms (GPU)`
+        : `${(cpuAccum / frames).toFixed(2)} ms/frame (CPU)`;
       hud.textContent =
-        `${fps} fps · ${system.count.toLocaleString('fr-FR')} particules · ` +
-        `${system.constraintCount.toLocaleString('fr-FR')} contraintes ` +
-        `(${system.bendingCount.toLocaleString('fr-FR')} flexion) · ` +
-        `${system.colorCount} couleurs · ${SUBSTEPS} substeps`;
+        `${fps} fps · ${timing} · ${system.count.toLocaleString('fr-FR')} part. · ` +
+        `${system.constraintCount.toLocaleString('fr-FR')} contr. · ${substeps} substeps`;
       frames = 0;
       fpsAccum = 0;
+      cpuAccum = 0;
     }
 
     requestAnimationFrame(frame);

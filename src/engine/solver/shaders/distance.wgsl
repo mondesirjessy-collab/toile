@@ -1,10 +1,9 @@
-// distance.wgsl — Milestone 5-6, XPBD distance projection for BOTH the
-// structural/shear (stretch) and skip-2 (bending) constraints (brief §3.2 step 2,
-// §3.3). One dispatch per graph color: all constraints in a color are
-// vertex-disjoint, so their position writes never race.
+// distance.wgsl — XPBD distance projection for structural/shear (stretch) and
+// skip-2 (bending) constraints (brief §3.2 step 2, §3.3). One dispatch per graph
+// color: constraints in a color are vertex-disjoint, so writes never race.
 //
-// Compliance is per-constraint (packed in the Constraint struct): structural/shear
-// use α ≈ 0 (quasi-inextensible), bending uses a larger α_bend so the sheet folds.
+// Compliance is looked up live from SimParams by the constraint's kind, so the
+// control panel can retune stretch/shear/bend without rebuilding the buffer.
 //   Δλ = -C / (w_i + w_j + α̃),   α̃ = compliance / dt².
 
 struct SimParams {
@@ -18,17 +17,23 @@ struct SimParams {
   mouse_radius: f32,
   sphere_center: vec3f,
   sphere_radius: f32,
+  drag_target: vec3f,
+  drag_stiffness: f32,
+  compliance_stretch: f32,
+  compliance_shear: f32,
+  compliance_bend: f32,
+  cloth_thickness: f32,
   particle_count: u32,
   damping: f32,
   max_speed: f32,
-  cloth_thickness: f32,
+  drag_index: u32,
 };
 
 struct Constraint {
   i: u32,
   j: u32,
   rest: f32,
-  compliance: f32,
+  kind: u32, // 0 structural, 1 shear, 2 bending
 };
 
 struct Batch {
@@ -61,9 +66,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let len = length(d);
   if (len < 1e-8) { return; }
 
+  var compliance = params.compliance_stretch;
+  if (c.kind == 1u) { compliance = params.compliance_shear; }
+  else if (c.kind == 2u) { compliance = params.compliance_bend; }
+
   let n = d / len;
   let cval = len - c.rest;
-  let alpha = c.compliance / (params.dt * params.dt);
+  let alpha = compliance / (params.dt * params.dt);
   let dlambda = -cval / (wsum + alpha);
   let corr = dlambda * n;
 

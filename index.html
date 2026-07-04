@@ -27,6 +27,8 @@
     .hud-col { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
     #hud { opacity: 0.6; font-variant-numeric: tabular-nums; }
     #hint { opacity: 0.4; font-size: 11px; }
+    /* Drop lil-gui below the header bar so it doesn't overlap the HUD. */
+    .lil-gui.lil-root { top: 46px; z-index: 10; }
     #overlay {
       position: fixed; inset: 0; display: grid; place-content: center;
       background: #0e0f12; text-align: center; padding: 24px; gap: 10px;
@@ -39,10 +41,10 @@
 <body>
   <canvas id="view"></canvas>
   <header>
-    <span class="title">TOILE<small>jalon 5-6 — flexion + collisions</small></span>
+    <span class="title">TOILE<small>jalon 7-8 — interaction + UI</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
-      <span id="hint">R : relâcher le tissu · P : épingler les coins · clic G/D : attirer/repousser · molette / maj+glisser : caméra</span>
+      <span id="hint">clic gauche : attraper/tirer une particule · clic droit : repousser · R : reset · P : épingler · molette / maj+glisser : caméra</span>
     </span>
   </header>
   <div id="overlay" hidden></div>

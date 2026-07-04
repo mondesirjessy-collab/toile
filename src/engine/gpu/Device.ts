@@ -26,7 +26,12 @@ export async function initGpu(): Promise<GpuContext> {
     throw new WebGPUNotSupportedError('no suitable GPU adapter found');
   }
 
+  // Opt into GPU timestamp queries for the perf HUD when the adapter offers them.
+  const requiredFeatures: GPUFeatureName[] = [];
+  if (adapter.features.has('timestamp-query')) requiredFeatures.push('timestamp-query');
+
   const device = await adapter.requestDevice({
+    requiredFeatures,
     requiredLimits: {
       maxStorageBufferBindingSize: Math.min(
         adapter.limits.maxStorageBufferBindingSize,

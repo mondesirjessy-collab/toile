@@ -1,23 +1,21 @@
 /**
- * MouseForce — milestone 2 pointer interaction.
- * Tracks the cursor in normalized device coordinates (NDC, y up) and which
- * mouse button is held, then exposes a signed `mode`:
- *   +1 attract (left button)   -1 repel (right button)   0 idle
- *
- * Camera orbit was moved off the plain left-drag (see OrbitCamera) so the
- * left/right buttons are free for the radial force. The per-frame loop reads
- * `ndcX/ndcY` + `mode`, turns the cursor into a world-space ray via the camera,
- * and feeds it to the solver.
+ * MouseForce — pointer state for cloth interaction.
+ * Tracks the cursor in normalized device coordinates (NDC, y up) and the button
+ * state. Milestone 7-8 remapped the buttons:
+ *   - left  → raycast particle drag (the brief's official interaction; the grab
+ *             + follow is driven in main.ts, which reads `leftDown` edges)
+ *   - right → radial repulsion force (the milestone-2 tool, kept as a stress
+ *             test for stability S3)
+ * Camera orbit stays on middle button / Shift+left (see OrbitCamera), so plain
+ * left/right are free.
  */
-export type ForceMode = -1 | 0 | 1;
-
 export class MouseForce {
   /** Cursor position in NDC: x,y ∈ [-1, 1], y pointing up. */
   ndcX = 0;
   ndcY = 0;
 
-  private leftDown = false;
-  private rightDown = false;
+  leftDown = false;
+  rightDown = false;
 
   attach(canvas: HTMLElement): void {
     // Right button drives repulsion, so suppress the native context menu.
@@ -27,7 +25,7 @@ export class MouseForce {
 
     canvas.addEventListener('pointerdown', (e) => {
       this.updateNdc(canvas, e);
-      // Shift+left is reserved for camera orbit — don't grab it as a force.
+      // Shift+left is reserved for camera orbit — don't grab it.
       if (e.button === 0 && !e.shiftKey) this.leftDown = true;
       if (e.button === 2) this.rightDown = true;
     });
@@ -45,11 +43,9 @@ export class MouseForce {
     });
   }
 
-  /** Repulsion wins if both buttons are somehow held at once. */
-  get mode(): ForceMode {
-    if (this.rightDown) return -1;
-    if (this.leftDown) return 1;
-    return 0;
+  /** Radial force mode: -1 repel (right button), 0 idle. */
+  get repelMode(): number {
+    return this.rightDown ? -1 : 0;
   }
 
   private updateNdc(canvas: HTMLElement, e: PointerEvent): void {
