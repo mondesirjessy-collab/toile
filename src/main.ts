@@ -80,8 +80,7 @@ async function main(): Promise<void> {
   });
 
   const scene = buildSceneMesh({ sphereCenter: SPHERE_CENTER, sphereRadius: SPHERE_RADIUS, groundY: GROUND_Y });
-  const camera = new OrbitCamera();
-  camera.attach(canvas);
+  const camera = new OrbitCamera(); // attached below, once the grab test exists
   const mouse = new MouseForce();
   mouse.attach(canvas);
   const profiler = new GpuProfiler(device);
@@ -92,6 +91,13 @@ async function main(): Promise<void> {
 
   let system!: ParticleSystem;
   let renderer!: ClothRenderer;
+
+  // Drag state: the grab test runs synchronously on pointerdown against a
+  // periodically-refreshed CPU cache of positions (GPU read-back is async,
+  // the press must not be).
+  let posCache: Float32Array | null = null;
+  let dragIndex: number | null = null;
+  let dragDepth = 0;
 
   const build = (resolution: number): void => {
     system?.dispose();
@@ -116,8 +122,27 @@ async function main(): Promise<void> {
       scene,
     );
     renderer.resize(canvas.width, canvas.height);
+    posCache = null; // stale cache belongs to the previous system
+    dragIndex = null;
   };
   build(DEFAULT_RESOLUTION);
+
+  // CLO3D-style pointer model: a left press ON the fabric grabs it; a left
+  // press on empty space orbits the camera. Returns true when orbit is allowed.
+  const tryOrbit = (e: PointerEvent): boolean => {
+    if (!posCache) return true; // no cache yet → just orbit
+    const rect = canvas.getBoundingClientRect();
+    const ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    const ndcY = 1 - ((e.clientY - rect.top) / rect.height) * 2;
+    const ray = camera.pickRay(ndcX, ndcY, canvas.width / canvas.height);
+    const count = Math.min(system.count, posCache.length / 4);
+    const hit = pickParticle(posCache, count, ray.origin, ray.dir, 0.15);
+    if (!hit) return true;
+    dragIndex = hit.index;
+    dragDepth = hit.depth;
+    return false; // fabric grabbed — the camera stays put
+  };
+  camera.attach(canvas, tryOrbit);
 
   const panel = new ControlPanel(
     {
@@ -165,12 +190,6 @@ async function main(): Promise<void> {
   new ResizeObserver(resize).observe(canvas);
   resize();
 
-  // --- Drag state (raycast grab; async position read-back at grab time) ---
-  let dragIndex: number | null = null;
-  let dragDepth = 0;
-  let prevLeft = false;
-  let picking = false;
-
   // --- Loop with fps + timing accounting ---
   let last = performance.now();
   let frames = 0;
@@ -192,20 +211,12 @@ async function main(): Promise<void> {
     const aspect = canvas.width / canvas.height;
     const ray = camera.pickRay(mouse.ndcX, mouse.ndcY, aspect);
 
-    // Left press → raycast pick the nearest particle (async read-back).
-    if (mouse.leftDown && !prevLeft && !picking && dragIndex === null) {
-      picking = true;
-      void system.readPositions().then((pos) => {
-        picking = false;
-        if (!pos || !mouse.leftDown) return; // released before the read landed
-        const hit = pickParticle(pos, system.count, ray.origin, ray.dir);
-        if (hit) {
-          dragIndex = hit.index;
-          dragDepth = hit.depth;
-        }
+    // Refresh the CPU position cache used by the instant grab test (~7 Hz).
+    if ((frames & 7) === 0) {
+      void system.readPositions().then((p) => {
+        if (p) posCache = p;
       });
     }
-    prevLeft = mouse.leftDown;
 
     // Drive or release the drag constraint.
     if (dragIndex !== null) {

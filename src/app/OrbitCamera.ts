@@ -1,7 +1,8 @@
 /**
- * Minimal orbit camera. Wheel to zoom; orbit with the middle button or
- * Shift+left-drag (plain left/right clicks are reserved for the milestone 2
- * mouse force). Touch still orbits with a single-finger drag.
+ * Minimal orbit camera. Wheel to zoom; orbit with the middle button,
+ * Shift+left-drag, touch — or a plain left-drag when the `shouldOrbit`
+ * callback says the press didn't land on the cloth (CLO3D-style: drag the
+ * fabric when you click it, orbit the view when you click empty space).
  * Hand-rolled matrices (column-major, WebGPU clip space z in [0,1])
  * to keep the milestone dependency-free.
  */
@@ -13,15 +14,17 @@ export class OrbitCamera {
   private readonly viewProj = new Float32Array(16);
   private readonly fov = Math.PI / 4;
 
-  attach(canvas: HTMLCanvasElement): void {
+  attach(canvas: HTMLCanvasElement, shouldOrbit?: (e: PointerEvent) => boolean): void {
     let dragging = false;
     let lastX = 0;
     let lastY = 0;
 
     canvas.addEventListener('pointerdown', (e) => {
-      // Orbit only on middle button, Shift+left, or touch — leave plain
-      // left/right for the particle force.
-      const orbit = e.button === 1 || (e.button === 0 && e.shiftKey) || e.pointerType === 'touch';
+      // Middle button, Shift+left and touch always orbit. A plain left press
+      // orbits only when `shouldOrbit` says it missed the cloth (otherwise the
+      // press becomes a fabric grab, handled by the app).
+      let orbit = e.button === 1 || (e.button === 0 && e.shiftKey) || e.pointerType === 'touch';
+      if (!orbit && e.button === 0 && shouldOrbit) orbit = shouldOrbit(e);
       if (!orbit) return;
       dragging = true;
       lastX = e.clientX;
