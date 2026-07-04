@@ -1,10 +1,11 @@
 import { initGpu, WebGPUNotSupportedError } from './engine/gpu/Device';
 import { ParticleSystem } from './engine/solver/ParticleSystem';
+import { generateClothGrid } from './engine/cloth/ClothMesh';
 import { PointsRenderer } from './app/PointsRenderer';
 import { OrbitCamera } from './app/OrbitCamera';
 import { MouseForce } from './app/MouseForce';
 
-const PARTICLE_COUNT = 4096; // milestone 1 target (S1 baseline)
+const RESOLUTION = 64; // 64×64 = 4 096 particules (brief S1 baseline)
 const SUBSTEPS = 20;
 
 async function main(): Promise<void> {
@@ -30,11 +31,13 @@ async function main(): Promise<void> {
 
   const { device } = gpu;
 
-  const system = new ParticleSystem(device, {
-    count: PARTICLE_COUNT,
-    spawnMin: [-0.6, 1.2, -0.6],
-    spawnMax: [0.6, 3.2, 0.6],
+  const mesh = generateClothGrid({
+    resolution: RESOLUTION,
+    size: 1.0, // 1 m × 1 m (brief §4)
+    topY: 1.8,
+    pin: 'corners', // held at two corners of the anchored edge (brief §3.3)
   });
+  const system = new ParticleSystem(device, mesh);
 
   const renderer = new PointsRenderer(device, canvas, system.positionBuffer, system.count);
   const camera = new OrbitCamera();
@@ -76,8 +79,9 @@ async function main(): Promise<void> {
     if (fpsAccum >= 0.5) {
       const fps = Math.round(frames / fpsAccum);
       hud.textContent =
-        `${fps} fps · ${PARTICLE_COUNT.toLocaleString('fr-FR')} particules · ` +
-        `${SUBSTEPS} substeps`;
+        `${fps} fps · ${system.count.toLocaleString('fr-FR')} particules · ` +
+        `${system.constraintCount.toLocaleString('fr-FR')} contraintes · ` +
+        `${system.colorCount} couleurs · ${SUBSTEPS} substeps`;
       frames = 0;
       fpsAccum = 0;
     }
