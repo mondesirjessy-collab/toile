@@ -1,7 +1,9 @@
 /**
- * Minimal orbit camera. Drag to rotate, wheel to zoom.
+ * Minimal orbit camera. Wheel to zoom; orbit with the middle button or
+ * Shift+left-drag (plain left/right clicks are reserved for the milestone 2
+ * mouse force). Touch still orbits with a single-finger drag.
  * Hand-rolled matrices (column-major, WebGPU clip space z in [0,1])
- * to keep milestone 1 dependency-free.
+ * to keep the milestone dependency-free.
  */
 export class OrbitCamera {
   private azimuth = Math.PI / 5;
@@ -9,6 +11,7 @@ export class OrbitCamera {
   private radius = 5.5;
   private readonly target: [number, number, number] = [0, 0.8, 0];
   private readonly viewProj = new Float32Array(16);
+  private readonly fov = Math.PI / 4;
 
   attach(canvas: HTMLCanvasElement): void {
     let dragging = false;
@@ -16,6 +19,10 @@ export class OrbitCamera {
     let lastY = 0;
 
     canvas.addEventListener('pointerdown', (e) => {
+      // Orbit only on middle button, Shift+left, or touch — leave plain
+      // left/right for the particle force.
+      const orbit = e.button === 1 || (e.button === 0 && e.shiftKey) || e.pointerType === 'touch';
+      if (!orbit) return;
       dragging = true;
       lastX = e.clientX;
       lastY = e.clientY;
@@ -30,6 +37,7 @@ export class OrbitCamera {
       lastY = e.clientY;
     });
     canvas.addEventListener('pointerup', () => (dragging = false));
+    canvas.addEventListener('pointercancel', () => (dragging = false));
     canvas.addEventListener(
       'wheel',
       (e) => {
@@ -40,17 +48,44 @@ export class OrbitCamera {
     );
   }
 
-  /** Returns the combined view-projection matrix for the current state. */
-  matrix(aspect: number): Float32Array {
+  /** World-space eye position for the current orbit state. */
+  private computeEye(): [number, number, number] {
     const ce = Math.cos(this.elevation);
-    const eye: [number, number, number] = [
+    return [
       this.target[0] + this.radius * ce * Math.sin(this.azimuth),
       this.target[1] + this.radius * Math.sin(this.elevation),
       this.target[2] + this.radius * ce * Math.cos(this.azimuth),
     ];
+  }
 
+  /**
+   * Pinhole ray from the eye through a cursor at NDC (x,y ∈ [-1,1], y up).
+   * Returns an orthonormal-basis ray matching the perspective() projection,
+   * used to apply the mouse force toward the line under the cursor.
+   */
+  pickRay(
+    ndcX: number,
+    ndcY: number,
+    aspect: number,
+  ): { origin: [number, number, number]; dir: [number, number, number] } {
+    const eye = this.computeEye();
+    const forward = normalize(sub(this.target, eye));
+    const right = normalize(cross(forward, [0, 1, 0]));
+    const trueUp = cross(right, forward);
+    const tanHalf = Math.tan(this.fov / 2);
+    const dir = normalize([
+      forward[0]! + ndcX * tanHalf * aspect * right[0]! + ndcY * tanHalf * trueUp[0]!,
+      forward[1]! + ndcX * tanHalf * aspect * right[1]! + ndcY * tanHalf * trueUp[1]!,
+      forward[2]! + ndcX * tanHalf * aspect * right[2]! + ndcY * tanHalf * trueUp[2]!,
+    ]);
+    return { origin: eye, dir: [dir[0]!, dir[1]!, dir[2]!] };
+  }
+
+  /** Returns the combined view-projection matrix for the current state. */
+  matrix(aspect: number): Float32Array {
+    const eye = this.computeEye();
     const view = lookAt(eye, this.target, [0, 1, 0]);
-    const proj = perspective(Math.PI / 4, aspect, 0.05, 100);
+    const proj = perspective(this.fov, aspect, 0.05, 100);
     multiply(this.viewProj, proj, view);
     return this.viewProj;
   }

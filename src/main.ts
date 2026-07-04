@@ -2,6 +2,7 @@ import { initGpu, WebGPUNotSupportedError } from './engine/gpu/Device';
 import { ParticleSystem } from './engine/solver/ParticleSystem';
 import { PointsRenderer } from './app/PointsRenderer';
 import { OrbitCamera } from './app/OrbitCamera';
+import { MouseForce } from './app/MouseForce';
 
 const PARTICLE_COUNT = 4096; // milestone 1 target (S1 baseline)
 const SUBSTEPS = 20;
@@ -38,6 +39,8 @@ async function main(): Promise<void> {
   const renderer = new PointsRenderer(device, canvas, system.positionBuffer, system.count);
   const camera = new OrbitCamera();
   camera.attach(canvas);
+  const mouse = new MouseForce();
+  mouse.attach(canvas);
 
   const resize = (): void => {
     const dpr = Math.min(window.devicePixelRatio, 2);
@@ -57,8 +60,16 @@ async function main(): Promise<void> {
     const dt = Math.min((now - last) / 1000, 1 / 30); // clamp to avoid tab-switch spikes
     last = now;
 
+    const aspect = canvas.width / canvas.height;
+    if (mouse.mode !== 0) {
+      const { origin, dir } = camera.pickRay(mouse.ndcX, mouse.ndcY, aspect);
+      system.setMouse(origin, dir, mouse.mode);
+    } else {
+      system.setMouse([0, 0, 0], [0, 0, 1], 0);
+    }
+
     system.step(dt, SUBSTEPS);
-    renderer.render(camera.matrix(canvas.width / canvas.height));
+    renderer.render(camera.matrix(aspect));
 
     frames++;
     fpsAccum += dt;
