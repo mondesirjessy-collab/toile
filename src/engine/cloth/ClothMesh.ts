@@ -46,6 +46,7 @@ export interface ClothMeshData {
   readonly structuralCount: number;
   readonly shearCount: number;
   readonly bendingCount: number;
+  readonly seamCount: number;
   /** Indices of the two v=0 corners, for runtime pin/release. */
   readonly cornerIndices: [number, number];
   /** Triangle indices (2 per grid cell) for surface rendering. */
@@ -163,7 +164,152 @@ export function generateClothGrid(opts: ClothMeshOptions): ClothMeshData {
     structuralCount: structural.length,
     shearCount: shear.length,
     bendingCount: bending.length,
+    seamCount: 0,
     cornerIndices: [index(0, 0), index(n - 1, 0)],
+    triangleIndices,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1 — seamed panels (the "sew" primitive).
+// ---------------------------------------------------------------------------
+
+export interface SeamedPanelsOptions {
+  /** Particles per side of EACH panel; total = 2 × resolution². */
+  resolution: number;
+  /** Panel width in meters (tube circumference = 2 × width). */
+  width?: number;
+  /** Panel height in meters. */
+  height?: number;
+  /** Initial distance between the two panels (they start apart, seams pull them shut). */
+  gap?: number;
+  /** World Y of the top edge. */
+  topY?: number;
+}
+
+/**
+ * Two flat rectangular pattern pieces (front/back), vertical, facing each
+ * other across `gap`, stitched along both side edges with near-zero rest
+ * length "seam" constraints. When the sim starts, the seams pull the pieces
+ * shut around whatever stands between them (the scene sphere): the CLO-style
+ * garment-assembly moment. The tube then drapes as one garment.
+ */
+export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
+  const n = opts.resolution;
+  const width = opts.width ?? 1.2;
+  const height = opts.height ?? 1.2;
+  const gap = opts.gap ?? 1.3;
+  const topY = opts.topY ?? 1.9;
+  const panelSize = n * n;
+  const count = 2 * panelSize;
+
+  const positions = new Float32Array(count * 4);
+  const invMasses = new Float32Array(count).fill(1.0);
+
+  const index = (p: number, u: number, v: number): number => p * panelSize + v * n + u;
+
+  for (let p = 0; p < 2; p++) {
+    const z = (p === 0 ? 1 : -1) * (gap / 2);
+    for (let v = 0; v < n; v++) {
+      for (let u = 0; u < n; u++) {
+        const i = index(p, u, v);
+        positions[i * 4 + 0] = (u / (n - 1) - 0.5) * width;
+        positions[i * 4 + 1] = topY - (v / (n - 1)) * height;
+        positions[i * 4 + 2] = z;
+      }
+    }
+  }
+
+  const dist = (a: number, b: number): number => {
+    const dx = positions[a * 4 + 0]! - positions[b * 4 + 0]!;
+    const dy = positions[a * 4 + 1]! - positions[b * 4 + 1]!;
+    const dz = positions[a * 4 + 2]! - positions[b * 4 + 2]!;
+    return Math.hypot(dx, dy, dz);
+  };
+
+  const structural: Edge[] = [];
+  const shear: Edge[] = [];
+  const bending: Edge[] = [];
+  const seams: Edge[] = [];
+  const edge = (a: number, b: number, kind: ConstraintKind): Edge => ({
+    i: a,
+    j: b,
+    rest: dist(a, b),
+    kind,
+  });
+
+  // In-panel constraints, identical topology to the single sheet.
+  for (let p = 0; p < 2; p++) {
+    for (let v = 0; v < n; v++) {
+      for (let u = 0; u < n; u++) {
+        if (u + 1 < n) structural.push(edge(index(p, u, v), index(p, u + 1, v), ConstraintKind.Structural));
+        if (v + 1 < n) structural.push(edge(index(p, u, v), index(p, u, v + 1), ConstraintKind.Structural));
+        if (u + 1 < n && v + 1 < n) {
+          shear.push(edge(index(p, u, v), index(p, u + 1, v + 1), ConstraintKind.Shear));
+          shear.push(edge(index(p, u + 1, v), index(p, u, v + 1), ConstraintKind.Shear));
+        }
+        if (u + 2 < n) bending.push(edge(index(p, u, v), index(p, u + 2, v), ConstraintKind.Bending));
+        if (v + 2 < n) bending.push(edge(index(p, u, v), index(p, u, v + 2), ConstraintKind.Bending));
+      }
+    }
+  }
+
+  // Side seams: stitch matching rows of both panels along u=0 and u=n-1.
+  // Rest length ≈ the fabric spacing so the closed seam reads as one weave.
+  const seamRest = width / (n - 1);
+  for (let v = 0; v < n; v++) {
+    seams.push({ i: index(0, 0, v), j: index(1, 0, v), rest: seamRest, kind: ConstraintKind.Seam });
+    seams.push({ i: index(0, n - 1, v), j: index(1, n - 1, v), rest: seamRest, kind: ConstraintKind.Seam });
+  }
+
+  const all = structural.concat(shear, bending, seams);
+  const { ordered, colorOffsets, colorCounts } = colorConstraints(all, count);
+
+  const constraintData = new ArrayBuffer(ordered.length * CONSTRAINT_STRIDE);
+  const dv = new DataView(constraintData);
+  for (let k = 0; k < ordered.length; k++) {
+    const c = ordered[k]!;
+    const base = k * CONSTRAINT_STRIDE;
+    dv.setUint32(base + 0, c.i, true);
+    dv.setUint32(base + 4, c.j, true);
+    dv.setFloat32(base + 8, c.rest, true);
+    dv.setUint32(base + 12, c.kind, true);
+  }
+
+  // Triangles for both panels.
+  const triangleIndices = new Uint32Array(2 * (n - 1) * (n - 1) * 6);
+  let ti = 0;
+  for (let p = 0; p < 2; p++) {
+    for (let v = 0; v < n - 1; v++) {
+      for (let u = 0; u < n - 1; u++) {
+        const i00 = index(p, u, v);
+        const i10 = index(p, u + 1, v);
+        const i01 = index(p, u, v + 1);
+        const i11 = index(p, u + 1, v + 1);
+        triangleIndices[ti++] = i00;
+        triangleIndices[ti++] = i01;
+        triangleIndices[ti++] = i10;
+        triangleIndices[ti++] = i10;
+        triangleIndices[ti++] = i01;
+        triangleIndices[ti++] = i11;
+      }
+    }
+  }
+
+  return {
+    resolution: n,
+    count,
+    positions,
+    invMasses,
+    constraintData,
+    constraintCount: ordered.length,
+    colorOffsets,
+    colorCounts,
+    structuralCount: structural.length,
+    shearCount: shear.length,
+    bendingCount: bending.length,
+    seamCount: seams.length,
+    cornerIndices: [index(0, 0, 0), index(0, n - 1, 0)],
     triangleIndices,
   };
 }

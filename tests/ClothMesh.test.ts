@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { generateClothGrid } from '../src/engine/cloth/ClothMesh';
+import { generateClothGrid, generateSeamedPanels } from '../src/engine/cloth/ClothMesh';
 
 /**
  * Topology + rest-pose tests for the CPU cloth generator (brief §2, §3.3):
@@ -160,5 +160,78 @@ describe('generateClothGrid pinning', () => {
   it("leaves every particle free with 'none'", () => {
     const mesh = generateClothGrid({ resolution: n, pin: 'none' });
     expect([...mesh.invMasses].every((w) => w === 1)).toBe(true);
+  });
+});
+
+describe('generateSeamedPanels (phase 1)', () => {
+  const n = 8;
+  const width = 1.2;
+  const gap = 1.3;
+  const mesh = generateSeamedPanels({ resolution: n, width, height: 1.2, gap, topY: 1.9 });
+
+  it('has two panels of resolution² particles, facing across the gap', () => {
+    expect(mesh.count).toBe(2 * n * n);
+    // Panel 0 at z=+gap/2, panel 1 at z=-gap/2.
+    expect(mesh.positions[0 * 4 + 2]).toBeCloseTo(gap / 2, 6);
+    expect(mesh.positions[(n * n) * 4 + 2]).toBeCloseTo(-gap / 2, 6);
+    expect([...mesh.invMasses].every((w) => w === 1)).toBe(true);
+  });
+
+  it('counts in-panel constraints as twice the single-sheet counts, plus 2n seams', () => {
+    const single = generateClothGrid({ resolution: n, pin: 'none' });
+    expect(mesh.structuralCount).toBe(2 * single.structuralCount);
+    expect(mesh.shearCount).toBe(2 * single.shearCount);
+    expect(mesh.bendingCount).toBe(2 * single.bendingCount);
+    expect(mesh.seamCount).toBe(2 * n); // both side edges, one seam per row
+    expect(mesh.constraintCount).toBe(
+      mesh.structuralCount + mesh.shearCount + mesh.bendingCount + mesh.seamCount,
+    );
+  });
+
+  it('seams (kind 3) connect matching edge rows across the two panels', () => {
+    const dv = new DataView(mesh.constraintData);
+    const panelSize = n * n;
+    let seams = 0;
+    for (let k = 0; k < mesh.constraintCount; k++) {
+      const kind = dv.getUint32(k * 16 + 12, true);
+      if (kind !== 3) continue;
+      seams++;
+      const i = dv.getUint32(k * 16, true);
+      const j = dv.getUint32(k * 16 + 4, true);
+      // One endpoint per panel…
+      expect(i < panelSize).toBe(true);
+      expect(j >= panelSize).toBe(true);
+      // …same (u,v) cell on each side, and u on a side edge.
+      const li = i % panelSize;
+      const lj = (j - panelSize) % panelSize;
+      expect(li).toBe(lj);
+      const u = li % n;
+      expect(u === 0 || u === n - 1).toBe(true);
+      // Rest length is the fabric spacing, not the initial gap.
+      expect(dv.getFloat32(k * 16 + 8, true)).toBeCloseTo(width / (n - 1), 5);
+    }
+    expect(seams).toBe(mesh.seamCount);
+  });
+
+  it('keeps the coloring vertex-disjoint with seams included', () => {
+    const dv = new DataView(mesh.constraintData);
+    for (let c = 0; c < mesh.colorOffsets.length; c++) {
+      const start = mesh.colorOffsets[c]!;
+      const end = start + mesh.colorCounts[c]!;
+      const seen = new Set<number>();
+      for (let k = start; k < end; k++) {
+        const i = dv.getUint32(k * 16, true);
+        const j = dv.getUint32(k * 16 + 4, true);
+        expect(seen.has(i)).toBe(false);
+        expect(seen.has(j)).toBe(false);
+        seen.add(i);
+        seen.add(j);
+      }
+    }
+  });
+
+  it('emits triangles for both panels', () => {
+    expect(mesh.triangleIndices.length).toBe(2 * (n - 1) * (n - 1) * 6);
+    for (const idx of mesh.triangleIndices) expect(idx).toBeLessThan(mesh.count);
   });
 });

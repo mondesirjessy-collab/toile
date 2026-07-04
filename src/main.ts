@@ -1,6 +1,7 @@
 import { initGpu, WebGPUNotSupportedError } from './engine/gpu/Device';
 import { ParticleSystem } from './engine/solver/ParticleSystem';
-import { generateClothGrid } from './engine/cloth/ClothMesh';
+import { generateClothGrid, generateSeamedPanels } from './engine/cloth/ClothMesh';
+import type { SceneMode } from './app/ControlPanel';
 import { ClothRenderer, DEFAULT_FABRIC } from './app/ClothRenderer';
 import { OrbitCamera } from './app/OrbitCamera';
 import { MouseForce } from './app/MouseForce';
@@ -89,6 +90,8 @@ async function main(): Promise<void> {
   let compliance = { stretch: 1e-7, shear: 1e-6, bend: 2e-5 };
   let friction = 0.5;
   let fabricStyle = DEFAULT_FABRIC;
+  let sceneMode: SceneMode = 'drapé';
+  let resolution = DEFAULT_RESOLUTION;
 
   let system!: ParticleSystem;
   let renderer!: ClothRenderer;
@@ -100,10 +103,15 @@ async function main(): Promise<void> {
   let dragIndex: number | null = null;
   let dragDepth = 0;
 
-  const build = (resolution: number): void => {
+  const build = (): void => {
     system?.dispose();
     renderer?.dispose();
-    const mesh = generateClothGrid({ resolution, size: CLOTH_SIZE, topY: CLOTH_TOP_Y, pin: 'none' });
+    // 'drapé': one sheet falling onto the sphere. 'couture' (phase 1): two flat
+    // pattern pieces stitched along their side seams, closing around the sphere.
+    const mesh =
+      sceneMode === 'couture'
+        ? generateSeamedPanels({ resolution, width: 1.2, height: 1.2, gap: 1.3, topY: 1.9 })
+        : generateClothGrid({ resolution, size: CLOTH_SIZE, topY: CLOTH_TOP_Y, pin: 'none' });
     system = new ParticleSystem(device, mesh, {
       sphereCenter: SPHERE_CENTER,
       sphereRadius: SPHERE_RADIUS,
@@ -127,7 +135,7 @@ async function main(): Promise<void> {
     posCache = null; // stale cache belongs to the previous system
     dragIndex = null;
   };
-  build(DEFAULT_RESOLUTION);
+  build();
 
   // CLO3D-style pointer model: a left press ON the fabric grabs it; a left
   // press on empty space orbits the camera. Returns true when orbit is allowed.
@@ -148,7 +156,14 @@ async function main(): Promise<void> {
 
   const panel = new ControlPanel(
     {
-      onResolution: (r) => build(r),
+      onScene: (m) => {
+        sceneMode = m;
+        build();
+      },
+      onResolution: (r) => {
+        resolution = r;
+        build();
+      },
       onCompliance: (c) => {
         compliance = c;
         system.setCompliance(c);

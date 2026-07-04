@@ -13,6 +13,8 @@ export enum ConstraintKind {
   Structural = 0,
   Shear = 1,
   Bending = 2,
+  /** Seam between two pattern pieces — solved rigid, like structural. */
+  Seam = 3,
 }
 
 export interface Edge {

@@ -18,19 +18,24 @@ struct GridInfo { n: u32, count: u32, _p0: u32, _p1: u32 };
 @group(0) @binding(2) var<storage, read_write> normals: array<vec4f>;
 
 // Per-vertex normal from central differences over the grid neighbours.
+// Supports multiple stacked n×n panels (seamed garments): neighbour lookups
+// stay inside the particle's own panel.
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
   let i = gid.x;
   if (i >= grid.count) { return; }
   let n = grid.n;
-  let u = i % n;
-  let v = i / n;
+  let panel_size = n * n;
+  let base = (i / panel_size) * panel_size;
+  let local = i - base;
+  let u = local % n;
+  let v = local / n;
   let up1 = min(u + 1u, n - 1u);
   let um1 = select(u - 1u, 0u, u == 0u);
   let vp1 = min(v + 1u, n - 1u);
   let vm1 = select(v - 1u, 0u, v == 0u);
-  let tu = positions[v * n + up1].xyz - positions[v * n + um1].xyz;
-  let tv = positions[vp1 * n + u].xyz - positions[vm1 * n + u].xyz;
+  let tu = positions[base + v * n + up1].xyz - positions[base + v * n + um1].xyz;
+  let tv = positions[base + vp1 * n + u].xyz - positions[base + vm1 * n + u].xyz;
   var nor = cross(tv, tu); // +Y for the flat rest pose
   let len = length(nor);
   if (len < 1e-8) { nor = vec3f(0.0, 1.0, 0.0); } else { nor = nor / len; }

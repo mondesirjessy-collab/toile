@@ -8,7 +8,10 @@
 import GUI from 'lil-gui';
 import type { FabricStyle } from './ClothRenderer';
 
+export type SceneMode = 'drapé' | 'couture';
+
 export interface PanelCallbacks {
+  onScene(mode: SceneMode): void;
   onResolution(resolution: number): void;
   onCompliance(c: { stretch: number; shear: number; bend: number }): void;
   onFriction(mu: number): void;
@@ -18,6 +21,7 @@ export interface PanelCallbacks {
 }
 
 interface Settings {
+  scene: SceneMode;
   resolution: number;
   substeps: number;
   stretchExp: number; // compliance = 10^exp (log slider); -8 ≈ rigid
@@ -76,6 +80,7 @@ export class ControlPanel {
   constructor(cb: PanelCallbacks, initial: { resolution: number; substeps: number }) {
     this.cb = cb;
     this.settings = {
+      scene: 'drapé' as SceneMode,
       resolution: initial.resolution,
       substeps: initial.substeps,
       stretchExp: -8,
@@ -88,6 +93,12 @@ export class ControlPanel {
 
     this.gui = new GUI({ title: 'TOILE — solveur' });
 
+    this.controllers.push(
+      this.gui
+        .add(this.settings, 'scene', ['drapé', 'couture'])
+        .name('scène')
+        .onChange((m: SceneMode) => this.cb.onScene(m)),
+    );
     this.controllers.push(
       this.gui
         .add(this.settings, 'resolution', [32, 64, 128])
