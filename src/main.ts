@@ -97,6 +97,7 @@ async function main(): Promise<void> {
   let fabricStyle = DEFAULT_FABRIC;
   let sceneMode: SceneMode = 'drapé';
   let resolution = DEFAULT_RESOLUTION;
+  let selfCollision = true;
 
   let system!: ParticleSystem;
   let renderer!: ClothRenderer;
@@ -135,6 +136,7 @@ async function main(): Promise<void> {
       complianceStretch: compliance.stretch,
       complianceShear: compliance.shear,
       complianceBend: compliance.bend,
+      selfCollision,
     });
     const sceneMesh = buildSceneMesh({ spheres: colliders, groundY: GROUND_Y });
     renderer = new ClothRenderer(
@@ -192,6 +194,10 @@ async function main(): Promise<void> {
       onStyle: (style) => {
         fabricStyle = style;
         renderer.setFabric(style);
+      },
+      onSelfCollision: (enabled) => {
+        selfCollision = enabled;
+        system.setSelfCollision(enabled);
       },
       onPins: (held) => system.setCornerPins(held),
       onReset: () => {

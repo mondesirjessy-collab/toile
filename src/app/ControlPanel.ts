@@ -16,6 +16,7 @@ export interface PanelCallbacks {
   onCompliance(c: { stretch: number; shear: number; bend: number }): void;
   onFriction(mu: number): void;
   onStyle(style: FabricStyle): void;
+  onSelfCollision(enabled: boolean): void;
   onPins(held: boolean): void;
   onReset(): void;
 }
@@ -24,6 +25,7 @@ interface Settings {
   scene: SceneMode;
   resolution: number;
   substeps: number;
+  selfCollision: boolean;
   stretchExp: number; // compliance = 10^exp (log slider); -8 ≈ rigid
   shearExp: number;
   bendExp: number;
@@ -83,6 +85,7 @@ export class ControlPanel {
       scene: 'drapé' as SceneMode,
       resolution: initial.resolution,
       substeps: initial.substeps,
+      selfCollision: true,
       stretchExp: -8,
       shearExp: -8,
       bendExp: Math.log10(2e-6),
@@ -107,6 +110,12 @@ export class ControlPanel {
     );
     this.controllers.push(
       this.gui.add(this.settings, 'substeps', 5, 40, 1).name('substeps'),
+    );
+    this.controllers.push(
+      this.gui
+        .add(this.settings, 'selfCollision')
+        .name('auto-collision')
+        .onChange((v: boolean) => this.cb.onSelfCollision(v)),
     );
 
     const fabric = this.gui.addFolder('tissu');

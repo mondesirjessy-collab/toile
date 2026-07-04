@@ -12,6 +12,7 @@ import integrateWGSL from './shaders/integrate.wgsl?raw';
 import distanceWGSL from './shaders/distance.wgsl?raw';
 import dragWGSL from './shaders/drag.wgsl?raw';
 import collideWGSL from './shaders/collide.wgsl?raw';
+import selfCollideWGSL from './shaders/selfCollide.wgsl?raw';
 import updateVelocityWGSL from './shaders/updateVelocity.wgsl?raw';
 import type { ClothMeshData } from '../cloth/ClothMesh';
 
@@ -44,6 +45,8 @@ export interface SolverOptions {
   maxSpeed?: number;
   /** How hard the grabbed particle follows the cursor each substep [0,1]. */
   dragStiffness?: number;
+  /** Cloth self-collision (spatial hash), on by default. */
+  selfCollision?: boolean;
 }
 
 // SimParams std140-style layout, 112 bytes. Offsets (bytes):
@@ -72,6 +75,9 @@ export class ParticleSystem {
   private readonly constraintBuffer: GPUBuffer;
   private readonly colliderBuffer: GPUBuffer;
   private readonly uniformBuffer: GPUBuffer;
+  private readonly selfParamsBuffer: GPUBuffer;
+  private readonly headsBuffer: GPUBuffer;
+  private readonly nextsBuffer: GPUBuffer;
   private readonly batchBuffers: GPUBuffer[];
   private readonly readbackBuffer: GPUBuffer;
   private readonly uniformData: ArrayBuffer;
@@ -81,12 +87,23 @@ export class ParticleSystem {
   private readonly dragPipeline: GPUComputePipeline;
   private readonly collidePipeline: GPUComputePipeline;
   private readonly velocityPipeline: GPUComputePipeline;
+  private readonly hashClearPipeline: GPUComputePipeline;
+  private readonly hashInsertPipeline: GPUComputePipeline;
+  private readonly selfCollidePipeline: GPUComputePipeline;
 
   private readonly integrateBindGroup: GPUBindGroup;
   private readonly dragBindGroup: GPUBindGroup;
   private readonly collideBindGroup: GPUBindGroup;
   private readonly velocityBindGroup: GPUBindGroup;
   private readonly solveBindGroups: GPUBindGroup[];
+  private readonly hashClearBindGroup: GPUBindGroup;
+  private readonly hashInsertBindGroup: GPUBindGroup;
+  private readonly selfCollideBindGroup: GPUBindGroup;
+
+  private readonly tableSize: number;
+  private readonly spacing: number;
+  private readonly gridN: number;
+  private selfEnabled: boolean;
 
   private readonly colorCounts: number[];
 
@@ -144,6 +161,10 @@ export class ParticleSystem {
     this.damping = opts.damping ?? 0.8;
     this.maxSpeed = opts.maxSpeed ?? 12.0;
     this.dragStiffness = opts.dragStiffness ?? 0.4;
+    this.selfEnabled = opts.selfCollision ?? true;
+    this.spacing = mesh.spacing;
+    this.gridN = mesh.resolution;
+    this.tableSize = 1 << Math.ceil(Math.log2(Math.max(1024, this.count * 2)));
 
     // --- Buffers ---
     const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
@@ -158,6 +179,21 @@ export class ParticleSystem {
     const colliderData = new Float32Array(this.colliderCount * 4);
     colliders.forEach((c, k) => colliderData.set([...c.center, c.radius], k * 4));
     this.colliderBuffer = this.createBuffer(colliderData, storage);
+
+    // Self-collision spatial hash: cell heads + per-particle next links.
+    this.headsBuffer = device.createBuffer({
+      size: this.tableSize * 4,
+      usage: GPUBufferUsage.STORAGE,
+    });
+    this.nextsBuffer = device.createBuffer({
+      size: this.count * 4,
+      usage: GPUBufferUsage.STORAGE,
+    });
+    this.selfParamsBuffer = device.createBuffer({
+      size: 32,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.writeSelfParams();
     this.readbackBuffer = device.createBuffer({
       size: this.count * 16,
       usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
@@ -190,6 +226,17 @@ export class ParticleSystem {
     this.dragPipeline = pipeline(dragWGSL, 'drag');
     this.collidePipeline = pipeline(collideWGSL, 'collide');
     this.velocityPipeline = pipeline(updateVelocityWGSL, 'updateVelocity');
+
+    const selfModule = device.createShaderModule({ code: selfCollideWGSL, label: 'selfCollide' });
+    const selfPipeline = (entryPoint: string): GPUComputePipeline =>
+      device.createComputePipeline({
+        label: `self-${entryPoint}`,
+        layout: 'auto',
+        compute: { module: selfModule, entryPoint },
+      });
+    this.hashClearPipeline = selfPipeline('clear_hash');
+    this.hashInsertPipeline = selfPipeline('insert');
+    this.selfCollidePipeline = selfPipeline('collide');
 
     // --- Bind groups ---
     const bg = (p: GPUComputePipeline, buffers: GPUBuffer[]): GPUBindGroup =>
@@ -238,6 +285,31 @@ export class ParticleSystem {
         ],
       }),
     );
+
+    // Self-collision bind groups ('auto' layouts only contain the bindings each
+    // entry point actually uses, so they are built per pipeline).
+    this.hashClearBindGroup = device.createBindGroup({
+      layout: this.hashClearPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.selfParamsBuffer } },
+        { binding: 3, resource: { buffer: this.headsBuffer } },
+      ],
+    });
+    const selfAll: GPUBindGroupEntry[] = [
+      { binding: 0, resource: { buffer: this.selfParamsBuffer } },
+      { binding: 1, resource: { buffer: this.positionBuffer } },
+      { binding: 2, resource: { buffer: this.invMassBuffer } },
+      { binding: 3, resource: { buffer: this.headsBuffer } },
+      { binding: 4, resource: { buffer: this.nextsBuffer } },
+    ];
+    this.hashInsertBindGroup = device.createBindGroup({
+      layout: this.hashInsertPipeline.getBindGroupLayout(0),
+      entries: selfAll,
+    });
+    this.selfCollideBindGroup = device.createBindGroup({
+      layout: this.selfCollidePipeline.getBindGroupLayout(0),
+      entries: selfAll,
+    });
   }
 
   get colorCount(): number {
@@ -268,6 +340,25 @@ export class ParticleSystem {
 
   setFriction(v: number): void {
     this.friction = v;
+  }
+
+  /** Toggle cloth self-collision live. */
+  setSelfCollision(enabled: boolean): void {
+    this.selfEnabled = enabled;
+    this.writeSelfParams();
+  }
+
+  private writeSelfParams(): void {
+    const data = new ArrayBuffer(32);
+    const dv = new DataView(data);
+    dv.setFloat32(0, this.spacing, true); // cell_size
+    dv.setFloat32(4, this.spacing * 0.9, true); // min_dist, under the weave spacing
+    dv.setUint32(8, this.tableSize, true);
+    dv.setUint32(12, this.count, true);
+    dv.setUint32(16, this.gridN, true);
+    dv.setUint32(20, this.gridN * this.gridN, true);
+    dv.setUint32(24, this.selfEnabled ? 1 : 0, true);
+    this.device.queue.writeBuffer(this.selfParamsBuffer, 0, data);
   }
   setCompliance(c: { stretch?: number; shear?: number; bend?: number }): void {
     if (c.stretch !== undefined) this.complianceStretch = c.stretch;
@@ -358,6 +449,14 @@ export class ParticleSystem {
 
       // The drag constraint costs a dispatch only while a particle is grabbed.
       if (this.dragIndex !== DRAG_NONE) dispatch(this.dragPipeline, this.dragBindGroup, 1);
+
+      // Self-collision: rebuild the spatial hash, then separate close pairs.
+      if (this.selfEnabled) {
+        dispatch(this.hashClearPipeline, this.hashClearBindGroup, Math.ceil(this.tableSize / WORKGROUP));
+        dispatch(this.hashInsertPipeline, this.hashInsertBindGroup, particleGroups);
+        dispatch(this.selfCollidePipeline, this.selfCollideBindGroup, particleGroups);
+      }
+
       dispatch(this.collidePipeline, this.collideBindGroup, particleGroups);
       dispatch(this.velocityPipeline, this.velocityBindGroup, particleGroups);
     }
@@ -374,6 +473,9 @@ export class ParticleSystem {
     this.constraintBuffer.destroy();
     this.colliderBuffer.destroy();
     this.uniformBuffer.destroy();
+    this.selfParamsBuffer.destroy();
+    this.headsBuffer.destroy();
+    this.nextsBuffer.destroy();
     this.readbackBuffer.destroy();
     for (const b of this.batchBuffers) b.destroy();
   }
