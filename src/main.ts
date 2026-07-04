@@ -112,6 +112,9 @@ async function main(): Promise<void> {
     renderer.resize(canvas.width, canvas.height);
   };
   window.addEventListener('resize', resize);
+  // A ResizeObserver also catches late/zero-then-nonzero sizing (some embedded
+  // webviews report a 0×0 viewport on load, which would leave nothing to draw).
+  new ResizeObserver(resize).observe(canvas);
   resize();
 
   // --- Drag state (raycast grab; async position read-back at grab time) ---
@@ -188,9 +191,27 @@ async function main(): Promise<void> {
       cpuAccum = 0;
     }
 
-    requestAnimationFrame(frame);
+    schedule();
   };
-  requestAnimationFrame(frame);
+
+  // requestAnimationFrame is paused while the document is hidden (e.g. a
+  // backgrounded preview webview), which leaves the canvas blank. Fall back to
+  // setTimeout when hidden so the loop keeps rendering. Single-flight: cancel any
+  // pending tick before scheduling, so frame() and visibilitychange can't stack
+  // two loops, and a rAF stranded by a visible→hidden switch gets replaced.
+  let rafId = 0;
+  let timeoutId = 0;
+  const schedule = (): void => {
+    cancelAnimationFrame(rafId);
+    clearTimeout(timeoutId);
+    if (document.hidden) timeoutId = window.setTimeout(() => frame(performance.now()), 1000 / 60);
+    else rafId = requestAnimationFrame(frame);
+  };
+
+  // Draw the initial state once so the scene shows immediately, before the loop.
+  renderer.render(camera.matrix(canvas.width / canvas.height));
+  document.addEventListener('visibilitychange', schedule);
+  schedule();
 }
 
 void main();
