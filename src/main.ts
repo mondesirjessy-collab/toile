@@ -232,10 +232,6 @@ async function main(): Promise<void> {
       }
     }
 
-    // Right button → radial repulsion force.
-    if (mouse.repelMode !== 0) system.setMouse(ray.origin, ray.dir, mouse.repelMode);
-    else system.setMouse([0, 0, 0], [0, 0, 1], 0);
-
     const substeps = panel.substeps;
     system.step(dt, substeps, profiler.simSpan());
     renderer.render(camera.matrix(aspect), profiler.renderSpan());

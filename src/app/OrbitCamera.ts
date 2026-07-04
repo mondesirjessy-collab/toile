@@ -1,8 +1,10 @@
 /**
- * Minimal orbit camera. Wheel to zoom; orbit with the middle button,
- * Shift+left-drag, touch — or a plain left-drag when the `shouldOrbit`
- * callback says the press didn't land on the cloth (CLO3D-style: drag the
- * fabric when you click it, orbit the view when you click empty space).
+ * Minimal orbit camera, CLO3D-style navigation:
+ *   - left-drag on empty space (or middle button / Shift+left / touch): orbit
+ *     — a plain left press consults `shouldOrbit` so a press ON the cloth
+ *     becomes a fabric grab instead
+ *   - right-drag: pan (move the view target laterally/vertically)
+ *   - wheel: zoom
  * Hand-rolled matrices (column-major, WebGPU clip space z in [0,1])
  * to keep the milestone dependency-free.
  */
@@ -15,32 +17,42 @@ export class OrbitCamera {
   private readonly fov = Math.PI / 4;
 
   attach(canvas: HTMLCanvasElement, shouldOrbit?: (e: PointerEvent) => boolean): void {
-    let dragging = false;
+    let mode: 'none' | 'orbit' | 'pan' = 'none';
     let lastX = 0;
     let lastY = 0;
 
     canvas.addEventListener('pointerdown', (e) => {
-      // Middle button, Shift+left and touch always orbit. A plain left press
-      // orbits only when `shouldOrbit` says it missed the cloth (otherwise the
-      // press becomes a fabric grab, handled by the app).
-      let orbit = e.button === 1 || (e.button === 0 && e.shiftKey) || e.pointerType === 'touch';
-      if (!orbit && e.button === 0 && shouldOrbit) orbit = shouldOrbit(e);
-      if (!orbit) return;
-      dragging = true;
+      // Right button pans. Middle button, Shift+left and touch always orbit.
+      // A plain left press orbits only when `shouldOrbit` says it missed the
+      // cloth (otherwise the press becomes a fabric grab, handled by the app).
+      if (e.button === 2) {
+        mode = 'pan';
+      } else {
+        let orbit = e.button === 1 || (e.button === 0 && e.shiftKey) || e.pointerType === 'touch';
+        if (!orbit && e.button === 0 && shouldOrbit) orbit = shouldOrbit(e);
+        if (!orbit) return;
+        mode = 'orbit';
+      }
       lastX = e.clientX;
       lastY = e.clientY;
       canvas.setPointerCapture(e.pointerId);
     });
     canvas.addEventListener('pointermove', (e) => {
-      if (!dragging) return;
-      this.azimuth -= (e.clientX - lastX) * 0.005;
-      this.elevation += (e.clientY - lastY) * 0.005;
-      this.elevation = Math.min(Math.max(this.elevation, 0.05), Math.PI / 2 - 0.05);
+      if (mode === 'none') return;
+      const dx = e.clientX - lastX;
+      const dy = e.clientY - lastY;
       lastX = e.clientX;
       lastY = e.clientY;
+      if (mode === 'orbit') {
+        this.azimuth -= dx * 0.005;
+        this.elevation += dy * 0.005;
+        this.elevation = Math.min(Math.max(this.elevation, 0.05), Math.PI / 2 - 0.05);
+      } else {
+        this.pan(dx, dy);
+      }
     });
-    canvas.addEventListener('pointerup', () => (dragging = false));
-    canvas.addEventListener('pointercancel', () => (dragging = false));
+    canvas.addEventListener('pointerup', () => (mode = 'none'));
+    canvas.addEventListener('pointercancel', () => (mode = 'none'));
     canvas.addEventListener(
       'wheel',
       (e) => {
@@ -49,6 +61,22 @@ export class OrbitCamera {
       },
       { passive: false },
     );
+  }
+
+  /** Slide the view target across the screen plane (right-drag). */
+  private pan(dx: number, dy: number): void {
+    const eye = this.computeEye();
+    const forward = normalize(sub(this.target, eye));
+    const right = normalize(cross(forward, [0, 1, 0]));
+    const up = cross(right, forward);
+    const k = this.radius * 0.0011; // screen-proportional pan speed
+    this.target[0] += (-right[0]! * dx + up[0]! * dy) * k;
+    this.target[1] += (-right[1]! * dx + up[1]! * dy) * k;
+    this.target[2] += (-right[2]! * dx + up[2]! * dy) * k;
+    // Keep the target near the scene so the user can't get lost.
+    this.target[0] = Math.min(Math.max(this.target[0], -3), 3);
+    this.target[1] = Math.min(Math.max(this.target[1], 0.1), 3);
+    this.target[2] = Math.min(Math.max(this.target[2], -3), 3);
   }
 
   /** World-space eye position for the current orbit state. */
