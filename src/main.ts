@@ -261,24 +261,24 @@ async function main(): Promise<void> {
     schedule();
   };
 
-  // requestAnimationFrame is paused while the document is hidden (e.g. a
-  // backgrounded preview webview), which leaves the canvas blank. Fall back to
-  // setTimeout when hidden so the loop keeps rendering. Single-flight: cancel any
-  // pending tick before scheduling, so frame() and visibilitychange can't stack
-  // two loops, and a rAF stranded by a visible→hidden switch gets replaced.
+  // Drive the loop with requestAnimationFrame AND a watchdog timer, armed
+  // together: whichever fires first runs the frame and re-arms both (frame()
+  // ends with schedule(), which cancels the loser). On healthy systems rAF wins
+  // at 60 fps; on systems where rAF never fires (hidden tabs, or machines whose
+  // display compositor is broken for this page — observed in the field), the
+  // 50 ms watchdog keeps the sim and interaction alive at ~20 fps.
   let rafId = 0;
   let timeoutId = 0;
   const schedule = (): void => {
     cancelAnimationFrame(rafId);
     clearTimeout(timeoutId);
-    if (document.hidden) timeoutId = window.setTimeout(() => frame(performance.now()), 1000 / 60);
-    else rafId = requestAnimationFrame(frame);
+    rafId = requestAnimationFrame(frame);
+    timeoutId = window.setTimeout(() => frame(performance.now()), 50);
   };
 
   // Draw the initial state once so the scene shows immediately, before the loop.
   renderer.render(camera.matrix(canvas.width / canvas.height));
   blit();
-  document.addEventListener('visibilitychange', schedule);
   schedule();
 }
 

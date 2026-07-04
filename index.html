@@ -40,7 +40,11 @@
     #overlay {
       position: fixed; inset: 0; display: grid; place-content: center;
       background: #0e0f12; text-align: center; padding: 24px; gap: 10px;
+      z-index: 20;
     }
+    /* Author display:grid would otherwise defeat the hidden attribute, leaving
+       an invisible full-screen layer that swallows every pointer event. */
+    #overlay[hidden] { display: none; }
     #overlay h1 { font-size: 16px; letter-spacing: 0.1em; }
     #overlay p { font-size: 13px; opacity: 0.7; max-width: 46ch; }
     #overlay .detail { font-size: 11px; opacity: 0.4; }
