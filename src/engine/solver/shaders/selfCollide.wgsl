@@ -70,17 +70,26 @@ fn collide(@builtin(global_invocation_id) gid: vec3u) {
             // and cross-panel cells within ONE grid cell of the mirror (they
             // may be seamed together — repelling them, or their immediate
             // neighbours, would push every seam open into a ladder of gaps).
+            let pj = j / sp.panel_size;
             let lj = i32(j % sp.panel_size);
             let dl = abs(lj - li);
             let ni = i32(sp.n);
+            // Panels pair up two-by-two into garments (front/back); the seam
+            // exclusion must never apply BETWEEN garments, or layered outfits
+            // stop separating in mirror-aligned patches.
+            let same_garment = (pi / 2u) == (pj / 2u);
             let near_weave =
-              ((j / sp.panel_size) == pi && dl < 2 * ni + 3) ||
-              (dl <= 1 || (dl >= ni - 1 && dl <= ni + 1));
+              (pj == pi && dl < 2 * ni + 3) ||
+              (same_garment &&
+                (dl <= 2 || (dl >= ni - 2 && dl <= ni + 2) || (dl >= 2 * ni - 2 && dl <= 2 * ni + 2)));
             if (!near_weave) {
               let d = x - positions[j].xyz;
               let dist = length(d);
               if (dist < sp.min_dist && dist > 1e-6) {
-                corr += d * ((sp.min_dist - dist) / dist) * 0.5;
+                // Gentle relaxation (0.3, not the full half-correction): layered
+                // garments resting on each other settle smoothly instead of
+                // locking into stepped patches.
+                corr += d * ((sp.min_dist - dist) / dist) * 0.3;
               }
             }
           }

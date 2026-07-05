@@ -213,7 +213,7 @@ describe('generateSeamedPanels (phase 1)', () => {
       expect(u === 0 || u === n - 1).toBe(true);
       // Rest length is a fraction of the fabric spacing (sewn = touching),
       // not the initial gap.
-      expect(dv.getFloat32(k * 16 + 8, true)).toBeCloseTo((width / (n - 1)) * 0.3, 5);
+      expect(dv.getFloat32(k * 16 + 8, true)).toBeCloseTo((width / (n - 1)) * 0.15, 5);
     }
     expect(seams).toBe(mesh.seamCount);
   });

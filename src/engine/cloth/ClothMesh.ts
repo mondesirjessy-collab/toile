@@ -361,7 +361,8 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
   // Seams stitch the two panels along their edges, the way a garment is sewn.
   // Rest length well under the fabric spacing: a sewn seam has no play — the
   // two pieces touch (self-collision excludes mirror pairs so it can close).
-  const seamRest = (width / (n - 1)) * 0.3;
+  const gridSpacing = width / (n - 1);
+  const seamRest = gridSpacing * 0.15;
   if (shape === 'rect') {
     // Plain tube: side seams only (leftmost/rightmost of each row), top open.
     for (let v = 0; v < n; v++) {
@@ -391,12 +392,36 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
       !kept[v * n + (u + 1)] ||
       !kept[(v - 1) * n + u] ||
       !kept[(v + 1) * n + u];
+    // Cross-seam flattening: for cells one ring inside a stitched edge, a soft
+    // bending constraint ties front↔back at the flat-continuation distance
+    // (2 × spacing), so the fabric behaves as if continuous through the seam —
+    // a smooth ridge instead of a pinched, gaping fold.
+    const flattened = new Set<number>();
     for (let v = 0; v < n; v++) {
       for (let u = 0; u < n; u++) {
         if (!kept[v * n + u]) continue;
         if (!onBoundary(u, v)) continue;
         if (isOpening(shape, u / (n - 1), v / (n - 1))) continue;
         seams.push({ i: index(0, u, v), j: index(1, u, v), rest: seamRest, kind: ConstraintKind.Seam });
+        for (const [du, dv2] of [
+          [-1, 0],
+          [1, 0],
+          [0, -1],
+          [0, 1],
+        ] as const) {
+          const u2 = u + du;
+          const v2 = v + dv2;
+          if (u2 < 0 || u2 >= n || v2 < 0 || v2 >= n) continue;
+          const local = v2 * n + u2;
+          if (!kept[local] || flattened.has(local)) continue;
+          flattened.add(local);
+          bending.push({
+            i: index(0, u2, v2),
+            j: index(1, u2, v2),
+            rest: 2 * gridSpacing,
+            kind: ConstraintKind.Bending,
+          });
+        }
       }
     }
   }

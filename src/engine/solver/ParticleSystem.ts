@@ -364,7 +364,7 @@ export class ParticleSystem {
     const data = new ArrayBuffer(32);
     const dv = new DataView(data);
     dv.setFloat32(0, this.spacing, true); // cell_size
-    dv.setFloat32(4, this.spacing * 0.9, true); // min_dist, under the weave spacing
+    dv.setFloat32(4, this.spacing * 0.6, true); // min_dist, under the weave spacing
     dv.setUint32(8, this.tableSize, true);
     dv.setUint32(12, this.count, true);
     dv.setUint32(16, this.gridN, true);
