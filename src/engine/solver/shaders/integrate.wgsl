@@ -14,8 +14,8 @@ struct SimParams {
   ray_dir: vec3f,    // cursor pick ray direction (normalized), world space
   mouse_radius: f32, // radial falloff radius (world units)
   collider_count: u32,
-  _c0: f32,
-  _c1: f32,
+  wind_strength: f32, // peak wind acceleration (m/s^2), 0 = calm
+  wind_time: f32,     // running clock driving the gusts
   _c2: f32,
   drag_target: vec3f,
   drag_stiffness: f32,
@@ -52,6 +52,15 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   // Gravity
   v.y += params.gravity * params.dt;
+
+  // Wind: a steady stream plus spatial gusts, so the fabric flutters rather
+  // than leaning uniformly.
+  if (params.wind_strength > 0.0) {
+    let t = params.wind_time;
+    let gust = 0.55 + 0.45 * sin(t * 1.9 + x.y * 1.7) * sin(t * 2.7 + x.x * 2.3 + x.z * 1.1);
+    let wdir = normalize(vec3f(1.0, 0.15, 0.35));
+    v += wdir * (params.wind_strength * gust) * params.dt;
+  }
 
   // Radial mouse force toward the closest point on the cursor ray (milestone 2).
   if (params.mouse_force != 0.0) {

@@ -102,6 +102,7 @@ async function main(): Promise<void> {
   let sceneMode: SceneMode = 'drapé';
   let resolution = DEFAULT_RESOLUTION;
   let selfCollision = true;
+  let wind = 0;
 
   let system!: ParticleSystem;
   let renderer!: ClothRenderer;
@@ -142,6 +143,7 @@ async function main(): Promise<void> {
       complianceBend: compliance.bend,
       selfCollision,
     });
+    system.setWind(wind); // keep the breeze across rebuilds
     const sceneMesh = buildSceneMesh({ colliders, groundY: GROUND_Y });
     renderer = new ClothRenderer(
       device,
@@ -202,6 +204,10 @@ async function main(): Promise<void> {
       onSelfCollision: (enabled) => {
         selfCollision = enabled;
         system.setSelfCollision(enabled);
+      },
+      onWind: (v) => {
+        wind = v;
+        system.setWind(v);
       },
       onPins: (held) => system.setCornerPins(held),
       onReset: () => {

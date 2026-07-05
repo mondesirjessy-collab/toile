@@ -129,6 +129,8 @@ export class ParticleSystem {
   private complianceStretch: number;
   private complianceShear: number;
   private complianceBend: number;
+  private windStrength = 0;
+  private windTime = 0;
 
   private mouseOrigin: [number, number, number] = [0, 0, 0];
   private mouseDir: [number, number, number] = [0, 0, 1];
@@ -347,6 +349,11 @@ export class ParticleSystem {
     this.friction = v;
   }
 
+  /** Set the wind strength (m/s², 0 = calm) live. */
+  setWind(strength: number): void {
+    this.windStrength = strength;
+  }
+
   /** Toggle cloth self-collision live. */
   setSelfCollision(enabled: boolean): void {
     this.selfEnabled = enabled;
@@ -422,6 +429,7 @@ export class ParticleSystem {
    */
   step(frameDt: number, substeps: number, ts?: TimestampSpan): void {
     const dt = frameDt / substeps;
+    this.windTime += frameDt; // drives the gust pattern
     this.writeUniforms(dt);
 
     const encoder = this.device.createCommandEncoder({ label: 'sim-frame' });
@@ -501,8 +509,8 @@ export class ParticleSystem {
     dv.setFloat32(40, this.mouseDir[2], LE);
     dv.setFloat32(44, this.mouseRadius, LE);
     dv.setUint32(48, this.colliderCount, LE);
-    dv.setFloat32(52, 0, LE);
-    dv.setFloat32(56, 0, LE);
+    dv.setFloat32(52, this.windStrength, LE);
+    dv.setFloat32(56, this.windTime, LE);
     dv.setFloat32(60, 0, LE);
     dv.setFloat32(64, this.dragTarget[0], LE);
     dv.setFloat32(68, this.dragTarget[1], LE);
