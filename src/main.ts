@@ -129,7 +129,7 @@ async function main(): Promise<void> {
     const colliders =
       sceneMode === 'robe'
         ? MANNEQUIN
-        : sceneMode === 't-shirt' || sceneMode === 'ensemble'
+        : sceneMode === 't-shirt' || sceneMode === 'chemise' || sceneMode === 'ensemble'
           ? MANNEQUIN_ARMS
           : SPHERE;
     const tee = () =>
@@ -155,6 +155,17 @@ async function main(): Promise<void> {
             })
           : sceneMode === 't-shirt'
             ? tee()
+            : sceneMode === 'chemise'
+              ? // Set-in sleeves: body + two separate sleeve pieces on one
+                // cutting sheet, armholes stitched island-to-island.
+                generateSeamedPanels({
+                  resolution,
+                  width: 1.3,
+                  height: 0.75,
+                  gap: 0.9,
+                  topY: 1.52,
+                  shape: 'setin',
+                })
             : sceneMode === 'ensemble'
               ? // Outfit: tee + flared skirt, one simulation — self-collision
                 // keeps the layers apart where they overlap.

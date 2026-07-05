@@ -295,9 +295,11 @@ export interface SeamedPanelsOptions {
    * piece: fitted at the top, flared at the hem, with a scooped neckline that
    * leaves two shoulder straps. 'tshirt' cuts a kimono tee: body and short
    * sleeves in one T-shaped piece, with a neck scoop. 'skirt' cuts a flared
-   * skirt piece: snug waist, open top and hem.
+   * skirt piece: snug waist, open top and hem. 'setin' cuts a cutting-layout of
+   * THREE pieces — body plus two separate sleeves beside it — whose armhole
+   * edges are stitched together at assembly time (set-in sleeves).
    */
-  shape?: 'rect' | 'aline' | 'tshirt' | 'skirt';
+  shape?: 'rect' | 'aline' | 'tshirt' | 'skirt' | 'setin';
 }
 
 type PatternShape = NonNullable<SeamedPanelsOptions['shape']>;
@@ -328,6 +330,25 @@ function skirtShape(u: number, v: number): boolean {
 }
 
 /**
+ * Set-in tee cutting layout: three islands on one pattern sheet — the body in
+ * the middle (neck scoop), and two separate sleeve pieces beside it. The
+ * armhole edges get stitched island-to-island at assembly.
+ */
+function setinShape(u: number, v: number): boolean {
+  const x = Math.abs(u - 0.5);
+  if (x <= 0.22) {
+    // Body, with a neck scoop.
+    if (v < 0.09) {
+      const scoop = 0.1 * Math.sqrt(1 - (v / 0.09) ** 2);
+      if (x < scoop) return false;
+    }
+    return true;
+  }
+  // Sleeves: separate pieces across a cutting gap, shoulder-height band only.
+  return x > 0.27 && x <= 0.47 && v >= 0.02 && v <= 0.34;
+}
+
+/**
  * Openings of a shaped garment — boundary regions that must NOT be seamed
  * (where the body enters/exits: neckline, waist, hem, sleeve ends).
  */
@@ -340,6 +361,13 @@ function isOpening(shape: PatternShape, uu: number, vv: number): boolean {
     if (x > 0.48) return true; // sleeve ends (the arm comes out here)
   }
   if (shape === 'skirt') return vv < 0.04; // waist
+  if (shape === 'setin') {
+    if (vv < 0.1 && x < 0.11) return true; // neckline
+    if (x > 0.45) return true; // sleeve cuffs
+    // Armhole edges (body side + sleeve inner end) are sewn island-to-island,
+    // not front-to-back — keep them out of the mirror seams.
+    if (vv < 0.36 && ((x >= 0.2 && x <= 0.24) || (x >= 0.255 && x <= 0.3))) return true;
+  }
   return false;
 }
 
@@ -383,6 +411,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
     if (shape === 'aline') return alineShape(uu, vv);
     if (shape === 'tshirt') return tshirtShape(uu, vv);
     if (shape === 'skirt') return skirtShape(uu, vv);
+    if (shape === 'setin') return setinShape(uu, vv);
     return true;
   };
   const inside = (u: number, v: number): boolean => insideUV(u / (n - 1), v / (n - 1));
@@ -574,6 +603,43 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
             j: index(1, u2, v2),
             rest: 2 * gridSpacing,
             kind: ConstraintKind.Bending,
+          });
+        }
+      }
+    }
+
+    // Island-to-island armhole seams (set-in sleeves): on each row, stitch the
+    // body's side edge to the facing sleeve's inner edge, on both panels.
+    if (shape === 'setin') {
+      for (let v = 0; v < n; v++) {
+        // Collect the row's kept runs [start, end].
+        const runs: Array<[number, number]> = [];
+        let start = -1;
+        for (let u = 0; u <= n; u++) {
+          const k = u < n && kept[v * n + u];
+          if (k && start < 0) start = u;
+          else if (!k && start >= 0) {
+            runs.push([start, u - 1]);
+            start = -1;
+          }
+        }
+        if (runs.length < 3) continue; // no sleeves on this row
+        const sleeveL = runs[0]!;
+        const sleeveR = runs[runs.length - 1]!;
+        const bodyLeftEdge = runs[1]![0];
+        const bodyRightEdge = runs[runs.length - 2]![1];
+        for (let p = 0; p < 2; p++) {
+          seams.push({
+            i: index(p, sleeveL[1], v), // left sleeve inner end
+            j: index(p, bodyLeftEdge, v),
+            rest: seamRest,
+            kind: ConstraintKind.Seam,
+          });
+          seams.push({
+            i: index(p, bodyRightEdge, v),
+            j: index(p, sleeveR[0], v), // right sleeve inner end
+            rest: seamRest,
+            kind: ConstraintKind.Seam,
           });
         }
       }

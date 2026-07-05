@@ -363,6 +363,56 @@ describe("generateSeamedPanels shape 'tshirt' (kimono tee)", () => {
   });
 });
 
+describe("generateSeamedPanels shape 'setin' (set-in sleeves)", () => {
+  const n = 32;
+  const mesh = generateSeamedPanels({
+    resolution: n,
+    width: 1.3,
+    height: 0.75,
+    gap: 0.9,
+    topY: 1.52,
+    shape: 'setin',
+  });
+  const kept = (i: number): boolean => mesh.invMasses[i] === 1;
+
+  it('lays out three islands on sleeve rows (sleeve, body, sleeve)', () => {
+    const v = Math.floor(0.2 * (n - 1));
+    let runs = 0;
+    let run = 0;
+    for (let u = 0; u <= n; u++) {
+      const k = u < n && kept(v * n + u);
+      if (k) run++;
+      else if (run > 0) {
+        runs++;
+        run = 0;
+      }
+    }
+    expect(runs).toBe(3);
+  });
+
+  it('stitches armholes island-to-island: same-panel seams between different columns', () => {
+    const dv = new DataView(mesh.constraintData);
+    const panelSize = n * n;
+    let armholeSeams = 0;
+    for (let k = 0; k < mesh.constraintCount; k++) {
+      if (dv.getUint32(k * 16 + 12, true) !== 3) continue; // Seam kind
+      const i = dv.getUint32(k * 16, true);
+      const j = dv.getUint32(k * 16 + 4, true);
+      expect(kept(i)).toBe(true);
+      expect(kept(j)).toBe(true);
+      if (Math.floor(i / panelSize) === Math.floor(j / panelSize)) {
+        // Same panel → must be an armhole seam: same row, different columns.
+        const li = i % panelSize;
+        const lj = j % panelSize;
+        expect(Math.floor(li / n)).toBe(Math.floor(lj / n));
+        expect(li % n).not.toBe(lj % n);
+        armholeSeams++;
+      }
+    }
+    expect(armholeSeams).toBeGreaterThan(0); // both sleeves, every band row
+  });
+});
+
 describe('combineClothMeshes (outfits)', () => {
   const n = 16;
   const tee = generateSeamedPanels({ resolution: n, width: 1.15, height: 0.75, gap: 0.9, topY: 1.52, shape: 'tshirt' });
