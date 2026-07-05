@@ -162,10 +162,10 @@ async function main(): Promise<void> {
                   tee(),
                   generateSeamedPanels({
                     resolution,
-                    width: 1.0,
-                    height: 0.62,
+                    width: 0.85, // waist ring smaller than the hip bulge — cannot slip past
+                    height: 0.6,
                     gap: 0.75,
-                    topY: 1.12, // waist starts above the hip bulge, drops onto it
+                    topY: 1.14, // starts above the hips, drops onto them
                     shape: 'skirt',
                   }),
                 )

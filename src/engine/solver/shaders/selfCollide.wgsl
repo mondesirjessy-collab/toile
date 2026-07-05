@@ -67,11 +67,15 @@ fn collide(@builtin(global_invocation_id) gid: vec3u) {
           if (j != i) {
             // The weave handles its own spacing: skip same-panel particles
             // within two grid rows (their distance constraints already act),
-            // and cross-panel mirror cells (they may be seamed together —
-            // repelling them would hold every seam open).
+            // and cross-panel cells within ONE grid cell of the mirror (they
+            // may be seamed together — repelling them, or their immediate
+            // neighbours, would push every seam open into a ladder of gaps).
             let lj = i32(j % sp.panel_size);
+            let dl = abs(lj - li);
+            let ni = i32(sp.n);
             let near_weave =
-              ((j / sp.panel_size) == pi && abs(lj - li) < i32(2u * sp.n + 3u)) || lj == li;
+              ((j / sp.panel_size) == pi && dl < 2 * ni + 3) ||
+              (dl <= 1 || (dl >= ni - 1 && dl <= ni + 1));
             if (!near_weave) {
               let d = x - positions[j].xyz;
               let dist = length(d);
