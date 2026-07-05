@@ -29,6 +29,12 @@ const MANNEQUIN = [
   { a: [-0.08, 0.9, 0] as V3, b: [-0.085, 0.08, 0] as V3, radius: 0.065 }, // left leg
   { a: [0.08, 0.9, 0] as V3, b: [0.085, 0.08, 0] as V3, radius: 0.065 }, // right leg
 ];
+// Same mannequin with A-pose arms — needed for sleeved garments.
+const MANNEQUIN_ARMS = [
+  ...MANNEQUIN,
+  { a: [-0.21, 1.38, 0] as V3, b: [-0.34, 1.02, 0] as V3, radius: 0.05 }, // left arm
+  { a: [0.21, 1.38, 0] as V3, b: [0.34, 1.02, 0] as V3, radius: 0.05 }, // right arm
+];
 
 let fatalShown = false;
 
@@ -120,7 +126,8 @@ async function main(): Promise<void> {
     // 'drapé': one sheet falling onto the sphere. 'couture': two pattern pieces
     // stitched around the sphere. 'robe': the same seamed pieces closing around
     // a dress form (stacked-sphere bust), falling to the floor.
-    const colliders = sceneMode === 'robe' ? MANNEQUIN : SPHERE;
+    const colliders =
+      sceneMode === 'robe' ? MANNEQUIN : sceneMode === 't-shirt' ? MANNEQUIN_ARMS : SPHERE;
     const mesh =
       sceneMode === 'couture'
         ? generateSeamedPanels({ resolution, width: 1.2, height: 1.2, gap: 1.3, topY: 1.9 })
@@ -133,7 +140,16 @@ async function main(): Promise<void> {
               topY: 1.6,
               shape: 'aline', // real pattern piece: fitted, flared, scooped neckline
             })
-          : generateClothGrid({ resolution, size: CLOTH_SIZE, topY: CLOTH_TOP_Y, pin: 'none' });
+          : sceneMode === 't-shirt'
+            ? generateSeamedPanels({
+                resolution,
+                width: 1.15, // sleeve tip to sleeve tip
+                height: 0.75,
+                gap: 0.9,
+                topY: 1.52,
+                shape: 'tshirt', // kimono tee: body + sleeves in one piece
+              })
+            : generateClothGrid({ resolution, size: CLOTH_SIZE, topY: CLOTH_TOP_Y, pin: 'none' });
     system = new ParticleSystem(device, mesh, {
       colliders,
       groundY: GROUND_Y,

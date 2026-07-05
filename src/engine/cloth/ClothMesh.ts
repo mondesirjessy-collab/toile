@@ -191,9 +191,25 @@ export interface SeamedPanelsOptions {
   /**
    * Pattern outline. 'rect' keeps the full grid. 'aline' cuts an A-line dress
    * piece: fitted at the top, flared at the hem, with a scooped neckline that
-   * leaves two shoulder straps.
+   * leaves two shoulder straps. 'tshirt' cuts a kimono tee: body and short
+   * sleeves in one T-shaped piece, with a neck scoop.
    */
-  shape?: 'rect' | 'aline';
+  shape?: 'rect' | 'aline' | 'tshirt';
+}
+
+/** True when (u,v) ∈ [0,1]² lies inside the kimono-tee pattern piece: a
+ * T-shape — full width across the sleeve band, narrower body below the
+ * underarm, with a neck scoop at the top. */
+function tshirtShape(u: number, v: number): boolean {
+  const x = Math.abs(u - 0.5);
+  const halfWidth = v < 0.32 ? 0.5 : 0.24; // sleeve band → body
+  if (x > halfWidth) return false;
+  // Neck scoop.
+  if (v < 0.09) {
+    const scoop = 0.11 * Math.sqrt(1 - (v / 0.09) ** 2);
+    if (x < scoop) return false;
+  }
+  return true;
 }
 
 /** True when grid cell (u,v) ∈ [0,1]² lies inside the A-line pattern piece. */
@@ -232,8 +248,13 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
   // Pattern mask: particles outside the outline are cut from the garment —
   // pinned (inverse mass 0), parked far below, referenced by no constraint or
   // triangle. Keeping the grid regular keeps the GPU normals pass trivial.
-  const inside = (u: number, v: number): boolean =>
-    shape === 'aline' ? alineShape(u / (n - 1), v / (n - 1)) : true;
+  const inside = (u: number, v: number): boolean => {
+    const uu = u / (n - 1);
+    const vv = v / (n - 1);
+    if (shape === 'aline') return alineShape(uu, vv);
+    if (shape === 'tshirt') return tshirtShape(uu, vv);
+    return true;
+  };
   const kept = new Array<boolean>(panelSize);
   for (let v = 0; v < n; v++) for (let u = 0; u < n; u++) kept[v * n + u] = inside(u, v);
 

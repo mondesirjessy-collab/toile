@@ -292,3 +292,52 @@ describe("generateSeamedPanels shape 'aline' (pattern cutting)", () => {
     expect(kept(mesh.cornerIndices[1])).toBe(true);
   });
 });
+
+describe("generateSeamedPanels shape 'tshirt' (kimono tee)", () => {
+  const n = 25;
+  const mesh = generateSeamedPanels({
+    resolution: n,
+    width: 1.15,
+    height: 0.75,
+    gap: 0.9,
+    topY: 1.52,
+    shape: 'tshirt',
+  });
+  const kept = (i: number): boolean => mesh.invMasses[i] === 1;
+  const rowKept = (v: number): number => {
+    let c = 0;
+    for (let u = 0; u < n; u++) if (kept(v * n + u)) c++;
+    return c;
+  };
+
+  it('is a T: sleeve band full width, body narrower below the underarm', () => {
+    const sleeveRow = Math.floor(0.2 * (n - 1)); // inside the sleeve band
+    const bodyRow = Math.floor(0.6 * (n - 1)); // below the underarm
+    expect(rowKept(sleeveRow)).toBe(n); // full width
+    expect(rowKept(bodyRow)).toBeGreaterThan(0);
+    expect(rowKept(bodyRow)).toBeLessThan(rowKept(sleeveRow) * 0.6);
+  });
+
+  it('has a neck scoop splitting the top row in two', () => {
+    let runs = 0;
+    let run = 0;
+    for (let u = 0; u <= n; u++) {
+      const k = u < n && kept(u);
+      if (k) run++;
+      else if (run > 0) {
+        runs++;
+        run = 0;
+      }
+    }
+    expect(runs).toBe(2);
+  });
+
+  it('references only kept particles from constraints and triangles', () => {
+    const dv = new DataView(mesh.constraintData);
+    for (let k = 0; k < mesh.constraintCount; k++) {
+      expect(kept(dv.getUint32(k * 16, true))).toBe(true);
+      expect(kept(dv.getUint32(k * 16 + 4, true))).toBe(true);
+    }
+    for (const idx of mesh.triangleIndices) expect(kept(idx)).toBe(true);
+  });
+});
