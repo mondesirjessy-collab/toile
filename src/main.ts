@@ -8,6 +8,7 @@ import { MouseForce } from './app/MouseForce';
 import { buildSceneMesh } from './app/SceneGeometry';
 import { GpuProfiler } from './app/GpuProfiler';
 import { ControlPanel } from './app/ControlPanel';
+import { PatternView } from './app/PatternView';
 import { pickParticle } from './app/pick';
 
 const DEFAULT_RESOLUTION = 64;
@@ -99,6 +100,7 @@ async function main(): Promise<void> {
   const camera = new OrbitCamera(); // attached below, once the grab test exists
   const mouse = new MouseForce();
   mouse.attach(canvas);
+  const patternView = new PatternView(document.getElementById('pattern') as HTMLCanvasElement);
   const profiler = new GpuProfiler(device);
 
   // Fabric params kept across rebuilds (a resolution change recreates the sim).
@@ -208,6 +210,7 @@ async function main(): Promise<void> {
     renderer.resize(canvas.width, canvas.height);
     posCache = null; // stale cache belongs to the previous system
     dragIndex = null;
+    patternView.draw(mesh); // refresh the 2D cutting-layout inset
   };
   build();
 

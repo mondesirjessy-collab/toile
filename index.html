@@ -24,6 +24,19 @@
       pointer-events: none; z-index: 1;
     }
     header { z-index: 5; }
+    /* 2D cutting-layout inset (CLO-style dual view). */
+    #patternBox {
+      position: fixed; left: 14px; bottom: 14px; z-index: 6;
+      pointer-events: none;
+      background: rgba(10, 11, 14, 0.55);
+      border: 1px solid rgba(237, 233, 223, 0.15);
+      border-radius: 6px; padding: 8px 10px 6px;
+    }
+    #patternBox .label {
+      font-size: 10px; letter-spacing: 0.1em; opacity: 0.55; display: block;
+      margin-bottom: 4px;
+    }
+    #pattern { display: block; }
     header {
       position: fixed; top: 0; left: 0; right: 0;
       display: flex; justify-content: space-between; align-items: baseline;
@@ -54,12 +67,16 @@
   <canvas id="view"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 2 — patron paramétrique · v29</small></span>
+    <span class="title">TOILE<small>phase 2 — plan de coupe 2D · v30</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
       <span id="hint">glisser sur le tissu : le tirer · glisser à côté : tourner · clic droit + glisser : se déplacer · molette : zoom · R : reset</span>
     </span>
   </header>
+  <div id="patternBox">
+    <span class="label">PLAN DE COUPE</span>
+    <canvas id="pattern" width="230" height="260"></canvas>
+  </div>
   <div id="overlay" hidden></div>
   <script type="module" src="/src/main.ts"></script>
 </body>
