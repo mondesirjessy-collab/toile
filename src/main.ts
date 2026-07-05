@@ -109,6 +109,7 @@ async function main(): Promise<void> {
   let resolution = DEFAULT_RESOLUTION;
   let selfCollision = true;
   let wind = 0;
+  let dressPattern = { length: 1.3, flare: 0.5, neck: 0.1 };
 
   let system!: ParticleSystem;
   let renderer!: ClothRenderer;
@@ -148,10 +149,11 @@ async function main(): Promise<void> {
           ? generateSeamedPanels({
               resolution,
               width: 0.95,
-              height: 1.3,
+              height: dressPattern.length,
               gap: 1.0,
               topY: 1.6,
               shape: 'aline', // real pattern piece: fitted, flared, scooped neckline
+              shapeParams: { hem: dressPattern.flare, scoop: dressPattern.neck },
             })
           : sceneMode === 't-shirt'
             ? tee()
@@ -255,6 +257,10 @@ async function main(): Promise<void> {
       onWind: (v) => {
         wind = v;
         system.setWind(v);
+      },
+      onPattern: (p) => {
+        dressPattern = p;
+        if (sceneMode === 'robe') build(); // re-cut and re-sew the dress
       },
       onPins: (held) => system.setCornerPins(held),
       onReset: () => {

@@ -300,9 +300,12 @@ export interface SeamedPanelsOptions {
    * edges are stitched together at assembly time (set-in sleeves).
    */
   shape?: 'rect' | 'aline' | 'tshirt' | 'skirt' | 'setin';
+  /** Pattern measurements (grading): shape-specific, all in normalized [0,1] pattern units. */
+  shapeParams?: { hem?: number; scoop?: number };
 }
 
 type PatternShape = NonNullable<SeamedPanelsOptions['shape']>;
+type ShapeParams = NonNullable<SeamedPanelsOptions['shapeParams']>;
 
 /** True when (u,v) ∈ [0,1]² lies inside the kimono-tee pattern piece: body
  * column plus sleeve bands angled downward to follow the mannequin's A-pose
@@ -352,10 +355,10 @@ function setinShape(u: number, v: number): boolean {
  * Openings of a shaped garment — boundary regions that must NOT be seamed
  * (where the body enters/exits: neckline, waist, hem, sleeve ends).
  */
-function isOpening(shape: PatternShape, uu: number, vv: number): boolean {
+function isOpening(shape: PatternShape, uu: number, vv: number, p: ShapeParams = {}): boolean {
   const x = Math.abs(uu - 0.5);
   if (vv > 0.97) return true; // hem
-  if (shape === 'aline') return vv < 0.13 && x < 0.115; // neckline
+  if (shape === 'aline') return vv < 0.13 && x < (p.scoop ?? 0.1) + 0.02; // neckline
   if (shape === 'tshirt') {
     if (vv < 0.1 && x < 0.12) return true; // neckline
     if (x > 0.48) return true; // sleeve ends (the arm comes out here)
@@ -371,17 +374,21 @@ function isOpening(shape: PatternShape, uu: number, vv: number): boolean {
   return false;
 }
 
-/** True when grid cell (u,v) ∈ [0,1]² lies inside the A-line pattern piece. */
-function alineShape(u: number, v: number): boolean {
+/** True when grid cell (u,v) ∈ [0,1]² lies inside the A-line pattern piece.
+ * Parametric (grading): `hem` = half-width at the hem, `scoop` = neckline
+ * half-width — the seed of pattern editing. */
+function alineShape(u: number, v: number, p: ShapeParams = {}): boolean {
+  const hem = p.hem ?? 0.5;
+  const scoopW = p.scoop ?? 0.1;
   const x = Math.abs(u - 0.5);
-  // Fitted top → full hem. The top stays narrow so the neck opening ring is
+  // Fitted top → hem. The top stays narrow so the neck opening ring is
   // smaller than the shoulder span — otherwise the dress slips off over time
   // (a genuine pattern-fitting bug found by the sim itself).
-  const halfWidth = 0.21 + (0.5 - 0.21) * v;
+  const halfWidth = 0.21 + (hem - 0.21) * v;
   if (x > halfWidth) return false;
   // Elliptical neckline scoop, leaving straps close to the neck.
   if (v < 0.12) {
-    const scoop = 0.1 * Math.sqrt(1 - (v / 0.12) ** 2);
+    const scoop = scoopW * Math.sqrt(1 - (v / 0.12) ** 2);
     if (x < scoop) return false;
   }
   return true;
@@ -401,6 +408,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
   const gap = opts.gap ?? 1.3;
   const topY = opts.topY ?? 1.9;
   const shape = opts.shape ?? 'rect';
+  const shapeParams = opts.shapeParams ?? {};
   const panelSize = n * n;
   const count = 2 * panelSize;
 
@@ -408,7 +416,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
   // pinned (inverse mass 0), parked far below, referenced by no constraint or
   // triangle. Keeping the grid regular keeps the GPU normals pass trivial.
   const insideUV = (uu: number, vv: number): boolean => {
-    if (shape === 'aline') return alineShape(uu, vv);
+    if (shape === 'aline') return alineShape(uu, vv, shapeParams);
     if (shape === 'tshirt') return tshirtShape(uu, vv);
     if (shape === 'skirt') return skirtShape(uu, vv);
     if (shape === 'setin') return setinShape(uu, vv);
@@ -584,7 +592,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
       for (let u = 0; u < n; u++) {
         if (!kept[v * n + u]) continue;
         if (!onBoundary(u, v)) continue;
-        if (isOpening(shape, u / (n - 1), v / (n - 1))) continue;
+        if (isOpening(shape, u / (n - 1), v / (n - 1), shapeParams)) continue;
         seams.push({ i: index(0, u, v), j: index(1, u, v), rest: seamRest, kind: ConstraintKind.Seam });
         for (const [du, dv2] of [
           [-1, 0],
