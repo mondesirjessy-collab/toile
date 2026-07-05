@@ -45,28 +45,47 @@ describe('generateClothGrid topology', () => {
     expect(mesh.invMasses.length).toBe(n * n);
   });
 
-  it('counts structural, shear, and bending edges correctly', () => {
+  it('counts structural and shear edges, bending now lives in dihedral hinges', () => {
     const structural = 2 * n * (n - 1); // horizontal + vertical
     const shear = 2 * (n - 1) * (n - 1); // both diagonals per cell
-    const bending = 2 * n * (n - 2); // skip-2 in each axis
     expect(mesh.structuralCount).toBe(structural);
     expect(mesh.shearCount).toBe(shear);
-    expect(mesh.bendingCount).toBe(bending);
-    expect(mesh.constraintCount).toBe(structural + shear + bending);
+    expect(mesh.bendingCount).toBe(0); // replaced by true dihedral hinges
+    expect(mesh.constraintCount).toBe(structural + shear);
     expect(mesh.constraintData.byteLength).toBe(mesh.constraintCount * 16);
+    // One hinge per interior grid edge, both directions.
+    expect(mesh.quadCount).toBe(2 * (n - 1) * (n - 2));
+    expect(mesh.quadData.byteLength).toBe(mesh.quadCount * 32);
   });
 
-  it('classifies rest lengths as structural, shear, or bending (skip-2)', () => {
+  it('keeps hinge colors vertex-disjoint (4 particles each)', () => {
+    const dv = new DataView(mesh.quadData);
+    expect(mesh.quadColorCounts.reduce((a, b) => a + b, 0)).toBe(mesh.quadCount);
+    for (let c = 0; c < mesh.quadColorOffsets.length; c++) {
+      const start = mesh.quadColorOffsets[c]!;
+      const end = start + mesh.quadColorCounts[c]!;
+      const seen = new Set<number>();
+      for (let k = start; k < end; k++) {
+        for (let f = 0; f < 4; f++) {
+          const p = dv.getUint32(k * 32 + f * 4, true);
+          expect(seen.has(p)).toBe(false);
+          seen.add(p);
+          expect(p).toBeLessThan(mesh.count);
+        }
+        // Flat rest pose → rest angle π.
+        expect(dv.getFloat32(k * 32 + 16, true)).toBeCloseTo(Math.PI, 4);
+      }
+    }
+  });
+
+  it('classifies rest lengths as structural or shear', () => {
     const edges = decodeConstraints(mesh.constraintData, mesh.constraintCount);
     const diag = spacing * Math.SQRT2;
-    const skip2 = spacing * 2;
     let structural = 0;
     let shear = 0;
-    let bending = 0;
     for (const e of edges) {
       if (Math.abs(e.rest - spacing) < 1e-5) structural++;
       else if (Math.abs(e.rest - diag) < 1e-5) shear++;
-      else if (Math.abs(e.rest - skip2) < 1e-5) bending++;
       else throw new Error(`unexpected rest length ${e.rest}`);
       expect(e.i).toBeGreaterThanOrEqual(0);
       expect(e.i).toBeLessThan(mesh.count);
@@ -75,21 +94,18 @@ describe('generateClothGrid topology', () => {
     }
     expect(structural).toBe(2 * n * (n - 1));
     expect(shear).toBe(2 * (n - 1) * (n - 1));
-    expect(bending).toBe(2 * n * (n - 2));
   });
 
   it('tags each constraint with the kind matching its rest length', () => {
     const edges = decodeConstraints(mesh.constraintData, mesh.constraintCount);
     const diag = spacing * Math.SQRT2;
-    const skip2 = spacing * 2;
     const byKind = [0, 0, 0];
     for (const e of edges) {
       let expectedKind: number;
       if (Math.abs(e.rest - spacing) < 1e-5) expectedKind = 0; // structural
-      else if (Math.abs(e.rest - diag) < 1e-5) expectedKind = 1; // shear
-      else expectedKind = 2; // bending (skip-2)
+      else expectedKind = 1; // shear
       expect(e.kind, `rest ${e.rest} should be kind ${expectedKind}`).toBe(expectedKind);
-      if (expectedKind === 2) expect(Math.abs(e.rest - skip2)).toBeLessThan(1e-5);
+      if (expectedKind === 1) expect(Math.abs(e.rest - diag)).toBeLessThan(1e-5);
       byKind[e.kind]!++;
     }
     expect(byKind[0]).toBe(mesh.structuralCount);

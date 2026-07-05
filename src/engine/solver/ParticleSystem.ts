@@ -10,6 +10,7 @@
  */
 import integrateWGSL from './shaders/integrate.wgsl?raw';
 import distanceWGSL from './shaders/distance.wgsl?raw';
+import dihedralWGSL from './shaders/dihedral.wgsl?raw';
 import dragWGSL from './shaders/drag.wgsl?raw';
 import collideWGSL from './shaders/collide.wgsl?raw';
 import selfCollideWGSL from './shaders/selfCollide.wgsl?raw';
@@ -74,6 +75,7 @@ export class ParticleSystem {
   private readonly velocityBuffer: GPUBuffer;
   private readonly invMassBuffer: GPUBuffer;
   private readonly constraintBuffer: GPUBuffer;
+  private readonly quadBuffer: GPUBuffer | null;
   private readonly colliderBuffer: GPUBuffer;
   private readonly uniformBuffer: GPUBuffer;
   private readonly selfParamsBuffer: GPUBuffer;
@@ -100,6 +102,9 @@ export class ParticleSystem {
   private readonly hashClearBindGroup: GPUBindGroup;
   private readonly hashInsertBindGroup: GPUBindGroup;
   private readonly selfCollideBindGroup: GPUBindGroup;
+  private readonly dihedralPipeline: GPUComputePipeline;
+  private readonly dihedralBindGroups: GPUBindGroup[];
+  private readonly quadColorCounts: number[];
 
   private readonly tableSize: number;
   private readonly spacing: number;
@@ -179,6 +184,8 @@ export class ParticleSystem {
     this.velocityBuffer = this.createBuffer(new Float32Array(this.count * 4), storage);
     this.invMassBuffer = this.createBuffer(mesh.invMasses, storage);
     this.constraintBuffer = this.createBufferRaw(mesh.constraintData, storage);
+    this.quadColorCounts = mesh.quadColorCounts;
+    this.quadBuffer = mesh.quadCount > 0 ? this.createBufferRaw(mesh.quadData, storage) : null;
     // Capsule packing: {a.xyz, radius, b.xyz, pad} — 32 bytes per collider.
     const colliderData = new Float32Array(this.colliderCount * 8);
     colliders.forEach((c, k) => {
@@ -292,6 +299,30 @@ export class ParticleSystem {
         ],
       }),
     );
+
+    // Dihedral bending hinges: one dispatch per hinge color, like distance.
+    this.dihedralPipeline = pipeline(dihedralWGSL, 'dihedral');
+    this.dihedralBindGroups =
+      this.quadBuffer === null
+        ? []
+        : mesh.quadColorOffsets.map((offset, c) => {
+            const buf = device.createBuffer({
+              size: BATCH_SIZE,
+              usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            });
+            device.queue.writeBuffer(buf, 0, new Uint32Array([offset, mesh.quadColorCounts[c]!, 0, 0]));
+            this.batchBuffers.push(buf); // shares the dispose path
+            return device.createBindGroup({
+              layout: this.dihedralPipeline.getBindGroupLayout(0),
+              entries: [
+                { binding: 0, resource: { buffer: this.uniformBuffer } },
+                { binding: 1, resource: { buffer: this.positionBuffer } },
+                { binding: 2, resource: { buffer: this.invMassBuffer } },
+                { binding: 3, resource: { buffer: this.quadBuffer! } },
+                { binding: 4, resource: { buffer: buf } },
+              ],
+            });
+          });
 
     // Self-collision bind groups ('auto' layouts only contain the bindings each
     // entry point actually uses, so they are built per pipeline).
@@ -460,6 +491,12 @@ export class ParticleSystem {
         if (groups > 0) dispatch(this.solvePipeline, this.solveBindGroups[c]!, groups);
       }
 
+      // True dihedral bending, one dispatch per hinge color.
+      for (let c = 0; c < this.quadColorCounts.length; c++) {
+        const groups = Math.ceil(this.quadColorCounts[c]! / WORKGROUP);
+        if (groups > 0) dispatch(this.dihedralPipeline, this.dihedralBindGroups[c]!, groups);
+      }
+
       // The drag constraint costs a dispatch only while a particle is grabbed.
       if (this.dragIndex !== DRAG_NONE) dispatch(this.dragPipeline, this.dragBindGroup, 1);
 
@@ -484,6 +521,7 @@ export class ParticleSystem {
     this.velocityBuffer.destroy();
     this.invMassBuffer.destroy();
     this.constraintBuffer.destroy();
+    this.quadBuffer?.destroy();
     this.colliderBuffer.destroy();
     this.uniformBuffer.destroy();
     this.selfParamsBuffer.destroy();

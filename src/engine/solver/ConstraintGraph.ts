@@ -34,6 +34,51 @@ export interface ColoringResult {
   colorCounts: number[];
 }
 
+/** Dihedral bending element: shared edge (e0,e1) + the two wing vertices. */
+export interface BendQuad {
+  e0: number;
+  e1: number;
+  w0: number;
+  w1: number;
+  /** Rest dihedral angle (π = flat). */
+  restAngle: number;
+}
+
+export interface QuadColoringResult {
+  ordered: BendQuad[];
+  colorOffsets: number[];
+  colorCounts: number[];
+}
+
+/** Same greedy coloring as edges, but each constraint occupies 4 particles. */
+export function colorQuads(quads: BendQuad[], particleCount: number): QuadColoringResult {
+  const used: Set<number>[] = Array.from({ length: particleCount }, () => new Set<number>());
+  const colorOf = new Int32Array(quads.length).fill(-1);
+  let numColors = 0;
+
+  for (let q = 0; q < quads.length; q++) {
+    const quad = quads[q]!;
+    const parts = [quad.e0, quad.e1, quad.w0, quad.w1];
+    let c = 0;
+    while (parts.some((p) => used[p]!.has(c))) c++;
+    colorOf[q] = c;
+    for (const p of parts) used[p]!.add(c);
+    if (c + 1 > numColors) numColors = c + 1;
+  }
+
+  const colorCounts = new Array<number>(numColors).fill(0);
+  for (let q = 0; q < quads.length; q++) colorCounts[colorOf[q]!]!++;
+  const colorOffsets = new Array<number>(numColors).fill(0);
+  for (let c = 1; c < numColors; c++) colorOffsets[c] = colorOffsets[c - 1]! + colorCounts[c - 1]!;
+
+  const cursor = colorOffsets.slice();
+  const ordered = new Array<BendQuad>(quads.length);
+  for (let q = 0; q < quads.length; q++) {
+    ordered[cursor[colorOf[q]!]!++] = quads[q]!;
+  }
+  return { ordered, colorOffsets, colorCounts };
+}
+
 export function colorConstraints(edges: Edge[], particleCount: number): ColoringResult {
   // Per-particle set of colors already used by an incident edge.
   const used: Set<number>[] = Array.from({ length: particleCount }, () => new Set<number>());

@@ -13,7 +13,13 @@
  *   - bending:    "skip-2" distance edges i↔i+2 (brief §3.3 Phase-0 alternative
  *                 to true dihedral bending), soft α_bend so the sheet folds
  */
-import { colorConstraints, ConstraintKind, type Edge } from '../solver/ConstraintGraph';
+import {
+  colorConstraints,
+  colorQuads,
+  ConstraintKind,
+  type BendQuad,
+  type Edge,
+} from '../solver/ConstraintGraph';
 
 export interface ClothMeshOptions {
   /** Particles per side; total = resolution². 64 → 4 096 (brief S1). */
@@ -44,6 +50,11 @@ export interface ClothMeshData {
   readonly constraintCount: number;
   readonly colorOffsets: number[];
   readonly colorCounts: number[];
+  /** Packed dihedral bending hinges sorted by color: {e0,e1,w0,w1:u32, restAngle:f32, 3 pads}. */
+  readonly quadData: ArrayBuffer;
+  readonly quadCount: number;
+  readonly quadColorOffsets: number[];
+  readonly quadColorCounts: number[];
   /** Edge counts by kind (for the HUD and tests). */
   readonly structuralCount: number;
   readonly shearCount: number;
@@ -56,6 +67,97 @@ export interface ClothMeshData {
 }
 
 const CONSTRAINT_STRIDE = 16; // bytes: 2×u32 + 2×f32
+const QUAD_STRIDE = 32; // bytes: 4×u32 + f32 + 3 pads
+
+/**
+ * Dihedral bending hinges (brief §3.3, the "true" Phase-1 bending): one hinge
+ * across every interior grid edge, joining the two adjacent triangles. Rest
+ * angle measured on the rest pose (π when flat). Returns the hinges packed and
+ * color-sorted for race-free GPU dispatches.
+ */
+function buildBendQuads(
+  positions: Float32Array,
+  panelCount: number,
+  n: number,
+  keptLocal: (u: number, v: number) => boolean,
+): Pick<ClothMeshData, 'quadData' | 'quadCount' | 'quadColorOffsets' | 'quadColorCounts'> {
+  const panelSize = n * n;
+  const quads: BendQuad[] = [];
+
+  const restAngle = (e0: number, e1: number, w0: number, w1: number): number | null => {
+    const P = (i: number, k: number): number => positions[i * 4 + k]!;
+    const p2 = [P(e1, 0) - P(e0, 0), P(e1, 1) - P(e0, 1), P(e1, 2) - P(e0, 2)];
+    const p3 = [P(w0, 0) - P(e0, 0), P(w0, 1) - P(e0, 1), P(w0, 2) - P(e0, 2)];
+    const p4 = [P(w1, 0) - P(e0, 0), P(w1, 1) - P(e0, 1), P(w1, 2) - P(e0, 2)];
+    const cross = (a: number[], b: number[]): number[] => [
+      a[1]! * b[2]! - a[2]! * b[1]!,
+      a[2]! * b[0]! - a[0]! * b[2]!,
+      a[0]! * b[1]! - a[1]! * b[0]!,
+    ];
+    const c23 = cross(p2, p3);
+    const c24 = cross(p2, p4);
+    const l23 = Math.hypot(c23[0]!, c23[1]!, c23[2]!);
+    const l24 = Math.hypot(c24[0]!, c24[1]!, c24[2]!);
+    if (l23 < 1e-9 || l24 < 1e-9) return null; // degenerate hinge
+    const d =
+      (c23[0]! * c24[0]! + c23[1]! * c24[1]! + c23[2]! * c24[2]!) / (l23 * l24);
+    return Math.acos(Math.min(1, Math.max(-1, d)));
+  };
+
+  for (let p = 0; p < panelCount; p++) {
+    const idx = (u: number, v: number): number => p * panelSize + v * n + u;
+    const push = (e0: number, e1: number, w0: number, w1: number): void => {
+      const angle = restAngle(e0, e1, w0, w1);
+      if (angle !== null) quads.push({ e0, e1, w0, w1, restAngle: angle });
+    };
+    for (let v = 0; v < n - 1; v++) {
+      for (let u = 0; u < n - 1; u++) {
+        // Hinge across the vertical grid edge shared with the next cell right.
+        if (
+          u + 2 < n &&
+          keptLocal(u, v + 1) &&
+          keptLocal(u + 1, v) &&
+          keptLocal(u + 1, v + 1) &&
+          keptLocal(u + 2, v)
+        ) {
+          push(idx(u + 1, v), idx(u + 1, v + 1), idx(u, v + 1), idx(u + 2, v));
+        }
+        // Hinge across the horizontal grid edge shared with the cell below.
+        if (
+          v + 2 < n &&
+          keptLocal(u + 1, v) &&
+          keptLocal(u, v + 1) &&
+          keptLocal(u + 1, v + 1) &&
+          keptLocal(u, v + 2)
+        ) {
+          push(idx(u, v + 1), idx(u + 1, v + 1), idx(u + 1, v), idx(u, v + 2));
+        }
+      }
+    }
+  }
+
+  const { ordered, colorOffsets, colorCounts } = colorQuads(
+    quads,
+    panelCount * panelSize,
+  );
+  const quadData = new ArrayBuffer(ordered.length * QUAD_STRIDE);
+  const dv = new DataView(quadData);
+  for (let k = 0; k < ordered.length; k++) {
+    const q = ordered[k]!;
+    const base = k * QUAD_STRIDE;
+    dv.setUint32(base + 0, q.e0, true);
+    dv.setUint32(base + 4, q.e1, true);
+    dv.setUint32(base + 8, q.w0, true);
+    dv.setUint32(base + 12, q.w1, true);
+    dv.setFloat32(base + 16, q.restAngle, true);
+  }
+  return {
+    quadData,
+    quadCount: ordered.length,
+    quadColorOffsets: colorOffsets,
+    quadColorCounts: colorCounts,
+  };
+}
 
 export function generateClothGrid(opts: ClothMeshOptions): ClothMeshData {
   const n = opts.resolution;
@@ -115,14 +217,13 @@ export function generateClothGrid(opts: ClothMeshOptions): ClothMeshData {
         shear.push(edge(index(u, v), index(u + 1, v + 1), ConstraintKind.Shear)); // ╲
         shear.push(edge(index(u + 1, v), index(u, v + 1), ConstraintKind.Shear)); // ╱
       }
-      // Bending: skip-2 distance edges (brief §3.3 Phase-0 alternative).
-      if (u + 2 < n) bending.push(edge(index(u, v), index(u + 2, v), ConstraintKind.Bending));
-      if (v + 2 < n) bending.push(edge(index(u, v), index(u, v + 2), ConstraintKind.Bending));
+      // Bending is handled by true dihedral hinges (buildBendQuads), phase 1.
     }
   }
 
   const all = structural.concat(shear, bending);
   const { ordered, colorOffsets, colorCounts } = colorConstraints(all, count);
+  const quads = buildBendQuads(positions, 1, n, () => true);
 
   // Pack color-sorted constraints for the GPU.
   const constraintData = new ArrayBuffer(ordered.length * CONSTRAINT_STRIDE);
@@ -164,6 +265,7 @@ export function generateClothGrid(opts: ClothMeshOptions): ClothMeshData {
     constraintCount: ordered.length,
     colorOffsets,
     colorCounts,
+    ...quads,
     structuralCount: structural.length,
     shearCount: shear.length,
     bendingCount: bending.length,
@@ -405,10 +507,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
           if (isKept(p, u + 1, v) && isKept(p, u, v + 1))
             shear.push(edge(index(p, u + 1, v), index(p, u, v + 1), ConstraintKind.Shear));
         }
-        if (u + 2 < n && isKept(p, u + 1, v) && isKept(p, u + 2, v))
-          bending.push(edge(index(p, u, v), index(p, u + 2, v), ConstraintKind.Bending));
-        if (v + 2 < n && isKept(p, u, v + 1) && isKept(p, u, v + 2))
-          bending.push(edge(index(p, u, v), index(p, u, v + 2), ConstraintKind.Bending));
+        // In-panel bending is handled by true dihedral hinges (buildBendQuads).
       }
     }
   }
@@ -483,6 +582,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
 
   const all = structural.concat(shear, bending, seams);
   const { ordered, colorOffsets, colorCounts } = colorConstraints(all, count);
+  const quads = buildBendQuads(positions, 2, n, (u, v) => kept[v * n + u]!);
 
   const constraintData = new ArrayBuffer(ordered.length * CONSTRAINT_STRIDE);
   const dv = new DataView(constraintData);
@@ -553,6 +653,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
     constraintCount: ordered.length,
     colorOffsets,
     colorCounts,
+    ...quads,
     structuralCount: structural.length,
     shearCount: shear.length,
     bendingCount: bending.length,
@@ -613,6 +714,36 @@ export function combineClothMeshes(a: ClothMeshData, b: ClothMeshData): ClothMes
     dv.setUint32(k * 16 + 12, c.kind, true);
   }
 
+  // Dihedral hinges: decode both, offset b, re-color the union.
+  const decodeQuads = (mesh: ClothMeshData, offset: number): BendQuad[] => {
+    const dv2 = new DataView(mesh.quadData);
+    const out: BendQuad[] = [];
+    for (let k = 0; k < mesh.quadCount; k++) {
+      const base = k * QUAD_STRIDE;
+      out.push({
+        e0: dv2.getUint32(base, true) + offset,
+        e1: dv2.getUint32(base + 4, true) + offset,
+        w0: dv2.getUint32(base + 8, true) + offset,
+        w1: dv2.getUint32(base + 12, true) + offset,
+        restAngle: dv2.getFloat32(base + 16, true),
+      });
+    }
+    return out;
+  };
+  const allQuads = decodeQuads(a, 0).concat(decodeQuads(b, a.count));
+  const quadColoring = colorQuads(allQuads, count);
+  const quadData = new ArrayBuffer(quadColoring.ordered.length * QUAD_STRIDE);
+  const qdv = new DataView(quadData);
+  for (let k = 0; k < quadColoring.ordered.length; k++) {
+    const q = quadColoring.ordered[k]!;
+    const base = k * QUAD_STRIDE;
+    qdv.setUint32(base, q.e0, true);
+    qdv.setUint32(base + 4, q.e1, true);
+    qdv.setUint32(base + 8, q.w0, true);
+    qdv.setUint32(base + 12, q.w1, true);
+    qdv.setFloat32(base + 16, q.restAngle, true);
+  }
+
   const triangleIndices = new Uint32Array(a.triangleIndices.length + b.triangleIndices.length);
   triangleIndices.set(a.triangleIndices, 0);
   for (let t = 0; t < b.triangleIndices.length; t++) {
@@ -629,6 +760,10 @@ export function combineClothMeshes(a: ClothMeshData, b: ClothMeshData): ClothMes
     constraintCount: ordered.length,
     colorOffsets,
     colorCounts,
+    quadData,
+    quadCount: quadColoring.ordered.length,
+    quadColorOffsets: quadColoring.colorOffsets,
+    quadColorCounts: quadColoring.colorCounts,
     structuralCount: a.structuralCount + b.structuralCount,
     shearCount: a.shearCount + b.shearCount,
     bendingCount: a.bendingCount + b.bendingCount,
