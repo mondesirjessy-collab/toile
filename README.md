@@ -4,7 +4,7 @@
 XPBD solver running entirely on WebGPU compute shaders — zero CPU round-trips per frame.
 
 <p align="center">
-  <img src="docs/media/demo.gif" alt="A seamed dress worn by a mannequin, cycling through jersey, denim and silk fabrics" width="720" />
+  <img src="docs/media/demo.gif" alt="A mannequin trying on a silk dress, a kimono tee, then a full tee-and-skirt outfit fluttering in the wind" width="720" />
 </p>
 
 <p align="center">
@@ -13,9 +13,11 @@ XPBD solver running entirely on WebGPU compute shaders — zero CPU round-trips 
 
 TOILE (*French: the muslin test garment a pattern is validated on*) is the open engine at the core of a browser-based 3D garment design tool: an open, web-first alternative to proprietary desktop suites. The engine and the garment file format are free software; anyone can build on them.
 
-> **Status: Phase 0 complete · Phase 1 (garment construction) underway.**
-> The engine now sews: pattern pieces are cut to shape, seamed along their
-> edges, and assembled onto a full mannequin — with cloth self-collision.
+> **Status: Phase 0 complete · Phase 1 (garment construction) essentially done.**
+> The engine sews: pattern pieces are cut along smooth curves, seamed along
+> their edges, and assembled onto a full mannequin — dress, kimono tee, or a
+> layered tee-and-skirt outfit — with true dihedral bending, cloth
+> self-collision and wind.
 
 ## Why
 
@@ -25,18 +27,20 @@ TOILE (*French: the muslin test garment a pattern is validated on*) is the open 
 
 ## What works today
 
-- **XPBD cloth solver on GPU compute** — distance (structural + shear) and bending constraints, graph-colored for race-free parallel solving, 20 substeps per frame
-- **Garment construction** — pattern pieces cut to shape (A-line, neckline, straps), stitched with seam constraints along their shaped edges, assembled live onto the body
+- **XPBD cloth solver on GPU compute** — distance (structural + shear) and **true dihedral bending** (4-particle hinges), graph-colored for race-free parallel solving, 20 substeps per frame
+- **Garment construction** — pattern pieces cut along smooth curves (A-line dress, kimono tee, flared skirt), stitched along their full boundary except declared openings (neckline, hem, cuffs), assembled live onto the body
+- **Outfits** — several garments merged into one simulation; self-collision keeps the layers apart (tee over skirt)
 - **Self-collision** — GPU spatial hash (atomic linked cells); folds slide instead of interpenetrating
-- **Capsule colliders** — the scene mannequin (head, shoulders, torso, hips, legs) is a handful of capsules; sphere and ground included
+- **Capsule colliders** — the mannequin (head, shoulders, torso, hips, legs, optional arms) is a handful of capsules
+- **Wind** — gusty directional force on a live slider
 - **Grab the fabric** — raycast picking with a temporary drag constraint; orbit/pan/zoom camera
 - **Fabric presets** — Jersey / Denim / Silk: per-fabric stretch, shear, bending compliance, friction *and* look (face/back colors, sheen)
-- **Live tuning** — three scenes (drape / sewing / dress), mesh resolution 32/64/128, substeps, log-scale compliance sliders, friction, self-collision toggle
+- **Live tuning** — five scenes (drape / sewing / dress / tee / outfit), mesh resolution 32/64/128, substeps, log-scale compliance sliders, friction, self-collision toggle
 - **Perf HUD** — fps plus GPU-timestamped sim vs render times
 
-| Jersey — soft knit | Denim — stiff twill | Silk — fluid, sheeny |
+| Silk dress | Kimono tee | Tee + skirt outfit |
 |---|---|---|
-| ![Jersey dress on the mannequin](docs/media/jersey.jpg) | ![Denim dress on the mannequin](docs/media/denim.jpg) | ![Silk dress on the mannequin](docs/media/silk.jpg) |
+| ![Silk dress on the mannequin](docs/media/dress.jpg) | ![Kimono tee on the mannequin](docs/media/tee.jpg) | ![Layered tee and skirt outfit](docs/media/outfit.jpg) |
 
 ## Controls
 
@@ -92,7 +96,7 @@ The engine never imports a rendering framework. This boundary is what makes it p
 ## Roadmap
 
 - **Phase 0** — feasibility: stable interactive drape at 60 fps ✅
-- **Phase 1 (now)** — garment construction: pattern seaming ✅, shaped pieces ✅, self-collision ✅, mannequin ✅ — next: true dihedral bending, richer pattern shapes
+- **Phase 1** — garment construction: pattern seaming ✅, shaped pieces ✅, self-collision ✅, mannequin ✅, dihedral bending ✅, outfits ✅ — next: set-in sleeves (curved armhole seams)
 - **Phase 2** — SMPL-X avatars, pattern editor, open community fabric library
 
 ## License
