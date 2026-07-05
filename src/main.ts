@@ -1,6 +1,6 @@
 import { initGpu, WebGPUNotSupportedError } from './engine/gpu/Device';
 import { ParticleSystem } from './engine/solver/ParticleSystem';
-import { generateClothGrid, generateSeamedPanels } from './engine/cloth/ClothMesh';
+import { generateClothGrid, generateSeamedPanels, combineClothMeshes } from './engine/cloth/ClothMesh';
 import type { SceneMode } from './app/ControlPanel';
 import { ClothRenderer, DEFAULT_FABRIC } from './app/ClothRenderer';
 import { OrbitCamera } from './app/OrbitCamera';
@@ -127,7 +127,20 @@ async function main(): Promise<void> {
     // stitched around the sphere. 'robe': the same seamed pieces closing around
     // a dress form (stacked-sphere bust), falling to the floor.
     const colliders =
-      sceneMode === 'robe' ? MANNEQUIN : sceneMode === 't-shirt' ? MANNEQUIN_ARMS : SPHERE;
+      sceneMode === 'robe'
+        ? MANNEQUIN
+        : sceneMode === 't-shirt' || sceneMode === 'ensemble'
+          ? MANNEQUIN_ARMS
+          : SPHERE;
+    const tee = () =>
+      generateSeamedPanels({
+        resolution,
+        width: 1.15, // sleeve tip to sleeve tip
+        height: 0.75,
+        gap: 0.9,
+        topY: 1.52,
+        shape: 'tshirt', // kimono tee: body + sleeves in one piece
+      });
     const mesh =
       sceneMode === 'couture'
         ? generateSeamedPanels({ resolution, width: 1.2, height: 1.2, gap: 1.3, topY: 1.9 })
@@ -141,15 +154,22 @@ async function main(): Promise<void> {
               shape: 'aline', // real pattern piece: fitted, flared, scooped neckline
             })
           : sceneMode === 't-shirt'
-            ? generateSeamedPanels({
-                resolution,
-                width: 1.15, // sleeve tip to sleeve tip
-                height: 0.75,
-                gap: 0.9,
-                topY: 1.52,
-                shape: 'tshirt', // kimono tee: body + sleeves in one piece
-              })
-            : generateClothGrid({ resolution, size: CLOTH_SIZE, topY: CLOTH_TOP_Y, pin: 'none' });
+            ? tee()
+            : sceneMode === 'ensemble'
+              ? // Outfit: tee + flared skirt, one simulation — self-collision
+                // keeps the layers apart where they overlap.
+                combineClothMeshes(
+                  tee(),
+                  generateSeamedPanels({
+                    resolution,
+                    width: 1.0,
+                    height: 0.62,
+                    gap: 0.75,
+                    topY: 1.12, // waist starts above the hip bulge, drops onto it
+                    shape: 'skirt',
+                  }),
+                )
+              : generateClothGrid({ resolution, size: CLOTH_SIZE, topY: CLOTH_TOP_Y, pin: 'none' });
     system = new ParticleSystem(device, mesh, {
       colliders,
       groundY: GROUND_Y,

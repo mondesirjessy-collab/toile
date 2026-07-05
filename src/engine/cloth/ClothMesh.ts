@@ -192,10 +192,13 @@ export interface SeamedPanelsOptions {
    * Pattern outline. 'rect' keeps the full grid. 'aline' cuts an A-line dress
    * piece: fitted at the top, flared at the hem, with a scooped neckline that
    * leaves two shoulder straps. 'tshirt' cuts a kimono tee: body and short
-   * sleeves in one T-shaped piece, with a neck scoop.
+   * sleeves in one T-shaped piece, with a neck scoop. 'skirt' cuts a flared
+   * skirt piece: snug waist, open top and hem.
    */
-  shape?: 'rect' | 'aline' | 'tshirt';
+  shape?: 'rect' | 'aline' | 'tshirt' | 'skirt';
 }
+
+type PatternShape = NonNullable<SeamedPanelsOptions['shape']>;
 
 /** True when (u,v) ∈ [0,1]² lies inside the kimono-tee pattern piece: body
  * column plus sleeve bands angled downward to follow the mannequin's A-pose
@@ -216,11 +219,17 @@ function tshirtShape(u: number, v: number): boolean {
   return v >= drop && v <= drop + 0.34;
 }
 
+/** True when (u,v) ∈ [0,1]² lies inside the flared-skirt pattern piece. */
+function skirtShape(u: number, v: number): boolean {
+  const x = Math.abs(u - 0.5);
+  return x <= 0.22 + (0.46 - 0.22) * v; // snug waist → flared hem
+}
+
 /**
  * Openings of a shaped garment — boundary regions that must NOT be seamed
- * (where the body enters/exits: neckline, hem, sleeve ends).
+ * (where the body enters/exits: neckline, waist, hem, sleeve ends).
  */
-function isOpening(shape: 'rect' | 'aline' | 'tshirt', uu: number, vv: number): boolean {
+function isOpening(shape: PatternShape, uu: number, vv: number): boolean {
   const x = Math.abs(uu - 0.5);
   if (vv > 0.97) return true; // hem
   if (shape === 'aline') return vv < 0.13 && x < 0.115; // neckline
@@ -228,6 +237,7 @@ function isOpening(shape: 'rect' | 'aline' | 'tshirt', uu: number, vv: number): 
     if (vv < 0.1 && x < 0.12) return true; // neckline
     if (x > 0.48) return true; // sleeve ends (the arm comes out here)
   }
+  if (shape === 'skirt') return vv < 0.04; // waist
   return false;
 }
 
@@ -272,6 +282,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
     const vv = v / (n - 1);
     if (shape === 'aline') return alineShape(uu, vv);
     if (shape === 'tshirt') return tshirtShape(uu, vv);
+    if (shape === 'skirt') return skirtShape(uu, vv);
     return true;
   };
   const kept = new Array<boolean>(panelSize);
@@ -455,6 +466,82 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
     bendingCount: bending.length,
     seamCount: seams.length,
     cornerIndices: [cornerA, cornerB],
+    triangleIndices,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Outfits — several garments in ONE simulation.
+// ---------------------------------------------------------------------------
+
+/**
+ * Merge two garments into a single ClothMeshData (an outfit). Particle indices
+ * of `b` are offset past `a`, and the constraints of both are re-colored
+ * TOGETHER so the GPU solve stays race-free across the whole outfit.
+ * Both garments must share the same per-panel resolution (the renderer's
+ * normals pass assumes uniform n×n panels).
+ */
+export function combineClothMeshes(a: ClothMeshData, b: ClothMeshData): ClothMeshData {
+  if (a.resolution !== b.resolution) {
+    throw new Error('combineClothMeshes: garments must share the same resolution');
+  }
+  const count = a.count + b.count;
+
+  const positions = new Float32Array(count * 4);
+  positions.set(a.positions, 0);
+  positions.set(b.positions, a.count * 4);
+  const invMasses = new Float32Array(count);
+  invMasses.set(a.invMasses, 0);
+  invMasses.set(b.invMasses, a.count);
+
+  // Decode both constraint buffers, offset b, re-color the union.
+  const decode = (mesh: ClothMeshData, offset: number): Edge[] => {
+    const dv = new DataView(mesh.constraintData);
+    const edges: Edge[] = [];
+    for (let k = 0; k < mesh.constraintCount; k++) {
+      edges.push({
+        i: dv.getUint32(k * 16, true) + offset,
+        j: dv.getUint32(k * 16 + 4, true) + offset,
+        rest: dv.getFloat32(k * 16 + 8, true),
+        kind: dv.getUint32(k * 16 + 12, true) as ConstraintKind,
+      });
+    }
+    return edges;
+  };
+  const all = decode(a, 0).concat(decode(b, a.count));
+  const { ordered, colorOffsets, colorCounts } = colorConstraints(all, count);
+
+  const constraintData = new ArrayBuffer(ordered.length * CONSTRAINT_STRIDE);
+  const dv = new DataView(constraintData);
+  for (let k = 0; k < ordered.length; k++) {
+    const c = ordered[k]!;
+    dv.setUint32(k * 16, c.i, true);
+    dv.setUint32(k * 16 + 4, c.j, true);
+    dv.setFloat32(k * 16 + 8, c.rest, true);
+    dv.setUint32(k * 16 + 12, c.kind, true);
+  }
+
+  const triangleIndices = new Uint32Array(a.triangleIndices.length + b.triangleIndices.length);
+  triangleIndices.set(a.triangleIndices, 0);
+  for (let t = 0; t < b.triangleIndices.length; t++) {
+    triangleIndices[a.triangleIndices.length + t] = b.triangleIndices[t]! + a.count;
+  }
+
+  return {
+    resolution: a.resolution,
+    spacing: Math.max(a.spacing, b.spacing),
+    count,
+    positions,
+    invMasses,
+    constraintData,
+    constraintCount: ordered.length,
+    colorOffsets,
+    colorCounts,
+    structuralCount: a.structuralCount + b.structuralCount,
+    shearCount: a.shearCount + b.shearCount,
+    bendingCount: a.bendingCount + b.bendingCount,
+    seamCount: a.seamCount + b.seamCount,
+    cornerIndices: a.cornerIndices,
     triangleIndices,
   };
 }

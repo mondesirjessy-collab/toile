@@ -8,7 +8,7 @@
 import GUI from 'lil-gui';
 import type { FabricStyle } from './ClothRenderer';
 
-export type SceneMode = 'drapé' | 'couture' | 'robe' | 't-shirt';
+export type SceneMode = 'drapé' | 'couture' | 'robe' | 't-shirt' | 'ensemble';
 
 export interface PanelCallbacks {
   onScene(mode: SceneMode): void;
@@ -102,7 +102,7 @@ export class ControlPanel {
 
     this.controllers.push(
       this.gui
-        .add(this.settings, 'scene', ['drapé', 'couture', 'robe', 't-shirt'])
+        .add(this.settings, 'scene', ['drapé', 'couture', 'robe', 't-shirt', 'ensemble'])
         .name('scène')
         .onChange((m: SceneMode) => this.cb.onScene(m)),
     );

@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { generateClothGrid, generateSeamedPanels } from '../src/engine/cloth/ClothMesh';
+import {
+  generateClothGrid,
+  generateSeamedPanels,
+  combineClothMeshes,
+} from '../src/engine/cloth/ClothMesh';
 
 /**
  * Topology + rest-pose tests for the CPU cloth generator (brief §2, §3.3):
@@ -340,5 +344,48 @@ describe("generateSeamedPanels shape 'tshirt' (kimono tee)", () => {
       expect(kept(dv.getUint32(k * 16 + 4, true))).toBe(true);
     }
     for (const idx of mesh.triangleIndices) expect(kept(idx)).toBe(true);
+  });
+});
+
+describe('combineClothMeshes (outfits)', () => {
+  const n = 16;
+  const tee = generateSeamedPanels({ resolution: n, width: 1.15, height: 0.75, gap: 0.9, topY: 1.52, shape: 'tshirt' });
+  const skirt = generateSeamedPanels({ resolution: n, width: 1.0, height: 0.55, gap: 0.75, topY: 1.0, shape: 'skirt' });
+  const outfit = combineClothMeshes(tee, skirt);
+
+  it('sums particles, constraints and triangles with offset indices', () => {
+    expect(outfit.count).toBe(tee.count + skirt.count);
+    expect(outfit.constraintCount).toBe(tee.constraintCount + skirt.constraintCount);
+    expect(outfit.triangleIndices.length).toBe(tee.triangleIndices.length + skirt.triangleIndices.length);
+    expect(outfit.seamCount).toBe(tee.seamCount + skirt.seamCount);
+    // Skirt triangles all point past the tee block.
+    for (let t = tee.triangleIndices.length; t < outfit.triangleIndices.length; t++) {
+      expect(outfit.triangleIndices[t]).toBeGreaterThanOrEqual(tee.count);
+    }
+  });
+
+  it('re-colors the union: every color block stays vertex-disjoint', () => {
+    const dv = new DataView(outfit.constraintData);
+    expect(outfit.colorCounts.reduce((a, b) => a + b, 0)).toBe(outfit.constraintCount);
+    for (let c = 0; c < outfit.colorOffsets.length; c++) {
+      const start = outfit.colorOffsets[c]!;
+      const end = start + outfit.colorCounts[c]!;
+      const seen = new Set<number>();
+      for (let k = start; k < end; k++) {
+        const i = dv.getUint32(k * 16, true);
+        const j = dv.getUint32(k * 16 + 4, true);
+        expect(seen.has(i)).toBe(false);
+        expect(seen.has(j)).toBe(false);
+        seen.add(i);
+        seen.add(j);
+        expect(i).toBeLessThan(outfit.count);
+        expect(j).toBeLessThan(outfit.count);
+      }
+    }
+  });
+
+  it('rejects mismatched resolutions', () => {
+    const other = generateSeamedPanels({ resolution: 8, shape: 'skirt' });
+    expect(() => combineClothMeshes(tee, other)).toThrow();
   });
 });
