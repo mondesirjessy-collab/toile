@@ -260,7 +260,13 @@ async function main(): Promise<void> {
       },
       onPattern: (p) => {
         dressPattern = p;
-        if (sceneMode === 'robe') build(); // re-cut and re-sew the dress
+        // The pattern sliders describe the dress: jump to the dress scene so
+        // the adjustment is always visible, then re-cut and re-sew.
+        if (sceneMode !== 'robe') {
+          sceneMode = 'robe';
+          panel.syncScene('robe');
+        }
+        build();
       },
       onPins: (held) => system.setCornerPins(held),
       onReset: () => {

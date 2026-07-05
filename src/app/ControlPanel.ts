@@ -165,10 +165,12 @@ export class ControlPanel {
         flare: this.settings.dressFlare,
         neck: this.settings.dressNeck,
       });
+    // onFinishChange: re-cutting the pattern on every drag tick would restart
+    // the sim dozens of times mid-drag — apply once, when the slider settles.
     this.controllers.push(
-      pattern.add(this.settings, 'dressLength', 0.9, 1.55, 0.01).name('longueur (m)').onChange(pushPattern),
-      pattern.add(this.settings, 'dressFlare', 0.25, 0.5, 0.01).name('évasement').onChange(pushPattern),
-      pattern.add(this.settings, 'dressNeck', 0.06, 0.16, 0.005).name('encolure').onChange(pushPattern),
+      pattern.add(this.settings, 'dressLength', 0.9, 1.55, 0.01).name('longueur (m)').onFinishChange(pushPattern),
+      pattern.add(this.settings, 'dressFlare', 0.25, 0.5, 0.01).name('évasement').onFinishChange(pushPattern),
+      pattern.add(this.settings, 'dressNeck', 0.06, 0.16, 0.005).name('encolure').onFinishChange(pushPattern),
     );
 
     // Open garment format: save/load the whole garment as JSON.
@@ -194,6 +196,12 @@ export class ControlPanel {
   /** Keep the pin checkbox in sync when pins are toggled elsewhere (P key / reset). */
   syncPins(held: boolean): void {
     this.settings.pinCorners = held;
+    for (const c of this.controllers) c.updateDisplay();
+  }
+
+  /** Keep the scene select in sync when the scene changes elsewhere. */
+  syncScene(mode: SceneMode): void {
+    this.settings.scene = mode;
     for (const c of this.controllers) c.updateDisplay();
   }
 
