@@ -549,7 +549,7 @@ export class ParticleSystem {
     dv.setUint32(48, this.colliderCount, LE);
     dv.setFloat32(52, this.windStrength, LE);
     dv.setFloat32(56, this.windTime, LE);
-    dv.setFloat32(60, 0, LE);
+    dv.setFloat32(60, this.spacing, LE); // cloth_spacing (dihedral compliance scale)
     dv.setFloat32(64, this.dragTarget[0], LE);
     dv.setFloat32(68, this.dragTarget[1], LE);
     dv.setFloat32(72, this.dragTarget[2], LE);

@@ -17,7 +17,7 @@ struct SimParams {
   collider_count: u32,
   wind_strength: f32,
   wind_time: f32,
-  _c2: f32,
+  cloth_spacing: f32, // rest distance between grid neighbours
   drag_target: vec3f,
   drag_stiffness: f32,
   compliance_stretch: f32,
@@ -91,7 +91,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let denom = w1 * dot(q1, q1) + w2 * dot(q2, q2) + w3 * dot(q3, q3) + w4 * dot(q4, q4);
   if (denom < 1e-9) { return; }
 
-  let alpha = params.compliance_bend / (params.dt * params.dt);
+  // The compliance slider is calibrated for DISTANCE constraints (meters);
+  // this constraint is an ANGLE (radians), whose gradients scale as
+  // 1/spacing. Dividing by spacing² keeps the same slider range meaningful
+  // (and resolution-independent): low = leather-stiff, high = chiffon-floppy.
+  let sp2 = params.cloth_spacing * params.cloth_spacing;
+  let alpha = params.compliance_bend / (params.dt * params.dt * max(sp2, 1e-8));
   let s = -c * sqrt(max(1.0 - d * d, 0.0)) / (denom + alpha);
 
   positions[q.e0] = vec4f(x1 + s * w1 * q1, 0.0);
