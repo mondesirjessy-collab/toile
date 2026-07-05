@@ -348,8 +348,9 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
   }
 
   // Seams stitch the two panels along their edges, the way a garment is sewn.
-  // Rest length ≈ the fabric spacing so the closed seam reads as one weave.
-  const seamRest = width / (n - 1);
+  // Rest length well under the fabric spacing: a sewn seam has no play — the
+  // two pieces touch (self-collision excludes mirror pairs so it can close).
+  const seamRest = (width / (n - 1)) * 0.3;
   if (shape === 'rect') {
     // Plain tube: side seams only (leftmost/rightmost of each row), top open.
     for (let v = 0; v < n; v++) {
