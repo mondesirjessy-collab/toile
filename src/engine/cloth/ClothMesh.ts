@@ -277,16 +277,70 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
   // Pattern mask: particles outside the outline are cut from the garment —
   // pinned (inverse mass 0), parked far below, referenced by no constraint or
   // triangle. Keeping the grid regular keeps the GPU normals pass trivial.
-  const inside = (u: number, v: number): boolean => {
-    const uu = u / (n - 1);
-    const vv = v / (n - 1);
+  const insideUV = (uu: number, vv: number): boolean => {
     if (shape === 'aline') return alineShape(uu, vv);
     if (shape === 'tshirt') return tshirtShape(uu, vv);
     if (shape === 'skirt') return skirtShape(uu, vv);
     return true;
   };
+  const inside = (u: number, v: number): boolean => insideUV(u / (n - 1), v / (n - 1));
   const kept = new Array<boolean>(panelSize);
   for (let v = 0; v < n; v++) for (let u = 0; u < n; u++) kept[v * n + u] = inside(u, v);
+
+  // Smooth cut edges: boundary particles slide onto the exact pattern curve
+  // (bisecting inside/outside toward each cut neighbour), so the outline is a
+  // clean line instead of a grid staircase. Rest lengths are derived from the
+  // adjusted positions, keeping the weave consistent.
+  const uAdj = new Float32Array(panelSize);
+  const vAdj = new Float32Array(panelSize);
+  for (let v = 0; v < n; v++) {
+    for (let u = 0; u < n; u++) {
+      uAdj[v * n + u] = u / (n - 1);
+      vAdj[v * n + u] = v / (n - 1);
+    }
+  }
+  if (shape !== 'rect') {
+    const crossing = (u0: number, v0: number, u1: number, v1: number): [number, number] => {
+      let a = 0;
+      let b = 1;
+      for (let it = 0; it < 10; it++) {
+        const m = (a + b) / 2;
+        if (insideUV(u0 + (u1 - u0) * m, v0 + (v1 - v0) * m)) a = m;
+        else b = m;
+      }
+      const t = (a + b) / 2;
+      return [u0 + (u1 - u0) * t, v0 + (v1 - v0) * t];
+    };
+    for (let v = 0; v < n; v++) {
+      for (let u = 0; u < n; u++) {
+        if (!kept[v * n + u]) continue;
+        const u0 = u / (n - 1);
+        const v0 = v / (n - 1);
+        let sumU = 0;
+        let sumV = 0;
+        let cuts = 0;
+        for (const [du, dv2] of [
+          [-1, 0],
+          [1, 0],
+          [0, -1],
+          [0, 1],
+        ] as const) {
+          const u1 = u + du;
+          const v1 = v + dv2;
+          if (u1 < 0 || u1 >= n || v1 < 0 || v1 >= n) continue;
+          if (kept[v1 * n + u1]) continue;
+          const [cu, cv] = crossing(u0, v0, u1 / (n - 1), v1 / (n - 1));
+          sumU += cu;
+          sumV += cv;
+          cuts++;
+        }
+        if (cuts > 0) {
+          uAdj[v * n + u] = sumU / cuts;
+          vAdj[v * n + u] = sumV / cuts;
+        }
+      }
+    }
+  }
 
   const positions = new Float32Array(count * 4);
   const invMasses = new Float32Array(count).fill(1.0);
@@ -300,9 +354,10 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
     for (let v = 0; v < n; v++) {
       for (let u = 0; u < n; u++) {
         const i = index(p, u, v);
-        if (kept[v * n + u]) {
-          positions[i * 4 + 0] = (u / (n - 1) - 0.5) * width;
-          positions[i * 4 + 1] = topY - (v / (n - 1)) * height;
+        const local = v * n + u;
+        if (kept[local]) {
+          positions[i * 4 + 0] = (uAdj[local]! - 0.5) * width;
+          positions[i * 4 + 1] = topY - vAdj[local]! * height;
           positions[i * 4 + 2] = z;
         } else {
           // Cut from the pattern: parked out of the scene, immovable.
@@ -440,18 +495,30 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
     dv.setUint32(base + 12, c.kind, true);
   }
 
-  // Triangles for both panels — a cell renders only if its 4 corners exist.
+  // Triangles for both panels: full cells render two triangles, and boundary
+  // cells with exactly three kept corners render one — otherwise the cut edge
+  // shows a sawtooth of missing half-cells.
   const tris: number[] = [];
   for (let p = 0; p < 2; p++) {
     for (let v = 0; v < n - 1; v++) {
       for (let u = 0; u < n - 1; u++) {
-        if (!isKept(p, u, v) || !isKept(p, u + 1, v) || !isKept(p, u, v + 1) || !isKept(p, u + 1, v + 1))
-          continue;
+        const k00 = isKept(p, u, v);
+        const k10 = isKept(p, u + 1, v);
+        const k01 = isKept(p, u, v + 1);
+        const k11 = isKept(p, u + 1, v + 1);
         const i00 = index(p, u, v);
         const i10 = index(p, u + 1, v);
         const i01 = index(p, u, v + 1);
         const i11 = index(p, u + 1, v + 1);
-        tris.push(i00, i01, i10, i10, i01, i11);
+        const keptCount = Number(k00) + Number(k10) + Number(k01) + Number(k11);
+        if (keptCount === 4) {
+          tris.push(i00, i01, i10, i10, i01, i11);
+        } else if (keptCount === 3) {
+          if (!k11) tris.push(i00, i01, i10);
+          else if (!k10) tris.push(i00, i01, i11);
+          else if (!k01) tris.push(i00, i11, i10);
+          else tris.push(i10, i01, i11);
+        }
       }
     }
   }
