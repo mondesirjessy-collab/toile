@@ -197,19 +197,38 @@ export interface SeamedPanelsOptions {
   shape?: 'rect' | 'aline' | 'tshirt';
 }
 
-/** True when (u,v) ∈ [0,1]² lies inside the kimono-tee pattern piece: a
- * T-shape — full width across the sleeve band, narrower body below the
- * underarm, with a neck scoop at the top. */
+/** True when (u,v) ∈ [0,1]² lies inside the kimono-tee pattern piece: body
+ * column plus sleeve bands angled downward to follow the mannequin's A-pose
+ * arms, with a neck scoop at the top. */
 function tshirtShape(u: number, v: number): boolean {
   const x = Math.abs(u - 0.5);
-  const halfWidth = v < 0.32 ? 0.5 : 0.24; // sleeve band → body
-  if (x > halfWidth) return false;
-  // Neck scoop.
-  if (v < 0.09) {
-    const scoop = 0.11 * Math.sqrt(1 - (v / 0.09) ** 2);
-    if (x < scoop) return false;
+  const bodyHalf = 0.24;
+  if (x <= bodyHalf) {
+    // Neck scoop.
+    if (v < 0.09) {
+      const scoop = 0.11 * Math.sqrt(1 - (v / 0.09) ** 2);
+      if (x < scoop) return false;
+    }
+    return true;
   }
-  return true;
+  // Sleeve: a band sloping down as it leaves the body, matching the arm pose.
+  const drop = 0.75 * (x - bodyHalf);
+  return v >= drop && v <= drop + 0.34;
+}
+
+/**
+ * Openings of a shaped garment — boundary regions that must NOT be seamed
+ * (where the body enters/exits: neckline, hem, sleeve ends).
+ */
+function isOpening(shape: 'rect' | 'aline' | 'tshirt', uu: number, vv: number): boolean {
+  const x = Math.abs(uu - 0.5);
+  if (vv > 0.97) return true; // hem
+  if (shape === 'aline') return vv < 0.13 && x < 0.115; // neckline
+  if (shape === 'tshirt') {
+    if (vv < 0.1 && x < 0.12) return true; // neckline
+    if (x > 0.48) return true; // sleeve ends (the arm comes out here)
+  }
+  return false;
 }
 
 /** True when grid cell (u,v) ∈ [0,1]² lies inside the A-line pattern piece. */
@@ -328,31 +347,45 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
     }
   }
 
-  // Side seams: stitch matching rows of both panels along the pattern's own
-  // shaped edges (leftmost/rightmost kept particle per row).
+  // Seams stitch the two panels along their edges, the way a garment is sewn.
   // Rest length ≈ the fabric spacing so the closed seam reads as one weave.
   const seamRest = width / (n - 1);
-  for (let v = 0; v < n; v++) {
-    let uMin = -1;
-    let uMax = -1;
-    for (let u = 0; u < n; u++) {
-      if (kept[v * n + u]) {
-        if (uMin < 0) uMin = u;
-        uMax = u;
+  if (shape === 'rect') {
+    // Plain tube: side seams only (leftmost/rightmost of each row), top open.
+    for (let v = 0; v < n; v++) {
+      let uMin = -1;
+      let uMax = -1;
+      for (let u = 0; u < n; u++) {
+        if (kept[v * n + u]) {
+          if (uMin < 0) uMin = u;
+          uMax = u;
+        }
       }
+      if (uMin < 0) continue;
+      seams.push({ i: index(0, uMin, v), j: index(1, uMin, v), rest: seamRest, kind: ConstraintKind.Seam });
+      if (uMax !== uMin)
+        seams.push({ i: index(0, uMax, v), j: index(1, uMax, v), rest: seamRest, kind: ConstraintKind.Seam });
     }
-    if (uMin < 0) continue; // fully cut row
-    seams.push({ i: index(0, uMin, v), j: index(1, uMin, v), rest: seamRest, kind: ConstraintKind.Seam });
-    if (uMax !== uMin)
-      seams.push({ i: index(0, uMax, v), j: index(1, uMax, v), rest: seamRest, kind: ConstraintKind.Seam });
-  }
-
-  // Shoulder seams (shaped pieces only): stitch the top edge of both panels so
-  // the straps close over the shoulders and the garment hangs from them.
-  if (shape !== 'rect') {
-    for (let u = 0; u < n; u++) {
-      if (kept[u]) // row v = 0
-        seams.push({ i: index(0, u, 0), j: index(1, u, 0), rest: seamRest, kind: ConstraintKind.Seam });
+  } else {
+    // Shaped garment: stitch the ENTIRE cut boundary of the pattern — except
+    // the openings (neckline, hem, sleeve ends) where the body passes through.
+    // A particle is on the boundary when a 4-neighbour is missing or cut.
+    const onBoundary = (u: number, v: number): boolean =>
+      u === 0 ||
+      u === n - 1 ||
+      v === 0 ||
+      v === n - 1 ||
+      !kept[v * n + (u - 1)] ||
+      !kept[v * n + (u + 1)] ||
+      !kept[(v - 1) * n + u] ||
+      !kept[(v + 1) * n + u];
+    for (let v = 0; v < n; v++) {
+      for (let u = 0; u < n; u++) {
+        if (!kept[v * n + u]) continue;
+        if (!onBoundary(u, v)) continue;
+        if (isOpening(shape, u / (n - 1), v / (n - 1))) continue;
+        seams.push({ i: index(0, u, v), j: index(1, u, v), rest: seamRest, kind: ConstraintKind.Seam });
+      }
     }
   }
 

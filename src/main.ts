@@ -29,11 +29,11 @@ const MANNEQUIN = [
   { a: [-0.08, 0.9, 0] as V3, b: [-0.085, 0.08, 0] as V3, radius: 0.065 }, // left leg
   { a: [0.08, 0.9, 0] as V3, b: [0.085, 0.08, 0] as V3, radius: 0.065 }, // right leg
 ];
-// Same mannequin with A-pose arms — needed for sleeved garments.
+// Same mannequin with A-pose arms, angled to match the kimono sleeve slope.
 const MANNEQUIN_ARMS = [
   ...MANNEQUIN,
-  { a: [-0.21, 1.38, 0] as V3, b: [-0.34, 1.02, 0] as V3, radius: 0.05 }, // left arm
-  { a: [0.21, 1.38, 0] as V3, b: [0.34, 1.02, 0] as V3, radius: 0.05 }, // right arm
+  { a: [-0.21, 1.4, 0] as V3, b: [-0.38, 1.28, 0] as V3, radius: 0.055 }, // left arm
+  { a: [0.21, 1.4, 0] as V3, b: [0.38, 1.28, 0] as V3, radius: 0.055 }, // right arm
 ];
 
 let fatalShown = false;

@@ -311,8 +311,8 @@ describe("generateSeamedPanels shape 'tshirt' (kimono tee)", () => {
   };
 
   it('is a T: sleeve band full width, body narrower below the underarm', () => {
-    const sleeveRow = Math.floor(0.2 * (n - 1)); // inside the sleeve band
-    const bodyRow = Math.floor(0.6 * (n - 1)); // below the underarm
+    const sleeveRow = Math.floor(0.28 * (n - 1)); // inside the angled sleeve band
+    const bodyRow = Math.floor(0.75 * (n - 1)); // below the underarm
     expect(rowKept(sleeveRow)).toBe(n); // full width
     expect(rowKept(bodyRow)).toBeGreaterThan(0);
     expect(rowKept(bodyRow)).toBeLessThan(rowKept(sleeveRow) * 0.6);
