@@ -10,8 +10,8 @@ honest about what exists, what's planned, and what's deliberately out.
 |---|---|---|---|
 | **Cloth simulation** | GPU trim simulation, fabric-aware strain maps, fabric swap | ✅ Phase 0 done — XPBD on WebGPU compute, 60 fps at 128², fabric presets (physics + look), measured benchmarks | — |
 | **2D pattern making** | Pattern Drafter, sketch-on-avatar, annotations, symmetric tracing | ❌ | Phase 2 — pattern editor |
-| **Seaming 2D→3D** | Assemble pattern pieces on the body, gluing, lacing | ❌ | **Phase 1 — next major milestone** |
-| **Avatars & animation** | Blend shapes, rigged accessories, VRM, animation timeline | ❌ | Phase 2 — SMPL-X |
+| **Seaming 2D→3D** | Assemble pattern pieces on the body, gluing, lacing | ✅ First version — shaped pieces (A-line, neckline, straps), side + shoulder seams, assembled live on a capsule mannequin, with cloth self-collision | Phase 1 continues: dihedral bending, richer shapes |
+| **Avatars & animation** | Blend shapes, rigged accessories, VRM, animation timeline | Capsule mannequin (head/shoulders/torso/hips/legs) | Phase 2 — SMPL-X |
 | **Rendering & details** | Zippers, fur, toon shader, isolate mode | Basic lit surface | Post-Phase 2 |
 | **Production** | Auto POM & grading, nesting, cost estimation, DXF export | ❌ | Post-NGI; DXF import considered earlier for interop |
 

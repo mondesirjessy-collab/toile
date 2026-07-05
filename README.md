@@ -4,7 +4,7 @@
 XPBD solver running entirely on WebGPU compute shaders — zero CPU round-trips per frame.
 
 <p align="center">
-  <img src="docs/media/demo.gif" alt="Cloth dropping and draping over a sphere, then silk cascading" width="720" />
+  <img src="docs/media/demo.gif" alt="A seamed dress worn by a mannequin, cycling through jersey, denim and silk fabrics" width="720" />
 </p>
 
 <p align="center">
@@ -13,9 +13,9 @@ XPBD solver running entirely on WebGPU compute shaders — zero CPU round-trips 
 
 TOILE (*French: the muslin test garment a pattern is validated on*) is the open engine at the core of a browser-based 3D garment design tool: an open, web-first alternative to proprietary desktop suites. The engine and the garment file format are free software; anyone can build on them.
 
-> **Status: Phase 0 — feasibility prototype, weeks 9-10 of 12.**
-> Solver, collisions, interaction, surface rendering and fabric presets are done and deployed.
-> Remaining: Blender drape comparison, final polish.
+> **Status: Phase 0 complete · Phase 1 (garment construction) underway.**
+> The engine now sews: pattern pieces are cut to shape, seamed along their
+> edges, and assembled onto a full mannequin — with cloth self-collision.
 
 ## Why
 
@@ -26,15 +26,17 @@ TOILE (*French: the muslin test garment a pattern is validated on*) is the open 
 ## What works today
 
 - **XPBD cloth solver on GPU compute** — distance (structural + shear) and bending constraints, graph-colored for race-free parallel solving, 20 substeps per frame
-- **Collisions** — sphere + ground with Coulomb friction, zero visible interpenetration
+- **Garment construction** — pattern pieces cut to shape (A-line, neckline, straps), stitched with seam constraints along their shaped edges, assembled live onto the body
+- **Self-collision** — GPU spatial hash (atomic linked cells); folds slide instead of interpenetrating
+- **Capsule colliders** — the scene mannequin (head, shoulders, torso, hips, legs) is a handful of capsules; sphere and ground included
 - **Grab the fabric** — raycast picking with a temporary drag constraint; orbit/pan/zoom camera
 - **Fabric presets** — Jersey / Denim / Silk: per-fabric stretch, shear, bending compliance, friction *and* look (face/back colors, sheen)
-- **Live tuning** — mesh resolution 32/64/128, substeps, log-scale compliance sliders, friction, corner pins
+- **Live tuning** — three scenes (drape / sewing / dress), mesh resolution 32/64/128, substeps, log-scale compliance sliders, friction, self-collision toggle
 - **Perf HUD** — fps plus GPU-timestamped sim vs render times
 
-| Jersey — soft knit | Silk — fluid, sheeny |
-|---|---|
-| ![Jersey draped over a sphere](docs/media/jersey.jpg) | ![Silk cascading over a sphere](docs/media/silk.jpg) |
+| Jersey — soft knit | Denim — stiff twill | Silk — fluid, sheeny |
+|---|---|---|
+| ![Jersey dress on the mannequin](docs/media/jersey.jpg) | ![Denim dress on the mannequin](docs/media/denim.jpg) | ![Silk dress on the mannequin](docs/media/silk.jpg) |
 
 ## Controls
 
@@ -89,8 +91,8 @@ The engine never imports a rendering framework. This boundary is what makes it p
 
 ## Roadmap
 
-- **Phase 0 (now)** — feasibility: stable interactive drape at 60 fps ✅
-- **Phase 1** — garment construction: 2D pattern seaming, true dihedral bending, cloth self-collision
+- **Phase 0** — feasibility: stable interactive drape at 60 fps ✅
+- **Phase 1 (now)** — garment construction: pattern seaming ✅, shaped pieces ✅, self-collision ✅, mannequin ✅ — next: true dihedral bending, richer pattern shapes
 - **Phase 2** — SMPL-X avatars, pattern editor, open community fabric library
 
 ## License

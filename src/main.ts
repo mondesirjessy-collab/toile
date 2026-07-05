@@ -23,7 +23,7 @@ const SPHERE = [{ a: [0, 0.8, 0] as V3, radius: 0.55 }];
 const MANNEQUIN = [
   { a: [0, 1.62, 0] as V3, radius: 0.11 }, // head
   { a: [0, 1.46, 0] as V3, b: [0, 1.54, 0] as V3, radius: 0.05 }, // neck
-  { a: [-0.16, 1.4, 0] as V3, b: [0.16, 1.4, 0] as V3, radius: 0.07 }, // shoulders
+  { a: [-0.19, 1.4, 0] as V3, b: [0.19, 1.4, 0] as V3, radius: 0.07 }, // shoulders
   { a: [0, 1.16, 0] as V3, b: [0, 1.38, 0] as V3, radius: 0.155 }, // torso
   { a: [-0.05, 0.94, 0] as V3, b: [0.05, 0.94, 0] as V3, radius: 0.15 }, // hips
   { a: [-0.08, 0.9, 0] as V3, b: [-0.085, 0.08, 0] as V3, radius: 0.065 }, // left leg

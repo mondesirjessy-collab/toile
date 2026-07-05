@@ -199,11 +199,14 @@ export interface SeamedPanelsOptions {
 /** True when grid cell (u,v) ∈ [0,1]² lies inside the A-line pattern piece. */
 function alineShape(u: number, v: number): boolean {
   const x = Math.abs(u - 0.5);
-  const halfWidth = 0.26 + (0.5 - 0.26) * v; // fitted top → full hem
+  // Fitted top → full hem. The top stays narrow so the neck opening ring is
+  // smaller than the shoulder span — otherwise the dress slips off over time
+  // (a genuine pattern-fitting bug found by the sim itself).
+  const halfWidth = 0.21 + (0.5 - 0.21) * v;
   if (x > halfWidth) return false;
-  // Elliptical neckline scoop, leaving straps on both sides.
-  if (v < 0.14) {
-    const scoop = 0.13 * Math.sqrt(1 - (v / 0.14) ** 2);
+  // Elliptical neckline scoop, leaving straps close to the neck.
+  if (v < 0.12) {
+    const scoop = 0.1 * Math.sqrt(1 - (v / 0.12) ** 2);
     if (x < scoop) return false;
   }
   return true;

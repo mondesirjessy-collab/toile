@@ -64,11 +64,12 @@ const PRESETS: Record<string, FabricPreset> = {
     style: { face: [0.23, 0.29, 0.45], back: [0.52, 0.58, 0.7], exponent: 1.4, ambient: 0.3 },
   },
   // Silk: inextensible but extremely floppy (fine wrinkles), slippery, sheeny.
+  // (μ 0.25: slippery enough to read as silk, grippy enough to stay dressed.)
   Soie: {
     stretch: 1e-8,
     shear: 8e-7,
     bend: 1e-4,
-    friction: 0.15,
+    friction: 0.25,
     style: { face: [0.93, 0.87, 0.78], back: [0.8, 0.68, 0.58], exponent: 3.5, ambient: 0.12 },
   },
 };
