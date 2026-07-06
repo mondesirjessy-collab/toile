@@ -26,6 +26,7 @@ export interface BodyMeasure {
   chest: Level;
   waist: Level;
   hip: Level;
+  thigh: Level; // one leg, mid-thigh
 }
 
 /** Distance from the body axis (0,y,0) to the surface along (dx,0,dz). */
@@ -142,7 +143,38 @@ export function measureBody(sd: Sd, height: number): BodyMeasure {
     if (l.circ > hip.circ) hip = l;
   }
 
-  return { height: H, neckY, shoulderY, shoulderHalfW, chest, waist, hip };
+  // Mid-thigh: one leg's circumference (calipers around the leg axis).
+  const thighY = hip.y - 0.17;
+  const legX = firstExit(sd, thighY, 1, 0) * 0.55 || 0.09; // rough leg-axis offset
+  const legHalfW = (() => {
+    // caliper around (legX, thighY): march outward both ways along x
+    let inner = 0;
+    let outer = 0;
+    for (let t = 0.002; t < 0.2; t += 0.002) {
+      if (!outer && sd(legX + t, thighY, 0) > 0) outer = t;
+      if (!inner && sd(legX - t, thighY, 0) > 0) inner = t;
+      if (inner && outer) break;
+    }
+    return (inner + outer) / 2 || 0.06;
+  })();
+  const legHalfD = (() => {
+    let zp = 0;
+    let zm = 0;
+    for (let t = 0.002; t < 0.2; t += 0.002) {
+      if (!zp && sd(legX, thighY, t) > 0) zp = t;
+      if (!zm && sd(legX, thighY, -t) > 0) zm = t;
+      if (zp && zm) break;
+    }
+    return (zp + zm) / 2 || legHalfW;
+  })();
+  const thigh: Level = {
+    y: thighY,
+    halfW: legHalfW,
+    halfD: Math.min(legHalfD, 1.5 * legHalfW),
+    circ: ellipse(legHalfW, Math.min(legHalfD, 1.5 * legHalfW)),
+  };
+
+  return { height: H, neckY, shoulderY, shoulderHalfW, chest, waist, hip, thigh };
 }
 
 /** Trilinear SDF sampler over a baked scan grid (CPU side). */

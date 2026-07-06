@@ -28,7 +28,7 @@ export interface PanelCallbacks {
   onPodium(rpm: number): void;
   onAnimate(on: boolean): void;
   onBody(kind: BodyKind): void;
-  onMorph(m: { poitrine: number; taille: number; hanches: number }): void;
+  onMorph(cm: { stature: number; carrure: number; poitrine: number; taille: number; hanches: number; cuisse: number }): void;
   onPattern(p: PatternParams): void;
   onProfile(kind: 'robe' | 'chemise' | 'jupe', profile: number[]): void;
   onShirtPattern(p: { sleeve: number }): void;
@@ -42,9 +42,12 @@ export type BodyKind = 'femme' | 'homme' | 'scan homme' | 'scan femme';
 interface Settings {
   scene: SceneMode;
   body: BodyKind;
+  stature: number;
+  carrure: number;
   poitrine: number;
   taille: number;
   hanches: number;
+  cuisse: number;
   resolution: number;
   substeps: number;
   selfCollision: boolean;
@@ -110,15 +113,19 @@ export class ControlPanel {
   private readonly cb: PanelCallbacks;
   private readonly settings: Settings;
   private readonly controllers: { updateDisplay(): void }[] = [];
+  private morphControllers: Record<string, { updateDisplay(): void }> = {};
 
   constructor(cb: PanelCallbacks, initial: { resolution: number; substeps: number }) {
     this.cb = cb;
     this.settings = {
       scene: 'drapé' as SceneMode,
       body: 'femme' as BodyKind,
-      poitrine: 1,
-      taille: 1,
-      hanches: 1,
+      stature: 175,
+      carrure: 52,
+      poitrine: 79,
+      taille: 76,
+      hanches: 106,
+      cuisse: 55,
       resolution: initial.resolution,
       substeps: initial.substeps,
       selfCollision: true,
@@ -155,14 +162,27 @@ export class ControlPanel {
         .name('mannequin')
         .onChange((k: BodyKind) => this.cb.onBody(k)),
     );
-    const morphFolder = this.gui.addFolder('mannequin · mensurations');
+    // Prêt-à-porter measurements, in centimeters. The sliders open on the
+    // selected mannequin's OWN measured values (syncMorphCm).
+    const morphFolder = this.gui.addFolder('mannequin · mensurations (cm)');
     const pushMorph = (): void =>
-      this.cb.onMorph({ poitrine: this.settings.poitrine, taille: this.settings.taille, hanches: this.settings.hanches });
-    this.controllers.push(
-      morphFolder.add(this.settings, 'poitrine', 0.85, 1.2, 0.01).name('poitrine').onFinishChange(pushMorph),
-      morphFolder.add(this.settings, 'taille', 0.85, 1.2, 0.01).name('taille').onFinishChange(pushMorph),
-      morphFolder.add(this.settings, 'hanches', 0.85, 1.2, 0.01).name('hanches').onFinishChange(pushMorph),
-    );
+      this.cb.onMorph({
+        stature: this.settings.stature,
+        carrure: this.settings.carrure,
+        poitrine: this.settings.poitrine,
+        taille: this.settings.taille,
+        hanches: this.settings.hanches,
+        cuisse: this.settings.cuisse,
+      });
+    this.morphControllers = {
+      stature: morphFolder.add(this.settings, 'stature', 145, 195, 0.5).name('stature').onFinishChange(pushMorph),
+      carrure: morphFolder.add(this.settings, 'carrure', 34, 60, 0.5).name('carrure (épaules)').onFinishChange(pushMorph),
+      poitrine: morphFolder.add(this.settings, 'poitrine', 65, 130, 0.5).name('tour de poitrine').onFinishChange(pushMorph),
+      taille: morphFolder.add(this.settings, 'taille', 55, 125, 0.5).name('tour de taille').onFinishChange(pushMorph),
+      hanches: morphFolder.add(this.settings, 'hanches', 75, 140, 0.5).name('tour de hanches').onFinishChange(pushMorph),
+      cuisse: morphFolder.add(this.settings, 'cuisse', 40, 78, 0.5).name('tour de cuisse').onFinishChange(pushMorph),
+    };
+    this.controllers.push(...Object.values(this.morphControllers));
     morphFolder.close();
 
     this.controllers.push(
@@ -280,6 +300,15 @@ export class ControlPanel {
     for (const c of this.controllers) c.updateDisplay();
   }
 
+  /** Open the measurement sliders on the selected body's own values (cm). */
+  syncMorphCm(cm: Record<string, number>): void {
+    const s = this.settings as unknown as Record<string, number>;
+    for (const k of ['stature', 'carrure', 'poitrine', 'taille', 'hanches', 'cuisse']) {
+      if (typeof cm[k] === 'number') s[k] = Math.round(cm[k]! * 2) / 2;
+    }
+    for (const c of Object.values(this.morphControllers)) c.updateDisplay();
+  }
+
   /** Drafted silhouettes per garment (exported with the garment). */
   private profiles: { robe?: number[]; chemise?: number[]; jupe?: number[] } = {};
 
@@ -305,7 +334,14 @@ export class ControlPanel {
       version: 1,
       scene: s.scene,
       body: s.body,
-      morph: { poitrine: s.poitrine, taille: s.taille, hanches: s.hanches },
+      morph: {
+        stature: s.stature,
+        carrure: s.carrure,
+        poitrine: s.poitrine,
+        taille: s.taille,
+        hanches: s.hanches,
+        cuisse: s.cuisse,
+      },
       pattern: {
         profile: this.profiles.robe,
         profileChemise: this.profiles.chemise,
@@ -360,7 +396,7 @@ export class ControlPanel {
       format?: string;
       scene?: SceneMode;
       body?: BodyKind;
-      morph?: { poitrine?: number; taille?: number; hanches?: number };
+      morph?: Record<string, number>;
       pattern?: Partial<PatternParams> & {
         sleeve?: number;
         skirtLength?: number;
@@ -406,7 +442,14 @@ export class ControlPanel {
     // into settings), so remember the file's scene and restore it at the end.
     const targetScene = s.scene;
     this.cb.onBody(s.body);
-    this.cb.onMorph({ poitrine: s.poitrine, taille: s.taille, hanches: s.hanches });
+    this.cb.onMorph({
+      stature: s.stature,
+      carrure: s.carrure,
+      poitrine: s.poitrine,
+      taille: s.taille,
+      hanches: s.hanches,
+      cuisse: s.cuisse,
+    });
     const preset = PRESETS[s.preset];
     if (preset) this.cb.onStyle(preset.style);
     this.cb.onCompliance({ stretch: 10 ** s.stretchExp, shear: 10 ** s.shearExp, bend: 10 ** s.bendExp });

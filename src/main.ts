@@ -162,19 +162,39 @@ async function main(): Promise<void> {
     }
     return REF;
   };
-  // Feature heights of each UNMORPHED body: the anchor points of the warp.
-  const marksCache: Record<string, MorphMarks> = {};
+  // Full measurements of each UNMORPHED body: warp anchors AND the cm
+  // baselines the measurement sliders convert against.
+  const baseCache: Record<string, BodyMeasure> = {};
+  const baseFor = (kind: string, scan: ScanAvatar | null): BodyMeasure => {
+    baseCache[kind] ??=
+      kind === 'homme'
+        ? measureBody((x, y, z) => sdBody(x, y, z, BODY_MALE, BODY_BLEND), 1.765)
+        : scan
+          ? measureBody(gridSd(scan.grid), scan.grid.max[1] - 0.06)
+          : REF;
+    return baseCache[kind]!;
+  };
   const marksFor = (kind: string, scan: ScanAvatar | null): MorphMarks => {
-    if (!marksCache[kind]) {
-      const base =
-        kind === 'homme'
-          ? measureBody((x, y, z) => sdBody(x, y, z, BODY_MALE, BODY_BLEND), 1.765)
-          : scan
-            ? measureBody(gridSd(scan.grid), scan.grid.max[1] - 0.06)
-            : REF;
-      marksCache[kind] = { chestY: base.chest.y, waistY: base.waist.y, hipY: base.hip.y };
-    }
-    return marksCache[kind]!;
+    const base = baseFor(kind, scan);
+    return {
+      shoulderY: base.shoulderY,
+      chestY: base.chest.y,
+      waistY: base.waist.y,
+      hipY: base.hip.y,
+      thighY: base.thigh.y,
+    };
+  };
+  /** The selected body's natural prêt-à-porter measurements, in cm. */
+  const baseCm = (kind: string, scan: ScanAvatar | null): Record<string, number> => {
+    const b = baseFor(kind, scan);
+    return {
+      stature: b.height * 100,
+      carrure: 2 * b.shoulderHalfW * 100,
+      poitrine: b.chest.circ * 100,
+      taille: b.waist.circ * 100,
+      hanches: b.hip.circ * 100,
+      cuisse: b.thigh.circ * 100,
+    };
   };
   // Morphed-body caches (rebuilt on slider release, keyed by kind+morphs).
   const morphCache: Record<string, { grid: ScanAvatar['grid']; mesh: ScanAvatar['mesh'] }> = {};
@@ -493,14 +513,28 @@ async function main(): Promise<void> {
         sceneMode = m;
         build();
       },
-      onMorph: (mo) => {
-        morphs = { ...mo };
+      onMorph: (cm) => {
+        // Sliders speak prêt-à-porter centimeters; the warp speaks ratios.
+        const scan = bodyKind.startsWith('scan') ? (scans[bodyKind] ?? null) : null;
+        const b = baseCm(bodyKind, scan);
+        const r = (target: number, base: number): number =>
+          Math.min(1.3, Math.max(0.75, target / Math.max(1, base)));
+        morphs = {
+          stature: r(cm.stature, b.stature!),
+          carrure: r(cm.carrure, b.carrure!),
+          poitrine: r(cm.poitrine, b.poitrine!),
+          taille: r(cm.taille, b.taille!),
+          hanches: r(cm.hanches, b.hanches!),
+          cuisse: r(cm.cuisse, b.cuisse!),
+        };
         if (sceneMode === 'robe' || sceneMode === 't-shirt' || sceneMode === 'chemise' || sceneMode === 'ensemble' || sceneMode === 'pantalon') {
           build();
         }
       },
       onBody: (kind) => {
         bodyKind = kind;
+        morphs = { ...NO_MORPH }; // a new body starts at ITS natural measurements
+        panel.syncMorphCm(baseCm(kind, kind.startsWith('scan') ? (scans[kind] ?? null) : null));
         // Only rebuild where a body is actually on stage; drapé/couture keep
         // their cloth instead of resetting for an invisible change.
         if (sceneMode === 'robe' || sceneMode === 't-shirt' || sceneMode === 'chemise' || sceneMode === 'ensemble') {
@@ -590,6 +624,8 @@ async function main(): Promise<void> {
     },
     { resolution: DEFAULT_RESOLUTION, substeps: DEFAULT_SUBSTEPS },
   );
+  // Open the measurement sliders on the default mannequin's own values.
+  panel.syncMorphCm(baseCm(bodyKind, null));
 
   // Keyboard shortcuts mirror the panel (brief §3.3 release flow).
   window.addEventListener('keydown', (e) => {
