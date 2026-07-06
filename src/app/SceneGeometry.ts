@@ -15,6 +15,8 @@ export const SCENE_VERTEX_FLOATS = 9;
 export interface SceneMesh {
   vertices: Float32Array; // interleaved pos3, normal3, color3
   indices: Uint32Array;
+  /** Indices [0, bodyIndexCount) are the mannequin (podium-rotated at draw). */
+  bodyIndexCount: number;
 }
 
 export interface SceneParams {
@@ -136,6 +138,8 @@ export function buildSceneMesh(p: SceneParams): SceneMesh {
     }
   }
 
+  const bodyIndexCount = indices.length; // everything so far rotates on the podium
+
   // --- Ground quad (y = groundY, facing up) ---
   const h = p.groundHalfSize ?? 4.0;
   const g = p.groundY;
@@ -147,5 +151,5 @@ export function buildSceneMesh(p: SceneParams): SceneMesh {
   const g3 = push([-h, g, h], up, groundColor);
   indices.push(g0, g2, g1, g0, g3, g2);
 
-  return { vertices: new Float32Array(vertices), indices: new Uint32Array(indices) };
+  return { vertices: new Float32Array(vertices), indices: new Uint32Array(indices), bodyIndexCount };
 }

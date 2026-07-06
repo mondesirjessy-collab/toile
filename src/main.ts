@@ -119,6 +119,8 @@ async function main(): Promise<void> {
   let shirtPattern = { sleeve: 0.47 };
   let skirtPattern = { length: 0.6, flare: 0.46 };
   let bodyKind: 'femme' | 'homme' | 'scan homme' | 'scan femme' = 'femme';
+  let podium = 0; // tours/minute
+  let podiumAngle = 0;
   // The scanned CC0 avatar (Blender Studio realistic male via Wikimedia
   // Commons) — rendered as a real mesh, felt by the cloth as a baked SDF grid.
   const scans: Record<string, ScanAvatar | null> = {
@@ -375,6 +377,9 @@ async function main(): Promise<void> {
         wind = v;
         system.setWind(v);
       },
+      onPodium: (v) => {
+        podium = v;
+      },
       onPattern: (p) => {
         dressPattern = p;
         // The pattern sliders describe the dress: jump to the dress scene so
@@ -480,6 +485,12 @@ async function main(): Promise<void> {
     }
 
     const substeps = panel.substeps;
+    // Podium: advance the turn, hand the solver the per-second rate (it
+    // derives the per-substep surface motion for friction), spin the visual.
+    const omega = (podium * 2 * Math.PI) / 60;
+    if (omega !== 0) podiumAngle = (podiumAngle + omega * dt) % (2 * Math.PI);
+    system.setSpin(podiumAngle, omega);
+    renderer.setSpin(podiumAngle);
     system.step(dt, substeps, profiler.simSpan());
     renderer.render(camera.matrix(aspect), profiler.renderSpan());
     blit();

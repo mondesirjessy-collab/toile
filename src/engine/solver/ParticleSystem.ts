@@ -76,8 +76,9 @@ export interface SolverOptions {
 //  64 drag_target.xyz, 76 drag_stiffness,
 //  80 compliance_stretch, 84 compliance_shear, 88 compliance_bend, 92 cloth_thickness,
 //  96 particle_count, 100 damping, 104 max_speed, 108 drag_index,
-//  112 body_min.xyz, 124 blend_k, 128 body_max.xyz, 140 pad.
-const UNIFORM_SIZE = 144;
+//  112 body_min.xyz, 124 blend_k, 128 body_max.xyz, 140 use_grid,
+//  144 spin_cos, 148 spin_sin, 152 spin_dtheta (per substep), 156 pad.
+const UNIFORM_SIZE = 160;
 const BATCH_SIZE = 16;
 const WORKGROUP = 256;
 const DRAG_NONE = 0xffffffff;
@@ -144,6 +145,9 @@ export class ParticleSystem {
   private readonly colliderCount: number;
   private readonly colliderBlend: number;
   private readonly useGrid: boolean;
+  private spinAngle = 0;
+  private spinRate = 0; // rad/s
+
   private readonly sdfTexture: GPUTexture;
   private readonly bodyMin = [Infinity, Infinity, Infinity];
   private readonly bodyMax = [-Infinity, -Infinity, -Infinity];
@@ -451,6 +455,12 @@ export class ParticleSystem {
   }
 
   /** Set the wind strength (m/s², 0 = calm) live. */
+  /** Podium turn: current angle + angular speed (drives surface friction). */
+  setSpin(angle: number, rate: number): void {
+    this.spinAngle = angle;
+    this.spinRate = rate;
+  }
+
   setWind(strength: number): void {
     this.windStrength = strength;
   }
@@ -640,6 +650,9 @@ export class ParticleSystem {
     dv.setFloat32(132, this.bodyMax[1]!, LE);
     dv.setFloat32(136, this.bodyMax[2]!, LE);
     dv.setUint32(140, this.useGrid ? 1 : 0, LE);
+    dv.setFloat32(144, Math.cos(this.spinAngle), LE);
+    dv.setFloat32(148, Math.sin(this.spinAngle), LE);
+    dv.setFloat32(152, this.spinRate * dt, LE);
     this.device.queue.writeBuffer(this.uniformBuffer, 0, this.uniformData);
   }
 

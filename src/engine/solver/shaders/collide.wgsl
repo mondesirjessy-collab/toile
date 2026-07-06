@@ -37,7 +37,19 @@ struct SimParams {
   blend_k: f32,      // smooth-min radius; 0 = hard min
   body_max: vec3f,
   use_grid: u32,     // 1 = collide against the baked SDF texture instead
+  spin_cos: f32,     // podium turn: body-space rotation about +Y
+  spin_sin: f32,
+  spin_dtheta: f32,  // podium angle advanced THIS substep (surface velocity)
+  _c4: f32,
 };
+
+// World → body space (inverse podium turn) and back.
+fn to_body(p: vec3f) -> vec3f {
+  return vec3f(params.spin_cos * p.x + params.spin_sin * p.z, p.y, -params.spin_sin * p.x + params.spin_cos * p.z);
+}
+fn to_world(v: vec3f) -> vec3f {
+  return vec3f(params.spin_cos * v.x - params.spin_sin * v.z, v.y, params.spin_sin * v.x + params.spin_cos * v.z);
+}
 
 // Round cone: segment a→b, radius ra at a, rb at b. Sphere when a = b.
 // s squashes per axis about the midpoint (components ≤ 1, ellipse sections);
@@ -148,17 +160,23 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var x = positions[i].xyz;
   let xp = prev_positions[i].xyz;
 
+  // Podium: query the body in ITS rotating frame; the surface under the
+  // particle moved by dtheta this substep — friction is measured relative
+  // to that motion, so the turning mannequin carries its garment along.
+  let xb = to_body(x);
+  let surf_du = vec3f(-params.spin_dtheta * x.z, 0.0, params.spin_dtheta * x.x);
+
   // --- Scanned-avatar SDF grid (trilinear texture) ---
   if (params.use_grid == 1u
-      && all(x > params.body_min) && all(x < params.body_max)) {
-    let s = grid_sample(x);
+      && all(xb > params.body_min) && all(xb < params.body_max)) {
+    let s = grid_sample(xb);
     if (s.w < params.cloth_thickness) {
       let gl = length(s.xyz);
       if (gl > 1e-6) {
-        let nrm = s.xyz / gl;
+        let nrm = to_world(s.xyz / gl);
         let push = params.cloth_thickness - s.w;
         x += nrm * push;
-        let disp = x - xp;
+        let disp = x - xp - surf_du;
         let dispT = disp - dot(disp, nrm) * nrm;
         let tl = length(dispT);
         if (tl > 1e-9) {
@@ -170,8 +188,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   // --- Body field (skip fast when outside the collider AABB) ---
   if (params.collider_count > 0u
-      && all(x > params.body_min) && all(x < params.body_max)) {
-    let d = sd_body(x);
+      && all(xb > params.body_min) && all(xb < params.body_max)) {
+    let d = sd_body(xb);
     if (d < params.cloth_thickness) {
       // Field gradient, 4-tap tetrahedral.
       let e = 0.002;
@@ -179,17 +197,17 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let k1 = vec3f(-1.0, -1.0, 1.0);
       let k2 = vec3f(-1.0, 1.0, -1.0);
       let k3 = vec3f(1.0, 1.0, 1.0);
-      let g = k0 * sd_body(x + k0 * e) + k1 * sd_body(x + k1 * e)
-            + k2 * sd_body(x + k2 * e) + k3 * sd_body(x + k3 * e);
+      let g = k0 * sd_body(xb + k0 * e) + k1 * sd_body(xb + k1 * e)
+            + k2 * sd_body(xb + k2 * e) + k3 * sd_body(xb + k3 * e);
       let gl = length(g);
       if (gl > 1e-6) {
-        let nrm = g / gl;
+        let nrm = to_world(g / gl);
         let push = params.cloth_thickness - d;
         x += nrm * push; // project onto the offset surface
         // Coulomb friction (PBD): the tangential correction is capped by
         // µ × the normal push. Slow creep dies completely (static friction) —
         // this is what keeps a strap resting on a sloped shoulder.
-        let disp = x - xp;
+        let disp = x - xp - surf_du;
         let dispT = disp - dot(disp, nrm) * nrm;
         let tl = length(dispT);
         if (tl > 1e-9) {

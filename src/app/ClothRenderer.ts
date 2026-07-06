@@ -95,6 +95,8 @@ fn fs(in: VSOut, @builtin(front_facing) front: bool) -> @location(0) vec4f {
 const SCENE_SHADER = /* wgsl */ `
 struct Camera { viewProj: mat4x4f };
 @group(0) @binding(0) var<uniform> camera: Camera;
+// Podium turn: x = cos, y = sin (identity when 1,0). Applied per draw range.
+@group(0) @binding(1) var<uniform> spin: vec4f;
 
 struct VSOut {
   @builtin(position) clip: vec4f,
@@ -102,11 +104,15 @@ struct VSOut {
   @location(1) color: vec3f,
 };
 
+fn turn(v: vec3f) -> vec3f {
+  return vec3f(spin.x * v.x - spin.y * v.z, v.y, spin.y * v.x + spin.x * v.z);
+}
+
 @vertex
 fn vs(@location(0) pos: vec3f, @location(1) normal: vec3f, @location(2) color: vec3f) -> VSOut {
   var out: VSOut;
-  out.clip = camera.viewProj * vec4f(pos, 1.0);
-  out.normal = normal;
+  out.clip = camera.viewProj * vec4f(turn(pos), 1.0);
+  out.normal = turn(normal);
   out.color = color;
   return out;
 }
@@ -151,6 +157,10 @@ export class ClothRenderer {
   private readonly normalsBindGroup: GPUBindGroup;
   private readonly clothPipeline: GPURenderPipeline;
   private readonly scenePipeline: GPURenderPipeline;
+  private spinBuffer!: GPUBuffer;
+  private spinIdentityBuffer!: GPUBuffer;
+  private sceneStaticBindGroup!: GPUBindGroup;
+  private sceneBodyIndexCount = 0;
   private readonly clothBindGroup: GPUBindGroup;
   private readonly sceneBindGroup: GPUBindGroup;
   private readonly positionBuffer: GPUBuffer;
@@ -290,9 +300,23 @@ export class ClothRenderer {
       primitive: { topology: 'triangle-list', cullMode: 'back' },
       depthStencil,
     });
+    this.spinBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    device.queue.writeBuffer(this.spinBuffer, 0, new Float32Array([1, 0, 0, 0]));
+    this.spinIdentityBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    device.queue.writeBuffer(this.spinIdentityBuffer, 0, new Float32Array([1, 0, 0, 0]));
     this.sceneBindGroup = device.createBindGroup({
       layout: this.scenePipeline.getBindGroupLayout(0),
-      entries: [{ binding: 0, resource: { buffer: this.cameraBuffer } }],
+      entries: [
+        { binding: 0, resource: { buffer: this.cameraBuffer } },
+        { binding: 1, resource: { buffer: this.spinBuffer } },
+      ],
+    });
+    this.sceneStaticBindGroup = device.createBindGroup({
+      layout: this.scenePipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.cameraBuffer } },
+        { binding: 1, resource: { buffer: this.spinIdentityBuffer } },
+      ],
     });
 
     this.sceneVertexBuffer = device.createBuffer({
@@ -311,6 +335,7 @@ export class ClothRenderer {
     new Uint32Array(this.sceneIndexBuffer.getMappedRange()).set(scene.indices);
     this.sceneIndexBuffer.unmap();
     this.sceneIndexCount = scene.indices.length;
+    this.sceneBodyIndexCount = scene.bodyIndexCount;
 
     this.depthTexture = this.createDepthTexture(canvas.width, canvas.height);
   }
@@ -321,6 +346,11 @@ export class ClothRenderer {
   }
 
   /** Apply a fabric preset's visual identity (live, no rebuild). */
+  /** Podium angle (radians) — rotates the mannequin's visual mesh. */
+  setSpin(angle: number): void {
+    this.device.queue.writeBuffer(this.spinBuffer, 0, new Float32Array([Math.cos(angle), Math.sin(angle), 0, 0]));
+  }
+
   setFabric(style: FabricStyle): void {
     this.device.queue.writeBuffer(
       this.fabricBuffer,
@@ -379,7 +409,12 @@ export class ClothRenderer {
     pass.setBindGroup(0, this.sceneBindGroup);
     pass.setVertexBuffer(0, this.sceneVertexBuffer);
     pass.setIndexBuffer(this.sceneIndexBuffer, 'uint32');
-    pass.drawIndexed(this.sceneIndexCount);
+    // Body first (podium spin), then the static remainder (ground, props).
+    if (this.sceneBodyIndexCount > 0) pass.drawIndexed(this.sceneBodyIndexCount);
+    if (this.sceneIndexCount > this.sceneBodyIndexCount) {
+      pass.setBindGroup(0, this.sceneStaticBindGroup);
+      pass.drawIndexed(this.sceneIndexCount - this.sceneBodyIndexCount, 1, this.sceneBodyIndexCount);
+    }
 
     pass.setPipeline(this.clothPipeline);
     pass.setBindGroup(0, this.clothBindGroup);
