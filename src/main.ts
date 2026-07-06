@@ -398,7 +398,7 @@ async function main(): Promise<void> {
                       height: Hb,
                       gap: 0.9,
                       topY: topB,
-                      elasticTop: 0.85, // bustier : le haut fronce et tient
+                      elasticTop: 0.78, // bustier : le haut fronce et AGRIPPE (0.85 lâchait depuis v56)
                     });
                     const jupe = generateSeamedPanels({
                       resolution,
@@ -473,7 +473,9 @@ async function main(): Promise<void> {
     wake();
     // Arm animation applies to sculpted ARMS bodies only (the arms ARE the
     // last 8 primitives; scans are rigid grids — podium only for them).
-    if (bodyPrims && bodyPrims !== BODY_FORM && bodyPrims !== BODY_MALE) {
+    // Decide by the SOURCE body: a morphed dress form is a fresh array, so an
+    // identity test against BODY_FORM would pass it and swing its LEGS.
+    if (bodyPrims && (basePrims === BODY_FORM_ARMS || basePrims === BODY_MALE_ARMS)) {
       animPrims = bodyPrims;
       const rest = bodyRestVertices(bodyPrims, BODY_BLEND);
       animSkin = buildSkin(bodyPrims, rest.positions);

@@ -1,5 +1,15 @@
 # TOILE — Audit complet du moteur (v57, 06/07/2026)
 
+## ÉTAT (07/07/2026, v59) — fait / à faire
+- ✅ **C1** mailles anisotropes (v58) : spacingV partout, strain par axe, UV motifs + glTF. *Reste : spacing par vêtement dans les combinés, normalisation dihedral (volontairement non touchée — presets réglés dessus).*
+- ✅ **C2** clés de cache morpho sur les 6 curseurs (v58).
+- ✅ **C3** hauteur du tailleur × stature (v58).
+- ✅ **M** auto-collision même-panneau : exclusion 2D Chebyshev ≤ 2 (les contacts d'une même rangée repoussent enfin) + rayon même-panneau réduit ×0,5 (le tissu replié sur lui-même se serre plus fort que deux vêtements) (v59).
+- ✅ **M** poseIdle : décision par le corps SOURCE (les formes morphées n'animent plus leurs jambes) (v59).
+- ✅ **M** (partiel) coutures trans-vêtement : particules cousues ±1 rangée exemptées de la répulsion (buffer seam_free, binding 5 de selfCollide) (v59).
+- ⚠️ **RÉGRESSION OUVERTE — robe froncée** : le bustier glisse aux hanches, EN PROD DEPUIS v56 (vérifié sur le build v56 public servi en cache — antérieur aux correctifs v59). Diagnostic mené : auto-collision OFF → toute la robe tombe au sol, donc l'élastique seul (même à 0,78) n'a JAMAIS tenu ce bustier — la « tenue » d'avant venait d'un équilibre d'encombrement des fronces que la porte same_garment de v56 a déplacé. Pistes : vrai ancrage de taille (ceinture = contrainte d'ancrage au corps, déjà au backlog), ou élargir seam_free à ±3-4 rangées, ou min_dist par vêtement. Ne PAS traiter comme un réglage : c'est le chantier « tenue des vêtements sans épaules ».
+- Le reste de la liste ci-dessous est à dérouler dans l'ordre.
+
 Audit adversarial mené par 33 agents (6 spécialistes : physique XPBD, GPU/WebGPU, patrons/topologie, corps/SDF, exports, produit — chaque trouvaille critique/majeure contre-vérifiée par un agent indépendant chargé de la réfuter).
 
 **Mode d'emploi (session future)** : traiter dans l'ordre. Chaque entrée donne le défaut tracé (fichier, lignes, valeurs concrètes) et une piste de correctif. Re-valider visuellement après chaque lot (serveur dev + scènes concernées), badge de version à chaque changement visible, déployer.

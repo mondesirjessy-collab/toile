@@ -509,6 +509,27 @@ describe('combineClothMeshes (outfits)', () => {
     expect(third.layers![tee.count]).toBe(1);
   });
 
+  it('flags cross-seamed rows as self-collision-exempt', () => {
+    // Sew the tee's bottom row to the skirt's top row (front panels).
+    const cross = Array.from({ length: n }, (_, u) => ({
+      i: (n - 1) * n + u,
+      j: tee.count + u,
+    }));
+    const sewn = combineClothMeshes(tee, skirt, cross);
+    expect(sewn.seamFree).toHaveLength(sewn.count);
+    for (const cs of cross) {
+      expect(sewn.seamFree![cs.i]).toBe(1); // seam endpoints…
+      expect(sewn.seamFree![cs.i - n]).toBe(1); // …and one row inward
+      expect(sewn.seamFree![cs.j]).toBe(1);
+      expect(sewn.seamFree![cs.j + n]).toBe(1);
+    }
+    // Far from the seam, nothing is exempt.
+    expect(sewn.seamFree![0]).toBe(0);
+    expect(sewn.seamFree![sewn.count - 1]).toBe(0);
+    // An unsewn outfit exempts nobody.
+    expect([...outfit.seamFree!].every((v) => v === 0)).toBe(true);
+  });
+
   it('carries hinge softness through the merge (pressing survives)', () => {
     const soft = (mesh: ClothMeshData): number[] => {
       const dv = new DataView(mesh.quadData);

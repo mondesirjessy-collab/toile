@@ -77,6 +77,13 @@ export interface ClothMeshData {
    * Absent = all zero (single garment).
    */
   readonly layers?: Float32Array;
+  /**
+   * Particles stitched across garments (cross-seams) plus their first ring:
+   * self-collision must not repel them — the seam legitimately holds them
+   * closer than min_dist, and fighting it every substep shakes the garment
+   * loose (the gathered bodice slid off exactly this way). 1 = exempt.
+   */
+  readonly seamFree?: Uint8Array;
 }
 
 const CONSTRAINT_STRIDE = 16; // bytes: 2×u32 + 2×f32
@@ -957,6 +964,17 @@ export function combineClothMeshes(
   const layers = new Float32Array(count);
   if (a.layers) layers.set(a.layers, 0);
   for (let i = 0; i < b.count; i++) layers[a.count + i] = (b.layers ? b.layers[i]! : 0) + layerB;
+  // Cross-seamed particles (and one row inward on each side) are exempt from
+  // self-collision: the seam holds them tighter than min_dist by design.
+  const seamFree = new Uint8Array(count);
+  if (a.seamFree) seamFree.set(a.seamFree, 0);
+  if (b.seamFree) for (let i = 0; i < b.count; i++) seamFree[a.count + i] = b.seamFree[i]!;
+  const na = a.resolution;
+  for (const cs of crossSeams) {
+    for (const k of [cs.i, cs.i - na, cs.j, cs.j + na]) {
+      if (k >= 0 && k < count) seamFree[k] = 1;
+    }
+  }
 
   // Decode both constraint buffers, offset b, re-color the union.
   const decode = (mesh: ClothMeshData, offset: number): Edge[] => {
@@ -1051,5 +1069,6 @@ export function combineClothMeshes(
     cornerIndices: a.cornerIndices,
     triangleIndices,
     layers,
+    seamFree,
   };
 }

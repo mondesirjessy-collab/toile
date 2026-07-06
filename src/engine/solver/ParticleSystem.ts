@@ -99,6 +99,7 @@ export class ParticleSystem {
   private readonly velocityBuffer: GPUBuffer;
   private readonly invMassBuffer: GPUBuffer;
   private readonly layerBuffer: GPUBuffer;
+  private readonly seamFreeBuffer: GPUBuffer;
   private readonly constraintBuffer: GPUBuffer;
   private readonly quadBuffer: GPUBuffer | null;
   private readonly colliderBuffer: GPUBuffer;
@@ -222,6 +223,11 @@ export class ParticleSystem {
     // Garment layer per particle: collide pushes layer L to thickness + L·gap,
     // so a dress worn over a tee rests ON the tee instead of inside it.
     this.layerBuffer = this.createBuffer(mesh.layers ?? new Float32Array(this.count), storage);
+    // Cross-seam ring: these particles are held at seam distance on purpose —
+    // self-collision must not repel them (u32 per particle for the shader).
+    const seamFree = new Uint32Array(this.count);
+    if (mesh.seamFree) for (let i = 0; i < this.count; i++) seamFree[i] = mesh.seamFree[i]!;
+    this.seamFreeBuffer = this.createBufferRaw(seamFree.buffer, storage);
     this.constraintBuffer = this.createBufferRaw(mesh.constraintData, storage);
     this.quadColorCounts = mesh.quadColorCounts;
     this.quadBuffer = mesh.quadCount > 0 ? this.createBufferRaw(mesh.quadData, storage) : null;
@@ -431,7 +437,7 @@ export class ParticleSystem {
     });
     this.selfCollideBindGroup = device.createBindGroup({
       layout: this.selfCollidePipeline.getBindGroupLayout(0),
-      entries: selfAll,
+      entries: [...selfAll, { binding: 5, resource: { buffer: this.seamFreeBuffer } }],
     });
   }
 
@@ -659,6 +665,7 @@ export class ParticleSystem {
     this.velocityBuffer.destroy();
     this.invMassBuffer.destroy();
     this.layerBuffer.destroy();
+    this.seamFreeBuffer.destroy();
     this.constraintBuffer.destroy();
     this.quadBuffer?.destroy();
     this.colliderBuffer.destroy();

@@ -22,6 +22,8 @@ struct SelfParams {
 @group(0) @binding(2) var<storage, read> inv_masses: array<f32>;
 @group(0) @binding(3) var<storage, read_write> heads: array<atomic<u32>>;
 @group(0) @binding(4) var<storage, read_write> nexts: array<u32>;
+// 1 = stitched across garments (cross-seam ring): never repel two of these.
+@group(0) @binding(5) var<storage, read> seam_free: array<u32>;
 
 const NIL: u32 = 0xffffffffu;
 
@@ -78,18 +80,35 @@ fn collide(@builtin(global_invocation_id) gid: vec3u) {
             // exclusion must never apply BETWEEN garments, or layered outfits
             // stop separating in mirror-aligned patches.
             let same_garment = (pi / 2u) == (pj / 2u);
+            // Same panel: exclude only the 2-ring the distance/shear/bending
+            // constraints already govern — in GRID coordinates. Linear index
+            // distance would conflate rows with columns and blind the pass to
+            // every same-row contact: a vertical fold bringing (u=5, v) onto
+            // (u=50, v) must repel like any other cloth-on-cloth touch.
+            let du = abs((lj % ni) - (li % ni));
+            let dv = abs((lj / ni) - (li / ni));
             let near_weave =
-              (pj == pi && dl < 2 * ni + 3) ||
-              (same_garment &&
-                (dl <= 2 || (dl >= ni - 2 && dl <= ni + 2) || (dl >= 2 * ni - 2 && dl <= 2 * ni + 2)));
+              (pj == pi && du <= 2 && dv <= 2) ||
+              (pj != pi && same_garment &&
+                (dl <= 2 || (dl >= ni - 2 && dl <= ni + 2) || (dl >= 2 * ni - 2 && dl <= 2 * ni + 2))) ||
+              // A waist seam sewing two garments together holds its rows at
+              // seam distance ON PURPOSE — repelling them shakes the garment
+              // loose (the gathered bodice slid off its bust this way).
+              (seam_free[i] == 1u && seam_free[j] == 1u);
             if (!near_weave) {
               let d = x - positions[j].xyz;
               let dist = length(d);
-              if (dist < sp.min_dist && dist > 1e-6) {
+              // A panel folded onto ITSELF packs tighter than two garments
+              // resting on each other: gathers (elastic tops, embu) stack
+              // distant columns at a fabric-thickness distance. Same-panel
+              // contacts get a slimmer radius — still a tunneling barrier,
+              // no longer a bellows that puffs every gather open.
+              let md = select(sp.min_dist, sp.min_dist * 0.5, pj == pi);
+              if (dist < md && dist > 1e-6) {
                 // Gentle relaxation (0.3, not the full half-correction): layered
                 // garments resting on each other settle smoothly instead of
                 // locking into stepped patches.
-                corr += d * ((sp.min_dist - dist) / dist) * 0.3;
+                corr += d * ((md - dist) / dist) * 0.3;
               }
             }
           }
