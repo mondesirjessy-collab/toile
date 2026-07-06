@@ -19,6 +19,17 @@ describe('measureBody (le tailleur)', () => {
     expect(F.chest.circ).toBeLessThan(1.4);
   });
 
+  it('finds the chest at BUST height, not on the ribcage bulge', () => {
+    // The diaphragm bulge (~0.66 H) is slightly fuller than the bust on the
+    // sculpted female form; a band floor below it graded tops on the wrong
+    // line and pointed the « poitrine » morph at the ribs.
+    expect(F.chest.y / 1.755).toBeGreaterThan(0.67);
+    expect(F.chest.y / 1.755).toBeLessThan(0.76);
+    expect(F.chest.y - F.waist.y).toBeGreaterThan(0.12); // clear of the waist band
+    expect(M.chest.y / 1.765).toBeGreaterThan(0.67);
+    expect(M.chest.y / 1.765).toBeLessThan(0.76);
+  });
+
   it('measures the male broader where it matters', () => {
     expect(M.chest.circ).toBeGreaterThan(F.chest.circ);
     expect(M.shoulderHalfW).toBeGreaterThan(F.shoulderHalfW);

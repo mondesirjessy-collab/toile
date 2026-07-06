@@ -12,6 +12,7 @@
 - ✅ **M** avatars scannés : les 4 fetchs (2 corps × mesh+sdf) passent en PARALLÈLE (Promise.all main.ts + ScanAvatar) — le premier rendu n'attend plus ~4,7 Mo en série (v60).
 - ✅ **M** import .toile.json : chaque scalaire validé fini + borné aux plages des curseurs (num() clamp), résolution sur liste blanche [32,64,128], substeps arrondi 5-40 — fini les NaN/Infinity/résolution-DoS (v60).
 - ✅ **M** trou sous-bras setin : la zone d'exemption emmanchure suit EXACTEMENT les bornes de la bande manche (CAP_V0..CAP_V1, mêmes comparaisons que le masque) — plus de rangées ni cousues à la manche ni au flanc ; test balayage n=16…128 (chaque rangée sous la bande porte sa couture miroir) (v61).
+- ✅ **M** poitrine mesurée au diaphragme : plancher de la bande de recherche 0,62 H → 0,695 H (au-dessus du creux sous-poitrine — la bosse des côtes s'étire jusqu'à 0,67 H et gagnait encore le max) ; le buste est trouvé à ~0,72 H, la gradation des hauts et l'ancrage du morph « poitrine » visent la bonne ligne ; test anthropométrique femme+homme (v62).
 - Le reste de la liste ci-dessous est à dérouler dans l'ordre.
 
 Audit adversarial mené par 33 agents (6 spécialistes : physique XPBD, GPU/WebGPU, patrons/topologie, corps/SDF, exports, produit — chaque trouvaille critique/majeure contre-vérifiée par un agent indépendant chargé de la réfuter).

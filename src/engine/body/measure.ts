@@ -122,9 +122,13 @@ export function measureBody(sd: Sd, height: number): BodyMeasure {
 
   // Chest/bust: fullest caliper circumference below the shoulders — capped
   // at 76% of stature (a bust never sits above that; the shoulder girdle does).
+  // The band FLOOR matters as much: the bust line lives at ~0.72 H, and a
+  // floor of 0.62 H let the RIBCAGE bulge (≈ 0.66 H, slightly fuller than
+  // the bust on the sculpted female form) win the max — the tailor graded
+  // tops on the diaphragm and the « poitrine » slider inflated it.
   let chest = level(sd, 0.7 * H);
   const chestTop = Math.min(shoulderY - 0.04, 0.76 * H);
-  for (let y = 0.62 * H; y <= chestTop; y += step) {
+  for (let y = 0.695 * H; y <= chestTop; y += step) {
     const l = level(sd, y);
     if (l.circ > chest.circ) chest = l;
   }
