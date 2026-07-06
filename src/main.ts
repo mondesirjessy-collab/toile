@@ -341,6 +341,7 @@ async function main(): Promise<void> {
                     topY: 1.14 + (m.waist.y - REF.waist.y), // starts above the hips, drops onto them
                     shape: 'skirt',
                     shapeParams: { profile: skirtPattern.profile },
+                    elasticTop: 0.75, // taille élastiquée : fronce et agrippe le corps
                   }),
                 )
               : sceneMode === 'pantalon'
@@ -354,6 +355,7 @@ async function main(): Promise<void> {
                     gap: 0.7,
                     topY: m.waist.y + 0.08, // starts above the waist, drops onto it
                     shape: 'pants',
+                    elasticTop: 0.8, // ceinture élastiquée
                   })
                 : generateClothGrid({ resolution, size: CLOTH_SIZE, topY: CLOTH_TOP_Y, pin: 'none' });
     system = new ParticleSystem(device, mesh, {

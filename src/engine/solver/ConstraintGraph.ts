@@ -42,6 +42,8 @@ export interface BendQuad {
   w1: number;
   /** Rest dihedral angle (π = flat). */
   restAngle: number;
+  /** Compliance multiplier: 1 = fabric bending, >1 = softer (seam pressing). */
+  softness?: number;
 }
 
 export interface QuadColoringResult {

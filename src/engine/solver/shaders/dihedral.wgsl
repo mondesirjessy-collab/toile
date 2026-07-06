@@ -36,7 +36,7 @@ struct BendQuad {
   w0: u32,
   w1: u32,
   rest_angle: f32,
-  _p0: f32,
+  softness: f32, // compliance multiplier: 1 = fabric bending, >1 = softer (pressing)
   _p1: f32,
   _p2: f32,
 };
@@ -96,7 +96,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // 1/spacing. Dividing by spacing² keeps the same slider range meaningful
   // (and resolution-independent): low = leather-stiff, high = chiffon-floppy.
   let sp2 = params.cloth_spacing * params.cloth_spacing;
-  let alpha = params.compliance_bend / (params.dt * params.dt * max(sp2, 1e-8));
+  let alpha = max(q.softness, 1.0) * params.compliance_bend / (params.dt * params.dt * max(sp2, 1e-8));
   let s = -c * sqrt(max(1.0 - d * d, 0.0)) / (denom + alpha);
 
   positions[q.e0] = vec4f(x1 + s * w1 * q1, 0.0);

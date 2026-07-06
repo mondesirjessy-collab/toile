@@ -538,3 +538,44 @@ describe('profils dessinés — jupe et chemise', () => {
     expect(kept(0.5 + 0.12, 0.9)).toBe(true);
   });
 });
+
+describe('couture v1 — repassage et élastique', () => {
+  const n = 64;
+  it('pose des charnières de repassage trans-couture à angle 0', () => {
+    const m = generateSeamedPanels({ resolution: n, width: 0.85, height: 0.6, gap: 0.75, topY: 1.14, shape: 'skirt' });
+    // quadData : 4×u32 + f32 restAngle (stride 32). Compter les charnières
+    // dont l'angle de repos est exactement 0 ET qui relient les deux panneaux.
+    const dv = new DataView(m.quadData);
+    const panelSize = n * n;
+    let press = 0;
+    for (let k = 0; k < m.quadCount; k++) {
+      const w0 = dv.getUint32(k * 32 + 8, true);
+      const w1 = dv.getUint32(k * 32 + 12, true);
+      const angle = dv.getFloat32(k * 32 + 16, true);
+      const cross = Math.floor(w0 / panelSize) !== Math.floor(w1 / panelSize);
+      if (cross && Math.abs(angle - Math.PI) < 1e-5) press++;
+    }
+    expect(press).toBeGreaterThan(50); // les deux coutures latérales en sont couvertes
+  });
+
+  it("réduit la longueur de repos du tissage en zone élastiquée", () => {
+    const plain = generateSeamedPanels({ resolution: n, width: 0.85, height: 0.6, gap: 0.75, topY: 1.14, shape: 'skirt' });
+    const elast = generateSeamedPanels({ resolution: n, width: 0.85, height: 0.6, gap: 0.75, topY: 1.14, shape: 'skirt', elasticTop: 0.75 });
+    const sumTopRest = (m: typeof plain): number => {
+      const dv = new DataView(m.constraintData);
+      let sum = 0;
+      for (let k = 0; k < m.constraintCount; k++) {
+        if (dv.getUint32(k * 16 + 12, true) !== 0) continue; // Structural
+        const i = dv.getUint32(k * 16, true) % (n * n);
+        const j = dv.getUint32(k * 16 + 4, true) % (n * n);
+        const vi = Math.floor(i / n);
+        const vj = Math.floor(j / n);
+        if (vi === vj && vi < Math.floor(0.05 * (n - 1))) sum += dv.getFloat32(k * 16 + 8, true);
+      }
+      return sum;
+    };
+    const ratio = sumTopRest(elast) / sumTopRest(plain);
+    expect(ratio).toBeGreaterThan(0.7);
+    expect(ratio).toBeLessThan(0.8);
+  });
+});

@@ -80,9 +80,10 @@ function buildBendQuads(
   panelCount: number,
   n: number,
   keptLocal: (u: number, v: number) => boolean,
+  extra: BendQuad[] = [],
 ): Pick<ClothMeshData, 'quadData' | 'quadCount' | 'quadColorOffsets' | 'quadColorCounts'> {
   const panelSize = n * n;
-  const quads: BendQuad[] = [];
+  const quads: BendQuad[] = [...extra];
 
   const restAngle = (e0: number, e1: number, w0: number, w1: number): number | null => {
     const P = (i: number, k: number): number => positions[i * 4 + k]!;
@@ -108,7 +109,7 @@ function buildBendQuads(
     const idx = (u: number, v: number): number => p * panelSize + v * n + u;
     const push = (e0: number, e1: number, w0: number, w1: number): void => {
       const angle = restAngle(e0, e1, w0, w1);
-      if (angle !== null) quads.push({ e0, e1, w0, w1, restAngle: angle });
+      if (angle !== null) quads.push({ e0, e1, w0, w1, restAngle: angle, softness: 1 });
     };
     for (let v = 0; v < n - 1; v++) {
       for (let u = 0; u < n - 1; u++) {
@@ -150,6 +151,7 @@ function buildBendQuads(
     dv.setUint32(base + 8, q.w0, true);
     dv.setUint32(base + 12, q.w1, true);
     dv.setFloat32(base + 16, q.restAngle, true);
+    dv.setFloat32(base + 20, q.softness ?? 1, true);
   }
   return {
     quadData,
@@ -302,6 +304,12 @@ export interface SeamedPanelsOptions {
   shape?: 'rect' | 'aline' | 'tshirt' | 'skirt' | 'setin' | 'pants';
   /** Pattern measurements (grading): shape-specific, all in normalized [0,1] pattern units. */
   shapeParams?: { hem?: number; scoop?: number; sleeve?: number; profile?: number[] };
+  /**
+   * Elastic band at the top edge: rest-length ratio (< 1) applied to the
+   * horizontal weave in the top rows — the fabric gathers and GRIPS whatever
+   * it sits on (elasticated waists, cuffs). 1 = no elastic.
+   */
+  elasticTop?: number;
 }
 
 type PatternShape = NonNullable<SeamedPanelsOptions['shape']>;
@@ -594,6 +602,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
     kind,
   });
 
+  const elasticTop = opts.elasticTop ?? 1;
   // In-panel constraints, identical topology to the single sheet, restricted
   // to particles inside the pattern (bending also requires the middle particle
   // so it never bridges across a cut).
@@ -601,8 +610,13 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
     for (let v = 0; v < n; v++) {
       for (let u = 0; u < n; u++) {
         if (!isKept(p, u, v)) continue;
-        if (u + 1 < n && isKept(p, u + 1, v))
-          structural.push(edge(index(p, u, v), index(p, u + 1, v), ConstraintKind.Structural));
+        if (u + 1 < n && isKept(p, u + 1, v)) {
+          const e = edge(index(p, u, v), index(p, u + 1, v), ConstraintKind.Structural);
+          // Elastic band: the top rows want to be SHORTER than they are cut —
+          // the weave gathers and grips (elasticated waist).
+          if (elasticTop < 1 && v / (n - 1) < 0.06) e.rest *= elasticTop;
+          structural.push(e);
+        }
         if (v + 1 < n && isKept(p, u, v + 1))
           structural.push(edge(index(p, u, v), index(p, u, v + 1), ConstraintKind.Structural));
         if (u + 1 < n && v + 1 < n) {
@@ -621,6 +635,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
   // two pieces touch (self-collision excludes mirror pairs so it can close).
   const gridSpacing = width / (n - 1);
   const seamRest = gridSpacing * 0.15;
+  const pressHinges: BendQuad[] = [];
   if (shape === 'rect') {
     // Plain tube: side seams only (leftmost/rightmost of each row), top open.
     for (let v = 0; v < n; v++) {
@@ -655,11 +670,13 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
     // (2 × spacing), so the fabric behaves as if continuous through the seam —
     // a smooth ridge instead of a pinched, gaping fold.
     const flattened = new Set<number>();
+    const seamedLocal = new Set<number>();
     for (let v = 0; v < n; v++) {
       for (let u = 0; u < n; u++) {
         if (!kept[v * n + u]) continue;
         if (!onBoundary(u, v)) continue;
         if (isOpening(shape, u / (n - 1), v / (n - 1), shapeParams)) continue;
+        seamedLocal.add(v * n + u);
         seams.push({ i: index(0, u, v), j: index(1, u, v), rest: seamRest, kind: ConstraintKind.Seam });
         for (const [du, dv2] of [
           [-1, 0],
@@ -680,6 +697,58 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
             kind: ConstraintKind.Bending,
           });
         }
+      }
+    }
+
+    // PRESSING (fold angle 180°): true dihedral hinges ACROSS each seam, rest
+    // angle 0 — once sewn, the two panels are asked to continue FLAT through
+    // the seam line, like a pressed seam under the iron. The hinge edge runs
+    // along the seam on panel 0; one wing is panel 0's inward neighbour, the
+    // other is panel 1's — geometrically a hinge over the closed seam ridge.
+    const inward = (u: number, v: number): number => {
+      for (const [du, dv2] of [
+        [-1, 0],
+        [1, 0],
+        [0, -1],
+        [0, 1],
+      ] as const) {
+        const u2 = u + du;
+        const v2 = v + dv2;
+        if (u2 < 0 || u2 >= n || v2 < 0 || v2 >= n) continue;
+        const local = v2 * n + u2;
+        if (kept[local] && !onBoundary(u2, v2)) return local;
+      }
+      return -1;
+    };
+    // Pressing only where seams are meant to lie flat (vertical side seams).
+    // Sleeve underarm seams WRAP the arm — flattening them fights the very
+    // curvature they exist to create (learned the hard way on the kimono tee).
+    const pressable = shape === 'aline' || shape === 'skirt' || shape === 'pants';
+    for (const local of pressable ? seamedLocal : []) {
+      const u = local % n;
+      const v = (local - u) / n;
+      for (const [du, dv2] of [
+        [1, 0],
+        [0, 1],
+      ] as const) {
+        const u2 = u + du;
+        const v2 = v + dv2;
+        if (u2 >= n || v2 >= n) continue;
+        const local2 = v2 * n + u2;
+        if (!seamedLocal.has(local2)) continue; // consecutive along the seam
+        const w0 = inward(u, v);
+        const w1 = inward(u2, v2);
+        if (w0 < 0 || w1 < 0) continue;
+        // Gentle iron: 8x softer than the fabric's own bending — presses the
+        // ridge flat without fighting seams that must curve around the body.
+        pressHinges.push({
+          e0: 0 * panelSize + local,
+          e1: 0 * panelSize + local2,
+          w0: 0 * panelSize + w0,
+          w1: 1 * panelSize + w1,
+          restAngle: Math.PI, // π = pressed FLAT in this convention
+          softness: 8,
+        });
       }
     }
 
@@ -723,7 +792,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
 
   const all = structural.concat(shear, bending, seams);
   const { ordered, colorOffsets, colorCounts } = colorConstraints(all, count);
-  const quads = buildBendQuads(positions, 2, n, (u, v) => kept[v * n + u]!);
+  const quads = buildBendQuads(positions, 2, n, (u, v) => kept[v * n + u]!, pressHinges);
 
   const constraintData = new ArrayBuffer(ordered.length * CONSTRAINT_STRIDE);
   const dv = new DataView(constraintData);
