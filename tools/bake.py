@@ -45,6 +45,7 @@ V -= V.min(0)
 h = V[:, 1].max()
 HEIGHT = float(sys.argv[3]) if len(sys.argv) > 3 else 1.755
 NAME = sys.argv[4] if len(sys.argv) > 4 else 'homme-scan'
+FLIP = sys.argv[5] if len(sys.argv) > 5 else 'auto'  # '0' | '1' | 'auto'
 V *= HEIGHT / h
 V[:, 0] -= (V[:, 0].max() + V[:, 0].min()) / 2
 V[:, 2] -= (V[:, 2].max() + V[:, 2].min()) / 2
@@ -53,7 +54,8 @@ print('normalized extents:', np.round(ext, 3), '(x=larg, y=haut, z=prof)')
 # Heuristic front check: the nose/toes push the +z or -z side out at foot level.
 feet = V[V[:, 1] < 0.15]
 zmid = (feet[:, 2].max() + feet[:, 2].min()) / 2
-if abs(feet[:, 2].min()) > abs(feet[:, 2].max()):
+do_flip = (FLIP == '1') if FLIP != 'auto' else abs(feet[:, 2].min()) > abs(feet[:, 2].max())
+if do_flip:
     V[:, 2] *= -1
     V[:, 0] *= -1  # keep right-handed
     print('flipped to face +z (toes forward)')

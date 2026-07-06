@@ -153,9 +153,19 @@ async function main(): Promise<void> {
             ? BODY_MALE_ARMS
             : BODY_FORM_ARMS;
     const colliders = bodyPrims ? toColliders(bodyPrims) : useScan ? [] : SPHERE;
-    // Garment grading: the male figure is broader and longer-limbed, so tops
-    // are cut larger for him — exactly what a size chart does in real life.
-    const fit = bodyKind === 'homme' || bodyKind === 'scan homme' ? 1.13 : 1;
+    // Garment grading per mannequin — exactly what a size chart does in real
+    // life. tops: tee/chemise width; dress: robe width; the male skirt keeps
+    // the top grade (it slides off him at any size anyway — no belt yet).
+    const GRADE: Record<string, { top: number; dress: number }> = {
+      femme: { top: 1, dress: 1 },
+      homme: { top: 1.13, dress: 1.08 },
+      'scan homme': { top: 1.13, dress: 1.08 },
+      // The scanned female is narrower in the shoulders than the sculpted
+      // form the patterns were cut for: take the dress in, or it reads poncho.
+      'scan femme': { top: 1, dress: 0.93 },
+    };
+    const grade = GRADE[bodyKind] ?? { top: 1, dress: 1 };
+    const fit = grade.top;
     const tee = () =>
       generateSeamedPanels({
         resolution,
@@ -171,7 +181,7 @@ async function main(): Promise<void> {
         : sceneMode === 'robe'
           ? generateSeamedPanels({
               resolution,
-              width: 0.95 * (fit === 1 ? 1 : 1.08),
+              width: 0.95 * grade.dress,
               height: dressPattern.length,
               gap: 1.0,
               topY: 1.6,
