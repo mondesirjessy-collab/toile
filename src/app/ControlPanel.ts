@@ -29,6 +29,7 @@ export interface PanelCallbacks {
   onAnimate(on: boolean): void;
   onBody(kind: BodyKind): void;
   onPattern(p: PatternParams): void;
+  onProfile(profile: number[]): void;
   onShirtPattern(p: { sleeve: number }): void;
   onSkirtPattern(p: { length: number; flare: number }): void;
   onPins(held: boolean): void;
@@ -262,6 +263,13 @@ export class ControlPanel {
     for (const c of this.controllers) c.updateDisplay();
   }
 
+  /** Drafted side-seam silhouette (exported with the garment). */
+  private profile: number[] | null = null;
+
+  setProfile(profile: number[]): void {
+    this.profile = profile.slice();
+  }
+
   /** Mirror a measurement edited in the 2D layout into the pattern sliders. */
   syncPattern(
     p: Partial<Pick<Settings, 'dressLength' | 'dressFlare' | 'dressNeck' | 'sleeveLen' | 'skirtLength' | 'skirtFlare'>>,
@@ -279,6 +287,7 @@ export class ControlPanel {
       scene: s.scene,
       body: s.body,
       pattern: {
+        profile: this.profile ?? undefined,
         length: s.dressLength,
         flare: s.dressFlare,
         neck: s.dressNeck,
@@ -329,7 +338,7 @@ export class ControlPanel {
       format?: string;
       scene?: SceneMode;
       body?: BodyKind;
-      pattern?: Partial<PatternParams> & { sleeve?: number; skirtLength?: number; skirtFlare?: number };
+      pattern?: Partial<PatternParams> & { sleeve?: number; skirtLength?: number; skirtFlare?: number; profile?: number[] };
       fabric?: { preset?: string; stretchExp?: number; shearExp?: number; bendExp?: number; friction?: number };
       sim?: { resolution?: number; substeps?: number; selfCollision?: boolean; wind?: number };
     };
@@ -374,6 +383,9 @@ export class ControlPanel {
     this.cb.onSelfCollision(s.selfCollision);
     this.cb.onWind(s.wind);
     this.cb.onPattern({ length: s.dressLength, flare: s.dressFlare, neck: s.dressNeck });
+    if (Array.isArray(d.pattern?.profile) && d.pattern.profile.length >= 2) {
+      this.cb.onProfile(d.pattern.profile);
+    }
     this.cb.onShirtPattern({ sleeve: s.sleeveLen });
     this.cb.onSkirtPattern({ length: s.skirtLength, flare: s.skirtFlare });
     this.cb.onResolution(s.resolution);

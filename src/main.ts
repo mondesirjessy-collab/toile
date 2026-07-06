@@ -117,7 +117,9 @@ async function main(): Promise<void> {
   let resolution = DEFAULT_RESOLUTION;
   let selfCollision = true;
   let wind = 0;
-  let dressPattern = { length: 1.3, flare: 0.5, neck: 0.1 };
+  const linearProfile = (flare: number): number[] =>
+    Array.from({ length: 6 }, (_, k) => 0.21 + (flare - 0.21) * (k / 5));
+  let dressPattern = { length: 1.3, flare: 0.5, neck: 0.1, profile: linearProfile(0.5) };
   let shirtPattern = { sleeve: 0.47 };
   let skirtPattern = { length: 0.6, flare: 0.46 };
   let bodyKind: 'femme' | 'homme' | 'scan homme' | 'scan femme' = 'femme';
@@ -220,7 +222,7 @@ async function main(): Promise<void> {
               gap: 1.0,
               topY: 1.6 + dyShoulder,
               shape: 'aline', // real pattern piece: fitted, flared, scooped neckline
-              shapeParams: { hem: dressPattern.flare, scoop: dressPattern.neck },
+              shapeParams: { profile: dressPattern.profile, scoop: dressPattern.neck },
             })
           : sceneMode === 't-shirt'
             ? tee()
@@ -309,8 +311,20 @@ async function main(): Promise<void> {
   const patternHandles = (): PatternHandleSpec[] => {
     if (sceneMode === 'robe') {
       const grid = { width: 0.95 * lastGrade.dressScale, topY: 1.6 + lastGrade.dyShoulder, height: dressPattern.length };
+      // Pattern drafting: one handle per side-seam station — sculpt the
+      // silhouette point by point, the dress is re-cut and re-sewn to match.
+      const stations: PatternHandleSpec[] = dressPattern.profile.map((w, k) => ({
+        id: `profil${k}`,
+        label: 'silhouette',
+        grid,
+        anchor: [0.5 + w, k / 5] as [number, number],
+        axis: 'u' as const,
+        value: w,
+        min: k === 0 ? 0.18 : 0.1,
+        max: 0.5,
+      }));
       return [
-        { id: 'dressFlare', label: 'évasement', grid, anchor: [0.5 + dressPattern.flare, 1], axis: 'u', value: dressPattern.flare, min: 0.25, max: 0.5 },
+        ...stations,
         { id: 'dressLength', label: 'longueur', grid, anchor: [0.5, 1], axis: 'y', value: dressPattern.length, min: 0.9, max: 1.55, unit: ' m' },
         { id: 'dressNeck', label: 'encolure', grid, anchor: [0.5 + dressPattern.neck, 0], axis: 'u', value: dressPattern.neck, min: 0.06, max: 0.16 },
       ];
@@ -333,7 +347,10 @@ async function main(): Promise<void> {
 
   // A handle was released in the layout: commit the measurement everywhere.
   const applyHandle = (id: string, value: number): void => {
-    if (id === 'dressFlare') dressPattern.flare = value;
+    if (id.startsWith('profil')) {
+      dressPattern.profile[Number(id.slice(6))] = value;
+      panel.setProfile(dressPattern.profile);
+    } else if (id === 'dressFlare') dressPattern.flare = value;
     else if (id === 'dressLength') dressPattern.length = value;
     else if (id === 'dressNeck') dressPattern.neck = value;
     else if (id === 'sleeveLen') shirtPattern.sleeve = value;
@@ -408,9 +425,20 @@ async function main(): Promise<void> {
         if (!v && animPrims) build(); // reset to the rest pose cleanly
       },
       onPattern: (p) => {
-        dressPattern = p;
+        // Sliders describe a straight grade: they reset any drafted silhouette.
+        dressPattern = { ...p, profile: linearProfile(p.flare) };
+        panel.setProfile(dressPattern.profile);
         // The pattern sliders describe the dress: jump to the dress scene so
         // the adjustment is always visible, then re-cut and re-sew.
+        if (sceneMode !== 'robe') {
+          sceneMode = 'robe';
+          panel.syncScene('robe');
+        }
+        build();
+      },
+      onProfile: (profile) => {
+        dressPattern.profile = profile.slice();
+        panel.setProfile(dressPattern.profile);
         if (sceneMode !== 'robe') {
           sceneMode = 'robe';
           panel.syncScene('robe');

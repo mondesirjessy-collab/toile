@@ -482,3 +482,16 @@ describe('combineClothMeshes (outfits)', () => {
     expect(() => combineClothMeshes(tee, other)).toThrow();
   });
 });
+
+describe('sideHalfWidth (patron libre)', () => {
+  it('interpolates the drafted silhouette between stations', async () => {
+    const { sideHalfWidth } = await import('../src/engine/cloth/ClothMesh');
+    const profile = [0.2, 0.3, 0.1, 0.1, 0.4, 0.5];
+    expect(sideHalfWidth(0, { profile })).toBeCloseTo(0.2);
+    expect(sideHalfWidth(1, { profile })).toBeCloseTo(0.5);
+    expect(sideHalfWidth(0.1, { profile })).toBeCloseTo(0.25); // mi-chemin station 0-1
+    expect(sideHalfWidth(0.4, { profile })).toBeCloseTo(0.1);
+    // Sans profil : la pente linéaire historique.
+    expect(sideHalfWidth(0.5, { hem: 0.41 })).toBeCloseTo(0.31);
+  });
+});

@@ -301,7 +301,7 @@ export interface SeamedPanelsOptions {
    */
   shape?: 'rect' | 'aline' | 'tshirt' | 'skirt' | 'setin';
   /** Pattern measurements (grading): shape-specific, all in normalized [0,1] pattern units. */
-  shapeParams?: { hem?: number; scoop?: number; sleeve?: number };
+  shapeParams?: { hem?: number; scoop?: number; sleeve?: number; profile?: number[] };
 }
 
 type PatternShape = NonNullable<SeamedPanelsOptions['shape']>;
@@ -380,15 +380,31 @@ function isOpening(shape: PatternShape, uu: number, vv: number, p: ShapeParams =
 /** True when grid cell (u,v) ∈ [0,1]² lies inside the A-line pattern piece.
  * Parametric (grading): `hem` = half-width at the hem, `scoop` = neckline
  * half-width — the seed of pattern editing. */
-function alineShape(u: number, v: number, p: ShapeParams = {}): boolean {
+/**
+ * Side-seam half-width at height v. Default: straight grade from the fitted
+ * top to the hem. With `profile`, the SILHOUETTE IS FREE-FORM: the array
+ * holds the half-width at evenly spaced v-stations (pattern drafting: the
+ * user sculpts the side seam point by point; linear between stations).
+ */
+export function sideHalfWidth(v: number, p: ShapeParams): number {
+  const prof = p.profile;
+  if (prof && prof.length >= 2) {
+    const t = Math.min(1, Math.max(0, v)) * (prof.length - 1);
+    const k = Math.min(prof.length - 2, Math.floor(t));
+    return prof[k]! + (prof[k + 1]! - prof[k]!) * (t - k);
+  }
   const hem = p.hem ?? 0.5;
+  return 0.21 + (hem - 0.21) * v;
+}
+
+function alineShape(u: number, v: number, p: ShapeParams = {}): boolean {
   const scoopW = p.scoop ?? 0.1;
   const x = Math.abs(u - 0.5);
-  // Fitted top → hem. The top stays narrow so the neck opening ring is
-  // smaller than the shoulder span — otherwise the dress slips off over time
-  // (a genuine pattern-fitting bug found by the sim itself).
-  const halfWidth = 0.21 + (hem - 0.21) * v;
-  if (x > halfWidth) return false;
+  // Fitted top → hem (or a free-form drafted silhouette). The top stays
+  // narrow so the neck opening ring is smaller than the shoulder span —
+  // otherwise the dress slips off over time (a genuine pattern-fitting bug
+  // found by the sim itself).
+  if (x > sideHalfWidth(v, p)) return false;
   // Elliptical neckline scoop, leaving straps close to the neck.
   if (v < 0.12) {
     const scoop = scoopW * Math.sqrt(1 - (v / 0.12) ** 2);
