@@ -48,3 +48,19 @@ describe('measureBody (le tailleur)', () => {
     expect(Math.abs(G.shoulderY - F.shoulderY)).toBeLessThan(0.05);
   });
 });
+
+describe('morphologies', () => {
+  it('widens the hips and the tailor re-measures accordingly', async () => {
+    const { morphPrims, morphScale } = await import('../src/engine/body/morph');
+    const base = measureBody(sdF, 1.755);
+    const marks = { chestY: base.chest.y, waistY: base.waist.y, hipY: base.hip.y };
+    const m = { poitrine: 1, taille: 1, hanches: 1.18 };
+    // The warp peaks at the hip line and fades at the chest.
+    expect(morphScale(base.hip.y, m, marks)).toBeCloseTo(1.18, 2);
+    expect(morphScale(base.chest.y, m, marks)).toBeLessThan(1.03);
+    const morphed = morphPrims(BODY_FORM, m, marks);
+    const M = measureBody((x, y, z) => sdBody(x, y, z, morphed, BODY_BLEND), 1.755);
+    expect(M.hip.circ).toBeGreaterThan(base.hip.circ * 1.1);
+    expect(Math.abs(M.chest.circ - base.chest.circ)).toBeLessThan(0.05);
+  });
+});

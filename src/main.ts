@@ -21,6 +21,7 @@ import {
 } from './engine/body/BodySdf';
 import { loadScanAvatar, type ScanAvatar } from './engine/body/ScanAvatar';
 import { gridSd, measureBody, type BodyMeasure } from './engine/body/measure';
+import { isNeutral, morphGrid, morphMesh, morphPrims, NO_MORPH, type MorphMarks, type Morphs } from './engine/body/morph';
 import { applySkin, buildSkin, poseIdle, type Skin } from './engine/body/pose';
 import { bodyRestVertices } from './app/SceneGeometry';
 
@@ -125,6 +126,7 @@ async function main(): Promise<void> {
     Array.from({ length: 4 }, (_, k) => 0.22 + (flare - 0.22) * (k / 3));
   let skirtPattern = { length: 0.6, flare: 0.46, profile: skirtLinear(0.46) };
   let bodyKind: 'femme' | 'homme' | 'scan homme' | 'scan femme' = 'femme';
+  let morphs: Morphs = { ...NO_MORPH };
   let podium = 0; // tours/minute
   let podiumAngle = 0;
   let animate = false;
@@ -145,17 +147,37 @@ async function main(): Promise<void> {
   // then lazy per-mannequin measurements (analytic field or scan grid).
   const REF = measureBody((x, y, z) => sdBody(x, y, z, BODY_FORM, BODY_BLEND), 1.755);
   const measureCache: Record<string, BodyMeasure> = {};
-  const measureFor = (kind: string, scan: ScanAvatar | null): BodyMeasure => {
-    if (kind === 'homme') {
-      measureCache[kind] ??= measureBody((x, y, z) => sdBody(x, y, z, BODY_MALE, BODY_BLEND), 1.765);
-      return measureCache[kind]!;
+  const measureFor = (kind: string, prims: SdfPrim[] | null, scan: ScanAvatar['grid'] | null): BodyMeasure => {
+    const key = `${kind}|${morphs.poitrine}|${morphs.taille}|${morphs.hanches}`;
+    if (prims) {
+      measureCache[key] ??= measureBody(
+        (x, y, z) => sdBody(x, y, z, prims, BODY_BLEND),
+        kind === 'homme' ? 1.765 : 1.755,
+      );
+      return measureCache[key]!;
     }
     if (scan) {
-      measureCache[kind] ??= measureBody(gridSd(scan.grid), scan.grid.max[1] - 0.06);
-      return measureCache[kind]!;
+      measureCache[key] ??= measureBody(gridSd(scan), scan.max[1] - 0.06);
+      return measureCache[key]!;
     }
     return REF;
   };
+  // Feature heights of each UNMORPHED body: the anchor points of the warp.
+  const marksCache: Record<string, MorphMarks> = {};
+  const marksFor = (kind: string, scan: ScanAvatar | null): MorphMarks => {
+    if (!marksCache[kind]) {
+      const base =
+        kind === 'homme'
+          ? measureBody((x, y, z) => sdBody(x, y, z, BODY_MALE, BODY_BLEND), 1.765)
+          : scan
+            ? measureBody(gridSd(scan.grid), scan.grid.max[1] - 0.06)
+            : REF;
+      marksCache[kind] = { chestY: base.chest.y, waistY: base.waist.y, hipY: base.hip.y };
+    }
+    return marksCache[kind]!;
+  };
+  // Morphed-body caches (rebuilt on slider release, keyed by kind+morphs).
+  const morphCache: Record<string, { grid: ScanAvatar['grid']; mesh: ScanAvatar['mesh'] }> = {};
 
   // Stashed by build() so the pattern-view handles use the graded dimensions.
   let lastGrade = { topScale: 1, dressScale: 1, skirtScale: 1, dyShoulder: 0, dyWaist: 0 };
@@ -208,7 +230,7 @@ async function main(): Promise<void> {
       sceneMode === 'pantalon';
     const scanAvatar = bodyKind.startsWith('scan') ? scans[bodyKind] : null;
     const useScan = bodyScene && scanAvatar !== null;
-    const bodyPrims =
+    const basePrims =
       !bodyScene || useScan
         ? null
         : sceneMode === 'robe'
@@ -216,11 +238,25 @@ async function main(): Promise<void> {
           : bodyKind === 'homme'
             ? BODY_MALE_ARMS
             : BODY_FORM_ARMS;
+    // Morphology: warp the selected body by the measurement sliders, then let
+    // the tailor measure the WARPED figure so garments re-grade themselves.
+    const neutral = isNeutral(morphs);
+    const marks = bodyScene && !neutral ? marksFor(bodyKind, scanAvatar ?? null) : null;
+    const bodyPrims = basePrims && marks ? morphPrims(basePrims, morphs, marks) : basePrims;
+    let effScan = useScan ? scanAvatar! : null;
+    if (effScan && marks) {
+      const key = `${bodyKind}|${morphs.poitrine}|${morphs.taille}|${morphs.hanches}`;
+      morphCache[key] ??= {
+        grid: morphGrid(effScan.grid, morphs, marks),
+        mesh: morphMesh(effScan.mesh, morphs, marks),
+      };
+      effScan = morphCache[key]! as ScanAvatar;
+    }
     const colliders = bodyPrims ? toColliders(bodyPrims) : useScan ? [] : SPHERE;
     // Automatic made-to-measure: measure the selected body's field like a
     // tailor (chest, waist, hips, shoulder line) and cut every garment from
     // RATIOS against the reference form the patterns were designed on.
-    const m = measureFor(bodyKind, useScan && scanAvatar ? scanAvatar : null);
+    const m = measureFor(bodyKind, bodyScene ? bodyPrims : null, effScan ? effScan.grid : null);
     const clampR = (v: number): number => Math.min(1.35, Math.max(0.8, v));
     const chestR = m.chest.circ / REF.chest.circ;
     const shoulderR = m.shoulderHalfW / REF.shoulderHalfW;
@@ -303,7 +339,7 @@ async function main(): Promise<void> {
     system = new ParticleSystem(device, mesh, {
       colliders,
       colliderBlend: bodyPrims ? BODY_BLEND : 0,
-      sdfGrid: useScan ? scanAvatar!.grid : undefined,
+      sdfGrid: effScan ? effScan.grid : undefined,
       groundY: GROUND_Y,
       friction,
       complianceStretch: compliance.stretch,
@@ -315,7 +351,7 @@ async function main(): Promise<void> {
     const sceneMesh = buildSceneMesh({
       colliders: bodyPrims || useScan ? [] : colliders,
       body: bodyPrims ? { prims: bodyPrims, blend: BODY_BLEND } : undefined,
-      rawBody: useScan ? scanAvatar!.mesh : undefined,
+      rawBody: effScan ? effScan.mesh : undefined,
       groundY: GROUND_Y,
     });
     renderer = new ClothRenderer(
@@ -456,6 +492,12 @@ async function main(): Promise<void> {
       onScene: (m) => {
         sceneMode = m;
         build();
+      },
+      onMorph: (mo) => {
+        morphs = { ...mo };
+        if (sceneMode === 'robe' || sceneMode === 't-shirt' || sceneMode === 'chemise' || sceneMode === 'ensemble' || sceneMode === 'pantalon') {
+          build();
+        }
       },
       onBody: (kind) => {
         bodyKind = kind;

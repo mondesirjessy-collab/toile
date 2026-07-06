@@ -28,6 +28,7 @@ export interface PanelCallbacks {
   onPodium(rpm: number): void;
   onAnimate(on: boolean): void;
   onBody(kind: BodyKind): void;
+  onMorph(m: { poitrine: number; taille: number; hanches: number }): void;
   onPattern(p: PatternParams): void;
   onProfile(kind: 'robe' | 'chemise' | 'jupe', profile: number[]): void;
   onShirtPattern(p: { sleeve: number }): void;
@@ -41,6 +42,9 @@ export type BodyKind = 'femme' | 'homme' | 'scan homme' | 'scan femme';
 interface Settings {
   scene: SceneMode;
   body: BodyKind;
+  poitrine: number;
+  taille: number;
+  hanches: number;
   resolution: number;
   substeps: number;
   selfCollision: boolean;
@@ -112,6 +116,9 @@ export class ControlPanel {
     this.settings = {
       scene: 'drapé' as SceneMode,
       body: 'femme' as BodyKind,
+      poitrine: 1,
+      taille: 1,
+      hanches: 1,
       resolution: initial.resolution,
       substeps: initial.substeps,
       selfCollision: true,
@@ -148,6 +155,16 @@ export class ControlPanel {
         .name('mannequin')
         .onChange((k: BodyKind) => this.cb.onBody(k)),
     );
+    const morphFolder = this.gui.addFolder('mannequin · mensurations');
+    const pushMorph = (): void =>
+      this.cb.onMorph({ poitrine: this.settings.poitrine, taille: this.settings.taille, hanches: this.settings.hanches });
+    this.controllers.push(
+      morphFolder.add(this.settings, 'poitrine', 0.85, 1.2, 0.01).name('poitrine').onFinishChange(pushMorph),
+      morphFolder.add(this.settings, 'taille', 0.85, 1.2, 0.01).name('taille').onFinishChange(pushMorph),
+      morphFolder.add(this.settings, 'hanches', 0.85, 1.2, 0.01).name('hanches').onFinishChange(pushMorph),
+    );
+    morphFolder.close();
+
     this.controllers.push(
       this.gui
         .add(this.settings, 'resolution', [32, 64, 128])
@@ -288,6 +305,7 @@ export class ControlPanel {
       version: 1,
       scene: s.scene,
       body: s.body,
+      morph: { poitrine: s.poitrine, taille: s.taille, hanches: s.hanches },
       pattern: {
         profile: this.profiles.robe,
         profileChemise: this.profiles.chemise,
@@ -342,6 +360,7 @@ export class ControlPanel {
       format?: string;
       scene?: SceneMode;
       body?: BodyKind;
+      morph?: { poitrine?: number; taille?: number; hanches?: number };
       pattern?: Partial<PatternParams> & {
         sleeve?: number;
         skirtLength?: number;
@@ -387,6 +406,7 @@ export class ControlPanel {
     // into settings), so remember the file's scene and restore it at the end.
     const targetScene = s.scene;
     this.cb.onBody(s.body);
+    this.cb.onMorph({ poitrine: s.poitrine, taille: s.taille, hanches: s.hanches });
     const preset = PRESETS[s.preset];
     if (preset) this.cb.onStyle(preset.style);
     this.cb.onCompliance({ stretch: 10 ** s.stretchExp, shear: 10 ** s.shearExp, bend: 10 ** s.bendExp });
