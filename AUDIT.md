@@ -15,6 +15,7 @@
 - ✅ **M** poitrine mesurée au diaphragme : plancher de la bande de recherche 0,62 H → 0,695 H (au-dessus du creux sous-poitrine — la bosse des côtes s'étire jusqu'à 0,67 H et gagnait encore le max) ; le buste est trouvé à ~0,72 H, la gradation des hauts et l'ancrage du morph « poitrine » visent la bonne ligne ; test anthropométrique femme+homme (v62).
 - ✅ **M** cuisse avalée par l'entrejambe : l'entrejambe est désormais LOCALISÉ (descente depuis la hanche jusqu'à ce que le plan médian sorte du corps, marge 1 cm) et la cuisse mesurée 3 cm dessous, là où les jambes sont séparées — fini les 28 cm au lieu de ~43 (le smin fusionnait les cuisses, le rayon intérieur ne sortait jamais) ; le curseur « cuisse » vise le bon endroit ; test invariant : sd(0, thigh.y, 0) > 0 (v63).
 - Le reste de la liste ci-dessous est à dérouler dans l'ordre.
+- **NB pour la session qui reprend** : les fiches détaillées ci-dessous décrivent l'état AU MOMENT DE L'AUDIT (v57) — les numéros de ligne ont dérivé depuis (v58-v63 ont modifié main.ts, ClothMesh.ts, measure.ts, selfCollide.wgsl, ControlPanel.ts, ClothRenderer.ts). Se repérer par NOMS de symboles/fonctions, pas par lignes. Les fiches marquées [✅ corrigé] sont soldées — détail dans cette section ÉTAT.
 
 Audit adversarial mené par 33 agents (6 spécialistes : physique XPBD, GPU/WebGPU, patrons/topologie, corps/SDF, exports, produit — chaque trouvaille critique/majeure contre-vérifiée par un agent indépendant chargé de la réfuter).
 
@@ -23,21 +24,21 @@ Audit adversarial mené par 33 agents (6 spécialistes : physique XPBD, GPU/WebG
 
 ## 🟥 CRITIQUE — 3
 
-### C1. Fit map strain is computed against a single isotropic rest spacing — solid red/blue on any non-square pattern
+### C1. [✅ corrigé] Fit map strain is computed against a single isotropic rest spacing — solid red/blue on any non-square pattern
 **Fichier** : `/Users/jessymondesir/dev/toile/src/app/ClothRenderer.ts`
 
 The normals pass (line 66) computes strain = mean(4 structural-neighbour distances)/grid.spacing - 1, with grid.spacing = mesh.spacing = width/(n-1) (ClothMesh.ts:888). But vertical rest spacing is height/(n-1), which differs whenever a pattern is not square. Trace for the 'robe' scene (width 0.95·scale, height 1.3, n=64): horizontal rest ≈ 0.0151 m, vertical ≈ 0.0206 m, so at REST strain = ((2·0.0151+2·0.0206)/4)/0.0151 − 1 = +18.4 % → heatmap t = clamp(0.184/0.10) = 1 → the whole dress reads full red with zero actual tension. For the tee (1.15 × 0.75) the baseline is −17 %, clamped to 0 → the fit map stays blue until real elongation exceeds ~17 %, i.e. it never shows tightness. The one core 'fit' feature is only correct on the square drapé/couture sheets. Same root cause corrupts the print UVs (vs() line 102 scales v by the width spacing → gingham/dots vertically stretched by height/width) and the glTF UV export (main.ts:749-750). combineClothMeshes compounds it with spacing = max(a,b) (ClothMesh.ts:1024), biasing whichever garment has the smaller spacing, and skews the dihedral compliance normalization (alpha ∝ 1/spacing²) between garments of an outfit.
 
 **Correctif proposé** : Carry both spacings: add spacingV = height/(n-1) to ClothMeshData, put it in GridInfo's free _p0 slot, and compute strain per axis (d1,d2 vs spacingU; d3,d4 vs spacingV) before averaging; use (u·spacingU, v·spacingV) for print/export UVs. For combined meshes keep per-garment spacing (a second fabric/grid uniform slot or a small per-panel lookup).
 
-### C2. Morph caches keyed on only 3 of 6 sliders — stature/carrure/cuisse changes reuse stale measurements and stale morphed scan grid/mesh
+### C2. [✅ corrigé] Morph caches keyed on only 3 of 6 sliders — stature/carrure/cuisse changes reuse stale measurements and stale morphed scan grid/mesh
 **Fichier** : `/Users/jessymondesir/dev/toile/src/main.ts`
 
 measureCache key (line 153) and morphCache key (line 276) are both `${kind}|${morphs.poitrine}|${morphs.taille}|${morphs.hanches}`, but onMorph (lines 611-619) sets six ratios including stature, carrure and cuisse. Sequence: user sets taille=110cm (cache miss, entry built), then moves carrure or stature — key is unchanged, so build() reuses the old BodyMeasure (garment grading frozen) and, for scan bodies, the old morphed SDF grid + render mesh: the avatar and its collider do not change at all when those three sliders move after any earlier morph.
 
 **Correctif proposé** : Include all six morph values in both cache keys (e.g. JSON of the Morphs object), or a single `morphKey(morphs)` helper used at lines 153 and 276.
 
-### C3. measureFor measures morphed bodies with a FIXED height — stature slider breaks all anthropometric bands
+### C3. [✅ corrigé] measureFor measures morphed bodies with a FIXED height — stature slider breaks all anthropometric bands
 **Fichier** : `/Users/jessymondesir/dev/toile/src/main.ts`
 
 Lines 155-158 pass `kind === 'homme' ? 1.765 : 1.755` to measureBody even when `prims` are stature-scaled morphPrims. Verified: with stature=0.8 the body top is at 1.404 m but the shoulder band [0.79H, neckY] = [1.386, ~1.55] lies almost entirely above the head → measured shoulderHalfW = 0.035 instead of 0.21 (6x off), chest 61.4 cm instead of 64.7 cm. dressScale/topScale clamp to garbage and dyShoulder ≈ 0 instead of ≈ −0.28, so garments spawn at the unmorphed shoulder height, floating above the shrunken mannequin and collapsing onto its head. (The scan branch at line 162 is inconsistent-but-right: it uses the morphed grid's scaled max[1].)
@@ -47,7 +48,7 @@ Lines 155-158 pass `kind === 'homme' ? 1.765 : 1.755` to measureBody even when `
 
 ## 🟧 MAJEUR — 23
 
-### M1. Self-collision same-panel exclusion uses LINEAR index distance — same-row and adjacent-row contacts never repel (anisotropic self-collision)
+### M1. [✅ corrigé] Self-collision same-panel exclusion uses LINEAR index distance — same-row and adjacent-row contacts never repel (anisotropic self-collision)
 **Fichier** : `src/engine/solver/shaders/selfCollide.wgsl`
 
 Line 82: `(pj == pi && dl < 2 * ni + 3)` where dl = |lj − li| is the difference of LINEAR in-panel indices (li = i % panelSize). The comment says 'skip same-panel particles within two grid rows', but linear distance conflates rows and columns: for n=64, any same-row pair has dl ≤ 63 < 131 → excluded; any adjacent-row pair has dl ≤ 127 < 131 → excluded; two-rows-apart pairs are excluded for most u-offsets (dl = 128+Δu ≤ 130 covers Δu ∈ [−63, 2]). Net effect: within a panel, self-collision only acts between particles ≥ ~3 grid rows apart in v. A fold along a vertical crease (warp direction) brings distant columns of the SAME row into contact — e.g. (u=5, v) touching (u=50, v) — and they pass straight through each other. Self-collision is effectively directional: horizontal folds are protected, vertical folds are not. The cross-panel branch on lines 83-84 shows the intended pattern (banded: dl ≤ 2 || |dl−n| ≤ 2 || |dl−2n| ≤ 2) — the same-panel branch just wasn't written that way.
@@ -89,7 +90,7 @@ blit() (lines 71-78) does mirrorCtx.drawImage(webgpuCanvas) every frame into a f
 
 **Correctif proposé** : Make the mirror a detected fallback: after a few frames, test whether the WebGPU canvas actually presented (e.g. one-time drawImage into a 1×1 canvas + getImageData, or a user toggle/query param); hide #mirror and skip blit() when presentation works. Expected: 1–3 ms/frame back on iGPUs plus ~30 MB memory.
 
-### M7. Both scan avatars fetched serially and eagerly at startup, blocking first paint
+### M7. [✅ corrigé] Both scan avatars fetched serially and eagerly at startup, blocking first paint
 **Fichier** : `/Users/jessymondesir/dev/toile/src/main.ts`
 
 Lines 143-146: `await loadScanAvatar('homme-scan')` then `await loadScanAvatar('femme-scan')` run sequentially inside main() BEFORE build() and the first rendered frame, even for the default 'drapé' scene that uses neither. Each avatar is a ~60 k-tri mesh plus an int16 SDF grid (several MB each), and ScanAvatar.ts:44-45 converts the full grid Int16→Float32 on the main thread. On a median connection this adds seconds to time-to-first-frame for content that may never be selected.
@@ -110,14 +111,14 @@ The cross-seam flattening loop (lines 711–730) adds a Bending distance constra
 
 **Correctif proposé** : Two-pass construction: first collect seamedLocal (already exists), then add flattening ties only to neighbours that are kept AND not on the boundary (i.e. interior — reuse onBoundary), which matches the stated 'one ring inside' intent and removes both the seam contradiction and the rim squeeze.
 
-### M10. setin: unsewn underarm rows at ALL production resolutions (32/64/128) — hole between armhole seam end and side-seam start
+### M10. [✅ corrigé] setin: unsewn underarm rows at ALL production resolutions (32/64/128) — hole between armhole seam end and side-seam start
 **Fichier** : `src/engine/cloth/ClothMesh.ts`
 
 The sleeve band ends at CAP_V1 = 0.34 (line 372), so island-to-island armhole seams stop there, but isOpening's setin armhole-zone exclusion (line 438) suppresses mirror seams on the body side edge for all vv < 0.36. Body-edge boundary rows with vv ∈ (0.34, 0.36) get NEITHER seam. Empirically confirmed: 1 unsewn row at n=32 (v=11), n=64 (v=22); 2 unsewn rows at n=96 (v=33,34) and n=128 (v=44,45) — on both sides, both panels: a real gaping slit under each arm exactly where the armhole should meet the side seam, growing with resolution.
 
 **Correctif proposé** : Make the two zones meet: change the isOpening armhole exclusion to vv < CAP_V1 + 0.5/(n-1) (pass n or a row-quantized threshold through), or raise CAP_V1 to 0.36 so the last armhole-stitched row abuts the first mirror-seamed side-seam row. Add a sweep test asserting every non-opening body-edge boundary particle carries at least one seam.
 
-### M11. Neckline sewn shut one row below the scoop at ~40% of resolutions (aline, tshirt, setin) — opening slack smaller than one grid row
+### M11. [✅ corrigé] Neckline sewn shut one row below the scoop at ~40% of resolutions (aline, tshirt, setin) — opening slack smaller than one grid row
 **Fichier** : `src/engine/cloth/ClothMesh.ts`
 
 isOpening uses fixed v-thresholds (aline vv < 0.13 vs scoop depth 0.12; tshirt/setin vv < 0.1 vs scoop depth 0.09, lines 426–434). The boundary particles on the scoop's BOTTOM rim sit on the first grid row with v ≥ scoop depth; whenever that row's vv lands past the threshold, those rim particles are mirror-seamed — the front of the garment is stitched to the back directly under the neck hole. Empirically confirmed at n=16,19–24,27–31,35–39,43–47 (aline), n=16–21,24–31,35–41,46–48 and n=80 (tshirt, setin: e.g. n=80 particles at x=0.006, vv=0.101 seamed). The current UI resolutions 32/64/128 pass only by rounding luck (0.12·(n−1) happens to land < 0.13 threshold); any new resolution, or tests at n=16, silently produce a pinched chest.
@@ -138,14 +139,14 @@ The normals/strain shader (line 66: strain = sum/cnt/grid.spacing − 1) average
 
 **Correctif proposé** : Add vertical spacing (and ideally per-panel spacing for combined meshes) to GridInfo; normalize u-neighbour distances by spacingU and v-neighbour distances by spacingV before averaging. Same for the motif UV meters-per-cell.
 
-### M14. poseIdle animates the LEGS of morphed armless bodies — identity check `bodyPrims !== BODY_FORM` misclassifies morphed dress forms as ARMS bodies
+### M14. [✅ corrigé] poseIdle animates the LEGS of morphed armless bodies — identity check `bodyPrims !== BODY_FORM` misclassifies morphed dress forms as ARMS bodies
 **Fichier** : `/Users/jessymondesir/dev/toile/src/main.ts`
 
 Line 470: `if (bodyPrims && bodyPrims !== BODY_FORM && bodyPrims !== BODY_MALE)` enables arm animation. morphPrims() returns a NEW array, so in robe/robe froncée/tenue scenes (which use the armless BODY_FORM/BODY_MALE) any non-neutral morph makes the check pass. poseIdle then swings the last 8 primitives assuming they are arms — for the 24-prim armless female form those are knee L/R, shank L/R, calf L/R, foot L/R. Verified by execution: foot prim b goes from z=0.140 to z=0.271 (feet/shanks kick ±18° about a pivot at the knee), and system.setColliders feeds these posed leg prims to the solver every frame, so the collider under a floor-length dress churns.
 
 **Correctif proposé** : Decide animation from the BASE selection, not array identity: set a `hasArms` boolean where basePrims is chosen (line ~260, true only for the *_ARMS variants) and gate line 470 on it. Optionally make poseIdle take the arm count explicitly.
 
-### M15. Thigh caliper halved by the smin-fused crotch: inner ray never exits, inner=0 silently accepted — female thigh measured 28.6 cm instead of ~44 cm
+### M15. [✅ corrigé] Thigh caliper halved by the smin-fused crotch: inner ray never exits, inner=0 silently accepted — female thigh measured 28.6 cm instead of ~44 cm
 **Fichier** : `/Users/jessymondesir/dev/toile/src/engine/body/measure.ts`
 
 At thighY=0.722 on BODY_FORM, the k=0.04 smooth-min closes the gap between the thighs: sd(0, 0.722, 0) = −0.010 (verified). In legHalfW (lines 149-159) the inner march from legX toward the centerline therefore never finds sd>0 within 0.2 m, `inner` stays 0, and `(inner + outer) / 2 || 0.06` returns (0 + 0.070)/2 = 0.035 — half the true half-width (0.070, verified by profiling the field: leg spans x∈[~0, 0.158] fused). REF.thigh.circ = 28.6 cm feeds baseCm.cuisse, so the cuisse slider baseline shown to the user is ~16 cm too small and any realistic target cm rams the ratio into the 1.3 clamp, ballooning the thighs.
@@ -159,14 +160,14 @@ bodyMeshCache (line 34) is a Map keyed by the prims ARRAY. morphPrims returns a 
 
 **Correctif proposé** : Morphed sculpted bodies should reuse the cached BASE mesh warped through morphMesh() (identical warp already used for scans) instead of re-meshing the field; keep surfaceNets only for the small set of base forms. At minimum evict non-base entries or key by kind+morphs with a size-1 LRU.
 
-### M17. Chest band overlaps the waist band: chestY detected at the diaphragm (1.158) instead of the bust (1.275) on BODY_FORM — poitrine and taille bells nearly coincide
+### M17. [✅ corrigé] Chest band overlaps the waist band: chestY detected at the diaphragm (1.158) instead of the bust (1.275) on BODY_FORM — poitrine and taille bells nearly coincide
 **Fichier** : `/Users/jessymondesir/dev/toile/src/engine/body/measure.ts`
 
 Chest search (line 127) starts at 0.62H, below the waist band's top (0.66H, line 134). On BODY_FORM the fullest ellipse in-band is the ribcage bottom at y=1.158 (79.4 cm), marginally beating the true bust level at 1.275 — so chestY lands 6 cm above waistY (1.098). Consequences verified: the poitrine bell (width 0.14) is centered on the diaphragm, so moving poitrine inflates the waist region (bell value 0.83 at the waist mark) and the two sliders alias almost completely; it is also the root cause of the 1.58 combined-bell overshoot above. The scan detector picks a correct bust (1.233) — only the sculpted forms are affected.
 
 **Correctif proposé** : Raise the chest band's lower bound above the waist band, e.g. from 0.62H to 0.68H (bust anthropometry ≈ 0.72H); on BODY_FORM this moves chestY to ~1.27 and separates the bells by 17 cm.
 
-### M18. Imported .toile.json scalars applied with zero type/range validation — NaN/Infinity injection, DoS via resolution/substeps
+### M18. [✅ corrigé] Imported .toile.json scalars applied with zero type/range validation — NaN/Infinity injection, DoS via resolution/substeps
 **Fichier** : `/Users/jessymondesir/dev/toile/src/app/ControlPanel.ts`
 
 applyGarment (lines 510-533) copies nearly every numeric field with bare `??`: `s.resolution = d.sim.resolution ?? s.resolution`, `s.substeps = d.sim.substeps ?? ...`, `s.dressLength = d.pattern.length ?? ...`, all four *Exp fields, friction, wind. `??` only filters null/undefined, so strings, negatives, and non-finite numbers pass. Concrete failure paths: (1) JSON.parse('{"sim":{"substeps":1e999}}') yields Infinity (JSON.parse maps 1e999 to Infinity — no NaN literal needed); the frame loop reads `panel.substeps` and dispatches that many substeps → tab hang. (2) `"resolution": 1024` → onResolution → generateSeamedPanels with n=1024 → 2M particles, ~12M constraints; colorConstraints runs for minutes and the constraint buffer (~192 MB) exceeds default maxStorageBufferBindingSize → device loss. Valid values are only [32, 64, 128] (ControlPanel.ts:254). (3) `"length": 1e999` or `"length": -1` → generateSeamedPanels height Infinity/negative → `topY - vAdj*height` = -Infinity/NaN positions → frontOutline's finite guard bails and the solver runs on NaN forever. (4) `"stretchExp": 400` → `10 ** 400` = Infinity compliance → NaN in distance.wgsl. (5) motifCouleur (line 520) checks Array.isArray and length===3 but not element types — `["a","b","c"]` flows into the style uniform as NaN. Note the contrast: `profile` arrays ARE validated hard (lines 571-584) and body/preset/motif are whitelisted — the scalars were simply missed. Since .toile.json is the shareable open format for a public demo aimed at a non-developer, hostile or corrupt files are the expected input class.
