@@ -16,6 +16,7 @@ export type SceneMode =
   | 't-shirt'
   | 'chemise'
   | 'ensemble'
+  | 'tenue'
   | 'pantalon';
 
 /** Parametric pattern measurements (grading) for the dress. */
@@ -215,7 +216,7 @@ export class ControlPanel {
 
     this.controllers.push(
       this.gui
-        .add(this.settings, 'scene', ['drapé', 'couture', 'robe', 'robe froncée', 't-shirt', 'chemise', 'ensemble', 'pantalon'])
+        .add(this.settings, 'scene', ['drapé', 'couture', 'robe', 'robe froncée', 't-shirt', 'chemise', 'ensemble', 'tenue', 'pantalon'])
         .name('scène')
         .onChange((m: SceneMode) => this.cb.onScene(m)),
     );

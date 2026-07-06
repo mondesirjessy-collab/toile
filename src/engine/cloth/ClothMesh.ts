@@ -64,6 +64,13 @@ export interface ClothMeshData {
   readonly cornerIndices: [number, number];
   /** Triangle indices (2 per grid cell) for surface rendering. */
   readonly triangleIndices: Uint32Array;
+  /**
+   * Per-particle garment layer (0 = against the body, 1 = worn over layer 0…).
+   * The solver pushes layer L out to thickness + L × gap, so stacked garments
+   * settle in dressing order instead of fighting for the same surface.
+   * Absent = all zero (single garment).
+   */
+  readonly layers?: Float32Array;
 }
 
 const CONSTRAINT_STRIDE = 16; // bytes: 2×u32 + 2×f32
@@ -896,7 +903,12 @@ export interface CrossSeam {
   j: number;
 }
 
-export function combineClothMeshes(a: ClothMeshData, b: ClothMeshData, crossSeams: CrossSeam[] = []): ClothMeshData {
+export function combineClothMeshes(
+  a: ClothMeshData,
+  b: ClothMeshData,
+  crossSeams: CrossSeam[] = [],
+  layerB = 0,
+): ClothMeshData {
   if (a.resolution !== b.resolution) {
     throw new Error('combineClothMeshes: garments must share the same resolution');
   }
@@ -908,6 +920,12 @@ export function combineClothMeshes(a: ClothMeshData, b: ClothMeshData, crossSeam
   const invMasses = new Float32Array(count);
   invMasses.set(a.invMasses, 0);
   invMasses.set(b.invMasses, a.count);
+  // Dressing order: garment b is worn OVER a when layerB > 0 (b's own layers,
+  // if any, shift up). Sewn combinations (cross-seamed at an edge) pass 0 —
+  // they share a boundary, not a surface.
+  const layers = new Float32Array(count);
+  if (a.layers) layers.set(a.layers, 0);
+  for (let i = 0; i < b.count; i++) layers[a.count + i] = (b.layers ? b.layers[i]! : 0) + layerB;
 
   // Decode both constraint buffers, offset b, re-color the union.
   const decode = (mesh: ClothMeshData, offset: number): Edge[] => {
@@ -952,6 +970,7 @@ export function combineClothMeshes(a: ClothMeshData, b: ClothMeshData, crossSeam
         w0: dv2.getUint32(base + 8, true) + offset,
         w1: dv2.getUint32(base + 12, true) + offset,
         restAngle: dv2.getFloat32(base + 16, true),
+        softness: dv2.getFloat32(base + 20, true),
       });
     }
     return out;
@@ -968,6 +987,7 @@ export function combineClothMeshes(a: ClothMeshData, b: ClothMeshData, crossSeam
     qdv.setUint32(base + 8, q.w0, true);
     qdv.setUint32(base + 12, q.w1, true);
     qdv.setFloat32(base + 16, q.restAngle, true);
+    qdv.setFloat32(base + 20, q.softness ?? 1, true); // pressing survives the merge
   }
 
   const triangleIndices = new Uint32Array(a.triangleIndices.length + b.triangleIndices.length);
@@ -996,5 +1016,6 @@ export function combineClothMeshes(a: ClothMeshData, b: ClothMeshData, crossSeam
     seamCount: a.seamCount + b.seamCount,
     cornerIndices: a.cornerIndices,
     triangleIndices,
+    layers,
   };
 }

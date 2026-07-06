@@ -252,13 +252,16 @@ async function main(): Promise<void> {
       sceneMode === 't-shirt' ||
       sceneMode === 'chemise' ||
       sceneMode === 'ensemble' ||
+      sceneMode === 'tenue' ||
       sceneMode === 'pantalon';
     const scanAvatar = bodyKind.startsWith('scan') ? scans[bodyKind] : null;
     const useScan = bodyScene && scanAvatar !== null;
     const basePrims =
       !bodyScene || useScan
         ? null
-        : sceneMode === 'robe' || sceneMode === 'robe froncée'
+        : // Sleeveless dresses have no armholes: on an ARMS body the arms end
+          // up trapped INSIDE the garment. Dress scenes use the dress form.
+          sceneMode === 'robe' || sceneMode === 'robe froncée' || sceneMode === 'tenue'
           ? (bodyKind === 'homme' ? BODY_MALE : BODY_FORM)
           : bodyKind === 'homme'
             ? BODY_MALE_ARMS
@@ -302,19 +305,42 @@ async function main(): Promise<void> {
         topY: 1.52 + dyShoulder,
         shape: 'tshirt', // kimono tee: body + sleeves in one piece
       });
+    const robe = () =>
+      generateSeamedPanels({
+        resolution,
+        width: 0.95 * dressScale,
+        height: dressPattern.length,
+        gap: 1.0,
+        topY: 1.6 + dyShoulder,
+        shape: 'aline', // real pattern piece: fitted, flared, scooped neckline
+        shapeParams: { profile: dressPattern.profile, scoop: dressPattern.neck },
+      });
     const mesh =
       sceneMode === 'couture'
         ? generateSeamedPanels({ resolution, width: 1.2, height: 1.2, gap: 1.3, topY: 1.9 })
         : sceneMode === 'robe'
-          ? generateSeamedPanels({
-              resolution,
-              width: 0.95 * dressScale,
-              height: dressPattern.length,
-              gap: 1.0,
-              topY: 1.6 + dyShoulder,
-              shape: 'aline', // real pattern piece: fitted, flared, scooped neckline
-              shapeParams: { profile: dressPattern.profile, scoop: dressPattern.neck },
-            })
+          ? robe()
+          : sceneMode === 'tenue'
+            ? // Layered outfit: the dress is WORN OVER the tee — its particles
+              // carry layer 1, so the body pushes it out one gap further and it
+              // drapes on the tee instead of fighting it for the same surface.
+              // Dressing order via the initial drop: the dress starts higher
+              // and wider, arriving once the tee already hugs the body —
+              // simultaneous falls interleave (tunneling locks wrong-side).
+              combineClothMeshes(
+                tee(),
+                generateSeamedPanels({
+                  resolution,
+                  width: 0.95 * dressScale,
+                  height: dressPattern.length,
+                  gap: 1.2,
+                  topY: 1.78 + dyShoulder,
+                  shape: 'aline',
+                  shapeParams: { profile: dressPattern.profile, scoop: dressPattern.neck },
+                }),
+                [],
+                1,
+              )
           : sceneMode === 't-shirt'
             ? tee()
             : sceneMode === 'chemise'
@@ -348,6 +374,8 @@ async function main(): Promise<void> {
                     shapeParams: { profile: skirtPattern.profile },
                     elasticTop: 0.75, // taille élastiquée : fronce et agrippe le corps
                   }),
+                  [],
+                  1, // la jupe se porte SUR le t-shirt (couche 1)
                 )
               : sceneMode === 'robe froncée'
                 ? (() => {
@@ -589,7 +617,7 @@ async function main(): Promise<void> {
           hanches: r(cm.hanches, b.hanches!),
           cuisse: r(cm.cuisse, b.cuisse!),
         };
-        if (sceneMode === 'robe' || sceneMode === 't-shirt' || sceneMode === 'chemise' || sceneMode === 'ensemble' || sceneMode === 'pantalon') {
+        if (sceneMode !== 'drapé' && sceneMode !== 'couture') {
           build();
         }
       },
@@ -599,7 +627,7 @@ async function main(): Promise<void> {
         panel.syncMorphCm(baseCm(kind, kind.startsWith('scan') ? (scans[kind] ?? null) : null));
         // Only rebuild where a body is actually on stage; drapé/couture keep
         // their cloth instead of resetting for an invisible change.
-        if (sceneMode === 'robe' || sceneMode === 't-shirt' || sceneMode === 'chemise' || sceneMode === 'ensemble') {
+        if (sceneMode !== 'drapé' && sceneMode !== 'couture') {
           build();
         }
       },

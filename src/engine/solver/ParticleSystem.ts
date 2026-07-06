@@ -79,8 +79,9 @@ export interface SolverOptions {
 //  80 compliance_stretch, 84 compliance_shear, 88 compliance_bend, 92 cloth_thickness,
 //  96 particle_count, 100 damping, 104 max_speed, 108 drag_index,
 //  112 body_min.xyz, 124 blend_k, 128 body_max.xyz, 140 use_grid,
-//  144 spin_cos, 148 spin_sin, 152 spin_dtheta (per substep), 156 compliance_stretch_warp.
-const UNIFORM_SIZE = 160;
+//  144 spin_cos, 148 spin_sin, 152 spin_dtheta (per substep), 156 compliance_stretch_warp,
+//  160 layer_gap (couches : la couche L est repoussée à thickness + L × gap), 164-172 pads.
+const UNIFORM_SIZE = 176;
 const BATCH_SIZE = 16;
 const WORKGROUP = 256;
 const DRAG_NONE = 0xffffffff;
@@ -97,6 +98,7 @@ export class ParticleSystem {
   private readonly prevPositionBuffer: GPUBuffer;
   private readonly velocityBuffer: GPUBuffer;
   private readonly invMassBuffer: GPUBuffer;
+  private readonly layerBuffer: GPUBuffer;
   private readonly constraintBuffer: GPUBuffer;
   private readonly quadBuffer: GPUBuffer | null;
   private readonly colliderBuffer: GPUBuffer;
@@ -217,6 +219,9 @@ export class ParticleSystem {
     this.prevPositionBuffer = this.createBuffer(mesh.positions, storage);
     this.velocityBuffer = this.createBuffer(new Float32Array(this.count * 4), storage);
     this.invMassBuffer = this.createBuffer(mesh.invMasses, storage);
+    // Garment layer per particle: collide pushes layer L to thickness + L·gap,
+    // so a dress worn over a tee rests ON the tee instead of inside it.
+    this.layerBuffer = this.createBuffer(mesh.layers ?? new Float32Array(this.count), storage);
     this.constraintBuffer = this.createBufferRaw(mesh.constraintData, storage);
     this.quadColorCounts = mesh.quadColorCounts;
     this.quadBuffer = mesh.quadCount > 0 ? this.createBufferRaw(mesh.quadData, storage) : null;
@@ -355,6 +360,7 @@ export class ParticleSystem {
         { binding: 3, resource: { buffer: this.invMassBuffer } },
         { binding: 4, resource: { buffer: this.colliderBuffer } },
         { binding: 5, resource: this.sdfTexture.createView() },
+        { binding: 6, resource: { buffer: this.layerBuffer } },
       ],
     });
     this.velocityBindGroup = bg(this.velocityPipeline, [
@@ -652,6 +658,7 @@ export class ParticleSystem {
     this.prevPositionBuffer.destroy();
     this.velocityBuffer.destroy();
     this.invMassBuffer.destroy();
+    this.layerBuffer.destroy();
     this.constraintBuffer.destroy();
     this.quadBuffer?.destroy();
     this.colliderBuffer.destroy();
@@ -690,6 +697,7 @@ export class ParticleSystem {
     dv.setFloat32(84, this.complianceShear, LE);
     dv.setFloat32(88, this.complianceBend, LE);
     dv.setFloat32(92, this.clothThickness, LE);
+    dv.setFloat32(160, this.clothThickness, LE); // layer_gap: one thickness per layer
     dv.setUint32(96, this.count, LE);
     dv.setFloat32(100, this.damping, LE);
     dv.setFloat32(104, this.maxSpeed, LE);

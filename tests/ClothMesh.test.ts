@@ -3,6 +3,7 @@ import {
   generateClothGrid,
   generateSeamedPanels,
   combineClothMeshes,
+  type ClothMeshData,
 } from '../src/engine/cloth/ClothMesh';
 
 /**
@@ -485,6 +486,32 @@ describe('combineClothMeshes (outfits)', () => {
   it('rejects mismatched resolutions', () => {
     const other = generateSeamedPanels({ resolution: 8, shape: 'skirt' });
     expect(() => combineClothMeshes(tee, other)).toThrow();
+  });
+
+  it('assigns garment b to the requested layer (dressing order)', () => {
+    const layered = combineClothMeshes(tee, skirt, [], 1);
+    expect(layered.layers).toHaveLength(layered.count);
+    for (let i = 0; i < tee.count; i++) expect(layered.layers![i]).toBe(0);
+    for (let i = tee.count; i < layered.count; i++) expect(layered.layers![i]).toBe(1);
+    // Sewn combinations default to a single surface: everyone on layer 0.
+    for (const l of outfit.layers!) expect(l).toBe(0);
+    // Stacking stacks: a third garment over an already-layered outfit.
+    const third = combineClothMeshes(layered, skirt, [], 2);
+    expect(third.layers![third.count - 1]).toBe(2);
+    expect(third.layers![tee.count]).toBe(1);
+  });
+
+  it('carries hinge softness through the merge (pressing survives)', () => {
+    const soft = (mesh: ClothMeshData): number[] => {
+      const dv = new DataView(mesh.quadData);
+      const out: number[] = [];
+      for (let k = 0; k < mesh.quadCount; k++) out.push(dv.getFloat32(k * 32 + 20, true));
+      return out;
+    };
+    const merged = soft(outfit).sort();
+    const source = soft(tee).concat(soft(skirt)).sort();
+    expect(merged).toEqual(source);
+    expect(Math.min(...merged)).toBeGreaterThanOrEqual(1); // never the 0 that an old merge wrote
   });
 });
 

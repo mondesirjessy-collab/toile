@@ -21,59 +21,79 @@ interface Segment {
   y2: number;
 }
 
-/** Cut-line segments of the front pieces, in millimeters, y pointing down. */
-function frontOutline(mesh: ClothMeshData): { segs: Segment[]; w: number; h: number } {
+/**
+ * Cut-line segments of the front pieces, in millimeters, y pointing down.
+ * An outfit (combined mesh) has one front piece PER GARMENT — panels 0, 2, 4…
+ * They share the same rest-pose axis, so printing them in place would stack
+ * their cut lines; instead each piece is laid out side by side on the sheet,
+ * like a real cutting layout. Exposed for tests.
+ */
+export function frontOutline(mesh: ClothMeshData): { segs: Segment[]; w: number; h: number; pieces: number } {
   const panelSize = mesh.resolution * mesh.resolution;
-  const frontPanel = (i: number): boolean => Math.floor(i / panelSize) % 2 === 0;
 
-  // Boundary = triangle edges owned by a single front triangle.
-  const edgeCount = new Map<string, [number, number]>();
-  const addEdge = (a: number, b: number): void => {
+  // Boundary = triangle edges owned by a single front triangle, per garment.
+  const byGarment = new Map<number, Map<string, [number, number]>>();
+  const addEdge = (g: number, a: number, b: number): void => {
+    let edges = byGarment.get(g);
+    if (!edges) byGarment.set(g, (edges = new Map()));
     const key = a < b ? `${a}-${b}` : `${b}-${a}`;
-    if (edgeCount.has(key)) edgeCount.delete(key);
-    else edgeCount.set(key, [a, b]);
+    if (edges.has(key)) edges.delete(key);
+    else edges.set(key, [a, b]);
   };
   for (let t = 0; t < mesh.triangleIndices.length; t += 3) {
     const a = mesh.triangleIndices[t]!;
-    if (!frontPanel(a)) continue;
+    const panel = Math.floor(a / panelSize);
+    if (panel % 2 !== 0) continue; // back panels mirror their fronts
+    const g = panel >> 1;
     const b = mesh.triangleIndices[t + 1]!;
     const c = mesh.triangleIndices[t + 2]!;
-    addEdge(a, b);
-    addEdge(b, c);
-    addEdge(a, c);
+    addEdge(g, a, b);
+    addEdge(g, b, c);
+    addEdge(g, a, c);
   }
 
-  // Rest pose is flat and vertical: (x, y) in meters → mm, y flipped so the
-  // garment's top lands at the top of the paper.
-  let minX = Infinity,
-    maxX = -Infinity,
-    minY = Infinity,
-    maxY = -Infinity;
+  // Rest pose is flat and vertical: (x, y) in meters → mm, y flipped so each
+  // piece's top lands at the top of the paper. Pieces advance left to right.
+  const GUTTER = 0.03; // 30 mm between pieces on the sheet
   const P = (i: number): [number, number] => [mesh.positions[i * 4]!, mesh.positions[i * 4 + 1]!];
-  for (const [a, b] of edgeCount.values()) {
-    for (const [x, y] of [P(a), P(b)]) {
-      minX = Math.min(minX, x);
-      maxX = Math.max(maxX, x);
-      minY = Math.min(minY, y);
-      maxY = Math.max(maxY, y);
-    }
-  }
   const segs: Segment[] = [];
-  for (const [a, b] of edgeCount.values()) {
-    const [ax, ay] = P(a);
-    const [bx, by] = P(b);
-    segs.push({
-      x1: (ax - minX) * 1000,
-      y1: (maxY - ay) * 1000,
-      x2: (bx - minX) * 1000,
-      y2: (maxY - by) * 1000,
-    });
+  let cursorX = 0;
+  let h = 0;
+  let pieces = 0;
+  for (const g of [...byGarment.keys()].sort((x, y) => x - y)) {
+    const edges = byGarment.get(g)!;
+    if (!edges.size) continue;
+    let minX = Infinity,
+      maxX = -Infinity,
+      minY = Infinity,
+      maxY = -Infinity;
+    for (const [a, b] of edges.values()) {
+      for (const [x, y] of [P(a), P(b)]) {
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
+        minY = Math.min(minY, y);
+        maxY = Math.max(maxY, y);
+      }
+    }
+    for (const [a, b] of edges.values()) {
+      const [ax, ay] = P(a);
+      const [bx, by] = P(b);
+      segs.push({
+        x1: (ax - minX + cursorX) * 1000,
+        y1: (maxY - ay) * 1000,
+        x2: (bx - minX + cursorX) * 1000,
+        y2: (maxY - by) * 1000,
+      });
+    }
+    cursorX += maxX - minX + GUTTER;
+    h = Math.max(h, maxY - minY);
+    pieces++;
   }
-  return { segs, w: (maxX - minX) * 1000, h: (maxY - minY) * 1000 };
+  return { segs, w: Math.max(0, cursorX - GUTTER) * 1000, h: h * 1000, pieces };
 }
 
 export function exportPatternPdf(mesh: ClothMeshData, garmentName: string): void {
-  const { segs, w, h } = frontOutline(mesh);
+  const { segs, w, h, pieces } = frontOutline(mesh);
   if (!segs.length || !Number.isFinite(w + h)) return;
 
   const cellW = PAGE_W - 2 * MARGIN - OVERLAP;
@@ -123,7 +143,13 @@ export function exportPatternPdf(mesh: ClothMeshData, garmentName: string): void
         pdf.setFontSize(8);
         pdf.setTextColor(0);
         pdf.text('carré de contrôle : 100 × 100 mm — imprimer à 100 % (échelle réelle)', PAGE_W - MARGIN - 105, MARGIN + 108);
-        pdf.text('TOILE — pièce AVANT · couper le dos à l’identique · droit-fil vertical', MARGIN + 2, PAGE_H - MARGIN - 6);
+        pdf.text(
+          pieces > 1
+            ? `TOILE — ${pieces} pièces AVANT côte à côte · couper chaque dos à l’identique · droit-fil vertical`
+            : 'TOILE — pièce AVANT · couper le dos à l’identique · droit-fil vertical',
+          MARGIN + 2,
+          PAGE_H - MARGIN - 6,
+        );
         pdf.text('marges de couture NON incluses : ajouter 1 cm à la coupe', MARGIN + 2, PAGE_H - MARGIN - 2);
         // Grain arrow.
         const gx = MARGIN + 12;

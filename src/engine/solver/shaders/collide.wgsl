@@ -41,6 +41,10 @@ struct SimParams {
   spin_sin: f32,
   spin_dtheta: f32,  // podium angle advanced THIS substep (surface velocity)
   _c4: f32,
+  layer_gap: f32,    // couches : la couche L est repoussée à thickness + L × gap
+  _c5: f32,
+  _c6: f32,
+  _c7: f32,
 };
 
 // World → body space (inverse podium turn) and back.
@@ -67,6 +71,8 @@ struct Prim {
 @group(0) @binding(4) var<storage, read> colliders: array<Prim>;
 // Baked SDF of a scanned avatar (meters), spanning body_min..body_max.
 @group(0) @binding(5) var sdf_tex: texture_3d<f32>;
+// Garment layer per particle (0 = against the body, 1 = worn over 0…).
+@group(0) @binding(6) var<storage, read> layers: array<f32>;
 
 // Manual trilinear sample + the interpolant's exact gradient from the same
 // 8 corners (no filterable-float feature needed). Returns vec4(grad, dist).
@@ -137,8 +143,8 @@ fn smin(a: f32, b: f32, k: f32) -> f32 {
 
 fn sd_body(p: vec3f) -> f32 {
   // Beyond this distance a primitive cannot influence the contact test (its
-  // smin contribution stays above cloth_thickness), so skip its full eval.
-  let margin = params.cloth_thickness + params.blend_k + 0.012;
+  // smin contribution stays above the largest layered offset), so skip it.
+  let margin = params.cloth_thickness + 2.0 * params.layer_gap + params.blend_k + 0.012;
   var d = 1e9;
   for (var s = 0u; s < params.collider_count; s++) {
     let prim = colliders[s];
@@ -160,6 +166,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var x = positions[i].xyz;
   let xp = prev_positions[i].xyz;
 
+  // Dressing order: each garment layer keeps its own distance to the body —
+  // the outer one is pushed past where the inner one rests, so stacked
+  // garments settle instead of fighting for the same offset surface.
+  let thick = params.cloth_thickness + layers[i] * params.layer_gap;
+
   // Podium: query the body in ITS rotating frame; the surface under the
   // particle moved by dtheta this substep — friction is measured relative
   // to that motion, so the turning mannequin carries its garment along.
@@ -170,11 +181,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   if (params.use_grid == 1u
       && all(xb > params.body_min) && all(xb < params.body_max)) {
     let s = grid_sample(xb);
-    if (s.w < params.cloth_thickness) {
+    if (s.w < thick) {
       let gl = length(s.xyz);
       if (gl > 1e-6) {
         let nrm = to_world(s.xyz / gl);
-        let push = params.cloth_thickness - s.w;
+        let push = thick - s.w;
         x += nrm * push;
         let disp = x - xp - surf_du;
         let dispT = disp - dot(disp, nrm) * nrm;
@@ -190,7 +201,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   if (params.collider_count > 0u
       && all(xb > params.body_min) && all(xb < params.body_max)) {
     let d = sd_body(xb);
-    if (d < params.cloth_thickness) {
+    if (d < thick) {
       // Field gradient, 4-tap tetrahedral.
       let e = 0.002;
       let k0 = vec3f(1.0, -1.0, -1.0);
@@ -202,7 +213,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let gl = length(g);
       if (gl > 1e-6) {
         let nrm = to_world(g / gl);
-        let push = params.cloth_thickness - d;
+        let push = thick - d;
         x += nrm * push; // project onto the offset surface
         // Coulomb friction (PBD): the tangential correction is capped by
         // µ × the normal push. Slow creep dies completely (static friction) —
