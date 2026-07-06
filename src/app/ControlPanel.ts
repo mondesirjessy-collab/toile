@@ -33,7 +33,7 @@ export interface PanelCallbacks {
   onReset(): void;
 }
 
-export type BodyKind = 'femme' | 'homme';
+export type BodyKind = 'femme' | 'homme' | 'scan';
 
 interface Settings {
   scene: SceneMode;
@@ -137,7 +137,7 @@ export class ControlPanel {
     );
     this.controllers.push(
       this.gui
-        .add(this.settings, 'body', ['femme', 'homme'])
+        .add(this.settings, 'body', ['femme', 'homme', 'scan'])
         .name('mannequin')
         .onChange((k: BodyKind) => this.cb.onBody(k)),
     );
@@ -338,7 +338,7 @@ export class ControlPanel {
       s.skirtLength = d.pattern.skirtLength ?? s.skirtLength;
       s.skirtFlare = d.pattern.skirtFlare ?? s.skirtFlare;
     }
-    if (d.body === 'femme' || d.body === 'homme') s.body = d.body;
+    if (d.body === 'femme' || d.body === 'homme' || d.body === 'scan') s.body = d.body;
     if (d.scene) s.scene = d.scene;
     for (const c of this.controllers) c.updateDisplay();
 

@@ -44,6 +44,16 @@ export interface SolverOptions {
   colliders?: Collider[];
   /** Smooth-min blend between colliders (m); 0 = hard union of shapes. */
   colliderBlend?: number;
+  /**
+   * Baked SDF grid collider (scanned avatar): signed distance in meters,
+   * x fastest then y then z. Replaces the analytic prims when present.
+   */
+  sdfGrid?: {
+    dims: [number, number, number];
+    min: [number, number, number];
+    max: [number, number, number];
+    data: Float32Array;
+  };
   friction?: number;
   clothThickness?: number;
   complianceStretch?: number;
@@ -133,6 +143,8 @@ export class ParticleSystem {
   private readonly groundY: number;
   private readonly colliderCount: number;
   private readonly colliderBlend: number;
+  private readonly useGrid: boolean;
+  private readonly sdfTexture: GPUTexture;
   private readonly bodyMin = [Infinity, Infinity, Infinity];
   private readonly bodyMax = [-Infinity, -Infinity, -Infinity];
   private readonly clothThickness: number;
@@ -200,7 +212,9 @@ export class ParticleSystem {
     this.quadColorCounts = mesh.quadColorCounts;
     this.quadBuffer = mesh.quadCount > 0 ? this.createBufferRaw(mesh.quadData, storage) : null;
     // Round-cone packing: {a.xyz, ra, b.xyz, rb, s.xyz, bound} — 48 B/collider.
-    const colliderData = new Float32Array(this.colliderCount * 12);
+    // At least one (zeroed) slot: a zero-sized binding is invalid even when
+    // collider_count is 0 (SDF-grid mode).
+    const colliderData = new Float32Array(Math.max(1, this.colliderCount) * 12);
     colliders.forEach((c, k) => {
       const b = c.b ?? c.a; // sphere: degenerate cone
       const r2 = c.radius2 ?? c.radius;
@@ -220,6 +234,29 @@ export class ParticleSystem {
         this.bodyMin[i] = Math.min(this.bodyMin[i]!, Math.min(c.a[i]!, b[i]!) - r - pad);
         this.bodyMax[i] = Math.max(this.bodyMax[i]!, Math.max(c.a[i]!, b[i]!) + r + pad);
       }
+    }
+    // Baked SDF grid (scanned avatar): its exact bbox IS the sampling domain.
+    const grid = opts.sdfGrid;
+    this.useGrid = !!grid;
+    if (grid) {
+      for (let i = 0; i < 3; i++) {
+        this.bodyMin[i] = grid.min[i]!;
+        this.bodyMax[i] = grid.max[i]!;
+      }
+    }
+    this.sdfTexture = device.createTexture({
+      size: grid ? { width: grid.dims[0], height: grid.dims[1], depthOrArrayLayers: grid.dims[2] } : { width: 1, height: 1, depthOrArrayLayers: 1 },
+      dimension: '3d',
+      format: 'r32float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    if (grid) {
+      device.queue.writeTexture(
+        { texture: this.sdfTexture },
+        grid.data as unknown as BufferSource,
+        { bytesPerRow: grid.dims[0] * 4, rowsPerImage: grid.dims[1] },
+        { width: grid.dims[0], height: grid.dims[1], depthOrArrayLayers: grid.dims[2] },
+      );
     }
 
     // Self-collision spatial hash: cell heads + per-particle next links.
@@ -299,13 +336,18 @@ export class ParticleSystem {
       this.positionBuffer,
       this.invMassBuffer,
     ]);
-    this.collideBindGroup = bg(this.collidePipeline, [
-      this.uniformBuffer,
-      this.positionBuffer,
-      this.prevPositionBuffer,
-      this.invMassBuffer,
-      this.colliderBuffer,
-    ]);
+    // The collide pass also binds the SDF texture (dummy 1³ when unused).
+    this.collideBindGroup = device.createBindGroup({
+      layout: this.collidePipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.uniformBuffer } },
+        { binding: 1, resource: { buffer: this.positionBuffer } },
+        { binding: 2, resource: { buffer: this.prevPositionBuffer } },
+        { binding: 3, resource: { buffer: this.invMassBuffer } },
+        { binding: 4, resource: { buffer: this.colliderBuffer } },
+        { binding: 5, resource: this.sdfTexture.createView() },
+      ],
+    });
     this.velocityBindGroup = bg(this.velocityPipeline, [
       this.uniformBuffer,
       this.positionBuffer,
@@ -597,6 +639,7 @@ export class ParticleSystem {
     dv.setFloat32(128, this.bodyMax[0]!, LE);
     dv.setFloat32(132, this.bodyMax[1]!, LE);
     dv.setFloat32(136, this.bodyMax[2]!, LE);
+    dv.setUint32(140, this.useGrid ? 1 : 0, LE);
     this.device.queue.writeBuffer(this.uniformBuffer, 0, this.uniformData);
   }
 

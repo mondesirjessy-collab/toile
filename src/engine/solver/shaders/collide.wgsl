@@ -33,10 +33,10 @@ struct SimParams {
   damping: f32,
   max_speed: f32,
   drag_index: u32,
-  body_min: vec3f,   // collider AABB (early out)
+  body_min: vec3f,   // collider AABB (early out) / SDF grid domain
   blend_k: f32,      // smooth-min radius; 0 = hard min
   body_max: vec3f,
-  _c3: f32,
+  use_grid: u32,     // 1 = collide against the baked SDF texture instead
 };
 
 // Round cone: segment a→b, radius ra at a, rb at b. Sphere when a = b.
@@ -53,6 +53,35 @@ struct Prim {
 @group(0) @binding(2) var<storage, read> prev_positions: array<vec4f>;
 @group(0) @binding(3) var<storage, read> inv_masses: array<f32>;
 @group(0) @binding(4) var<storage, read> colliders: array<Prim>;
+// Baked SDF of a scanned avatar (meters), spanning body_min..body_max.
+@group(0) @binding(5) var sdf_tex: texture_3d<f32>;
+
+// Manual trilinear sample + the interpolant's exact gradient from the same
+// 8 corners (no filterable-float feature needed). Returns vec4(grad, dist).
+fn grid_sample(p: vec3f) -> vec4f {
+  let dims = vec3f(textureDimensions(sdf_tex, 0));
+  let cell = (params.body_max - params.body_min) / (dims - 1.0);
+  let g = (p - params.body_min) / cell;
+  let i0 = clamp(vec3i(floor(g)), vec3i(0), vec3i(dims) - vec3i(2));
+  let f = clamp(g - vec3f(i0), vec3f(0.0), vec3f(1.0));
+  let c000 = textureLoad(sdf_tex, i0, 0).r;
+  let c100 = textureLoad(sdf_tex, i0 + vec3i(1, 0, 0), 0).r;
+  let c010 = textureLoad(sdf_tex, i0 + vec3i(0, 1, 0), 0).r;
+  let c110 = textureLoad(sdf_tex, i0 + vec3i(1, 1, 0), 0).r;
+  let c001 = textureLoad(sdf_tex, i0 + vec3i(0, 0, 1), 0).r;
+  let c101 = textureLoad(sdf_tex, i0 + vec3i(1, 0, 1), 0).r;
+  let c011 = textureLoad(sdf_tex, i0 + vec3i(0, 1, 1), 0).r;
+  let c111 = textureLoad(sdf_tex, i0 + vec3i(1, 1, 1), 0).r;
+  let cx00 = mix(c000, c100, f.x);
+  let cx10 = mix(c010, c110, f.x);
+  let cx01 = mix(c001, c101, f.x);
+  let cx11 = mix(c011, c111, f.x);
+  let d = mix(mix(cx00, cx10, f.y), mix(cx01, cx11, f.y), f.z);
+  let gx = mix(mix(c100 - c000, c110 - c010, f.y), mix(c101 - c001, c111 - c011, f.y), f.z) / cell.x;
+  let gy = mix(mix(c010 - c000, c110 - c100, f.x), mix(c011 - c001, c111 - c101, f.x), f.z) / cell.y;
+  let gz = mix(mix(c001 - c000, c101 - c100, f.x), mix(c011 - c010, c111 - c110, f.x), f.y) / cell.z;
+  return vec4f(gx, gy, gz, d);
+}
 
 fn sd_round_cone(p0: vec3f, prim: Prim) -> f32 {
   let a = prim.a_ra.xyz;
@@ -118,6 +147,26 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   var x = positions[i].xyz;
   let xp = prev_positions[i].xyz;
+
+  // --- Scanned-avatar SDF grid (trilinear texture) ---
+  if (params.use_grid == 1u
+      && all(x > params.body_min) && all(x < params.body_max)) {
+    let s = grid_sample(x);
+    if (s.w < params.cloth_thickness) {
+      let gl = length(s.xyz);
+      if (gl > 1e-6) {
+        let nrm = s.xyz / gl;
+        let push = params.cloth_thickness - s.w;
+        x += nrm * push;
+        let disp = x - xp;
+        let dispT = disp - dot(disp, nrm) * nrm;
+        let tl = length(dispT);
+        if (tl > 1e-9) {
+          x -= dispT * min(1.0, params.friction * push / tl);
+        }
+      }
+    }
+  }
 
   // --- Body field (skip fast when outside the collider AABB) ---
   if (params.collider_count > 0u

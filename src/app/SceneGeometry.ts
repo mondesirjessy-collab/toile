@@ -22,6 +22,8 @@ export interface SceneParams {
   colliders: { a: [number, number, number]; b?: [number, number, number]; radius: number }[];
   /** Smooth-blended SDF body: meshed by surface nets instead of capsule shells. */
   body?: { prims: SdfPrim[]; blend: number };
+  /** Pre-built body mesh (scanned avatar) — used verbatim. */
+  rawBody?: { positions: Float32Array; normals: Float32Array; indices: Uint32Array };
   groundY: number;
   groundHalfSize?: number;
 }
@@ -61,11 +63,11 @@ export function buildSceneMesh(p: SceneParams): SceneMesh {
 
   const bodyColor: [number, number, number] = [0.45, 0.49, 0.58];
 
-  // --- Sculpted body (smooth-blended SDF, meshed by surface nets) ---
-  if (p.body) {
+  // --- Sculpted body (surface nets) or scanned avatar (verbatim mesh) ---
+  if (p.body || p.rawBody) {
     // Warm matte "display mannequin" tone — a body should not read as machinery.
     const skin: [number, number, number] = [0.62, 0.53, 0.47];
-    const mesh = bodyMesh(p.body.prims, p.body.blend);
+    const mesh = p.rawBody ?? bodyMesh(p.body!.prims, p.body!.blend);
     const base = vertices.length / SCENE_VERTEX_FLOATS;
     for (let v = 0; v < mesh.positions.length / 3; v++) {
       push(

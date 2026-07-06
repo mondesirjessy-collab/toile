@@ -18,6 +18,7 @@ import {
   BODY_MALE_ARMS,
   type SdfPrim,
 } from './engine/body/BodySdf';
+import { loadScanAvatar, type ScanAvatar } from './engine/body/ScanAvatar';
 
 const DEFAULT_RESOLUTION = 64;
 const DEFAULT_SUBSTEPS = 20;
@@ -115,7 +116,10 @@ async function main(): Promise<void> {
   let dressPattern = { length: 1.3, flare: 0.5, neck: 0.1 };
   let shirtPattern = { sleeve: 0.47 };
   let skirtPattern = { length: 0.6, flare: 0.46 };
-  let bodyKind: 'femme' | 'homme' = 'femme';
+  let bodyKind: 'femme' | 'homme' | 'scan' = 'femme';
+  // The scanned CC0 avatar (Blender Studio realistic male via Wikimedia
+  // Commons) — rendered as a real mesh, felt by the cloth as a baked SDF grid.
+  const scanAvatar: ScanAvatar | null = await loadScanAvatar(`${import.meta.env.BASE_URL}avatars/homme-scan`);
 
   let system!: ParticleSystem;
   let renderer!: ClothRenderer;
@@ -133,16 +137,21 @@ async function main(): Promise<void> {
     // 'drapé': one sheet falling onto the sphere. 'couture': two pattern pieces
     // stitched around the sphere. 'robe': the same seamed pieces closing around
     // a dress form (stacked-sphere bust), falling to the floor.
+    const bodyScene =
+      sceneMode === 'robe' || sceneMode === 't-shirt' || sceneMode === 'chemise' || sceneMode === 'ensemble';
+    const useScan = bodyScene && bodyKind === 'scan' && scanAvatar !== null;
     const bodyPrims =
-      sceneMode === 'robe'
-        ? (bodyKind === 'homme' ? BODY_MALE : BODY_FORM)
-        : sceneMode === 't-shirt' || sceneMode === 'chemise' || sceneMode === 'ensemble'
-          ? (bodyKind === 'homme' ? BODY_MALE_ARMS : BODY_FORM_ARMS)
-          : null;
-    const colliders = bodyPrims ? toColliders(bodyPrims) : SPHERE;
+      !bodyScene || useScan
+        ? null
+        : sceneMode === 'robe'
+          ? (bodyKind === 'homme' ? BODY_MALE : BODY_FORM)
+          : bodyKind === 'homme'
+            ? BODY_MALE_ARMS
+            : BODY_FORM_ARMS;
+    const colliders = bodyPrims ? toColliders(bodyPrims) : useScan ? [] : SPHERE;
     // Garment grading: the male figure is broader and longer-limbed, so tops
     // are cut larger for him — exactly what a size chart does in real life.
-    const fit = bodyKind === 'homme' ? 1.13 : 1;
+    const fit = bodyKind === 'homme' || useScan ? 1.13 : 1;
     const tee = () =>
       generateSeamedPanels({
         resolution,
@@ -202,6 +211,7 @@ async function main(): Promise<void> {
     system = new ParticleSystem(device, mesh, {
       colliders,
       colliderBlend: bodyPrims ? BODY_BLEND : 0,
+      sdfGrid: useScan ? scanAvatar!.grid : undefined,
       groundY: GROUND_Y,
       friction,
       complianceStretch: compliance.stretch,
@@ -211,8 +221,9 @@ async function main(): Promise<void> {
     });
     system.setWind(wind); // keep the breeze across rebuilds
     const sceneMesh = buildSceneMesh({
-      colliders: bodyPrims ? [] : colliders,
+      colliders: bodyPrims || useScan ? [] : colliders,
       body: bodyPrims ? { prims: bodyPrims, blend: BODY_BLEND } : undefined,
+      rawBody: useScan ? scanAvatar!.mesh : undefined,
       groundY: GROUND_Y,
     });
     renderer = new ClothRenderer(
