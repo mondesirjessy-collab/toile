@@ -31,7 +31,11 @@ export interface SceneParams {
 }
 
 // The sculpted body is static per collider set: mesh it once, then reuse.
+// Callers memoize their prim arrays (same morph values → same identity), so
+// this hits for every revisited setting; the cap keeps a slider session from
+// hoarding one ~1 s surface-nets mesh per setting ever tried.
 const bodyMeshCache = new Map<SdfPrim[], ReturnType<typeof surfaceNets>>();
+const BODY_MESH_CACHE_MAX = 8;
 
 function bodyMesh(prims: SdfPrim[], blend: number): ReturnType<typeof surfaceNets> {
   let mesh = bodyMeshCache.get(prims);
@@ -44,6 +48,10 @@ function bodyMesh(prims: SdfPrim[], blend: number): ReturnType<typeof surfaceNet
       max,
       0.008,
     );
+    if (bodyMeshCache.size >= BODY_MESH_CACHE_MAX) {
+      // Evict the oldest entry (Map preserves insertion order).
+      bodyMeshCache.delete(bodyMeshCache.keys().next().value!);
+    }
     bodyMeshCache.set(prims, mesh);
   }
   return mesh;

@@ -212,6 +212,7 @@ async function main(): Promise<void> {
   };
   // Morphed-body caches (rebuilt on slider release, keyed by kind+morphs).
   const morphCache: Record<string, { grid: ScanAvatar['grid']; mesh: ScanAvatar['mesh'] }> = {};
+  const primsCache: Record<string, SdfPrim[]> = {};
 
   // Stashed by build() so the pattern-view handles use the graded dimensions.
   let lastGrade = { topScale: 1, dressScale: 1, skirtScale: 1, dyShoulder: 0, dyWaist: 0 };
@@ -282,7 +283,16 @@ async function main(): Promise<void> {
     // the tailor measure the WARPED figure so garments re-grade themselves.
     const neutral = isNeutral(morphs);
     const marks = bodyScene && !neutral ? marksFor(bodyKind, scanAvatar ?? null) : null;
-    const bodyPrims = basePrims && marks ? morphPrims(basePrims, morphs, marks) : basePrims;
+    // Memoized per (body, arms-variant, morph values): morphPrims returns a
+    // FRESH array each call, and the surface-nets mesh cache downstream is
+    // keyed by prim-array identity — without this, every slider release paid
+    // a full ~1 s re-mesh even back at settings already meshed.
+    const bodyPrims =
+      basePrims && marks
+        ? (primsCache[
+            `${bodyKind}|${basePrims === BODY_FORM_ARMS || basePrims === BODY_MALE_ARMS ? 'A' : 'F'}|${morphKey()}`
+          ] ??= morphPrims(basePrims, morphs, marks))
+        : basePrims;
     let effScan = useScan ? scanAvatar! : null;
     if (effScan && marks) {
       const key = `${bodyKind}|${morphKey()}`;
