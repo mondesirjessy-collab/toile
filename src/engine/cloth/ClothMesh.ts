@@ -452,8 +452,11 @@ function isOpening(shape: PatternShape, uu: number, vv: number, p: ShapeParams =
     if (vv < 0.1 + step && x < 0.11 + step) return true; // neckline
     if (x > (p.sleeve ?? 0.47) - 0.02) return true; // sleeve cuffs
     // Armhole edges (body side + the whole sleeve-cap curve) are sewn
-    // island-to-island, not front-to-back — keep them out of the mirror seams.
-    if (vv < 0.36 && x >= 0.2 && x <= CAP_BASE + 0.01) return true;
+    // island-to-island, not front-to-back — keep them out of the mirror
+    // seams. The zone must match the sleeve band EXACTLY (same bounds the
+    // mask uses): a fixed 0.36 exempted body rows BELOW the band, which no
+    // sleeve ever seams — an open hole under each arm at every resolution.
+    if (vv >= CAP_V0 && vv <= CAP_V1 && x >= 0.2 && x <= CAP_BASE + 0.01) return true;
   }
   return false;
 }

@@ -579,6 +579,42 @@ describe('necklines stay open at EVERY resolution', () => {
   }
 });
 
+describe('setin side seam has no underarm hole', () => {
+  // Between the sleeve band's end and the old fixed exemption bound, body
+  // rows were neither armhole-seamed (no sleeve there) nor mirror-seamed
+  // (exempted) — an open hole under each arm. The exemption now tracks the
+  // band exactly; below it, every side-edge row must carry its mirror seam.
+  for (const n of [16, 32, 48, 64, 96, 128]) {
+    it(`n=${n}: every body row below the band is sewn`, () => {
+      const mesh = generateSeamedPanels({ resolution: n, shape: 'setin' });
+      const ps = n * n;
+      const kept = (u: number, v: number): boolean => mesh.positions[(v * n + u) * 4 + 1]! > -5;
+      const mirror = new Set<number>();
+      const dv = new DataView(mesh.constraintData);
+      for (let k = 0; k < mesh.constraintCount; k++) {
+        if (dv.getUint32(k * 16 + 12, true) !== 3) continue;
+        const i = dv.getUint32(k * 16, true);
+        const j = dv.getUint32(k * 16 + 4, true);
+        if (Math.abs(j - i) === ps) mirror.add(Math.min(i, j));
+      }
+      for (let v = 0; v < n; v++) {
+        const vv = v / (n - 1);
+        if (vv <= 0.34 + 1 / (n - 1) || vv > 0.9) continue; // band rows + hem margin
+        // Left body edge of the row (single run below the band).
+        let edge = -1;
+        for (let u = 0; u < n; u++) {
+          if (kept(u, v)) {
+            edge = u;
+            break;
+          }
+        }
+        if (edge < 0) continue;
+        expect(mirror.has(v * n + edge), `n=${n} row vv=${vv.toFixed(3)} unsewn`).toBe(true);
+      }
+    });
+  }
+});
+
 describe('set-in sleeve cap (embu)', () => {
   const n = 64;
   const mesh = generateSeamedPanels({ resolution: n, width: 1.3, height: 0.75, gap: 0.9, topY: 1.52, shape: 'setin' });
