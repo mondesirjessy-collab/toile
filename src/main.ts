@@ -16,9 +16,11 @@ import {
   BODY_FORM_ARMS,
   BODY_MALE,
   BODY_MALE_ARMS,
+  sdBody,
   type SdfPrim,
 } from './engine/body/BodySdf';
 import { loadScanAvatar, type ScanAvatar } from './engine/body/ScanAvatar';
+import { gridSd, measureBody, type BodyMeasure } from './engine/body/measure';
 
 const DEFAULT_RESOLUTION = 64;
 const DEFAULT_SUBSTEPS = 20;
@@ -124,6 +126,25 @@ async function main(): Promise<void> {
     'scan femme': await loadScanAvatar(`${import.meta.env.BASE_URL}avatars/femme-scan`),
   };
 
+  // The tailor: measurements of the reference form the patterns were cut on,
+  // then lazy per-mannequin measurements (analytic field or scan grid).
+  const REF = measureBody((x, y, z) => sdBody(x, y, z, BODY_FORM, BODY_BLEND), 1.755);
+  const measureCache: Record<string, BodyMeasure> = {};
+  const measureFor = (kind: string, scan: ScanAvatar | null): BodyMeasure => {
+    if (kind === 'homme') {
+      measureCache[kind] ??= measureBody((x, y, z) => sdBody(x, y, z, BODY_MALE, BODY_BLEND), 1.765);
+      return measureCache[kind]!;
+    }
+    if (scan) {
+      measureCache[kind] ??= measureBody(gridSd(scan.grid), scan.grid.max[1] - 0.06);
+      return measureCache[kind]!;
+    }
+    return REF;
+  };
+
+  // Stashed by build() so the pattern-view handles use the graded dimensions.
+  let lastGrade = { topScale: 1, dressScale: 1, skirtScale: 1, dyShoulder: 0, dyWaist: 0 };
+
   let system!: ParticleSystem;
   let renderer!: ClothRenderer;
 
@@ -153,26 +174,28 @@ async function main(): Promise<void> {
             ? BODY_MALE_ARMS
             : BODY_FORM_ARMS;
     const colliders = bodyPrims ? toColliders(bodyPrims) : useScan ? [] : SPHERE;
-    // Garment grading per mannequin — exactly what a size chart does in real
-    // life. tops: tee/chemise width; dress: robe width; the male skirt keeps
-    // the top grade (it slides off him at any size anyway — no belt yet).
-    const GRADE: Record<string, { top: number; dress: number }> = {
-      femme: { top: 1, dress: 1 },
-      homme: { top: 1.13, dress: 1.08 },
-      'scan homme': { top: 1.13, dress: 1.08 },
-      // The scanned female is narrower in the shoulders than the sculpted
-      // form the patterns were cut for: take the dress in, or it reads poncho.
-      'scan femme': { top: 1, dress: 0.93 },
-    };
-    const grade = GRADE[bodyKind] ?? { top: 1, dress: 1 };
-    const fit = grade.top;
+    // Automatic made-to-measure: measure the selected body's field like a
+    // tailor (chest, waist, hips, shoulder line) and cut every garment from
+    // RATIOS against the reference form the patterns were designed on.
+    const m = measureFor(bodyKind, useScan && scanAvatar ? scanAvatar : null);
+    const clampR = (v: number): number => Math.min(1.35, Math.max(0.8, v));
+    const chestR = m.chest.circ / REF.chest.circ;
+    const shoulderR = m.shoulderHalfW / REF.shoulderHalfW;
+    // Strap/neckline-held garments live or die on the SHOULDER fit; the body
+    // of the garment stretches over the chest. 70/30 reproduces the grades
+    // that were hand-tuned per body before this tailor existed.
+    const dressScale = clampR(0.7 * shoulderR + 0.3 * chestR);
+    const topScale = clampR(Math.max(chestR, 0.7 * shoulderR + 0.3 * chestR));
+    const skirtScale = clampR(m.hip.circ / REF.hip.circ);
+    const dyShoulder = m.shoulderY - REF.shoulderY;
+    lastGrade = { topScale, dressScale, skirtScale, dyShoulder, dyWaist: m.waist.y - REF.waist.y };
     const tee = () =>
       generateSeamedPanels({
         resolution,
-        width: 1.15 * fit, // sleeve tip to sleeve tip
-        height: 0.75 * (fit === 1 ? 1 : 1.05),
+        width: 1.15 * topScale, // sleeve tip to sleeve tip
+        height: 0.75,
         gap: 0.9,
-        topY: 1.52,
+        topY: 1.52 + dyShoulder,
         shape: 'tshirt', // kimono tee: body + sleeves in one piece
       });
     const mesh =
@@ -181,10 +204,10 @@ async function main(): Promise<void> {
         : sceneMode === 'robe'
           ? generateSeamedPanels({
               resolution,
-              width: 0.95 * grade.dress,
+              width: 0.95 * dressScale,
               height: dressPattern.length,
               gap: 1.0,
-              topY: 1.6,
+              topY: 1.6 + dyShoulder,
               shape: 'aline', // real pattern piece: fitted, flared, scooped neckline
               shapeParams: { hem: dressPattern.flare, scoop: dressPattern.neck },
             })
@@ -195,10 +218,10 @@ async function main(): Promise<void> {
                 // cutting sheet, armholes stitched island-to-island.
                 generateSeamedPanels({
                   resolution,
-                  width: 1.3 * fit,
-                  height: 0.75 * (fit === 1 ? 1 : 1.05),
+                  width: 1.3 * topScale,
+                  height: 0.75,
                   gap: 0.9,
-                  topY: 1.52,
+                  topY: 1.52 + dyShoulder,
                   shape: 'setin',
                   shapeParams: { sleeve: shirtPattern.sleeve },
                 })
@@ -213,10 +236,10 @@ async function main(): Promise<void> {
                     // Honest physics: on the male body (waist ≈ hips) a skirt
                     // has nothing to catch on and slides down at ANY size —
                     // like in real life without a belt. Belts are future work.
-                    width: 0.85 * fit,
+                    width: 0.85 * skirtScale,
                     height: skirtPattern.length,
                     gap: 0.75,
-                    topY: 1.14, // starts above the hips, drops onto them
+                    topY: 1.14 + (m.waist.y - REF.waist.y), // starts above the hips, drops onto them
                     shape: 'skirt',
                     shapeParams: { hem: skirtPattern.flare },
                   }),
@@ -260,7 +283,7 @@ async function main(): Promise<void> {
   // The editable measurements of the current scene, pinned to their cut edges.
   const patternHandles = (): PatternHandleSpec[] => {
     if (sceneMode === 'robe') {
-      const grid = { width: 0.95, topY: 1.6, height: dressPattern.length };
+      const grid = { width: 0.95 * lastGrade.dressScale, topY: 1.6 + lastGrade.dyShoulder, height: dressPattern.length };
       return [
         { id: 'dressFlare', label: 'évasement', grid, anchor: [0.5 + dressPattern.flare, 1], axis: 'u', value: dressPattern.flare, min: 0.25, max: 0.5 },
         { id: 'dressLength', label: 'longueur', grid, anchor: [0.5, 1], axis: 'y', value: dressPattern.length, min: 0.9, max: 1.55, unit: ' m' },
@@ -268,13 +291,13 @@ async function main(): Promise<void> {
       ];
     }
     if (sceneMode === 'chemise') {
-      const grid = { width: 1.3, topY: 1.52, height: 0.75 };
+      const grid = { width: 1.3 * lastGrade.topScale, topY: 1.52 + lastGrade.dyShoulder, height: 0.75 };
       return [
         { id: 'sleeveLen', label: 'manches', grid, anchor: [0.5 + shirtPattern.sleeve, 0.18], axis: 'u', value: shirtPattern.sleeve, min: 0.33, max: 0.47 },
       ];
     }
     if (sceneMode === 'ensemble') {
-      const grid = { width: 0.85, topY: 1.14, height: skirtPattern.length };
+      const grid = { width: 0.85 * lastGrade.skirtScale, topY: 1.14 + lastGrade.dyWaist, height: skirtPattern.length };
       return [
         { id: 'skirtFlare', label: 'évasement', grid, anchor: [0.5 + skirtPattern.flare, 1], axis: 'u', value: skirtPattern.flare, min: 0.3, max: 0.46 },
         { id: 'skirtLength', label: 'longueur', grid, anchor: [0.5, 1], axis: 'y', value: skirtPattern.length, min: 0.4, max: 0.75, unit: ' m' },
