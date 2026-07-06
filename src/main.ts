@@ -167,6 +167,30 @@ async function main(): Promise<void> {
   // periodically-refreshed CPU cache of positions (GPU read-back is async,
   // the press must not be).
   let posCache: Float32Array | null = null;
+  // Cloth sleep: when every sampled particle moved less than ~0.5 mm between
+  // two position snapshots (~0.27 s apart), three times in a row, the solver
+  // is suspended — a settled scene costs (almost) nothing. Any interaction,
+  // wind, podium turn, animation or fabric change wakes it.
+  // Two-scale detector: solver chatter (mm-level, stationary) never sleeps a
+  // MAX criterion, so stillness = near-zero NET DRIFT versus a ~2 s old
+  // snapshot (chatter drifts nowhere; a real swing does), three times in a
+  // row, while a coarse instantaneous bound rejects fast periodic motion
+  // aliasing back onto its own position.
+  let sleepSnapshot: Float32Array | null = null; // last readback
+  let sleepSnapshotT = 0;
+  let driftBase: Float32Array | null = null; // older reference (~2.5 s)
+  let driftBaseT = 0;
+  let snapshotCount = 0;
+  let lastSnapReqT = 0;
+  let stillCount = 0;
+  let asleep = false;
+  const wake = (): void => {
+    asleep = false;
+    stillCount = 0;
+    sleepSnapshot = null;
+    driftBase = null;
+    snapshotCount = 0;
+  };
   let dragIndex: number | null = null;
   let dragDepth = 0;
 
@@ -308,6 +332,7 @@ async function main(): Promise<void> {
     renderer.resize(canvas.width, canvas.height);
     posCache = null; // stale cache belongs to the previous system
     dragIndex = null;
+    wake();
     // Arm animation applies to sculpted ARMS bodies only (the arms ARE the
     // last 8 primitives; scans are rigid grids — podium only for them).
     if (bodyPrims && bodyPrims !== BODY_FORM && bodyPrims !== BODY_MALE) {
@@ -447,10 +472,12 @@ async function main(): Promise<void> {
       onCompliance: (c) => {
         compliance = c;
         system.setCompliance(c);
+        wake(); // a different fabric settles into a different shape
       },
       onFriction: (v) => {
         friction = v;
         system.setFriction(v);
+        wake();
       },
       onStyle: (style) => {
         fabricStyle = style;
@@ -509,10 +536,14 @@ async function main(): Promise<void> {
         }
         build();
       },
-      onPins: (held) => system.setCornerPins(held),
+      onPins: (held) => {
+        system.setCornerPins(held);
+        wake();
+      },
       onReset: () => {
         system.reset();
         panel.syncPins(false);
+        wake();
       },
     },
     { resolution: DEFAULT_RESOLUTION, substeps: DEFAULT_SUBSTEPS },
@@ -565,10 +596,71 @@ async function main(): Promise<void> {
     const aspect = canvas.width / canvas.height;
     const ray = camera.pickRay(mouse.ndcX, mouse.ndcY, aspect);
 
-    // Refresh the CPU position cache used by the instant grab test (~7 Hz).
-    if ((frames & 7) === 0) {
+    // Anything that keeps the cloth alive also keeps the solver awake.
+    const sleepEligible =
+      wind === 0 && podium === 0 && !animate && dragIndex === null && !mouse.leftDown;
+    if (!sleepEligible && asleep) wake();
+
+    // Refresh the CPU position cache used by the instant grab test (time-based
+    // ~3 Hz — frame counters mislead when rAF throttles); consecutive
+    // snapshots double as the stillness detector for sleep.
+    if (now - lastSnapReqT > 300) {
+      lastSnapReqT = now;
       void system.readPositions().then((p) => {
-        if (p) posCache = p;
+        if (!p) return;
+        const tArrive = performance.now();
+        if (sleepEligible && driftBase && sleepSnapshot && driftBase.length === p.length) {
+          // A settled tube garment can keep ROTATING imperceptibly around the
+          // body (solver tangential bias at grazing contacts — a whole turn
+          // takes ~30 s and a uniform tube looks static). Estimate that rigid
+          // rotation about the body axis and measure only the RESIDUAL motion;
+          // freezing the rotation is itself a fix, not a lie.
+          const residualOver = (ref: Float32Array, limit: number): number => {
+            let num = 0;
+            let den = 0;
+            for (let i = 0; i < p.length; i += 16) {
+              const dx = p[i]! - ref[i]!;
+              const dz = p[i + 2]! - ref[i + 2]!;
+              num += p[i]! * dz - p[i + 2]! * dx; // (r × d)·ŷ
+              den += p[i]! * p[i]! + p[i + 2]! * p[i + 2]!;
+            }
+            const w = den > 1e-6 ? num / den : 0; // radians per interval
+            let over = 0;
+            for (let i = 0; i < p.length; i += 16) {
+              const rx = -w * p[i + 2]!;
+              const rz = w * p[i]!;
+              const dx = p[i]! - ref[i]! - rx;
+              const dy = p[i + 1]! - ref[i + 1]!;
+              const dz = p[i + 2]! - ref[i + 2]! - rz;
+              if (dx * dx + dy * dy + dz * dz > limit) over++;
+            }
+            return over;
+          };
+          const n = p.length / 16;
+          // Speed-normalized limits: sustained residual drift > 4 mm/s vs the
+          // old reference, or instantaneous residual motion > 4 cm/s.
+          const dtBase = Math.max(0.2, (tArrive - driftBaseT) / 1000);
+          const dtSnap = Math.max(0.05, (tArrive - sleepSnapshotT) / 1000);
+          const drifted = residualOver(driftBase, (0.004 * dtBase) ** 2);
+          const fast = residualOver(sleepSnapshot, (0.04 * dtSnap) ** 2);
+          if (drifted <= n * 0.005 && fast === 0) {
+            stillCount++;
+            if (stillCount >= 3) asleep = true;
+          } else {
+            stillCount = 0;
+            asleep = false;
+          }
+        } else {
+          stillCount = 0;
+        }
+        snapshotCount++;
+        if (snapshotCount % 8 === 0 || !driftBase) {
+          driftBase = p;
+          driftBaseT = tArrive;
+        }
+        sleepSnapshot = p;
+        sleepSnapshotT = tArrive;
+        posCache = p;
       });
     }
 
@@ -602,7 +694,8 @@ async function main(): Promise<void> {
       applySkin(animSkin, posed.xfs, animRest, animOut);
       renderer.updateBodyVertices(animOut);
     }
-    system.step(dt, substeps, profiler.simSpan());
+    const sleeping = asleep && sleepEligible;
+    if (!sleeping) system.step(dt, substeps, profiler.simSpan());
     renderer.render(camera.matrix(aspect), profiler.renderSpan());
     blit();
     profiler.resolve();
@@ -612,9 +705,11 @@ async function main(): Promise<void> {
     cpuAccum += performance.now() - t0;
     if (fpsAccum >= 0.5) {
       const fps = Math.round(frames / fpsAccum);
-      const timing = profiler.enabled
-        ? `sim ${profiler.simMs.toFixed(2)} ms · rendu ${profiler.renderMs.toFixed(2)} ms (GPU)`
-        : `${(cpuAccum / frames).toFixed(2)} ms/frame (CPU)`;
+      const timing = asleep
+        ? `sim en veille 💤 · rendu ${profiler.enabled ? profiler.renderMs.toFixed(2) : '—'} ms (GPU)`
+        : profiler.enabled
+          ? `sim ${profiler.simMs.toFixed(2)} ms · rendu ${profiler.renderMs.toFixed(2)} ms (GPU)`
+          : `${(cpuAccum / frames).toFixed(2)} ms/frame (CPU)`;
       hud.textContent =
         `${fps} fps · ${timing} · ${system.count.toLocaleString('fr-FR')} part. · ` +
         `${system.constraintCount.toLocaleString('fr-FR')} contr. · ${substeps} substeps`;

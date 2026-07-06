@@ -540,15 +540,26 @@ export class ParticleSystem {
   async readPositions(): Promise<Float32Array | null> {
     if (this.readbackBusy) return null;
     this.readbackBusy = true;
+    // Disposable staging buffer per read: a shared one gets permanently
+    // poisoned when one mapAsync fails mid-flight (e.g. across a rebuild) —
+    // every later map on it rejects and the pick cache silently dies.
+    let staging: GPUBuffer | null = null;
     try {
+      staging = this.device.createBuffer({
+        label: 'pick-readback',
+        size: this.count * 16,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
       const encoder = this.device.createCommandEncoder({ label: 'pick-readback' });
-      encoder.copyBufferToBuffer(this.positionBuffer, 0, this.readbackBuffer, 0, this.count * 16);
+      encoder.copyBufferToBuffer(this.positionBuffer, 0, staging, 0, this.count * 16);
       this.device.queue.submit([encoder.finish()]);
-      await this.readbackBuffer.mapAsync(GPUMapMode.READ);
-      const copy = new Float32Array(this.readbackBuffer.getMappedRange().slice(0));
-      this.readbackBuffer.unmap();
+      await staging.mapAsync(GPUMapMode.READ);
+      const copy = new Float32Array(staging.getMappedRange().slice(0));
       return copy;
+    } catch {
+      return null;
     } finally {
+      staging?.destroy();
       this.readbackBusy = false;
     }
   }
