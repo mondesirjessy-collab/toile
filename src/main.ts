@@ -9,6 +9,7 @@ import { buildSceneMesh } from './app/SceneGeometry';
 import { GpuProfiler } from './app/GpuProfiler';
 import { ControlPanel } from './app/ControlPanel';
 import { PatternView, type PatternHandleSpec } from './app/PatternView';
+import { exportPatternPdf } from './app/patternPdf';
 import { pickParticle } from './app/pick';
 import {
   BODY_BLEND,
@@ -202,6 +203,7 @@ async function main(): Promise<void> {
   // Stashed by build() so the pattern-view handles use the graded dimensions.
   let lastGrade = { topScale: 1, dressScale: 1, skirtScale: 1, dyShoulder: 0, dyWaist: 0 };
 
+  let currentMesh: ReturnType<typeof generateClothGrid> | null = null;
   let system!: ParticleSystem;
   let renderer!: ClothRenderer;
 
@@ -446,6 +448,7 @@ async function main(): Promise<void> {
       animRest = null;
       animOut = null;
     }
+    currentMesh = mesh;
     patternView.draw(mesh, patternHandles()); // refresh the 2D cutting-layout inset
   };
 
@@ -669,6 +672,9 @@ async function main(): Promise<void> {
         build();
       },
       onFitMap: (v) => renderer.setFitMap(v),
+      onPatternPdf: () => {
+        if (currentMesh) exportPatternPdf(currentMesh, sceneMode);
+      },
       onPins: (held) => {
         system.setCornerPins(held);
         wake();
