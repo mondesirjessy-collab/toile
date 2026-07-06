@@ -43,7 +43,9 @@ elif up == 0:
 # Normalize: feet at y=0, height 1.755 m, centered in x/z
 V -= V.min(0)
 h = V[:, 1].max()
-V *= 1.755 / h
+HEIGHT = float(sys.argv[3]) if len(sys.argv) > 3 else 1.755
+NAME = sys.argv[4] if len(sys.argv) > 4 else 'homme-scan'
+V *= HEIGHT / h
 V[:, 0] -= (V[:, 0].max() + V[:, 0].min()) / 2
 V[:, 2] -= (V[:, 2].max() + V[:, 2].min()) / 2
 ext = V.max(0) - V.min(0)
@@ -63,7 +65,7 @@ print('render mesh:', RV.shape[0], 'verts,', RF.shape[0], 'tris')
 NR = igl.per_vertex_normals(RV.astype(np.float64), RF.astype(np.int64))
 NR = np.nan_to_num(NR, nan=0.0)
 
-with open(f'{OUT}/homme-scan.mesh.bin', 'wb') as f:
+with open(f'{OUT}/{NAME}.mesh.bin', 'wb') as f:
     f.write(struct.pack('<II', RV.shape[0], RF.shape[0]))
     f.write(RV.astype('<f4').tobytes())
     f.write(NR.astype('<f4').tobytes())
@@ -86,7 +88,7 @@ P = np.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=1)
 S = igl.signed_distance(P, RV.astype(np.float64), RF.astype(np.int64),
                               sign_type=igl.SIGNED_DISTANCE_TYPE_FAST_WINDING_NUMBER)[0]
 S = np.clip(S * 1000.0, -32000, 32000).astype('<i2')  # millimeters, int16
-with open(f'{OUT}/homme-scan.sdf.bin', 'wb') as f:
+with open(f'{OUT}/{NAME}.sdf.bin', 'wb') as f:
     f.write(struct.pack('<III', nx, ny, nz))
     f.write(np.asarray(mn, '<f4').tobytes())
     f.write(np.asarray(mx, '<f4').tobytes())
