@@ -515,6 +515,79 @@ describe('combineClothMeshes (outfits)', () => {
   });
 });
 
+describe('set-in sleeve cap (embu)', () => {
+  const n = 64;
+  const mesh = generateSeamedPanels({ resolution: n, width: 1.3, height: 0.75, gap: 0.9, topY: 1.52, shape: 'setin' });
+
+  // Walk row by row like the armhole seam does: the left sleeve's inner end
+  // (last kept column of the first run) and the body's left edge (first kept
+  // column of the middle run). Their polyline lengths are the two sewn edges.
+  const edges = (): { cap: number; armhole: number; rows: number } => {
+    const P = (u: number, v: number): [number, number] => [mesh.positions[(v * n + u) * 4]!, mesh.positions[(v * n + u) * 4 + 1]!];
+    const kept = (u: number, v: number): boolean => mesh.invMasses[v * n + u] !== undefined && mesh.positions[(v * n + u) * 4 + 1]! > -5;
+    let cap = 0;
+    let armhole = 0;
+    let rows = 0;
+    let prevCap: [number, number] | null = null;
+    let prevArm: [number, number] | null = null;
+    for (let v = 0; v < n; v++) {
+      const runs: Array<[number, number]> = [];
+      let start = -1;
+      for (let u = 0; u <= n; u++) {
+        const k = u < n && kept(u, v);
+        if (k && start < 0) start = u;
+        else if (!k && start >= 0) {
+          runs.push([start, u - 1]);
+          start = -1;
+        }
+      }
+      if (runs.length < 3) {
+        prevCap = prevArm = null;
+        continue;
+      }
+      const capPt = P(runs[0]![1], v); // left sleeve inner end (the cap curve)
+      const armPt = P(runs[1]![0], v); // body's left edge (the armhole)
+      if (prevCap && prevArm) {
+        cap += Math.hypot(capPt[0] - prevCap[0], capPt[1] - prevCap[1]);
+        armhole += Math.hypot(armPt[0] - prevArm[0], armPt[1] - prevArm[1]);
+        rows++;
+      }
+      prevCap = capPt;
+      prevArm = armPt;
+    }
+    return { cap, armhole, rows };
+  };
+
+  it('cuts a curved cap whose edge is a few percent longer than the armhole', () => {
+    const { cap, armhole, rows } = edges();
+    expect(rows).toBeGreaterThan(10); // the sleeve band spans a real stretch
+    const ease = cap / armhole;
+    // Tailor's embu: enough to round the shoulder, not enough to gather.
+    expect(ease).toBeGreaterThan(1.02);
+    expect(ease).toBeLessThan(1.12);
+  });
+
+  it('keeps a cutting gap between the cap curve and the body edge', () => {
+    // The closest approach of the sleeve island to the body island must stay
+    // at least one full cell, or the pieces would fuse at cutting time.
+    const P = (u: number, v: number): number => mesh.positions[(v * n + u) * 4]!;
+    for (let v = 0; v < n; v++) {
+      const runs: Array<[number, number]> = [];
+      let start = -1;
+      for (let u = 0; u <= n; u++) {
+        const k = u < n && mesh.positions[(v * n + u) * 4 + 1]! > -5;
+        if (k && start < 0) start = u;
+        else if (!k && start >= 0) {
+          runs.push([start, u - 1]);
+          start = -1;
+        }
+      }
+      if (runs.length < 3) continue;
+      expect(runs[1]![0] - runs[0]![1]).toBeGreaterThanOrEqual(2);
+    }
+  });
+});
+
 describe('sideHalfWidth (patron libre)', () => {
   it('interpolates the drafted silhouette between stations', async () => {
     const { sideHalfWidth } = await import('../src/engine/cloth/ClothMesh');

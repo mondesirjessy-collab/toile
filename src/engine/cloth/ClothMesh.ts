@@ -355,7 +355,29 @@ function skirtShape(u: number, v: number, p: ShapeParams = {}): boolean {
  * Set-in tee cutting layout: three islands on one pattern sheet — the body in
  * the middle (neck scoop), and two separate sleeve pieces beside it. The
  * armhole edges get stitched island-to-island at assembly.
+ *
+ * The sleeve's inner edge is the SLEEVE CAP (tête de manche): a convex curve
+ * bulging toward the body. Its arc is a few percent LONGER than the straight
+ * armhole edge it is sewn to — the tailor's EASE (embu). The armhole seam
+ * stitches row by row, so the extra length between consecutive stitches gets
+ * compressed and the cap rounds itself over the shoulder instead of lying
+ * flat. Flat cap = boxy shoulder; eased cap = a set-in sleeve.
  */
+// Gentle drafting: the band ends stay close to the body (the armhole seam
+// swallows that gap at assembly — too far and the yank dislodges the whole
+// shoulder), and the bulge is sized for ~3-4 % ease: rounds without gathers.
+const CAP_BASE = 0.285; // inner sleeve bound at the band's ends (u units)
+const CAP_DEPTH = 0.022; // bulge toward the body — sets the ease
+const CAP_V0 = 0.02; // sleeve band: v ∈ [CAP_V0, CAP_V1]
+const CAP_V1 = 0.34;
+
+/** Inner sleeve bound at height v: the drafted cap curve. */
+function capInnerX(v: number): number {
+  const t = (v - CAP_V0) / (CAP_V1 - CAP_V0);
+  if (t < 0 || t > 1) return CAP_BASE;
+  return CAP_BASE - CAP_DEPTH * Math.sin(Math.PI * t);
+}
+
 function setinShape(u: number, v: number, p: ShapeParams = {}): boolean {
   const sleeveEnd = p.sleeve ?? 0.47; // outer sleeve bound = sleeve length
   const x = Math.abs(u - 0.5);
@@ -374,8 +396,9 @@ function setinShape(u: number, v: number, p: ShapeParams = {}): boolean {
     }
     return true;
   }
-  // Sleeves: separate pieces across a cutting gap, shoulder-height band only.
-  return x > 0.27 && x <= sleeveEnd && v >= 0.02 && v <= 0.34;
+  // Sleeves: separate pieces across a cutting gap, shoulder-height band only,
+  // bounded on the inside by the cap curve.
+  return x >= capInnerX(v) && x <= sleeveEnd && v >= CAP_V0 && v <= CAP_V1;
 }
 
 /**
@@ -410,9 +433,9 @@ function isOpening(shape: PatternShape, uu: number, vv: number, p: ShapeParams =
   if (shape === 'setin') {
     if (vv < 0.1 && x < 0.11) return true; // neckline
     if (x > (p.sleeve ?? 0.47) - 0.02) return true; // sleeve cuffs
-    // Armhole edges (body side + sleeve inner end) are sewn island-to-island,
-    // not front-to-back — keep them out of the mirror seams.
-    if (vv < 0.36 && ((x >= 0.2 && x <= 0.24) || (x >= 0.255 && x <= 0.3))) return true;
+    // Armhole edges (body side + the whole sleeve-cap curve) are sewn
+    // island-to-island, not front-to-back — keep them out of the mirror seams.
+    if (vv < 0.36 && x >= 0.2 && x <= CAP_BASE + 0.01) return true;
   }
   return false;
 }
