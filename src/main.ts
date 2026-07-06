@@ -112,6 +112,8 @@ async function main(): Promise<void> {
   let selfCollision = true;
   let wind = 0;
   let dressPattern = { length: 1.3, flare: 0.5, neck: 0.1 };
+  let shirtPattern = { sleeve: 0.47 };
+  let skirtPattern = { length: 0.6, flare: 0.46 };
 
   let system!: ParticleSystem;
   let renderer!: ClothRenderer;
@@ -169,6 +171,7 @@ async function main(): Promise<void> {
                   gap: 0.9,
                   topY: 1.52,
                   shape: 'setin',
+                  shapeParams: { sleeve: shirtPattern.sleeve },
                 })
             : sceneMode === 'ensemble'
               ? // Outfit: tee + flared skirt, one simulation — self-collision
@@ -178,10 +181,11 @@ async function main(): Promise<void> {
                   generateSeamedPanels({
                     resolution,
                     width: 0.85, // waist ring smaller than the hip bulge — cannot slip past
-                    height: 0.6,
+                    height: skirtPattern.length,
                     gap: 0.75,
                     topY: 1.14, // starts above the hips, drops onto them
                     shape: 'skirt',
+                    shapeParams: { hem: skirtPattern.flare },
                   }),
                 )
               : generateClothGrid({ resolution, size: CLOTH_SIZE, topY: CLOTH_TOP_Y, pin: 'none' });
@@ -268,6 +272,23 @@ async function main(): Promise<void> {
         if (sceneMode !== 'robe') {
           sceneMode = 'robe';
           panel.syncScene('robe');
+        }
+        build();
+      },
+      onShirtPattern: (p) => {
+        shirtPattern = p;
+        if (sceneMode !== 'chemise') {
+          sceneMode = 'chemise';
+          panel.syncScene('chemise');
+        }
+        build();
+      },
+      onSkirtPattern: (p) => {
+        skirtPattern = p;
+        // The skirt lives in the outfit scene.
+        if (sceneMode !== 'ensemble') {
+          sceneMode = 'ensemble';
+          panel.syncScene('ensemble');
         }
         build();
       },

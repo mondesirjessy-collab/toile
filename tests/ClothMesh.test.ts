@@ -390,6 +390,33 @@ describe("generateSeamedPanels shape 'setin' (set-in sleeves)", () => {
     expect(runs).toBe(3);
   });
 
+  it('grades the sleeve length via shapeParams.sleeve', () => {
+    const short = generateSeamedPanels({
+      resolution: n,
+      width: 1.3,
+      height: 0.75,
+      gap: 0.9,
+      topY: 1.52,
+      shape: 'setin',
+      shapeParams: { sleeve: 0.35 },
+    });
+    const keptCount = (m: typeof mesh): number => [...m.invMasses].filter((w) => w === 1).length;
+    expect(keptCount(short)).toBeLessThan(keptCount(mesh)); // shorter sleeves → less fabric
+    // Still three islands on a sleeve row.
+    const v = Math.floor(0.2 * (n - 1));
+    let runs = 0;
+    let run = 0;
+    for (let u = 0; u <= n; u++) {
+      const k = u < n && short.invMasses[v * n + u] === 1;
+      if (k) run++;
+      else if (run > 0) {
+        runs++;
+        run = 0;
+      }
+    }
+    expect(runs).toBe(3);
+  });
+
   it('stitches armholes island-to-island: same-panel seams between different columns', () => {
     const dv = new DataView(mesh.constraintData);
     const panelSize = n * n;

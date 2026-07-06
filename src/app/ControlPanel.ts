@@ -26,6 +26,8 @@ export interface PanelCallbacks {
   onSelfCollision(enabled: boolean): void;
   onWind(strength: number): void;
   onPattern(p: PatternParams): void;
+  onShirtPattern(p: { sleeve: number }): void;
+  onSkirtPattern(p: { length: number; flare: number }): void;
   onPins(held: boolean): void;
   onReset(): void;
 }
@@ -39,6 +41,9 @@ interface Settings {
   dressLength: number;
   dressFlare: number;
   dressNeck: number;
+  sleeveLen: number;
+  skirtLength: number;
+  skirtFlare: number;
   stretchExp: number; // compliance = 10^exp (log slider); -8 ≈ rigid
   shearExp: number;
   bendExp: number;
@@ -104,6 +109,9 @@ export class ControlPanel {
       dressLength: 1.3,
       dressFlare: 0.5,
       dressNeck: 0.1,
+      sleeveLen: 0.47,
+      skirtLength: 0.6,
+      skirtFlare: 0.46,
       stretchExp: -8,
       shearExp: -8,
       bendExp: Math.log10(2e-6),
@@ -113,6 +121,8 @@ export class ControlPanel {
     };
 
     this.gui = new GUI({ title: 'TOILE — solveur' });
+    // Accès de test en dev : piloter les contrôleurs sans dépendre de clics pixel.
+    if (import.meta.env.DEV) (window as unknown as { __toileGui?: GUI }).__toileGui = this.gui;
 
     this.controllers.push(
       this.gui
@@ -173,6 +183,24 @@ export class ControlPanel {
       pattern.add(this.settings, 'dressNeck', 0.06, 0.16, 0.005).name('encolure').onFinishChange(pushPattern),
     );
 
+    const shirtPattern = this.gui.addFolder('patron · chemise');
+    this.controllers.push(
+      shirtPattern
+        .add(this.settings, 'sleeveLen', 0.33, 0.47, 0.005)
+        .name('longueur manches')
+        .onFinishChange(() => this.cb.onShirtPattern({ sleeve: this.settings.sleeveLen })),
+    );
+
+    const skirtPattern = this.gui.addFolder('patron · jupe');
+    const pushSkirt = (): void =>
+      this.cb.onSkirtPattern({ length: this.settings.skirtLength, flare: this.settings.skirtFlare });
+    this.controllers.push(
+      skirtPattern.add(this.settings, 'skirtLength', 0.4, 0.75, 0.01).name('longueur (m)').onFinishChange(pushSkirt),
+      skirtPattern.add(this.settings, 'skirtFlare', 0.3, 0.46, 0.005).name('évasement').onFinishChange(pushSkirt),
+    );
+    shirtPattern.close();
+    skirtPattern.close();
+
     // Open garment format: save/load the whole garment as JSON.
     const file = this.gui.addFolder('fichier');
     file.add({ exporter: () => this.exportGarment() }, 'exporter').name('exporter le vêtement (.json)');
@@ -212,7 +240,14 @@ export class ControlPanel {
       format: 'toile-garment',
       version: 1,
       scene: s.scene,
-      pattern: { length: s.dressLength, flare: s.dressFlare, neck: s.dressNeck },
+      pattern: {
+        length: s.dressLength,
+        flare: s.dressFlare,
+        neck: s.dressNeck,
+        sleeve: s.sleeveLen,
+        skirtLength: s.skirtLength,
+        skirtFlare: s.skirtFlare,
+      },
       fabric: {
         preset: s.preset,
         stretchExp: s.stretchExp,
@@ -255,7 +290,7 @@ export class ControlPanel {
     const d = doc as {
       format?: string;
       scene?: SceneMode;
-      pattern?: Partial<PatternParams>;
+      pattern?: Partial<PatternParams> & { sleeve?: number; skirtLength?: number; skirtFlare?: number };
       fabric?: { preset?: string; stretchExp?: number; shearExp?: number; bendExp?: number; friction?: number };
       sim?: { resolution?: number; substeps?: number; selfCollision?: boolean; wind?: number };
     };
@@ -278,6 +313,9 @@ export class ControlPanel {
       s.dressLength = d.pattern.length ?? s.dressLength;
       s.dressFlare = d.pattern.flare ?? s.dressFlare;
       s.dressNeck = d.pattern.neck ?? s.dressNeck;
+      s.sleeveLen = d.pattern.sleeve ?? s.sleeveLen;
+      s.skirtLength = d.pattern.skirtLength ?? s.skirtLength;
+      s.skirtFlare = d.pattern.skirtFlare ?? s.skirtFlare;
     }
     if (d.scene) s.scene = d.scene;
     for (const c of this.controllers) c.updateDisplay();
@@ -290,8 +328,10 @@ export class ControlPanel {
     this.cb.onSelfCollision(s.selfCollision);
     this.cb.onWind(s.wind);
     this.cb.onPattern({ length: s.dressLength, flare: s.dressFlare, neck: s.dressNeck });
+    this.cb.onShirtPattern({ sleeve: s.sleeveLen });
+    this.cb.onSkirtPattern({ length: s.skirtLength, flare: s.skirtFlare });
     this.cb.onResolution(s.resolution);
-    this.cb.onScene(s.scene);
+    this.cb.onScene(s.scene); // the file's scene wins the final rebuild
   }
 
   private applyPreset(name: string): void {

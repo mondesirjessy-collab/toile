@@ -301,7 +301,7 @@ export interface SeamedPanelsOptions {
    */
   shape?: 'rect' | 'aline' | 'tshirt' | 'skirt' | 'setin';
   /** Pattern measurements (grading): shape-specific, all in normalized [0,1] pattern units. */
-  shapeParams?: { hem?: number; scoop?: number };
+  shapeParams?: { hem?: number; scoop?: number; sleeve?: number };
 }
 
 type PatternShape = NonNullable<SeamedPanelsOptions['shape']>;
@@ -326,10 +326,12 @@ function tshirtShape(u: number, v: number): boolean {
   return v >= drop && v <= drop + 0.34;
 }
 
-/** True when (u,v) ∈ [0,1]² lies inside the flared-skirt pattern piece. */
-function skirtShape(u: number, v: number): boolean {
+/** True when (u,v) ∈ [0,1]² lies inside the flared-skirt pattern piece.
+ * Parametric: `hem` = half-width at the hem (flare). */
+function skirtShape(u: number, v: number, p: ShapeParams = {}): boolean {
+  const hem = p.hem ?? 0.46;
   const x = Math.abs(u - 0.5);
-  return x <= 0.22 + (0.46 - 0.22) * v; // snug waist → flared hem
+  return x <= 0.22 + (hem - 0.22) * v; // snug waist → flared hem
 }
 
 /**
@@ -337,7 +339,8 @@ function skirtShape(u: number, v: number): boolean {
  * the middle (neck scoop), and two separate sleeve pieces beside it. The
  * armhole edges get stitched island-to-island at assembly.
  */
-function setinShape(u: number, v: number): boolean {
+function setinShape(u: number, v: number, p: ShapeParams = {}): boolean {
+  const sleeveEnd = p.sleeve ?? 0.47; // outer sleeve bound = sleeve length
   const x = Math.abs(u - 0.5);
   if (x <= 0.22) {
     // Body, with a neck scoop.
@@ -348,7 +351,7 @@ function setinShape(u: number, v: number): boolean {
     return true;
   }
   // Sleeves: separate pieces across a cutting gap, shoulder-height band only.
-  return x > 0.27 && x <= 0.47 && v >= 0.02 && v <= 0.34;
+  return x > 0.27 && x <= sleeveEnd && v >= 0.02 && v <= 0.34;
 }
 
 /**
@@ -366,7 +369,7 @@ function isOpening(shape: PatternShape, uu: number, vv: number, p: ShapeParams =
   if (shape === 'skirt') return vv < 0.04; // waist
   if (shape === 'setin') {
     if (vv < 0.1 && x < 0.11) return true; // neckline
-    if (x > 0.45) return true; // sleeve cuffs
+    if (x > (p.sleeve ?? 0.47) - 0.02) return true; // sleeve cuffs
     // Armhole edges (body side + sleeve inner end) are sewn island-to-island,
     // not front-to-back — keep them out of the mirror seams.
     if (vv < 0.36 && ((x >= 0.2 && x <= 0.24) || (x >= 0.255 && x <= 0.3))) return true;
@@ -418,8 +421,8 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
   const insideUV = (uu: number, vv: number): boolean => {
     if (shape === 'aline') return alineShape(uu, vv, shapeParams);
     if (shape === 'tshirt') return tshirtShape(uu, vv);
-    if (shape === 'skirt') return skirtShape(uu, vv);
-    if (shape === 'setin') return setinShape(uu, vv);
+    if (shape === 'skirt') return skirtShape(uu, vv, shapeParams);
+    if (shape === 'setin') return setinShape(uu, vv, shapeParams);
     return true;
   };
   const inside = (u: number, v: number): boolean => insideUV(u / (n - 1), v / (n - 1));
