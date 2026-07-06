@@ -549,6 +549,19 @@ async function main(): Promise<void> {
     return false; // fabric grabbed — the camera stays put
   };
   camera.attach(canvas, tryOrbit);
+  // Double-click: tack the fabric in place right where you aim (pin/unpin).
+  canvas.addEventListener('dblclick', (e) => {
+    if (!posCache) return;
+    const rect = canvas.getBoundingClientRect();
+    const ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    const ndcY = 1 - ((e.clientY - rect.top) / rect.height) * 2;
+    const ray = camera.pickRay(ndcX, ndcY, canvas.width / canvas.height);
+    const hit = pickParticle(posCache, Math.min(system.count, posCache.length / 4), ray.origin, ray.dir, 0.15);
+    if (hit) {
+      system.togglePin(hit.index);
+      wake();
+    }
+  });
 
   const panel = new ControlPanel(
     {
@@ -655,6 +668,7 @@ async function main(): Promise<void> {
         }
         build();
       },
+      onFitMap: (v) => renderer.setFitMap(v),
       onPins: (held) => {
         system.setCornerPins(held);
         wake();

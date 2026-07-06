@@ -50,7 +50,21 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var nor = cross(tv, tu); // +Y for the flat rest pose
   let len = length(nor);
   if (len < 1e-8) { nor = vec3f(0.0, 1.0, 0.0); } else { nor = nor / len; }
-  normals[i] = vec4f(nor, 0.0);
+  // Strain: mean structural-neighbour elongation vs the rest spacing —
+  // the fit map's raw data, smuggled in the normal's free w component.
+  var sum = 0.0;
+  var cnt = 0.0;
+  let nb1 = positions[base + v * n + up1].xyz;
+  let nb2 = positions[base + v * n + um1].xyz;
+  let nb3 = positions[base + vp1 * n + u].xyz;
+  let nb4 = positions[base + vm1 * n + u].xyz;
+  let d1 = distance(nb1, x); if (d1 > 1e-6 && d1 < limit) { sum += d1; cnt += 1.0; }
+  let d2 = distance(nb2, x); if (d2 > 1e-6 && d2 < limit) { sum += d2; cnt += 1.0; }
+  let d3 = distance(nb3, x); if (d3 > 1e-6 && d3 < limit) { sum += d3; cnt += 1.0; }
+  let d4 = distance(nb4, x); if (d4 > 1e-6 && d4 < limit) { sum += d4; cnt += 1.0; }
+  var strain = 0.0;
+  if (cnt > 0.0) { strain = sum / cnt / grid.spacing - 1.0; }
+  normals[i] = vec4f(nor, strain);
 }
 `;
 
@@ -65,6 +79,7 @@ struct Fabric {
   back: vec4f,
   motif: vec4f,
   motifColor: vec4f,
+  options: vec4f, // x = fit map on/off
 };
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(0) @binding(1) var<uniform> fabric: Fabric;
@@ -73,6 +88,7 @@ struct VSOut {
   @builtin(position) clip: vec4f,
   @location(0) normal: vec3f,
   @location(1) uv: vec2f, // rest-cloth coordinates in METERS
+  @location(2) strain: f32,
 };
 
 @vertex
@@ -84,7 +100,16 @@ fn vs(@builtin(vertex_index) vid: u32, @location(0) pos: vec4f, @location(1) nrm
   let n = u32(fabric.motif.z);
   let local = vid % (n * n);
   out.uv = vec2f(f32(local % n), f32(local / n)) * fabric.motif.w;
+  out.strain = nrm.w;
   return out;
+}
+
+// Fit map: blue (slack) → green (easy) → yellow (snug) → red (tight).
+fn heatmap(strain: f32) -> vec3f {
+  let t = clamp(strain / 0.10, 0.0, 1.0); // 10 % elongation = full red
+  if (t < 0.33) { return mix(vec3f(0.2, 0.4, 0.9), vec3f(0.2, 0.85, 0.4), t / 0.33); }
+  if (t < 0.66) { return mix(vec3f(0.2, 0.85, 0.4), vec3f(0.95, 0.85, 0.2), (t - 0.33) / 0.33); }
+  return mix(vec3f(0.95, 0.85, 0.2), vec3f(0.9, 0.15, 0.1), (t - 0.66) / 0.34);
 }
 
 fn motif_mask(uv: vec2f) -> f32 {
@@ -116,6 +141,7 @@ fn fs(in: VSOut, @builtin(front_facing) front: bool) -> @location(0) vec4f {
   let wrap = clamp(dot(n, L) * 0.5 + 0.5, 0.0, 1.0);
   var base = select(fabric.back.rgb, fabric.face.rgb, front);
   if (front) { base = mix(base, fabric.motifColor.rgb, motif_mask(in.uv) * fabric.motifColor.a); }
+  if (fabric.options.x > 0.5) { base = heatmap(max(in.strain, 0.0)); }
   let ambient = fabric.back.a;
   let shade = ambient + (1.0 - ambient) * pow(wrap, fabric.face.a);
   return vec4f(base * shade, 1.0);
@@ -205,6 +231,8 @@ export class ClothRenderer {
   private readonly cameraBuffer: GPUBuffer;
   private readonly fabricBuffer: GPUBuffer;
   private readonly clothResolution: number;
+  private fitMap = false;
+  private lastStyle: FabricStyle | null = null;
   private readonly clothSpacing: number;
   private readonly clothIndexBuffer: GPUBuffer;
   private readonly clothIndexCount: number;
@@ -241,7 +269,7 @@ export class ClothRenderer {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     this.fabricBuffer = device.createBuffer({
-      size: 64, // Fabric: 4 × vec4f (look + print)
+      size: 80, // Fabric: 5 × vec4f (look + print + options)
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     this.setFabric(DEFAULT_FABRIC);
@@ -418,8 +446,19 @@ export class ClothRenderer {
         mc[1],
         mc[2],
         mc[3],
+        this.fitMap ? 1 : 0,
+        0,
+        0,
+        0,
       ]),
     );
+    this.lastStyle = style;
+  }
+
+  /** Fit map: color the cloth by strain instead of fabric. */
+  setFitMap(on: boolean): void {
+    this.fitMap = on;
+    if (this.lastStyle) this.setFabric(this.lastStyle);
   }
 
   render(viewProj: Float32Array, ts?: TimestampSpan): void {

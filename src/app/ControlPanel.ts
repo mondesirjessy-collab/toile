@@ -42,6 +42,7 @@ export interface PanelCallbacks {
   onShirtPattern(p: { sleeve: number }): void;
   onSkirtPattern(p: { length: number; flare: number }): void;
   onPins(held: boolean): void;
+  onFitMap(on: boolean): void;
   onReset(): void;
 }
 
@@ -74,6 +75,7 @@ interface Settings {
   bendExp: number;
   friction: number;
   pinCorners: boolean;
+  fitMap: boolean;
   preset: string;
   motif: string;
   motifCm: number;
@@ -198,6 +200,7 @@ export class ControlPanel {
       bendExp: Math.log10(2e-6),
       friction: 0.5,
       pinCorners: false,
+      fitMap: false,
       preset: 'Jersey',
       motif: 'uni',
       motifCm: 5,
@@ -292,6 +295,10 @@ export class ControlPanel {
       fabric.add(this.settings, 'bendExp', -8, -3, 0.1).name('compliance flexion (log)').onChange(pushCompliance),
       fabric.add(this.settings, 'friction', 0, 1, 0.01).name('friction μ').onChange((v: number) => this.cb.onFriction(v)),
       fabric.add(this.settings, 'preset', ['Jersey', 'Maille', 'Popeline', 'Denim', 'Lin', 'Laine', 'Soie']).name('preset').onChange((name: string) => this.applyPreset(name)),
+      fabric
+        .add(this.settings, 'fitMap')
+        .name('carte de tension')
+        .onChange((v: boolean) => this.cb.onFitMap(v)),
     );
 
     // Prints: procedural, crisp at any zoom, scaled in real centimeters.

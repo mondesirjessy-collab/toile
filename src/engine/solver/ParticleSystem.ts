@@ -147,6 +147,7 @@ export class ParticleSystem {
   private readonly colliderCount: number;
   private readonly colliderBlend: number;
   private readonly useGrid: boolean;
+  private readonly extraPins = new Set<number>();
   private spinAngle = 0;
   private spinRate = 0; // rad/s
 
@@ -480,6 +481,17 @@ export class ParticleSystem {
       }
     });
     this.device.queue.writeBuffer(this.colliderBuffer, 0, data);
+  }
+
+  /** Pin/unpin one particle in place (double-click tack). */
+  togglePin(index: number): boolean {
+    if (index < 0 || index >= this.count) return false;
+    const pinned = this.extraPins.has(index);
+    if (pinned) this.extraPins.delete(index);
+    else this.extraPins.add(index);
+    const value = new Float32Array([pinned ? this.baseInvMasses[index]! : 0]);
+    this.device.queue.writeBuffer(this.invMassBuffer, index * 4, value);
+    return !pinned;
   }
 
   /** Podium turn: current angle + angular speed (drives surface friction). */
