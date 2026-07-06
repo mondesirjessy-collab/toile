@@ -149,12 +149,18 @@ async function main(): Promise<void> {
   // then lazy per-mannequin measurements (analytic field or scan grid).
   const REF = measureBody((x, y, z) => sdBody(x, y, z, BODY_FORM, BODY_BLEND), 1.755);
   const measureCache: Record<string, BodyMeasure> = {};
+  // Cache key over ALL the measurement sliders — dropping one serves a stale
+  // body (frozen grading, stale morphed scan) as soon as it moves alone.
+  const morphKey = (): string =>
+    `${morphs.stature}|${morphs.carrure}|${morphs.poitrine}|${morphs.taille}|${morphs.hanches}|${morphs.cuisse}`;
   const measureFor = (kind: string, prims: SdfPrim[] | null, scan: ScanAvatar['grid'] | null): BodyMeasure => {
-    const key = `${kind}|${morphs.poitrine}|${morphs.taille}|${morphs.hanches}`;
+    const key = `${kind}|${morphKey()}`;
     if (prims) {
+      // The anthropometric bands scale with the body: a stature-morphed form
+      // is measured at ITS height, or the shoulder band floats above the head.
       measureCache[key] ??= measureBody(
         (x, y, z) => sdBody(x, y, z, prims, BODY_BLEND),
-        kind === 'homme' ? 1.765 : 1.755,
+        (kind === 'homme' ? 1.765 : 1.755) * morphs.stature,
       );
       return measureCache[key]!;
     }
@@ -273,7 +279,7 @@ async function main(): Promise<void> {
     const bodyPrims = basePrims && marks ? morphPrims(basePrims, morphs, marks) : basePrims;
     let effScan = useScan ? scanAvatar! : null;
     if (effScan && marks) {
-      const key = `${bodyKind}|${morphs.poitrine}|${morphs.taille}|${morphs.hanches}`;
+      const key = `${bodyKind}|${morphKey()}`;
       morphCache[key] ??= {
         grid: morphGrid(effScan.grid, morphs, marks),
         mesh: morphMesh(effScan.mesh, morphs, marks),
@@ -456,6 +462,7 @@ async function main(): Promise<void> {
       system.count,
       mesh.resolution,
       mesh.spacing,
+      mesh.spacingV,
       mesh.triangleIndices,
       sceneMesh,
     );
@@ -747,7 +754,7 @@ async function main(): Promise<void> {
             clothPos[i * 3 + 2] = raw[i * 4 + 2]!;
             const local = i % panelSize; // rest-pose UVs in meters, same map as the print shader
             uvs[i * 2] = (local % mesh.resolution) * mesh.spacing;
-            uvs[i * 2 + 1] = Math.floor(local / mesh.resolution) * mesh.spacing;
+            uvs[i * 2 + 1] = Math.floor(local / mesh.resolution) * mesh.spacingV;
           }
           // Both panels of a garment share the same index winding, so the
           // back panel's faces (and thus its computed normals) point INTO

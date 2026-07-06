@@ -488,6 +488,14 @@ describe('combineClothMeshes (outfits)', () => {
     expect(() => combineClothMeshes(tee, other)).toThrow();
   });
 
+  it('carries per-axis rest lengths (anisotropic grids)', () => {
+    // tee: 1.15 × 0.75 over the same n×n — the two axes differ by 53 %.
+    expect(tee.spacing).toBeCloseTo(1.15 / (n - 1));
+    expect(tee.spacingV).toBeCloseTo(0.75 / (n - 1));
+    expect(outfit.spacing).toBeCloseTo(Math.max(tee.spacing, skirt.spacing));
+    expect(outfit.spacingV).toBeCloseTo(Math.max(tee.spacingV, skirt.spacingV));
+  });
+
   it('assigns garment b to the requested layer (dressing order)', () => {
     const layered = combineClothMeshes(tee, skirt, [], 1);
     expect(layered.layers).toHaveLength(layered.count);

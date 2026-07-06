@@ -12,7 +12,7 @@
 import { SCENE_VERTEX_FLOATS, type SceneMesh } from './SceneGeometry';
 
 const NORMALS_SHADER = /* wgsl */ `
-struct GridInfo { n: u32, count: u32, spacing: f32, _p0: u32 };
+struct GridInfo { n: u32, count: u32, spacing: f32, spacing_v: f32 };
 @group(0) @binding(0) var<uniform> grid: GridInfo;
 @group(0) @binding(1) var<storage, read> positions: array<vec4f>;
 @group(0) @binding(2) var<storage, read_write> normals: array<vec4f>;
@@ -42,7 +42,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let vp1 = min(v + 1u, n - 1u);
   let vm1 = select(v - 1u, 0u, v == 0u);
   let x = positions[i].xyz;
-  let limit = grid.spacing * 4.0;
+  let limit = max(grid.spacing, grid.spacing_v) * 4.0;
   let tu = valid(positions[base + v * n + up1].xyz, x, limit)
          - valid(positions[base + v * n + um1].xyz, x, limit);
   let tv = valid(positions[base + vp1 * n + u].xyz, x, limit)
@@ -50,20 +50,22 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var nor = cross(tv, tu); // +Y for the flat rest pose
   let len = length(nor);
   if (len < 1e-8) { nor = vec3f(0.0, 1.0, 0.0); } else { nor = nor / len; }
-  // Strain: mean structural-neighbour elongation vs the rest spacing —
-  // the fit map's raw data, smuggled in the normal's free w component.
+  // Strain: mean structural-neighbour elongation vs the rest length OF THE
+  // MATCHING AXIS (garment grids are anisotropic — one shared divisor would
+  // bake ±(height/width − 1) of fake strain into every non-square pattern).
+  // Smuggled in the normal's free w component for the fit map.
   var sum = 0.0;
   var cnt = 0.0;
   let nb1 = positions[base + v * n + up1].xyz;
   let nb2 = positions[base + v * n + um1].xyz;
   let nb3 = positions[base + vp1 * n + u].xyz;
   let nb4 = positions[base + vm1 * n + u].xyz;
-  let d1 = distance(nb1, x); if (d1 > 1e-6 && d1 < limit) { sum += d1; cnt += 1.0; }
-  let d2 = distance(nb2, x); if (d2 > 1e-6 && d2 < limit) { sum += d2; cnt += 1.0; }
-  let d3 = distance(nb3, x); if (d3 > 1e-6 && d3 < limit) { sum += d3; cnt += 1.0; }
-  let d4 = distance(nb4, x); if (d4 > 1e-6 && d4 < limit) { sum += d4; cnt += 1.0; }
+  let d1 = distance(nb1, x); if (d1 > 1e-6 && d1 < limit) { sum += d1 / grid.spacing; cnt += 1.0; }
+  let d2 = distance(nb2, x); if (d2 > 1e-6 && d2 < limit) { sum += d2 / grid.spacing; cnt += 1.0; }
+  let d3 = distance(nb3, x); if (d3 > 1e-6 && d3 < limit) { sum += d3 / grid.spacing_v; cnt += 1.0; }
+  let d4 = distance(nb4, x); if (d4 > 1e-6 && d4 < limit) { sum += d4 / grid.spacing_v; cnt += 1.0; }
   var strain = 0.0;
-  if (cnt > 0.0) { strain = sum / cnt / grid.spacing - 1.0; }
+  if (cnt > 0.0) { strain = sum / cnt - 1.0; }
   normals[i] = vec4f(nor, strain);
 }
 `;
@@ -96,10 +98,12 @@ fn vs(@builtin(vertex_index) vid: u32, @location(0) pos: vec4f, @location(1) nrm
   var out: VSOut;
   out.clip = camera.viewProj * vec4f(pos.xyz, 1.0);
   out.normal = nrm.xyz;
-  // The particle index IS the grid address: uv in meters of flat cloth.
+  // The particle index IS the grid address: uv in meters of flat cloth,
+  // each axis scaled by ITS rest length (options.y = vertical spacing) so a
+  // gingham stays square on a non-square pattern grid.
   let n = u32(fabric.motif.z);
   let local = vid % (n * n);
-  out.uv = vec2f(f32(local % n), f32(local / n)) * fabric.motif.w;
+  out.uv = vec2f(f32(local % n) * fabric.motif.w, f32(local / n) * fabric.options.y);
   out.strain = nrm.w;
   return out;
 }
@@ -234,6 +238,7 @@ export class ClothRenderer {
   private fitMap = false;
   private lastStyle: FabricStyle | null = null;
   private readonly clothSpacing: number;
+  private readonly clothSpacingV: number;
   private readonly clothIndexBuffer: GPUBuffer;
   private readonly clothIndexCount: number;
   private readonly sceneVertexBuffer: GPUBuffer;
@@ -249,6 +254,7 @@ export class ClothRenderer {
     count: number,
     resolution: number,
     spacing: number,
+    spacingV: number,
     triangleIndices: Uint32Array,
     scene: SceneMesh,
   ) {
@@ -256,6 +262,7 @@ export class ClothRenderer {
     this.count = count;
     this.clothResolution = resolution;
     this.clothSpacing = spacing;
+    this.clothSpacingV = spacingV;
     this.positionBuffer = positionBuffer;
 
     const ctx = canvas.getContext('webgpu');
@@ -288,6 +295,7 @@ export class ClothRenderer {
     gi.setUint32(0, resolution, true);
     gi.setUint32(4, count, true);
     gi.setFloat32(8, spacing, true);
+    gi.setFloat32(12, spacingV, true);
     device.queue.writeBuffer(this.gridInfoBuffer, 0, gridInfo);
 
     const normalsModule = device.createShaderModule({ code: NORMALS_SHADER, label: 'normals' });
@@ -447,7 +455,7 @@ export class ClothRenderer {
         mc[2],
         mc[3],
         this.fitMap ? 1 : 0,
-        0,
+        this.clothSpacingV, // options.y: vertical rest length for the print UVs
         0,
         0,
       ]),

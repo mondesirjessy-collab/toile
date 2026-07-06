@@ -38,8 +38,14 @@ export interface ClothMeshOptions {
 
 export interface ClothMeshData {
   readonly resolution: number;
-  /** Rest distance between grid neighbours (world units) — used by rendering. */
+  /** Rest distance between HORIZONTAL grid neighbours (world units). */
   readonly spacing: number;
+  /**
+   * Rest distance between VERTICAL grid neighbours. Garment grids are
+   * anisotropic (width ≠ height over the same n×n) — strain, prints and
+   * exported UVs each need the axis-correct rest length, not one for both.
+   */
+  readonly spacingV: number;
   readonly count: number;
   /** count × 4 floats (xyz + unused w), grid rest pose. */
   readonly positions: Float32Array;
@@ -267,6 +273,7 @@ export function generateClothGrid(opts: ClothMeshOptions): ClothMeshData {
   return {
     resolution: n,
     spacing: size / (n - 1),
+    spacingV: size / (n - 1), // the plain sheet is square
     count,
     positions,
     invMasses,
@@ -886,6 +893,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
   return {
     resolution: n,
     spacing: width / (n - 1),
+    spacingV: height / (n - 1),
     count,
     positions,
     invMasses,
@@ -1022,6 +1030,9 @@ export function combineClothMeshes(
   return {
     resolution: a.resolution,
     spacing: Math.max(a.spacing, b.spacing),
+    // Still one value per axis for the whole outfit (the coarser garment
+    // wins) — per-garment rest lengths are the audit's remaining step.
+    spacingV: Math.max(a.spacingV, b.spacingV),
     count,
     positions,
     invMasses,
