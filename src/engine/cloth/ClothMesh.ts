@@ -414,9 +414,31 @@ function isOpening(shape: PatternShape, uu: number, vv: number, p: ShapeParams =
 export function sideHalfWidth(v: number, p: ShapeParams): number {
   const prof = p.profile;
   if (prof && prof.length >= 2) {
-    const t = Math.min(1, Math.max(0, v)) * (prof.length - 1);
-    const k = Math.min(prof.length - 2, Math.floor(t));
-    return prof[k]! + (prof[k + 1]! - prof[k]!) * (t - k);
+    // Smooth curve THROUGH the stations — the drafter's French curve. Monotone
+    // cubic (Fritsch–Carlson): C¹ smooth, passes exactly through every drawn
+    // point, and NEVER overshoots between two stations (a Bézier/Catmull-Rom
+    // would ring past a pinched waist and cut fabric the user never drew).
+    const n = prof.length;
+    const t = Math.min(1, Math.max(0, v)) * (n - 1);
+    const k = Math.min(n - 2, Math.floor(t));
+    const u = t - k;
+    const d = (i: number): number => prof[i + 1]! - prof[i]!; // uniform h = 1
+    const slope = (i: number): number => {
+      if (i <= 0) return d(0);
+      if (i >= n - 1) return d(n - 2);
+      const a = d(i - 1);
+      const b = d(i);
+      return a * b > 0 ? (2 * a * b) / (a + b) : 0; // harmonic mean, 0 at extrema
+    };
+    const y0 = prof[k]!;
+    const y1 = prof[k + 1]!;
+    const m0 = slope(k);
+    const m1 = slope(k + 1);
+    const u2 = u * u;
+    const u3 = u2 * u;
+    return (
+      (2 * u3 - 3 * u2 + 1) * y0 + (u3 - 2 * u2 + u) * m0 + (-2 * u3 + 3 * u2) * y1 + (u3 - u2) * m1
+    );
   }
   const hem = p.hem ?? 0.5;
   return 0.21 + (hem - 0.21) * v;

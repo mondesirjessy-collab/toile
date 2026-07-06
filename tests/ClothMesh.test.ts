@@ -487,10 +487,19 @@ describe('sideHalfWidth (patron libre)', () => {
   it('interpolates the drafted silhouette between stations', async () => {
     const { sideHalfWidth } = await import('../src/engine/cloth/ClothMesh');
     const profile = [0.2, 0.3, 0.1, 0.1, 0.4, 0.5];
-    expect(sideHalfWidth(0, { profile })).toBeCloseTo(0.2);
-    expect(sideHalfWidth(1, { profile })).toBeCloseTo(0.5);
-    expect(sideHalfWidth(0.1, { profile })).toBeCloseTo(0.25); // mi-chemin station 0-1
-    expect(sideHalfWidth(0.4, { profile })).toBeCloseTo(0.1);
+    // La courbe passe EXACTEMENT par chaque station dessinée.
+    profile.forEach((w, k) => expect(sideHalfWidth(k / 5, { profile })).toBeCloseTo(w));
+    // Entre deux stations : lissée, monotone, jamais de débordement.
+    const mid01 = sideHalfWidth(0.1, { profile });
+    expect(mid01).toBeGreaterThan(0.2);
+    expect(mid01).toBeLessThan(0.3);
+    for (let v = 0.2; v < 0.4; v += 0.02) {
+      const w = sideHalfWidth(v, { profile });
+      expect(w).toBeGreaterThanOrEqual(0.1 - 1e-9); // pas de creux sous la taille pincée
+      expect(w).toBeLessThanOrEqual(0.3 + 1e-9);
+    }
+    // Segment plat entre deux stations égales : reste plat (pas d'ondulation).
+    expect(sideHalfWidth(0.5, { profile })).toBeCloseTo(0.1);
     // Sans profil : la pente linéaire historique.
     expect(sideHalfWidth(0.5, { hem: 0.41 })).toBeCloseTo(0.31);
   });
