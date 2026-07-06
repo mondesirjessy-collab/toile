@@ -56,11 +56,15 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
 const CLOTH_SHADER = /* wgsl */ `
 struct Camera { viewProj: mat4x4f };
-// Per-fabric look: face rgb + shading exponent, back rgb + ambient floor.
-// A high exponent reads as sheen (silk), a low one as matte weave (denim).
+// Per-fabric look: face rgb + shading exponent, back rgb + ambient floor,
+// plus the PRINT: motif.x = type (0 uni, 1 rayures, 2 vichy, 3 pois),
+// motif.y = repeat size in METERS (the pattern is scaled in real cm),
+// motif.z = grid resolution n, motif.w = particle spacing (m).
 struct Fabric {
   face: vec4f,
   back: vec4f,
+  motif: vec4f,
+  motifColor: vec4f,
 };
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(0) @binding(1) var<uniform> fabric: Fabric;
@@ -68,14 +72,39 @@ struct Fabric {
 struct VSOut {
   @builtin(position) clip: vec4f,
   @location(0) normal: vec3f,
+  @location(1) uv: vec2f, // rest-cloth coordinates in METERS
 };
 
 @vertex
-fn vs(@location(0) pos: vec4f, @location(1) nrm: vec4f) -> VSOut {
+fn vs(@builtin(vertex_index) vid: u32, @location(0) pos: vec4f, @location(1) nrm: vec4f) -> VSOut {
   var out: VSOut;
   out.clip = camera.viewProj * vec4f(pos.xyz, 1.0);
   out.normal = nrm.xyz;
+  // The particle index IS the grid address: uv in meters of flat cloth.
+  let n = u32(fabric.motif.z);
+  let local = vid % (n * n);
+  out.uv = vec2f(f32(local % n), f32(local / n)) * fabric.motif.w;
   return out;
+}
+
+fn motif_mask(uv: vec2f) -> f32 {
+  let kind = u32(fabric.motif.x);
+  let s = max(fabric.motif.y, 0.002);
+  if (kind == 1u) { // rayures
+    return step(0.5, fract(uv.x / s));
+  }
+  if (kind == 2u) { // vichy: deux trames semi-transparentes qui se croisent
+    let a = step(0.5, fract(uv.x / s));
+    let b = step(0.5, fract(uv.y / s));
+    return 0.55 * (a + b) - 0.35 * a * b;
+  }
+  if (kind == 3u) { // pois en quinconce
+    let cell = uv / s;
+    let row = floor(cell.y);
+    let f = vec2f(fract(cell.x + 0.5 * (row % 2.0)), fract(cell.y)) - vec2f(0.5);
+    return 1.0 - step(0.3, length(f));
+  }
+  return 0.0;
 }
 
 @fragment
@@ -85,7 +114,8 @@ fn fs(in: VSOut, @builtin(front_facing) front: bool) -> @location(0) vec4f {
   let L = normalize(vec3f(0.4, 0.9, 0.35));
   // Wrap ("half-lambert") diffuse keeps folds readable in the shadowed side.
   let wrap = clamp(dot(n, L) * 0.5 + 0.5, 0.0, 1.0);
-  let base = select(fabric.back.rgb, fabric.face.rgb, front);
+  var base = select(fabric.back.rgb, fabric.face.rgb, front);
+  if (front) { base = mix(base, fabric.motifColor.rgb, motif_mask(in.uv) * fabric.motifColor.a); }
   let ambient = fabric.back.a;
   let shade = ambient + (1.0 - ambient) * pow(wrap, fabric.face.a);
   return vec4f(base * shade, 1.0);
@@ -140,6 +170,12 @@ export interface FabricStyle {
   exponent: number;
   /** Ambient floor [0,1]: how bright the shadowed side stays. */
   ambient: number;
+  /** Print: 0 uni, 1 rayures, 2 vichy, 3 pois. */
+  motif?: number;
+  /** Print repeat, in METERS (the UI speaks cm). */
+  motifScale?: number;
+  /** Print color; alpha = opacity of the print over the base. */
+  motifColor?: [number, number, number, number];
 }
 
 export const DEFAULT_FABRIC: FabricStyle = {
@@ -168,6 +204,8 @@ export class ClothRenderer {
   private readonly gridInfoBuffer: GPUBuffer;
   private readonly cameraBuffer: GPUBuffer;
   private readonly fabricBuffer: GPUBuffer;
+  private readonly clothResolution: number;
+  private readonly clothSpacing: number;
   private readonly clothIndexBuffer: GPUBuffer;
   private readonly clothIndexCount: number;
   private readonly sceneVertexBuffer: GPUBuffer;
@@ -188,6 +226,8 @@ export class ClothRenderer {
   ) {
     this.device = device;
     this.count = count;
+    this.clothResolution = resolution;
+    this.clothSpacing = spacing;
     this.positionBuffer = positionBuffer;
 
     const ctx = canvas.getContext('webgpu');
@@ -201,7 +241,7 @@ export class ClothRenderer {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     this.fabricBuffer = device.createBuffer({
-      size: 32, // Fabric: 2 × vec4f
+      size: 64, // Fabric: 4 × vec4f (look + print)
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     this.setFabric(DEFAULT_FABRIC);
@@ -357,6 +397,7 @@ export class ClothRenderer {
   }
 
   setFabric(style: FabricStyle): void {
+    const mc = style.motifColor ?? [1, 1, 1, 0.85];
     this.device.queue.writeBuffer(
       this.fabricBuffer,
       0,
@@ -369,6 +410,14 @@ export class ClothRenderer {
         style.back[1],
         style.back[2],
         style.ambient,
+        style.motif ?? 0,
+        style.motifScale ?? 0.05,
+        this.clothResolution,
+        this.clothSpacing,
+        mc[0],
+        mc[1],
+        mc[2],
+        mc[3],
       ]),
     );
   }

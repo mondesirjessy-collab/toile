@@ -75,6 +75,9 @@ interface Settings {
   friction: number;
   pinCorners: boolean;
   preset: string;
+  motif: string;
+  motifCm: number;
+  motifCouleur: [number, number, number];
 }
 
 // Fabric presets (brief §4: Jersey/Denim/Soie — the seed of the fabric library).
@@ -196,6 +199,9 @@ export class ControlPanel {
       friction: 0.5,
       pinCorners: false,
       preset: 'Jersey',
+      motif: 'uni',
+      motifCm: 5,
+      motifCouleur: [1, 1, 1] as [number, number, number],
     };
 
     this.gui = new GUI({ title: 'TOILE — solveur' });
@@ -287,6 +293,17 @@ export class ControlPanel {
       fabric.add(this.settings, 'friction', 0, 1, 0.01).name('friction μ').onChange((v: number) => this.cb.onFriction(v)),
       fabric.add(this.settings, 'preset', ['Jersey', 'Maille', 'Popeline', 'Denim', 'Lin', 'Laine', 'Soie']).name('preset').onChange((name: string) => this.applyPreset(name)),
     );
+
+    // Prints: procedural, crisp at any zoom, scaled in real centimeters.
+    const MOTIFS = ['uni', 'rayures', 'vichy', 'pois'];
+    const motifFolder = this.gui.addFolder('motif');
+    const pushMotif = (): void => this.pushStyle();
+    this.controllers.push(
+      motifFolder.add(this.settings, 'motif', MOTIFS).name('imprimé').onChange(pushMotif),
+      motifFolder.add(this.settings, 'motifCm', 1, 30, 0.5).name('échelle (cm)').onChange(pushMotif),
+      motifFolder.addColor(this.settings, 'motifCouleur').name('couleur').onChange(pushMotif),
+    );
+    motifFolder.close();
 
     // Parametric pattern (grading) — applies to the dress scene.
     const pattern = this.gui.addFolder('patron · robe');
@@ -409,6 +426,9 @@ export class ControlPanel {
       },
       fabric: {
         preset: s.preset,
+        motif: s.motif,
+        motifCm: s.motifCm,
+        motifCouleur: s.motifCouleur,
         stretchExp: s.stretchExp,
         stretchWarpExp: s.stretchWarpExp,
         shearExp: s.shearExp,
@@ -467,6 +487,9 @@ export class ControlPanel {
         shearExp?: number;
         bendExp?: number;
         friction?: number;
+        motif?: string;
+        motifCm?: number;
+        motifCouleur?: [number, number, number];
       };
       sim?: { resolution?: number; substeps?: number; selfCollision?: boolean; wind?: number };
     };
@@ -480,6 +503,9 @@ export class ControlPanel {
     }
     if (d.fabric) {
       if (d.fabric.preset && PRESETS[d.fabric.preset]) s.preset = d.fabric.preset;
+      if (typeof d.fabric.motif === 'string' && ['uni', 'rayures', 'vichy', 'pois'].includes(d.fabric.motif)) s.motif = d.fabric.motif;
+      if (typeof d.fabric.motifCm === 'number' && d.fabric.motifCm >= 1 && d.fabric.motifCm <= 30) s.motifCm = d.fabric.motifCm;
+      if (Array.isArray(d.fabric.motifCouleur) && d.fabric.motifCouleur.length === 3) s.motifCouleur = d.fabric.motifCouleur;
       s.stretchExp = d.fabric.stretchExp ?? s.stretchExp;
       s.stretchWarpExp = d.fabric.stretchWarpExp ?? d.fabric.stretchExp ?? s.stretchWarpExp;
       s.shearExp = d.fabric.shearExp ?? s.shearExp;
@@ -513,8 +539,7 @@ export class ControlPanel {
       hanches: s.hanches,
       cuisse: s.cuisse,
     });
-    const preset = PRESETS[s.preset];
-    if (preset) this.cb.onStyle(preset.style);
+    if (PRESETS[s.preset]) this.pushStyle();
     this.cb.onCompliance({
       stretch: 10 ** s.stretchExp,
       stretchWarp: 10 ** s.stretchWarpExp,
@@ -552,6 +577,19 @@ export class ControlPanel {
     this.cb.onScene(targetScene); // the file's scene wins the final rebuild
   }
 
+  /** Current preset look + the print settings, merged. */
+  private pushStyle(): void {
+    const p = PRESETS[this.settings.preset];
+    if (!p) return;
+    const MOTIFS = ['uni', 'rayures', 'vichy', 'pois'];
+    this.cb.onStyle({
+      ...p.style,
+      motif: Math.max(0, MOTIFS.indexOf(this.settings.motif)),
+      motifScale: this.settings.motifCm / 100,
+      motifColor: [...this.settings.motifCouleur, 0.9],
+    });
+  }
+
   private applyPreset(name: string): void {
     const p = PRESETS[name];
     if (!p) return;
@@ -564,6 +602,6 @@ export class ControlPanel {
     for (const c of this.controllers) c.updateDisplay();
     this.cb.onCompliance({ stretch: p.stretch, stretchWarp: p.stretchWarp, shear: p.shear, bend: p.bend });
     this.cb.onFriction(p.friction);
-    this.cb.onStyle(p.style);
+    this.pushStyle();
   }
 }
