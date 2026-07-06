@@ -30,6 +30,17 @@ describe('measureBody (le tailleur)', () => {
     expect(M.chest.y / 1.765).toBeLessThan(0.76);
   });
 
+  it('measures the thigh below the crotch, where the legs are separate', () => {
+    // Above the crotch the smin blend fuses both thighs into one solid: the
+    // inner caliper ray never exits and the thigh read ~28 cm instead of ~43.
+    expect(sdF(0, F.thigh.y, 0)).toBeGreaterThan(0); // mid-plane clear = two legs
+    expect(sdM(0, M.thigh.y, 0)).toBeGreaterThan(0);
+    expect(F.thigh.circ).toBeGreaterThan(0.36);
+    expect(F.thigh.circ).toBeLessThan(0.75);
+    expect(M.thigh.circ).toBeGreaterThan(0.36);
+    expect(M.thigh.circ).toBeLessThan(0.8);
+  });
+
   it('measures the male broader where it matters', () => {
     expect(M.chest.circ).toBeGreaterThan(F.chest.circ);
     expect(M.shoulderHalfW).toBeGreaterThan(F.shoulderHalfW);

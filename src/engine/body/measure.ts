@@ -148,7 +148,18 @@ export function measureBody(sd: Sd, height: number): BodyMeasure {
   }
 
   // Mid-thigh: one leg's circumference (calipers around the leg axis).
-  const thighY = hip.y - 0.17;
+  // Measure BELOW THE CROTCH, where the legs are genuinely separate: above
+  // it the smin blend fuses both thighs into one solid, the inner caliper
+  // ray never exits, and the thigh reads ~28 cm instead of ~43. The crotch
+  // is where the mid-plane leaves the body on the way down from the hip.
+  let crotchY = hip.y - 0.25;
+  for (let y = hip.y; y > hip.y - 0.35; y -= step) {
+    if (sd(0, y, 0) > 0.01) {
+      crotchY = y;
+      break;
+    }
+  }
+  const thighY = Math.max(crotchY - 0.03, hip.y - 0.35);
   const legX = firstExit(sd, thighY, 1, 0) * 0.55 || 0.09; // rough leg-axis offset
   const legHalfW = (() => {
     // caliper around (legX, thighY): march outward both ways along x
