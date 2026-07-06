@@ -99,16 +99,21 @@ describe('generateClothGrid topology', () => {
   it('tags each constraint with the kind matching its rest length', () => {
     const edges = decodeConstraints(mesh.constraintData, mesh.constraintCount);
     const diag = spacing * Math.SQRT2;
-    const byKind = [0, 0, 0];
+    const byKind = [0, 0, 0, 0, 0];
     for (const e of edges) {
-      let expectedKind: number;
-      if (Math.abs(e.rest - spacing) < 1e-5) expectedKind = 0; // structural
-      else expectedKind = 1; // shear
-      expect(e.kind, `rest ${e.rest} should be kind ${expectedKind}`).toBe(expectedKind);
-      if (expectedKind === 1) expect(Math.abs(e.rest - diag)).toBeLessThan(1e-5);
+      if (Math.abs(e.rest - spacing) < 1e-5) {
+        // Anisotropie : trame (0, horizontale) ou chaîne (4, verticale).
+        expect([0, 4], `rest ${e.rest} devrait être trame ou chaîne`).toContain(e.kind);
+      } else {
+        expect(e.kind, `rest ${e.rest} devrait être du biais`).toBe(1);
+        expect(Math.abs(e.rest - diag)).toBeLessThan(1e-5);
+      }
       byKind[e.kind]!++;
     }
-    expect(byKind[0]).toBe(mesh.structuralCount);
+    // La grille carrée porte autant de trame que de chaîne.
+    expect(byKind[0]).toBe(n * (n - 1));
+    expect(byKind[4]).toBe(n * (n - 1));
+    expect(byKind[0]! + byKind[4]!).toBe(mesh.structuralCount);
     expect(byKind[1]).toBe(mesh.shearCount);
     expect(byKind[2]).toBe(mesh.bendingCount);
   });

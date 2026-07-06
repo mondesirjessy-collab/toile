@@ -214,7 +214,7 @@ export function generateClothGrid(opts: ClothMeshOptions): ClothMeshData {
   for (let v = 0; v < n; v++) {
     for (let u = 0; u < n; u++) {
       if (u + 1 < n) structural.push(edge(index(u, v), index(u + 1, v), ConstraintKind.Structural));
-      if (v + 1 < n) structural.push(edge(index(u, v), index(u, v + 1), ConstraintKind.Structural));
+      if (v + 1 < n) structural.push(edge(index(u, v), index(u, v + 1), ConstraintKind.StructuralWarp));
       if (u + 1 < n && v + 1 < n) {
         shear.push(edge(index(u, v), index(u + 1, v + 1), ConstraintKind.Shear)); // ╲
         shear.push(edge(index(u + 1, v), index(u, v + 1), ConstraintKind.Shear)); // ╱
@@ -618,7 +618,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
           structural.push(e);
         }
         if (v + 1 < n && isKept(p, u, v + 1))
-          structural.push(edge(index(p, u, v), index(p, u, v + 1), ConstraintKind.Structural));
+          structural.push(edge(index(p, u, v), index(p, u, v + 1), ConstraintKind.StructuralWarp));
         if (u + 1 < n && v + 1 < n) {
           if (isKept(p, u + 1, v + 1))
             shear.push(edge(index(p, u, v), index(p, u + 1, v + 1), ConstraintKind.Shear));

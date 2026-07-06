@@ -57,6 +57,8 @@ export interface SolverOptions {
   friction?: number;
   clothThickness?: number;
   complianceStretch?: number;
+  /** Grain-line (vertical/warp) stretch compliance; defaults to weft's. */
+  complianceStretchWarp?: number;
   complianceShear?: number;
   complianceBend?: number;
   mouseStrength?: number;
@@ -77,7 +79,7 @@ export interface SolverOptions {
 //  80 compliance_stretch, 84 compliance_shear, 88 compliance_bend, 92 cloth_thickness,
 //  96 particle_count, 100 damping, 104 max_speed, 108 drag_index,
 //  112 body_min.xyz, 124 blend_k, 128 body_max.xyz, 140 use_grid,
-//  144 spin_cos, 148 spin_sin, 152 spin_dtheta (per substep), 156 pad.
+//  144 spin_cos, 148 spin_sin, 152 spin_dtheta (per substep), 156 compliance_stretch_warp.
 const UNIFORM_SIZE = 160;
 const BATCH_SIZE = 16;
 const WORKGROUP = 256;
@@ -161,6 +163,7 @@ export class ParticleSystem {
   // Live-tunable parameters.
   private friction: number;
   private complianceStretch: number;
+  private complianceStretchWarp: number;
   private complianceShear: number;
   private complianceBend: number;
   private windStrength = 0;
@@ -191,6 +194,7 @@ export class ParticleSystem {
     this.friction = opts.friction ?? 0.5;
     this.clothThickness = opts.clothThickness ?? 0.01;
     this.complianceStretch = opts.complianceStretch ?? 0.0;
+    this.complianceStretchWarp = opts.complianceStretchWarp ?? opts.complianceStretch ?? 0.0;
     this.complianceShear = opts.complianceShear ?? 0.0;
     this.complianceBend = opts.complianceBend ?? 2.0e-6;
     this.mouseStrength = opts.mouseStrength ?? 45.0;
@@ -506,7 +510,9 @@ export class ParticleSystem {
     dv.setUint32(24, this.selfEnabled ? 1 : 0, true);
     this.device.queue.writeBuffer(this.selfParamsBuffer, 0, data);
   }
-  setCompliance(c: { stretch?: number; shear?: number; bend?: number }): void {
+  setCompliance(c: { stretch?: number; stretchWarp?: number; shear?: number; bend?: number }): void {
+    if (c.stretchWarp !== undefined) this.complianceStretchWarp = c.stretchWarp;
+    else if (c.stretch !== undefined) this.complianceStretchWarp = c.stretch;
     if (c.stretch !== undefined) this.complianceStretch = c.stretch;
     if (c.shear !== undefined) this.complianceShear = c.shear;
     if (c.bend !== undefined) this.complianceBend = c.bend;
@@ -687,6 +693,7 @@ export class ParticleSystem {
     dv.setFloat32(144, Math.cos(this.spinAngle), LE);
     dv.setFloat32(148, Math.sin(this.spinAngle), LE);
     dv.setFloat32(152, this.spinRate * dt, LE);
+    dv.setFloat32(156, this.complianceStretchWarp, LE);
     this.device.queue.writeBuffer(this.uniformBuffer, 0, this.uniformData);
   }
 

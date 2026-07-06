@@ -10,11 +10,15 @@
  */
 /** Constraint kind → selects which live compliance (stretch/shear/bend) applies. */
 export enum ConstraintKind {
+  /** Weft: the horizontal weave (u direction) — its own stretch stiffness. */
   Structural = 0,
+  /** Bias: diagonal resistance — what makes bias-cut garments drape. */
   Shear = 1,
   Bending = 2,
   /** Seam between two pattern pieces — solved rigid, like structural. */
   Seam = 3,
+  /** Warp: the vertical weave (v direction, the grain line) — anisotropy. */
+  StructuralWarp = 4,
 }
 
 export interface Edge {

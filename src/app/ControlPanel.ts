@@ -28,7 +28,7 @@ export interface PatternParams {
 export interface PanelCallbacks {
   onScene(mode: SceneMode): void;
   onResolution(resolution: number): void;
-  onCompliance(c: { stretch: number; shear: number; bend: number }): void;
+  onCompliance(c: { stretch: number; stretchWarp: number; shear: number; bend: number }): void;
   onFriction(mu: number): void;
   onStyle(style: FabricStyle): void;
   onSelfCollision(enabled: boolean): void;
@@ -69,6 +69,7 @@ interface Settings {
   skirtLength: number;
   skirtFlare: number;
   stretchExp: number; // compliance = 10^exp (log slider); -8 ≈ rigid
+  stretchWarpExp: number;
   shearExp: number;
   bendExp: number;
   friction: number;
@@ -80,35 +81,77 @@ interface Settings {
 // Physics: compliance (stretch/shear/bend) + Coulomb friction. Look: face/back
 // colors + shading response, so switching presets is instantly recognizable.
 interface FabricPreset {
-  stretch: number;
-  shear: number;
+  stretch: number; // weft (trame)
+  stretchWarp: number; // warp (chaîne, le droit-fil)
+  shear: number; // bias (biais)
   bend: number;
   friction: number;
   style: FabricStyle;
 }
 
+// Anisotropic fabric library: real cloth resists differently along the weft
+// (horizontal), the warp/grain (vertical, always the stiffest in a woven) and
+// the bias (diagonal — where wovens give, and why bias-cut dresses flow).
 const PRESETS: Record<string, FabricPreset> = {
-  // Knit: stretches a little, floppy, matte ecru.
+  // Knit: very stretchy across (courses), less along the wales; floppy.
   Jersey: {
-    stretch: 1e-6,
+    stretch: 3e-6,
+    stretchWarp: 8e-7,
     shear: 3e-6,
     bend: 3e-5,
     friction: 0.55,
     style: { face: [0.87, 0.82, 0.72], back: [0.66, 0.55, 0.47], exponent: 2.0, ambient: 0.22 },
   },
-  // Stiff heavy twill: inextensible, holds big folds, grippy; indigo with the
-  // washed-out lighter reverse denim is known for.
+  // Rib knit: the stretchiest thing on the rail, hugs everything.
+  Maille: {
+    stretch: 8e-6,
+    stretchWarp: 2e-6,
+    shear: 5e-6,
+    bend: 5e-5,
+    friction: 0.6,
+    style: { face: [0.72, 0.45, 0.42], back: [0.55, 0.33, 0.31], exponent: 1.8, ambient: 0.24 },
+  },
+  // Crisp shirting cotton: barely stretches, crisp folds.
+  Popeline: {
+    stretch: 5e-8,
+    stretchWarp: 2e-8,
+    shear: 8e-7,
+    bend: 3e-6,
+    friction: 0.5,
+    style: { face: [0.93, 0.93, 0.9], back: [0.82, 0.82, 0.78], exponent: 2.4, ambient: 0.2 },
+  },
+  // Stiff heavy twill: inextensible, holds big folds, grippy.
   Denim: {
     stretch: 1e-8,
+    stretchWarp: 8e-9,
     shear: 5e-8,
     bend: 5e-7,
     friction: 0.7,
     style: { face: [0.23, 0.29, 0.45], back: [0.52, 0.58, 0.7], exponent: 1.4, ambient: 0.3 },
   },
-  // Silk: inextensible but extremely floppy (fine wrinkles), slippery, sheeny.
-  // (μ 0.25: slippery enough to read as silk, grippy enough to stay dressed.)
+  // Linen: dry hand, holds creases, matte texture.
+  Lin: {
+    stretch: 3e-8,
+    stretchWarp: 3e-8,
+    shear: 2e-7,
+    bend: 1.5e-6,
+    friction: 0.6,
+    style: { face: [0.85, 0.8, 0.68], back: [0.74, 0.69, 0.57], exponent: 1.6, ambient: 0.26 },
+  },
+  // Wool flannel: soft, heavy drape, warm grey.
+  Laine: {
+    stretch: 8e-8,
+    stretchWarp: 5e-8,
+    shear: 5e-7,
+    bend: 2e-6,
+    friction: 0.65,
+    style: { face: [0.52, 0.5, 0.52], back: [0.4, 0.38, 0.4], exponent: 1.5, ambient: 0.28 },
+  },
+  // Silk satin: inextensible threads but a LOOSE bias — this is where the
+  // slink comes from — extremely floppy, slippery, sheeny.
   Soie: {
     stretch: 1e-8,
+    stretchWarp: 1e-8,
     shear: 8e-7,
     bend: 1e-4,
     friction: 0.25,
@@ -147,6 +190,7 @@ export class ControlPanel {
       skirtLength: 0.6,
       skirtFlare: 0.46,
       stretchExp: -8,
+      stretchWarpExp: -8,
       shearExp: -8,
       bendExp: Math.log10(2e-6),
       friction: 0.5,
@@ -231,15 +275,17 @@ export class ControlPanel {
     const pushCompliance = (): void =>
       this.cb.onCompliance({
         stretch: 10 ** this.settings.stretchExp,
+        stretchWarp: 10 ** this.settings.stretchWarpExp,
         shear: 10 ** this.settings.shearExp,
         bend: 10 ** this.settings.bendExp,
       });
     this.controllers.push(
-      fabric.add(this.settings, 'stretchExp', -8, -3, 0.1).name('compliance étirement (log)').onChange(pushCompliance),
-      fabric.add(this.settings, 'shearExp', -8, -3, 0.1).name('compliance cisaillement (log)').onChange(pushCompliance),
+      fabric.add(this.settings, 'stretchExp', -8, -3, 0.1).name('étirement trame (log)').onChange(pushCompliance),
+      fabric.add(this.settings, 'stretchWarpExp', -8, -3, 0.1).name('étirement chaîne (log)').onChange(pushCompliance),
+      fabric.add(this.settings, 'shearExp', -8, -3, 0.1).name('biais / cisaillement (log)').onChange(pushCompliance),
       fabric.add(this.settings, 'bendExp', -8, -3, 0.1).name('compliance flexion (log)').onChange(pushCompliance),
       fabric.add(this.settings, 'friction', 0, 1, 0.01).name('friction μ').onChange((v: number) => this.cb.onFriction(v)),
-      fabric.add(this.settings, 'preset', ['Jersey', 'Denim', 'Soie']).name('preset').onChange((name: string) => this.applyPreset(name)),
+      fabric.add(this.settings, 'preset', ['Jersey', 'Maille', 'Popeline', 'Denim', 'Lin', 'Laine', 'Soie']).name('preset').onChange((name: string) => this.applyPreset(name)),
     );
 
     // Parametric pattern (grading) — applies to the dress scene.
@@ -364,6 +410,7 @@ export class ControlPanel {
       fabric: {
         preset: s.preset,
         stretchExp: s.stretchExp,
+        stretchWarpExp: s.stretchWarpExp,
         shearExp: s.shearExp,
         bendExp: s.bendExp,
         friction: s.friction,
@@ -413,7 +460,14 @@ export class ControlPanel {
         profileChemise?: number[];
         profileJupe?: number[];
       };
-      fabric?: { preset?: string; stretchExp?: number; shearExp?: number; bendExp?: number; friction?: number };
+      fabric?: {
+        preset?: string;
+        stretchExp?: number;
+        stretchWarpExp?: number;
+        shearExp?: number;
+        bendExp?: number;
+        friction?: number;
+      };
       sim?: { resolution?: number; substeps?: number; selfCollision?: boolean; wind?: number };
     };
     if (d?.format !== 'toile-garment') return;
@@ -427,6 +481,7 @@ export class ControlPanel {
     if (d.fabric) {
       if (d.fabric.preset && PRESETS[d.fabric.preset]) s.preset = d.fabric.preset;
       s.stretchExp = d.fabric.stretchExp ?? s.stretchExp;
+      s.stretchWarpExp = d.fabric.stretchWarpExp ?? d.fabric.stretchExp ?? s.stretchWarpExp;
       s.shearExp = d.fabric.shearExp ?? s.shearExp;
       s.bendExp = d.fabric.bendExp ?? s.bendExp;
       s.friction = d.fabric.friction ?? s.friction;
@@ -460,7 +515,12 @@ export class ControlPanel {
     });
     const preset = PRESETS[s.preset];
     if (preset) this.cb.onStyle(preset.style);
-    this.cb.onCompliance({ stretch: 10 ** s.stretchExp, shear: 10 ** s.shearExp, bend: 10 ** s.bendExp });
+    this.cb.onCompliance({
+      stretch: 10 ** s.stretchExp,
+      stretchWarp: 10 ** s.stretchWarpExp,
+      shear: 10 ** s.shearExp,
+      bend: 10 ** s.bendExp,
+    });
     this.cb.onFriction(s.friction);
     this.cb.onSelfCollision(s.selfCollision);
     this.cb.onWind(s.wind);
@@ -496,12 +556,13 @@ export class ControlPanel {
     const p = PRESETS[name];
     if (!p) return;
     this.settings.stretchExp = Math.log10(p.stretch);
+    this.settings.stretchWarpExp = Math.log10(p.stretchWarp);
     this.settings.shearExp = Math.log10(p.shear);
     this.settings.bendExp = Math.log10(p.bend);
     this.settings.friction = p.friction;
     this.settings.preset = name;
     for (const c of this.controllers) c.updateDisplay();
-    this.cb.onCompliance({ stretch: p.stretch, shear: p.shear, bend: p.bend });
+    this.cb.onCompliance({ stretch: p.stretch, stretchWarp: p.stretchWarp, shear: p.shear, bend: p.bend });
     this.cb.onFriction(p.friction);
     this.cb.onStyle(p.style);
   }

@@ -29,13 +29,21 @@ struct SimParams {
   damping: f32,
   max_speed: f32,
   drag_index: u32,
+  body_min: vec3f,
+  blend_k: f32,
+  body_max: vec3f,
+  use_grid: u32,
+  spin_cos: f32,
+  spin_sin: f32,
+  spin_dtheta: f32,
+  compliance_stretch_warp: f32, // anisotropy: the grain line's own stiffness
 };
 
 struct Constraint {
   i: u32,
   j: u32,
   rest: f32,
-  kind: u32, // 0 structural, 1 shear, 2 bending
+  kind: u32, // 0 weft, 1 shear (bias), 2 bending, 3 seam, 4 warp
 };
 
 struct Batch {
@@ -68,9 +76,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let len = length(d);
   if (len < 1e-8) { return; }
 
-  var compliance = params.compliance_stretch;
+  var compliance = params.compliance_stretch; // kind 0: weft
   if (c.kind == 1u) { compliance = params.compliance_shear; }
   else if (c.kind == 2u) { compliance = params.compliance_bend; }
+  else if (c.kind == 4u) { compliance = params.compliance_stretch_warp; }
 
   let n = d / len;
   let cval = len - c.rest;
