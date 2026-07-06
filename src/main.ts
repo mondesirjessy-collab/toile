@@ -1,6 +1,6 @@
 import { initGpu, WebGPUNotSupportedError } from './engine/gpu/Device';
 import { ParticleSystem } from './engine/solver/ParticleSystem';
-import { generateClothGrid, generateSeamedPanels, combineClothMeshes } from './engine/cloth/ClothMesh';
+import { generateClothGrid, generateSeamedPanels, combineClothMeshes, type CrossSeam } from './engine/cloth/ClothMesh';
 import type { SceneMode } from './app/ControlPanel';
 import { ClothRenderer, DEFAULT_FABRIC } from './app/ClothRenderer';
 import { OrbitCamera } from './app/OrbitCamera';
@@ -244,6 +244,7 @@ async function main(): Promise<void> {
     // a dress form (stacked-sphere bust), falling to the floor.
     const bodyScene =
       sceneMode === 'robe' ||
+      sceneMode === 'robe froncée' ||
       sceneMode === 't-shirt' ||
       sceneMode === 'chemise' ||
       sceneMode === 'ensemble' ||
@@ -253,7 +254,7 @@ async function main(): Promise<void> {
     const basePrims =
       !bodyScene || useScan
         ? null
-        : sceneMode === 'robe'
+        : sceneMode === 'robe' || sceneMode === 'robe froncée'
           ? (bodyKind === 'homme' ? BODY_MALE : BODY_FORM)
           : bodyKind === 'homme'
             ? BODY_MALE_ARMS
@@ -344,6 +345,45 @@ async function main(): Promise<void> {
                     elasticTop: 0.75, // taille élastiquée : fronce et agrippe le corps
                   }),
                 )
+              : sceneMode === 'robe froncée'
+                ? (() => {
+                    // Couture v1 au complet dans UN vêtement : bustier élastiqué
+                    // (haut qui agrippe) + jupe 1,6× plus large cousue à la
+                    // taille — l'EMBU : la couture compresse le bord long sur le
+                    // bord court et l'excès de tissu fronce naturellement.
+                    const Wb = 0.42 * (m.chest.circ / REF.chest.circ);
+                    const Hb = 0.26;
+                    const topB = m.chest.y + 0.14; // au-dessus de la poitrine
+                    const bod = generateSeamedPanels({
+                      resolution,
+                      width: Wb,
+                      height: Hb,
+                      gap: 0.9,
+                      topY: topB,
+                      elasticTop: 0.85, // bustier : le haut fronce et tient
+                    });
+                    const jupe = generateSeamedPanels({
+                      resolution,
+                      width: Wb * 1.6, // l'embu : 60 % de tissu en plus à froncer
+                      height: 0.55,
+                      gap: 0.9,
+                      topY: topB - Hb,
+                    });
+                    // Couture taille : bas du bustier ↔ haut de la jupe, colonne
+                    // à colonne = appariement au prorata des abscisses (mêmes
+                    // fractions u/n des deux côtés, longueurs physiques inégales).
+                    const cross: CrossSeam[] = [];
+                    const ps = resolution * resolution;
+                    for (let p = 0; p < 2; p++) {
+                      for (let u = 0; u < resolution; u++) {
+                        cross.push({
+                          i: p * ps + (resolution - 1) * resolution + u,
+                          j: bod.count + p * ps + u,
+                        });
+                      }
+                    }
+                    return combineClothMeshes(bod, jupe, cross);
+                  })()
               : sceneMode === 'pantalon'
                 ? // Trousers: yoke + two legs, inseams derived from the cut
                   // between the legs. Snug waist ring sized by the tailor:

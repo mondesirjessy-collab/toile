@@ -884,7 +884,19 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
  * Both garments must share the same per-panel resolution (the renderer's
  * normals pass assumes uniform n×n panels).
  */
-export function combineClothMeshes(a: ClothMeshData, b: ClothMeshData): ClothMeshData {
+/**
+ * Cross-garment seam: pairs of GLOBAL particle indices (i in the combined
+ * space of a, j offset into b's space by the caller via a.count). Used for
+ * gathering (embu): when the two sewn edges have different physical lengths,
+ * the near-zero-rest seams compress the longer edge onto the shorter one and
+ * the excess fabric folds into natural gathers — shirring by pure physics.
+ */
+export interface CrossSeam {
+  i: number;
+  j: number;
+}
+
+export function combineClothMeshes(a: ClothMeshData, b: ClothMeshData, crossSeams: CrossSeam[] = []): ClothMeshData {
   if (a.resolution !== b.resolution) {
     throw new Error('combineClothMeshes: garments must share the same resolution');
   }
@@ -912,6 +924,10 @@ export function combineClothMeshes(a: ClothMeshData, b: ClothMeshData): ClothMes
     return edges;
   };
   const all = decode(a, 0).concat(decode(b, a.count));
+  const seamRest = a.spacing * 0.15;
+  for (const cs of crossSeams) {
+    all.push({ i: cs.i, j: cs.j, rest: seamRest, kind: ConstraintKind.Seam });
+  }
   const { ordered, colorOffsets, colorCounts } = colorConstraints(all, count);
 
   const constraintData = new ArrayBuffer(ordered.length * CONSTRAINT_STRIDE);
