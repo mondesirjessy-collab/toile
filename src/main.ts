@@ -10,6 +10,7 @@ import { GpuProfiler } from './app/GpuProfiler';
 import { ControlPanel } from './app/ControlPanel';
 import { PatternView, type PatternHandleSpec } from './app/PatternView';
 import { pickParticle } from './app/pick';
+import { BODY_BLEND, BODY_FORM, BODY_FORM_ARMS, type SdfPrim } from './engine/body/BodySdf';
 
 const DEFAULT_RESOLUTION = 64;
 const DEFAULT_SUBSTEPS = 20;
@@ -20,22 +21,11 @@ const CLOTH_TOP_Y = 1.7;
 const GROUND_Y = 0;
 type V3 = [number, number, number];
 const SPHERE = [{ a: [0, 0.8, 0] as V3, radius: 0.55 }];
-// Full mannequin, capsule silhouette: head, neck, shoulders, torso, hips, legs.
-const MANNEQUIN = [
-  { a: [0, 1.62, 0] as V3, radius: 0.11 }, // head
-  { a: [0, 1.46, 0] as V3, b: [0, 1.54, 0] as V3, radius: 0.05 }, // neck
-  { a: [-0.19, 1.4, 0] as V3, b: [0.19, 1.4, 0] as V3, radius: 0.07 }, // shoulders
-  { a: [0, 1.16, 0] as V3, b: [0, 1.38, 0] as V3, radius: 0.155 }, // torso
-  { a: [-0.05, 0.94, 0] as V3, b: [0.05, 0.94, 0] as V3, radius: 0.15 }, // hips
-  { a: [-0.08, 0.9, 0] as V3, b: [-0.085, 0.08, 0] as V3, radius: 0.065 }, // left leg
-  { a: [0.08, 0.9, 0] as V3, b: [0.085, 0.08, 0] as V3, radius: 0.065 }, // right leg
-];
-// Same mannequin with A-pose arms, angled to match the kimono sleeve slope.
-const MANNEQUIN_ARMS = [
-  ...MANNEQUIN,
-  { a: [-0.21, 1.4, 0] as V3, b: [-0.38, 1.28, 0] as V3, radius: 0.055 }, // left arm
-  { a: [0.21, 1.4, 0] as V3, b: [0.38, 1.28, 0] as V3, radius: 0.055 }, // right arm
-];
+// The sculpted dress form lives in engine/body/BodySdf.ts: round cones blended
+// into one smooth field (BODY_FORM, BODY_FORM_ARMS). The solver collides with
+// the field; the renderer meshes the very same field via surface nets.
+const toColliders = (prims: SdfPrim[]) =>
+  prims.map((p) => ({ a: p.a, b: p.b, radius: p.ra, radius2: p.rb }));
 
 let fatalShown = false;
 
@@ -135,12 +125,13 @@ async function main(): Promise<void> {
     // 'drapé': one sheet falling onto the sphere. 'couture': two pattern pieces
     // stitched around the sphere. 'robe': the same seamed pieces closing around
     // a dress form (stacked-sphere bust), falling to the floor.
-    const colliders =
+    const bodyPrims =
       sceneMode === 'robe'
-        ? MANNEQUIN
+        ? BODY_FORM
         : sceneMode === 't-shirt' || sceneMode === 'chemise' || sceneMode === 'ensemble'
-          ? MANNEQUIN_ARMS
-          : SPHERE;
+          ? BODY_FORM_ARMS
+          : null;
+    const colliders = bodyPrims ? toColliders(bodyPrims) : SPHERE;
     const tee = () =>
       generateSeamedPanels({
         resolution,
@@ -195,6 +186,7 @@ async function main(): Promise<void> {
               : generateClothGrid({ resolution, size: CLOTH_SIZE, topY: CLOTH_TOP_Y, pin: 'none' });
     system = new ParticleSystem(device, mesh, {
       colliders,
+      colliderBlend: bodyPrims ? BODY_BLEND : 0,
       groundY: GROUND_Y,
       friction,
       complianceStretch: compliance.stretch,
@@ -203,7 +195,11 @@ async function main(): Promise<void> {
       selfCollision,
     });
     system.setWind(wind); // keep the breeze across rebuilds
-    const sceneMesh = buildSceneMesh({ colliders, groundY: GROUND_Y });
+    const sceneMesh = buildSceneMesh({
+      colliders: bodyPrims ? [] : colliders,
+      body: bodyPrims ? { prims: bodyPrims, blend: BODY_BLEND } : undefined,
+      groundY: GROUND_Y,
+    });
     renderer = new ClothRenderer(
       device,
       canvas,

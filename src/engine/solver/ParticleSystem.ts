@@ -24,18 +24,24 @@ export interface TimestampSpan {
   endIndex: number;
 }
 
-/** Analytic capsule collider: segment a→b swept by a radius (sphere when b is omitted). */
+/**
+ * Analytic round-cone collider: segment a→b, radius at a, radius2 at b.
+ * A capsule when radius2 is omitted, a sphere when b is omitted too.
+ */
 export interface Collider {
   a: [number, number, number];
   b?: [number, number, number];
   radius: number;
+  radius2?: number;
 }
 
 export interface SolverOptions {
   gravity?: number;
   groundY?: number;
-  /** Capsule/sphere colliders (a mannequin is a handful of these). */
+  /** Round-cone colliders (a mannequin is a handful of these). */
   colliders?: Collider[];
+  /** Smooth-min blend between colliders (m); 0 = hard union of shapes. */
+  colliderBlend?: number;
   friction?: number;
   clothThickness?: number;
   complianceStretch?: number;
@@ -51,13 +57,15 @@ export interface SolverOptions {
   selfCollision?: boolean;
 }
 
-// SimParams std140-style layout, 112 bytes. Offsets (bytes):
+// SimParams std140-style layout, 144 bytes. Offsets (bytes):
 //  0 dt, 4 gravity, 8 ground_y, 12 friction,
 //  16 ray_origin.xyz, 28 mouse_force, 32 ray_dir.xyz, 44 mouse_radius,
-//  48 collider_count (u32) + 3 pads, 64 drag_target.xyz, 76 drag_stiffness,
+//  48 collider_count (u32), 52 wind_strength, 56 wind_time, 60 cloth_spacing,
+//  64 drag_target.xyz, 76 drag_stiffness,
 //  80 compliance_stretch, 84 compliance_shear, 88 compliance_bend, 92 cloth_thickness,
-//  96 particle_count, 100 damping, 104 max_speed, 108 drag_index.
-const UNIFORM_SIZE = 112;
+//  96 particle_count, 100 damping, 104 max_speed, 108 drag_index,
+//  112 body_min.xyz, 124 blend_k, 128 body_max.xyz, 140 pad.
+const UNIFORM_SIZE = 144;
 const BATCH_SIZE = 16;
 const WORKGROUP = 256;
 const DRAG_NONE = 0xffffffff;
@@ -122,6 +130,9 @@ export class ParticleSystem {
   private readonly gravity: number;
   private readonly groundY: number;
   private readonly colliderCount: number;
+  private readonly colliderBlend: number;
+  private readonly bodyMin = [Infinity, Infinity, Infinity];
+  private readonly bodyMax = [-Infinity, -Infinity, -Infinity];
   private readonly clothThickness: number;
   private readonly mouseStrength: number;
   private readonly mouseRadius: number;
@@ -186,13 +197,24 @@ export class ParticleSystem {
     this.constraintBuffer = this.createBufferRaw(mesh.constraintData, storage);
     this.quadColorCounts = mesh.quadColorCounts;
     this.quadBuffer = mesh.quadCount > 0 ? this.createBufferRaw(mesh.quadData, storage) : null;
-    // Capsule packing: {a.xyz, radius, b.xyz, pad} — 32 bytes per collider.
+    // Round-cone packing: {a.xyz, ra, b.xyz, rb} — 32 bytes per collider.
     const colliderData = new Float32Array(this.colliderCount * 8);
     colliders.forEach((c, k) => {
-      const b = c.b ?? c.a; // sphere: degenerate capsule
-      colliderData.set([...c.a, c.radius, ...b, 0], k * 8);
+      const b = c.b ?? c.a; // sphere: degenerate cone
+      colliderData.set([...c.a, c.radius, ...b, c.radius2 ?? c.radius], k * 8);
     });
     this.colliderBuffer = this.createBuffer(colliderData, storage);
+    // Collider AABB (early out in the collide pass) + smooth-min blend.
+    this.colliderBlend = opts.colliderBlend ?? 0;
+    const pad = this.colliderBlend + 0.05;
+    for (const c of colliders) {
+      const b = c.b ?? c.a;
+      const r = Math.max(c.radius, c.radius2 ?? c.radius);
+      for (let i = 0; i < 3; i++) {
+        this.bodyMin[i] = Math.min(this.bodyMin[i]!, Math.min(c.a[i]!, b[i]!) - r - pad);
+        this.bodyMax[i] = Math.max(this.bodyMax[i]!, Math.max(c.a[i]!, b[i]!) + r + pad);
+      }
+    }
 
     // Self-collision spatial hash: cell heads + per-particle next links.
     this.headsBuffer = device.createBuffer({
@@ -562,6 +584,13 @@ export class ParticleSystem {
     dv.setFloat32(100, this.damping, LE);
     dv.setFloat32(104, this.maxSpeed, LE);
     dv.setUint32(108, this.dragIndex, LE);
+    dv.setFloat32(112, this.bodyMin[0]!, LE);
+    dv.setFloat32(116, this.bodyMin[1]!, LE);
+    dv.setFloat32(120, this.bodyMin[2]!, LE);
+    dv.setFloat32(124, this.colliderBlend, LE);
+    dv.setFloat32(128, this.bodyMax[0]!, LE);
+    dv.setFloat32(132, this.bodyMax[1]!, LE);
+    dv.setFloat32(136, this.bodyMax[2]!, LE);
     this.device.queue.writeBuffer(this.uniformBuffer, 0, this.uniformData);
   }
 

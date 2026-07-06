@@ -7,6 +7,9 @@
  * color(3), consumed by the lit pass in PointsRenderer. Baked in world space
  * (the colliders don't move), so no per-object model matrix is needed.
  */
+import { bodyBounds, bodyNormal, sdBody, type SdfPrim } from '../engine/body/BodySdf';
+import { surfaceNets } from './SurfaceNets';
+
 export const SCENE_VERTEX_FLOATS = 9;
 
 export interface SceneMesh {
@@ -17,8 +20,29 @@ export interface SceneMesh {
 export interface SceneParams {
   /** Capsule/sphere colliders to visualize (a mannequin is a handful of them). */
   colliders: { a: [number, number, number]; b?: [number, number, number]; radius: number }[];
+  /** Smooth-blended SDF body: meshed by surface nets instead of capsule shells. */
+  body?: { prims: SdfPrim[]; blend: number };
   groundY: number;
   groundHalfSize?: number;
+}
+
+// The sculpted body is static per collider set: mesh it once, then reuse.
+const bodyMeshCache = new Map<SdfPrim[], ReturnType<typeof surfaceNets>>();
+
+function bodyMesh(prims: SdfPrim[], blend: number): ReturnType<typeof surfaceNets> {
+  let mesh = bodyMeshCache.get(prims);
+  if (!mesh) {
+    const { min, max } = bodyBounds(prims, blend + 0.02);
+    mesh = surfaceNets(
+      (x, y, z) => sdBody(x, y, z, prims, blend),
+      (x, y, z) => bodyNormal(x, y, z, prims, blend),
+      min,
+      max,
+      0.008,
+    );
+    bodyMeshCache.set(prims, mesh);
+  }
+  return mesh;
 }
 
 export function buildSceneMesh(p: SceneParams): SceneMesh {
@@ -35,12 +59,27 @@ export function buildSceneMesh(p: SceneParams): SceneMesh {
     return idx;
   };
 
+  const bodyColor: [number, number, number] = [0.45, 0.49, 0.58];
+
+  // --- Sculpted body (smooth-blended SDF, meshed by surface nets) ---
+  if (p.body) {
+    const mesh = bodyMesh(p.body.prims, p.body.blend);
+    const base = vertices.length / SCENE_VERTEX_FLOATS;
+    for (let v = 0; v < mesh.positions.length / 3; v++) {
+      push(
+        [mesh.positions[v * 3]!, mesh.positions[v * 3 + 1]!, mesh.positions[v * 3 + 2]!],
+        [mesh.normals[v * 3]!, mesh.normals[v * 3 + 1]!, mesh.normals[v * 3 + 2]!],
+        bodyColor,
+      );
+    }
+    for (const idx of mesh.indices) indices.push(base + idx);
+  }
+
   // --- Capsules (split-sphere technique: the unit sphere's upper hemisphere
   // anchors to endpoint b, the lower one to a, normals unchanged). A sphere is
   // just the degenerate case a = b. Local frame: "up" = the capsule axis.
   const rings = 32;
   const sectors = 48;
-  const bodyColor: [number, number, number] = [0.45, 0.49, 0.58];
   for (const col of p.colliders) {
     const a = col.a;
     const b = col.b ?? col.a;
