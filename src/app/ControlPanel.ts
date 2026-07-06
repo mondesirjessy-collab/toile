@@ -233,6 +233,14 @@ export class ControlPanel {
     for (const c of this.controllers) c.updateDisplay();
   }
 
+  /** Mirror a measurement edited in the 2D layout into the pattern sliders. */
+  syncPattern(
+    p: Partial<Pick<Settings, 'dressLength' | 'dressFlare' | 'dressNeck' | 'sleeveLen' | 'skirtLength' | 'skirtFlare'>>,
+  ): void {
+    Object.assign(this.settings, p);
+    for (const c of this.controllers) c.updateDisplay();
+  }
+
   /** Serialize the current garment to the open TOILE format and download it. */
   private exportGarment(): void {
     const s = this.settings;

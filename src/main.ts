@@ -8,7 +8,7 @@ import { MouseForce } from './app/MouseForce';
 import { buildSceneMesh } from './app/SceneGeometry';
 import { GpuProfiler } from './app/GpuProfiler';
 import { ControlPanel } from './app/ControlPanel';
-import { PatternView } from './app/PatternView';
+import { PatternView, type PatternHandleSpec } from './app/PatternView';
 import { pickParticle } from './app/pick';
 
 const DEFAULT_RESOLUTION = 64;
@@ -100,7 +100,11 @@ async function main(): Promise<void> {
   const camera = new OrbitCamera(); // attached below, once the grab test exists
   const mouse = new MouseForce();
   mouse.attach(canvas);
-  const patternView = new PatternView(document.getElementById('pattern') as HTMLCanvasElement);
+  // Dragging a handle in the 2D layout edits the measurement: update the
+  // pattern state, mirror it into the panel sliders, then re-cut and re-sew.
+  const patternView = new PatternView(document.getElementById('pattern') as HTMLCanvasElement, (id, value) =>
+    applyHandle(id, value),
+  );
   const profiler = new GpuProfiler(device);
 
   // Fabric params kept across rebuilds (a resolution change recreates the sim).
@@ -214,7 +218,46 @@ async function main(): Promise<void> {
     renderer.resize(canvas.width, canvas.height);
     posCache = null; // stale cache belongs to the previous system
     dragIndex = null;
-    patternView.draw(mesh); // refresh the 2D cutting-layout inset
+    patternView.draw(mesh, patternHandles()); // refresh the 2D cutting-layout inset
+  };
+
+  // The editable measurements of the current scene, pinned to their cut edges.
+  const patternHandles = (): PatternHandleSpec[] => {
+    if (sceneMode === 'robe') {
+      const grid = { width: 0.95, topY: 1.6, height: dressPattern.length };
+      return [
+        { id: 'dressFlare', label: 'évasement', grid, anchor: [0.5 + dressPattern.flare, 1], axis: 'u', value: dressPattern.flare, min: 0.25, max: 0.5 },
+        { id: 'dressLength', label: 'longueur', grid, anchor: [0.5, 1], axis: 'y', value: dressPattern.length, min: 0.9, max: 1.55, unit: ' m' },
+        { id: 'dressNeck', label: 'encolure', grid, anchor: [0.5 + dressPattern.neck, 0], axis: 'u', value: dressPattern.neck, min: 0.06, max: 0.16 },
+      ];
+    }
+    if (sceneMode === 'chemise') {
+      const grid = { width: 1.3, topY: 1.52, height: 0.75 };
+      return [
+        { id: 'sleeveLen', label: 'manches', grid, anchor: [0.5 + shirtPattern.sleeve, 0.18], axis: 'u', value: shirtPattern.sleeve, min: 0.33, max: 0.47 },
+      ];
+    }
+    if (sceneMode === 'ensemble') {
+      const grid = { width: 0.85, topY: 1.14, height: skirtPattern.length };
+      return [
+        { id: 'skirtFlare', label: 'évasement', grid, anchor: [0.5 + skirtPattern.flare, 1], axis: 'u', value: skirtPattern.flare, min: 0.3, max: 0.46 },
+        { id: 'skirtLength', label: 'longueur', grid, anchor: [0.5, 1], axis: 'y', value: skirtPattern.length, min: 0.4, max: 0.75, unit: ' m' },
+      ];
+    }
+    return [];
+  };
+
+  // A handle was released in the layout: commit the measurement everywhere.
+  const applyHandle = (id: string, value: number): void => {
+    if (id === 'dressFlare') dressPattern.flare = value;
+    else if (id === 'dressLength') dressPattern.length = value;
+    else if (id === 'dressNeck') dressPattern.neck = value;
+    else if (id === 'sleeveLen') shirtPattern.sleeve = value;
+    else if (id === 'skirtLength') skirtPattern.length = value;
+    else if (id === 'skirtFlare') skirtPattern.flare = value;
+    else return;
+    panel.syncPattern({ [id]: value });
+    build();
   };
   build();
 
