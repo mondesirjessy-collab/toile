@@ -495,3 +495,37 @@ describe('sideHalfWidth (patron libre)', () => {
     expect(sideHalfWidth(0.5, { hem: 0.41 })).toBeCloseTo(0.31);
   });
 });
+
+describe('profils dessinés — jupe et chemise', () => {
+  const n = 64;
+  it('la jupe suit sa silhouette libre', () => {
+    const m = generateSeamedPanels({
+      resolution: n,
+      width: 0.85,
+      height: 0.6,
+      gap: 0.75,
+      topY: 1.14,
+      shape: 'skirt',
+      shapeParams: { profile: [0.2, 0.45, 0.2, 0.45] },
+    });
+    const kept = (u: number, v: number): boolean => m.invMasses[Math.round(v * (n - 1)) * n + Math.round(u * (n - 1))]! > 0;
+    expect(kept(0.5 + 0.4, 1 / 3)).toBe(true); // large à la station évasée
+    expect(kept(0.5 + 0.3, 2 / 3)).toBe(false); // étroit à la station pincée
+  });
+
+  it('le corps de chemise reste à 0.22 dans la zone emmanchure, libre en dessous', () => {
+    const m = generateSeamedPanels({
+      resolution: n,
+      width: 1.3,
+      height: 0.75,
+      gap: 0.9,
+      topY: 1.52,
+      shape: 'setin',
+      shapeParams: { sleeve: 0.47, profile: [0.22, 0.14, 0.14, 0.14] },
+    });
+    const kept = (u: number, v: number): boolean => m.invMasses[Math.round(v * (n - 1)) * n + Math.round(u * (n - 1))]! > 0;
+    expect(kept(0.5 + 0.21, 0.2)).toBe(true); // emmanchure intacte
+    expect(kept(0.5 + 0.2, 0.9)).toBe(false); // taille resserrée dessinée
+    expect(kept(0.5 + 0.12, 0.9)).toBe(true);
+  });
+});

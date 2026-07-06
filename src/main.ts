@@ -120,8 +120,10 @@ async function main(): Promise<void> {
   const linearProfile = (flare: number): number[] =>
     Array.from({ length: 6 }, (_, k) => 0.21 + (flare - 0.21) * (k / 5));
   let dressPattern = { length: 1.3, flare: 0.5, neck: 0.1, profile: linearProfile(0.5) };
-  let shirtPattern = { sleeve: 0.47 };
-  let skirtPattern = { length: 0.6, flare: 0.46 };
+  let shirtPattern = { sleeve: 0.47, profile: [0.22, 0.22, 0.22] }; // stations v=0.57/0.79/1
+  const skirtLinear = (flare: number): number[] =>
+    Array.from({ length: 4 }, (_, k) => 0.22 + (flare - 0.22) * (k / 3));
+  let skirtPattern = { length: 0.6, flare: 0.46, profile: skirtLinear(0.46) };
   let bodyKind: 'femme' | 'homme' | 'scan homme' | 'scan femme' = 'femme';
   let podium = 0; // tours/minute
   let podiumAngle = 0;
@@ -236,7 +238,7 @@ async function main(): Promise<void> {
                   gap: 0.9,
                   topY: 1.52 + dyShoulder,
                   shape: 'setin',
-                  shapeParams: { sleeve: shirtPattern.sleeve },
+                  shapeParams: { sleeve: shirtPattern.sleeve, profile: [0.22, ...shirtPattern.profile] },
                 })
             : sceneMode === 'ensemble'
               ? // Outfit: tee + flared skirt, one simulation — self-collision
@@ -254,7 +256,7 @@ async function main(): Promise<void> {
                     gap: 0.75,
                     topY: 1.14 + (m.waist.y - REF.waist.y), // starts above the hips, drops onto them
                     shape: 'skirt',
-                    shapeParams: { hem: skirtPattern.flare },
+                    shapeParams: { profile: skirtPattern.profile },
                   }),
                 )
               : generateClothGrid({ resolution, size: CLOTH_SIZE, topY: CLOTH_TOP_Y, pin: 'none' });
@@ -331,14 +333,37 @@ async function main(): Promise<void> {
     }
     if (sceneMode === 'chemise') {
       const grid = { width: 1.3 * lastGrade.topScale, topY: 1.52 + lastGrade.dyShoulder, height: 0.75 };
+      const stations: PatternHandleSpec[] = shirtPattern.profile.map((w, k) => ({
+        id: `chemiseProfil${k}`,
+        label: 'silhouette',
+        grid,
+        anchor: [0.5 + w, 0.36 + (0.64 * (k + 1)) / 3] as [number, number],
+        axis: 'u' as const,
+        value: w,
+        min: 0.12,
+        max: 0.26,
+      }));
       return [
+        ...stations,
         { id: 'sleeveLen', label: 'manches', grid, anchor: [0.5 + shirtPattern.sleeve, 0.18], axis: 'u', value: shirtPattern.sleeve, min: 0.33, max: 0.47 },
       ];
     }
     if (sceneMode === 'ensemble') {
       const grid = { width: 0.85 * lastGrade.skirtScale, topY: 1.14 + lastGrade.dyWaist, height: skirtPattern.length };
+      const stations: PatternHandleSpec[] = skirtPattern.profile.map((w, k) => ({
+        id: `jupeProfil${k}`,
+        label: 'silhouette',
+        grid,
+        anchor: [0.5 + w, k / 3] as [number, number],
+        axis: 'u' as const,
+        value: w,
+        // Waist station: the ring must still close around the body (min) and
+        // stay narrower than the hip bulge (max) — measured limits.
+        min: k === 0 ? 0.2 : 0.1,
+        max: k === 0 ? 0.3 : 0.5,
+      }));
       return [
-        { id: 'skirtFlare', label: 'évasement', grid, anchor: [0.5 + skirtPattern.flare, 1], axis: 'u', value: skirtPattern.flare, min: 0.3, max: 0.46 },
+        ...stations,
         { id: 'skirtLength', label: 'longueur', grid, anchor: [0.5, 1], axis: 'y', value: skirtPattern.length, min: 0.4, max: 0.75, unit: ' m' },
       ];
     }
@@ -347,9 +372,15 @@ async function main(): Promise<void> {
 
   // A handle was released in the layout: commit the measurement everywhere.
   const applyHandle = (id: string, value: number): void => {
-    if (id.startsWith('profil')) {
+    if (id.startsWith('chemiseProfil')) {
+      shirtPattern.profile[Number(id.slice(13))] = value;
+      panel.setProfiles({ chemise: shirtPattern.profile });
+    } else if (id.startsWith('jupeProfil')) {
+      skirtPattern.profile[Number(id.slice(10))] = value;
+      panel.setProfiles({ jupe: skirtPattern.profile });
+    } else if (id.startsWith('profil')) {
       dressPattern.profile[Number(id.slice(6))] = value;
-      panel.setProfile(dressPattern.profile);
+      panel.setProfiles({ robe: dressPattern.profile });
     } else if (id === 'dressFlare') dressPattern.flare = value;
     else if (id === 'dressLength') dressPattern.length = value;
     else if (id === 'dressNeck') dressPattern.neck = value;
@@ -425,9 +456,9 @@ async function main(): Promise<void> {
         if (!v && animPrims) build(); // reset to the rest pose cleanly
       },
       onPattern: (p) => {
-        // Sliders describe a straight grade: they reset any drafted silhouette.
-        dressPattern = { ...p, profile: linearProfile(p.flare) };
-        panel.setProfile(dressPattern.profile);
+        // The FLARE slider resets the draft (straight grade); length/neck keep it.
+        dressPattern = { ...p, profile: p.flare === dressPattern.flare ? dressPattern.profile : linearProfile(p.flare) };
+        panel.setProfiles({ robe: dressPattern.profile });
         // The pattern sliders describe the dress: jump to the dress scene so
         // the adjustment is always visible, then re-cut and re-sew.
         if (sceneMode !== 'robe') {
@@ -436,17 +467,15 @@ async function main(): Promise<void> {
         }
         build();
       },
-      onProfile: (profile) => {
-        dressPattern.profile = profile.slice();
-        panel.setProfile(dressPattern.profile);
-        if (sceneMode !== 'robe') {
-          sceneMode = 'robe';
-          panel.syncScene('robe');
-        }
+      onProfile: (kind, profile) => {
+        if (kind === 'robe') dressPattern.profile = profile.slice();
+        else if (kind === 'chemise') shirtPattern.profile = profile.slice();
+        else skirtPattern.profile = profile.slice();
+        panel.setProfiles({ [kind]: profile.slice() });
         build();
       },
       onShirtPattern: (p) => {
-        shirtPattern = p;
+        shirtPattern = { ...p, profile: shirtPattern.profile };
         if (sceneMode !== 'chemise') {
           sceneMode = 'chemise';
           panel.syncScene('chemise');
@@ -454,7 +483,9 @@ async function main(): Promise<void> {
         build();
       },
       onSkirtPattern: (p) => {
-        skirtPattern = p;
+        // The FLARE slider resets the draft (straight grade); length keeps it.
+        skirtPattern = { ...p, profile: p.flare === skirtPattern.flare ? skirtPattern.profile : skirtLinear(p.flare) };
+        panel.setProfiles({ jupe: skirtPattern.profile });
         // The skirt lives in the outfit scene.
         if (sceneMode !== 'ensemble') {
           sceneMode = 'ensemble';

@@ -329,9 +329,11 @@ function tshirtShape(u: number, v: number): boolean {
 /** True when (u,v) ∈ [0,1]² lies inside the flared-skirt pattern piece.
  * Parametric: `hem` = half-width at the hem (flare). */
 function skirtShape(u: number, v: number, p: ShapeParams = {}): boolean {
-  const hem = p.hem ?? 0.46;
   const x = Math.abs(u - 0.5);
-  return x <= 0.22 + (hem - 0.22) * v; // snug waist → flared hem
+  // Drafted silhouette when present; otherwise snug waist → flared hem.
+  if (p.profile && p.profile.length >= 2) return x <= sideHalfWidth(v, p);
+  const hem = p.hem ?? 0.46;
+  return x <= 0.22 + (hem - 0.22) * v;
 }
 
 /**
@@ -342,7 +344,14 @@ function skirtShape(u: number, v: number, p: ShapeParams = {}): boolean {
 function setinShape(u: number, v: number, p: ShapeParams = {}): boolean {
   const sleeveEnd = p.sleeve ?? 0.47; // outer sleeve bound = sleeve length
   const x = Math.abs(u - 0.5);
-  if (x <= 0.22) {
+  // The armhole zone (v ≤ 0.36) keeps its 0.22 edge — the island-to-island
+  // seams and opening bands are anchored there. Below it, the body side seam
+  // is a drafted curve (profile anchors span v ∈ [0.36, 1]).
+  const bodyEdge =
+    p.profile && p.profile.length >= 2 && v > 0.36
+      ? sideHalfWidth((v - 0.36) / 0.64, { profile: p.profile })
+      : 0.22;
+  if (x <= bodyEdge) {
     // Body, with a neck scoop.
     if (v < 0.09) {
       const scoop = 0.1 * Math.sqrt(1 - (v / 0.09) ** 2);

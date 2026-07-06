@@ -29,7 +29,7 @@ export interface PanelCallbacks {
   onAnimate(on: boolean): void;
   onBody(kind: BodyKind): void;
   onPattern(p: PatternParams): void;
-  onProfile(profile: number[]): void;
+  onProfile(kind: 'robe' | 'chemise' | 'jupe', profile: number[]): void;
   onShirtPattern(p: { sleeve: number }): void;
   onSkirtPattern(p: { length: number; flare: number }): void;
   onPins(held: boolean): void;
@@ -263,11 +263,13 @@ export class ControlPanel {
     for (const c of this.controllers) c.updateDisplay();
   }
 
-  /** Drafted side-seam silhouette (exported with the garment). */
-  private profile: number[] | null = null;
+  /** Drafted silhouettes per garment (exported with the garment). */
+  private profiles: { robe?: number[]; chemise?: number[]; jupe?: number[] } = {};
 
-  setProfile(profile: number[]): void {
-    this.profile = profile.slice();
+  setProfiles(p: { robe?: number[]; chemise?: number[]; jupe?: number[] }): void {
+    if (p.robe) this.profiles.robe = p.robe.slice();
+    if (p.chemise) this.profiles.chemise = p.chemise.slice();
+    if (p.jupe) this.profiles.jupe = p.jupe.slice();
   }
 
   /** Mirror a measurement edited in the 2D layout into the pattern sliders. */
@@ -287,7 +289,9 @@ export class ControlPanel {
       scene: s.scene,
       body: s.body,
       pattern: {
-        profile: this.profile ?? undefined,
+        profile: this.profiles.robe,
+        profileChemise: this.profiles.chemise,
+        profileJupe: this.profiles.jupe,
         length: s.dressLength,
         flare: s.dressFlare,
         neck: s.dressNeck,
@@ -338,7 +342,14 @@ export class ControlPanel {
       format?: string;
       scene?: SceneMode;
       body?: BodyKind;
-      pattern?: Partial<PatternParams> & { sleeve?: number; skirtLength?: number; skirtFlare?: number; profile?: number[] };
+      pattern?: Partial<PatternParams> & {
+        sleeve?: number;
+        skirtLength?: number;
+        skirtFlare?: number;
+        profile?: number[];
+        profileChemise?: number[];
+        profileJupe?: number[];
+      };
       fabric?: { preset?: string; stretchExp?: number; shearExp?: number; bendExp?: number; friction?: number };
       sim?: { resolution?: number; substeps?: number; selfCollision?: boolean; wind?: number };
     };
@@ -383,11 +394,27 @@ export class ControlPanel {
     this.cb.onSelfCollision(s.selfCollision);
     this.cb.onWind(s.wind);
     this.cb.onPattern({ length: s.dressLength, flare: s.dressFlare, neck: s.dressNeck });
-    if (Array.isArray(d.pattern?.profile) && d.pattern.profile.length >= 2) {
-      this.cb.onProfile(d.pattern.profile);
-    }
     this.cb.onShirtPattern({ sleeve: s.sleeveLen });
     this.cb.onSkirtPattern({ length: s.skirtLength, flare: s.skirtFlare });
+    // Drafted silhouettes AFTER the slider callbacks (those reset to straight
+    // grades — the file's draft must win). Validate hard: exact station count,
+    // finite numbers, clamped to the handle bounds. The chemise always gets a
+    // call so a stale session draft can't leak into a file that has none.
+    const prof = (arr: unknown, len: number, min: number, max: number): number[] | null =>
+      Array.isArray(arr) && arr.length === len && arr.every((v) => typeof v === 'number' && Number.isFinite(v))
+        ? (arr as number[]).map((v) => Math.min(max, Math.max(min, v)))
+        : null;
+    const pr = prof(d.pattern?.profile, 6, 0.1, 0.5);
+    if (pr) {
+      pr[0] = Math.max(0.18, pr[0]!); // straps must clear the neckline scoop
+      this.cb.onProfile('robe', pr);
+    }
+    this.cb.onProfile('chemise', prof(d.pattern?.profileChemise, 3, 0.12, 0.26) ?? [0.22, 0.22, 0.22]);
+    const pj = prof(d.pattern?.profileJupe, 4, 0.1, 0.5);
+    if (pj) {
+      pj[0] = Math.min(0.3, Math.max(0.2, pj[0]!)); // waist ring must close AND stay under the hips
+      this.cb.onProfile('jupe', pj);
+    }
     this.cb.onResolution(s.resolution);
     s.scene = targetScene;
     for (const c of this.controllers) c.updateDisplay();
