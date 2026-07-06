@@ -40,9 +40,12 @@ struct SimParams {
 };
 
 // Round cone: segment a→b, radius ra at a, rb at b. Sphere when a = b.
+// s squashes per axis about the midpoint (components ≤ 1, ellipse sections);
+// bound = world bounding-sphere radius about the midpoint (fast reject).
 struct Prim {
-  a_ra: vec4f, // a.xyz, ra
-  b_rb: vec4f, // b.xyz, rb
+  a_ra: vec4f,    // a.xyz, ra
+  b_rb: vec4f,    // b.xyz, rb
+  s_bound: vec4f, // s.xyz, bound
 };
 
 @group(0) @binding(0) var<uniform> params: SimParams;
@@ -51,11 +54,17 @@ struct Prim {
 @group(0) @binding(3) var<storage, read> inv_masses: array<f32>;
 @group(0) @binding(4) var<storage, read> colliders: array<Prim>;
 
-fn sd_round_cone(p: vec3f, prim: Prim) -> f32 {
+fn sd_round_cone(p0: vec3f, prim: Prim) -> f32 {
   let a = prim.a_ra.xyz;
   let b = prim.b_rb.xyz;
   let ra = prim.a_ra.w;
   let rb = prim.b_rb.w;
+  // Ellipse squash: unscale the point about the midpoint, rescale the result
+  // by min(s) — conservative ellipsoid distance (exact on-axis).
+  let s = prim.s_bound.xyz;
+  let c = (a + b) * 0.5;
+  let p = c + (p0 - c) / s;
+  let s_min = min(s.x, min(s.y, s.z));
   let ba = b - a;
   let l2 = dot(ba, ba);
   let rr = ra - rb;
@@ -63,7 +72,7 @@ fn sd_round_cone(p: vec3f, prim: Prim) -> f32 {
   let pa = p - a;
   // Degenerate: zero-length segment, or one end sphere inside the other.
   if (l2 < 1e-12 || a2 <= 1e-12) {
-    return min(length(pa) - ra, length(p - b) - rb);
+    return min(length(pa) - ra, length(p - b) - rb) * s_min;
   }
   let il2 = 1.0 / l2;
   let y = dot(pa, ba);
@@ -73,9 +82,9 @@ fn sd_round_cone(p: vec3f, prim: Prim) -> f32 {
   let y2 = y * y * l2;
   let z2 = z * z * l2;
   let k = sign(rr) * rr * rr * x2;
-  if (sign(z) * a2 * z2 > k) { return sqrt(x2 + z2) * il2 - rb; }
-  if (sign(y) * a2 * y2 < k) { return sqrt(x2 + y2) * il2 - ra; }
-  return (sqrt(x2 * a2 * il2) + y * rr) * il2 - ra;
+  if (sign(z) * a2 * z2 > k) { return (sqrt(x2 + z2) * il2 - rb) * s_min; }
+  if (sign(y) * a2 * y2 < k) { return (sqrt(x2 + y2) * il2 - ra) * s_min; }
+  return ((sqrt(x2 * a2 * il2) + y * rr) * il2 - ra) * s_min;
 }
 
 // Polynomial smooth minimum; k = 0 degenerates to a hard min.
@@ -86,9 +95,17 @@ fn smin(a: f32, b: f32, k: f32) -> f32 {
 }
 
 fn sd_body(p: vec3f) -> f32 {
+  // Beyond this distance a primitive cannot influence the contact test (its
+  // smin contribution stays above cloth_thickness), so skip its full eval.
+  let margin = params.cloth_thickness + params.blend_k + 0.012;
   var d = 1e9;
   for (var s = 0u; s < params.collider_count; s++) {
-    d = smin(d, sd_round_cone(p, colliders[s]), params.blend_k);
+    let prim = colliders[s];
+    let c = (prim.a_ra.xyz + prim.b_rb.xyz) * 0.5;
+    let reach = prim.s_bound.w + margin;
+    let pc = p - c;
+    if (dot(pc, pc) > reach * reach) { continue; }
+    d = smin(d, sd_round_cone(p, prim), params.blend_k);
   }
   return d;
 }

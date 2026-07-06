@@ -63,13 +63,15 @@ export function buildSceneMesh(p: SceneParams): SceneMesh {
 
   // --- Sculpted body (smooth-blended SDF, meshed by surface nets) ---
   if (p.body) {
+    // Warm matte "display mannequin" tone — a body should not read as machinery.
+    const skin: [number, number, number] = [0.62, 0.53, 0.47];
     const mesh = bodyMesh(p.body.prims, p.body.blend);
     const base = vertices.length / SCENE_VERTEX_FLOATS;
     for (let v = 0; v < mesh.positions.length / 3; v++) {
       push(
         [mesh.positions[v * 3]!, mesh.positions[v * 3 + 1]!, mesh.positions[v * 3 + 2]!],
         [mesh.normals[v * 3]!, mesh.normals[v * 3 + 1]!, mesh.normals[v * 3 + 2]!],
-        bodyColor,
+        skin,
       );
     }
     for (const idx of mesh.indices) indices.push(base + idx);

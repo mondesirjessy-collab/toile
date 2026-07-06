@@ -27,12 +27,14 @@ export interface TimestampSpan {
 /**
  * Analytic round-cone collider: segment a→b, radius at a, radius2 at b.
  * A capsule when radius2 is omitted, a sphere when b is omitted too.
+ * `scale` squashes per axis about the midpoint (components ≤ 1): ellipses.
  */
 export interface Collider {
   a: [number, number, number];
   b?: [number, number, number];
   radius: number;
   radius2?: number;
+  scale?: [number, number, number];
 }
 
 export interface SolverOptions {
@@ -197,11 +199,15 @@ export class ParticleSystem {
     this.constraintBuffer = this.createBufferRaw(mesh.constraintData, storage);
     this.quadColorCounts = mesh.quadColorCounts;
     this.quadBuffer = mesh.quadCount > 0 ? this.createBufferRaw(mesh.quadData, storage) : null;
-    // Round-cone packing: {a.xyz, ra, b.xyz, rb} — 32 bytes per collider.
-    const colliderData = new Float32Array(this.colliderCount * 8);
+    // Round-cone packing: {a.xyz, ra, b.xyz, rb, s.xyz, bound} — 48 B/collider.
+    const colliderData = new Float32Array(this.colliderCount * 12);
     colliders.forEach((c, k) => {
       const b = c.b ?? c.a; // sphere: degenerate cone
-      colliderData.set([...c.a, c.radius, ...b, c.radius2 ?? c.radius], k * 8);
+      const r2 = c.radius2 ?? c.radius;
+      const s = c.scale ?? [1, 1, 1];
+      const half = Math.hypot(b[0] - c.a[0], b[1] - c.a[1], b[2] - c.a[2]) / 2;
+      const bound = half + Math.max(c.radius, r2); // world sphere about the midpoint
+      colliderData.set([...c.a, c.radius, ...b, r2, ...s, bound], k * 12);
     });
     this.colliderBuffer = this.createBuffer(colliderData, storage);
     // Collider AABB (early out in the collide pass) + smooth-min blend.

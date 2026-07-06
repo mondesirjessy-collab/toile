@@ -25,7 +25,7 @@ const SPHERE = [{ a: [0, 0.8, 0] as V3, radius: 0.55 }];
 // into one smooth field (BODY_FORM, BODY_FORM_ARMS). The solver collides with
 // the field; the renderer meshes the very same field via surface nets.
 const toColliders = (prims: SdfPrim[]) =>
-  prims.map((p) => ({ a: p.a, b: p.b, radius: p.ra, radius2: p.rb }));
+  prims.map((p) => ({ a: p.a, b: p.b, radius: p.ra, radius2: p.rb, scale: p.s }));
 
 let fatalShown = false;
 

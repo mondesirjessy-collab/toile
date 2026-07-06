@@ -14,12 +14,25 @@
 
 export type V3 = [number, number, number];
 
-/** Round cone: segment a→b, radius ra at a, rb at b. Sphere when a=b. */
+/**
+ * Round cone: segment a→b, radius ra at a, rb at b. Sphere when a=b.
+ * `s` squashes the shape per axis about the segment midpoint (components in
+ * (0,1] — bake any widening into the radii). Real bodies are elliptical:
+ * a chest is wider than it is deep.
+ */
 export interface SdfPrim {
   a: V3;
   b: V3;
   ra: number;
   rb: number;
+  s?: V3;
+}
+
+/** World-space bounding-sphere radius (scale ≤ 1 keeps this conservative). */
+export function primBoundRadius(p: SdfPrim): number {
+  const half =
+    Math.hypot(p.b[0] - p.a[0], p.b[1] - p.a[1], p.b[2] - p.a[2]) / 2;
+  return half + Math.max(p.ra, p.rb);
 }
 
 /** Polynomial smooth minimum (iq). k = 0 degenerates to a hard min. */
@@ -29,8 +42,22 @@ export function smin(a: number, b: number, k: number): number {
   return b * (1 - h) + a * h - k * h * (1 - h);
 }
 
-/** Exact distance to one round cone (iq's formula, with degenerate guards). */
+/**
+ * Distance to one round cone (iq's formula, with degenerate guards).
+ * With `s`, the point is unsquashed about the segment midpoint and the result
+ * rescaled by min(s): a conservative ellipsoid distance (exact on-axis).
+ */
 export function sdRoundCone(px: number, py: number, pz: number, p: SdfPrim): number {
+  let sMin = 1;
+  if (p.s) {
+    const cx = (p.a[0] + p.b[0]) / 2;
+    const cy = (p.a[1] + p.b[1]) / 2;
+    const cz = (p.a[2] + p.b[2]) / 2;
+    px = cx + (px - cx) / p.s[0];
+    py = cy + (py - cy) / p.s[1];
+    pz = cz + (pz - cz) / p.s[2];
+    sMin = Math.min(p.s[0], p.s[1], p.s[2]);
+  }
   const bax = p.b[0] - p.a[0];
   const bay = p.b[1] - p.a[1];
   const baz = p.b[2] - p.a[2];
@@ -44,7 +71,7 @@ export function sdRoundCone(px: number, py: number, pz: number, p: SdfPrim): num
   if (l2 < 1e-12 || a2 <= 1e-12) {
     const da = Math.hypot(pax, pay, paz) - p.ra;
     const db = Math.hypot(px - p.b[0], py - p.b[1], pz - p.b[2]) - p.rb;
-    return Math.min(da, db);
+    return Math.min(da, db) * sMin;
   }
   const il2 = 1 / l2;
   const y = pax * bax + pay * bay + paz * baz;
@@ -56,9 +83,9 @@ export function sdRoundCone(px: number, py: number, pz: number, p: SdfPrim): num
   const y2 = y * y * l2;
   const z2 = z * z * l2;
   const k = Math.sign(rr) * rr * rr * x2;
-  if (Math.sign(z) * a2 * z2 > k) return Math.sqrt(x2 + z2) * il2 - p.rb;
-  if (Math.sign(y) * a2 * y2 < k) return Math.sqrt(x2 + y2) * il2 - p.ra;
-  return (Math.sqrt((x2 * a2) * il2) + y * rr) * il2 - p.ra;
+  if (Math.sign(z) * a2 * z2 > k) return (Math.sqrt(x2 + z2) * il2 - p.rb) * sMin;
+  if (Math.sign(y) * a2 * y2 < k) return (Math.sqrt(x2 + y2) * il2 - p.ra) * sMin;
+  return ((Math.sqrt((x2 * a2) * il2) + y * rr) * il2 - p.ra) * sMin;
 }
 
 /** Distance to the whole blended body. */
@@ -97,42 +124,75 @@ export function bodyBounds(prims: SdfPrim[], pad: number): { min: V3; max: V3 } 
 }
 
 /** Smooth-min blend used by the dress form (meters). */
-export const BODY_BLEND = 0.045;
+export const BODY_BLEND = 0.04;
 
-const rc = (a: V3, b: V3, ra: number, rb: number): SdfPrim => ({ a, b, ra, rb });
+const rc = (a: V3, b: V3, ra: number, rb: number, s?: V3): SdfPrim => ({ a, b, ra, rb, s });
 
 /**
- * The sculpted dress form. Same key measurements as the old capsule mannequin
- * (shoulder span, bust, waist ring smaller than the hip bulge, leg length) so
- * every existing pattern still fits — but with a continuous, human silhouette.
+ * Mirror a one-sided primitive list across x (left limbs → both limbs).
+ * Primitives already on the centerline (|x| ≈ 0 at both ends) pass through.
  */
-export const BODY_FORM: SdfPrim[] = [
-  rc([0, 1.63, 0], [0, 1.63, 0], 0.105, 0.105), // head
-  rc([0, 1.565, 0], [0, 1.45, 0], 0.047, 0.062), // neck, flaring to the trapezius
-  rc([0, 1.452, 0], [-0.155, 1.408, 0], 0.066, 0.056), // left trapezius slope
-  rc([0, 1.452, 0], [0.155, 1.408, 0], 0.066, 0.056), // right trapezius slope
-  // Deltoid shelves: a level runway under the strap zone (the dress neck ring
-  // spans ±0.20), rounding off past ±0.21 — same hold as the proven capsule
-  // shoulder bar, but only its outer third so the trapezius slope stays.
-  rc([-0.14, 1.405, 0], [-0.21, 1.405, 0], 0.062, 0.062),
-  rc([0.14, 1.405, 0], [0.21, 1.405, 0], 0.062, 0.062),
-  rc([0, 1.375, 0], [0, 1.21, 0], 0.125, 0.146), // chest into the bust — the top
-  // dome doubles as the "hanger" the dress neckline rests on (its cross-section
-  // at y≈1.45 must stay wider than the neck-scoop ring, or straps slide off)
-  rc([0, 1.21, 0], [0, 1.055, 0], 0.146, 0.112), // bust tapering to the waist
-  rc([0, 1.055, 0], [0, 0.935, 0], 0.112, 0.147), // waist flaring to the hips
-  rc([-0.048, 0.92, 0], [0.048, 0.92, 0], 0.143, 0.143), // pelvis width
-  rc([-0.082, 0.9, 0], [-0.086, 0.46, 0], 0.077, 0.056), // left thigh → knee
-  rc([0.082, 0.9, 0], [0.086, 0.46, 0], 0.077, 0.056), // right thigh → knee
-  rc([-0.086, 0.46, 0], [-0.086, 0.08, 0], 0.052, 0.043), // left calf → ankle
-  rc([0.086, 0.46, 0], [0.086, 0.08, 0], 0.052, 0.043), // right calf → ankle
-];
+function mirrored(prims: SdfPrim[]): SdfPrim[] {
+  const out: SdfPrim[] = [];
+  for (const p of prims) {
+    out.push(p);
+    if (Math.abs(p.a[0]) > 1e-6 || Math.abs(p.b[0]) > 1e-6) {
+      out.push({
+        a: [-p.a[0], p.a[1], p.a[2]],
+        b: [-p.b[0], p.b[1], p.b[2]],
+        ra: p.ra,
+        rb: p.rb,
+        s: p.s,
+      });
+    }
+  }
+  return out;
+}
 
-/** Same form with A-pose arms, angled to match the kimono sleeve slope. */
+/**
+ * The realistic figure, ~1.75 m. Anatomy in three ingredients the old capsule
+ * body lacked: a DEPTH PROFILE in z (chest and bust forward, glutes and calves
+ * back — a straight column reads as a bollard, not a person), ELLIPTICAL
+ * cross-sections (`s` squash: a torso is wider than deep), and terminal parts
+ * (chin, hands, feet). +z is the garment "front" panel side.
+ *
+ * Fit constraints preserved from the proven capsule form: deltoid shelf
+ * spanning the dress-strap ring (±0.20) at y≈1.41; the upper-chest dome wider
+ * than the neck-scoop ring (±0.095) at y≈1.45 (the neckline's "hanger");
+ * waist ring narrower than hips+glutes (skirts hold); thigh/leg lengths.
+ */
+export const BODY_FORM: SdfPrim[] = mirrored([
+  // — Head: skull dome + jaw wedge down to a chin. Featureless on purpose —
+  //   a display-mannequin face reads elegant; a half-realistic one reads eerie.
+  rc([0, 1.655, 0.005], [0, 1.655, 0.005], 0.1, 0.1, [0.84, 1, 0.92]),
+  rc([0, 1.63, 0.015], [0, 1.575, 0.05], 0.062, 0.026, [0.8, 1, 1]), // jaw → chin
+  rc([0, 1.6, -0.005], [0, 1.47, -0.005], 0.044, 0.052, [1, 1, 0.9]), // neck
+  // — Shoulder girdle —
+  rc([0, 1.475, -0.01], [-0.155, 1.42, -0.005], 0.062, 0.05), // trapezius slope
+  rc([-0.14, 1.412, 0], [-0.205, 1.412, 0], 0.058, 0.058, [1, 1, 0.9]), // deltoid shelf
+  // — Torso, front-leaning chest to back-leaning seat —
+  rc([0, 1.4, 0.005], [0, 1.16, 0], 0.132, 0.142, [1, 1, 0.72]), // ribcage (hanger dome)
+  rc([-0.062, 1.275, 0.055], [-0.062, 1.275, 0.055], 0.072, 0.072), // bust
+  rc([0, 1.16, 0.012], [0, 1.0, 0.022], 0.115, 0.108, [1, 1, 0.72]), // abdomen, slight belly
+  rc([0, 1.0, 0], [0, 0.9, -0.008], 0.14, 0.185, [1, 1, 0.8]), // pelvis flaring to hips
+  // (hip span ±0.185 — a real pelvis; also what keeps a skirt waist ring from
+  // slipping through: the ring must meet a bulge WIDER than itself below the waist)
+  rc([-0.06, 0.9, -0.055], [-0.06, 0.94, -0.05], 0.08, 0.072), // glute
+  // — Legs, with knee caps, calf bellies, ankles and FEET —
+  rc([-0.085, 0.88, 0.004], [-0.088, 0.5, 0.006], 0.082, 0.057, [1, 1, 0.94]), // thigh
+  rc([-0.088, 0.478, 0.012], [-0.088, 0.478, 0.012], 0.051, 0.051), // knee cap
+  rc([-0.088, 0.46, -0.004], [-0.089, 0.12, -0.012], 0.048, 0.03), // shank
+  rc([-0.089, 0.375, -0.03], [-0.089, 0.375, -0.03], 0.047, 0.047, [0.95, 1, 1]), // calf belly
+  rc([-0.089, 0.05, -0.01], [-0.089, 0.038, 0.12], 0.032, 0.02, [1, 0.72, 1]), // foot → toes
+]);
+
+/** Same figure with A-pose arms: deltoid → elbow → forearm → mitten hand. */
 export const BODY_FORM_ARMS: SdfPrim[] = [
   ...BODY_FORM,
-  rc([-0.195, 1.405, 0], [-0.3, 1.335, 0], 0.056, 0.047), // left upper arm
-  rc([0.195, 1.405, 0], [0.3, 1.335, 0], 0.056, 0.047), // right upper arm
-  rc([-0.3, 1.335, 0], [-0.39, 1.27, 0], 0.045, 0.038), // left forearm
-  rc([0.3, 1.335, 0], [0.39, 1.27, 0], 0.045, 0.038), // right forearm
+  ...mirrored([
+    rc([-0.2, 1.415, 0], [-0.3, 1.3, -0.004], 0.052, 0.042), // upper arm
+    rc([-0.302, 1.297, -0.004], [-0.302, 1.297, -0.004], 0.041, 0.041), // elbow
+    rc([-0.305, 1.295, 0], [-0.385, 1.2, 0.01], 0.04, 0.027), // forearm
+    rc([-0.39, 1.19, 0.012], [-0.418, 1.14, 0.024], 0.026, 0.014, [0.72, 1, 1]), // hand
+  ]),
 ];

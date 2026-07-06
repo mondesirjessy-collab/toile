@@ -58,6 +58,23 @@ describe('smin', () => {
   });
 });
 
+describe('ellipsoid squash', () => {
+  const squashed: SdfPrim = { a: [1, 1, 1], b: [1, 1, 1], ra: 0.5, rb: 0.5, s: [1, 1, 0.5] };
+
+  it('is exact along the squashed axis', () => {
+    // Ellipsoid half-depth 0.25: surface at z = 1.25.
+    expect(sdRoundCone(1, 1, 1.3, squashed)).toBeCloseTo(0.05);
+    expect(sdRoundCone(1, 1, 1, squashed)).toBeCloseTo(-0.25);
+  });
+
+  it('stays conservative (never overestimates) off-axis', () => {
+    // True distance on the unsquashed axis is 0.1; the estimate may be smaller.
+    const d = sdRoundCone(1.6, 1, 1, squashed);
+    expect(d).toBeGreaterThan(0);
+    expect(d).toBeLessThanOrEqual(0.1 + 1e-9);
+  });
+});
+
 describe('body field', () => {
   it('has a unit gradient away from the surface', () => {
     const n = bodyNormal(0.5, 1.2, 0.4, BODY_FORM, BODY_BLEND);
