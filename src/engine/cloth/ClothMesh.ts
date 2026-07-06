@@ -299,7 +299,7 @@ export interface SeamedPanelsOptions {
    * THREE pieces — body plus two separate sleeves beside it — whose armhole
    * edges are stitched together at assembly time (set-in sleeves).
    */
-  shape?: 'rect' | 'aline' | 'tshirt' | 'skirt' | 'setin';
+  shape?: 'rect' | 'aline' | 'tshirt' | 'skirt' | 'setin' | 'pants';
   /** Pattern measurements (grading): shape-specific, all in normalized [0,1] pattern units. */
   shapeParams?: { hem?: number; scoop?: number; sleeve?: number; profile?: number[] };
 }
@@ -367,6 +367,21 @@ function setinShape(u: number, v: number, p: ShapeParams = {}): boolean {
  * Openings of a shaped garment — boundary regions that must NOT be seamed
  * (where the body enters/exits: neckline, waist, hem, sleeve ends).
  */
+/**
+ * Trouser front/back piece: one yoke from waist to crotch, then two legs.
+ * The mirror seams derive everything a real pair needs from the boundary:
+ * outseams (outer edges), INSEAMS (the cut between the legs) and the crotch
+ * curve — while the waist and the two leg hems stay open.
+ */
+function pantsShape(u: number, v: number): boolean {
+  const x = Math.abs(u - 0.5);
+  if (v <= 0.3) return x <= 0.27 + (0.42 - 0.27) * (v / 0.3); // yoke: waist → hip
+  const t = (v - 0.3) / 0.7;
+  const outer = 0.42 + (0.22 - 0.42) * t; // outseam taper to the ankle
+  const inner = 0.06 + (0.08 - 0.06) * t; // inseam: the slot between the legs
+  return x >= inner && x <= outer;
+}
+
 function isOpening(shape: PatternShape, uu: number, vv: number, p: ShapeParams = {}): boolean {
   const x = Math.abs(uu - 0.5);
   if (vv > 0.97) return true; // hem
@@ -376,6 +391,7 @@ function isOpening(shape: PatternShape, uu: number, vv: number, p: ShapeParams =
     if (x > 0.48) return true; // sleeve ends (the arm comes out here)
   }
   if (shape === 'skirt') return vv < 0.04; // waist
+  if (shape === 'pants') return vv < 0.04; // waist (leg hems via the vv > 0.97 rule)
   if (shape === 'setin') {
     if (vv < 0.1 && x < 0.11) return true; // neckline
     if (x > (p.sleeve ?? 0.47) - 0.02) return true; // sleeve cuffs
@@ -448,6 +464,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
     if (shape === 'tshirt') return tshirtShape(uu, vv);
     if (shape === 'skirt') return skirtShape(uu, vv, shapeParams);
     if (shape === 'setin') return setinShape(uu, vv, shapeParams);
+    if (shape === 'pants') return pantsShape(uu, vv);
     return true;
   };
   const inside = (u: number, v: number): boolean => insideUV(u / (n - 1), v / (n - 1));

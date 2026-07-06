@@ -177,7 +177,11 @@ async function main(): Promise<void> {
     // stitched around the sphere. 'robe': the same seamed pieces closing around
     // a dress form (stacked-sphere bust), falling to the floor.
     const bodyScene =
-      sceneMode === 'robe' || sceneMode === 't-shirt' || sceneMode === 'chemise' || sceneMode === 'ensemble';
+      sceneMode === 'robe' ||
+      sceneMode === 't-shirt' ||
+      sceneMode === 'chemise' ||
+      sceneMode === 'ensemble' ||
+      sceneMode === 'pantalon';
     const scanAvatar = bodyKind.startsWith('scan') ? scans[bodyKind] : null;
     const useScan = bodyScene && scanAvatar !== null;
     const bodyPrims =
@@ -259,7 +263,19 @@ async function main(): Promise<void> {
                     shapeParams: { profile: skirtPattern.profile },
                   }),
                 )
-              : generateClothGrid({ resolution, size: CLOTH_SIZE, topY: CLOTH_TOP_Y, pin: 'none' });
+              : sceneMode === 'pantalon'
+                ? // Trousers: yoke + two legs, inseams derived from the cut
+                  // between the legs. Snug waist ring sized by the tailor:
+                  // hold comes from hips/glutes + Coulomb static friction.
+                  generateSeamedPanels({
+                    resolution,
+                    width: 0.74 * (m.waist.circ / REF.waist.circ),
+                    height: m.waist.y + 0.03, // waist band down to the ankles
+                    gap: 0.7,
+                    topY: m.waist.y + 0.08, // starts above the waist, drops onto it
+                    shape: 'pants',
+                  })
+                : generateClothGrid({ resolution, size: CLOTH_SIZE, topY: CLOTH_TOP_Y, pin: 'none' });
     system = new ParticleSystem(device, mesh, {
       colliders,
       colliderBlend: bodyPrims ? BODY_BLEND : 0,

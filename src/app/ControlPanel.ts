@@ -8,7 +8,7 @@
 import GUI from 'lil-gui';
 import type { FabricStyle } from './ClothRenderer';
 
-export type SceneMode = 'drapé' | 'couture' | 'robe' | 't-shirt' | 'chemise' | 'ensemble';
+export type SceneMode = 'drapé' | 'couture' | 'robe' | 't-shirt' | 'chemise' | 'ensemble' | 'pantalon';
 
 /** Parametric pattern measurements (grading) for the dress. */
 export interface PatternParams {
@@ -138,7 +138,7 @@ export class ControlPanel {
 
     this.controllers.push(
       this.gui
-        .add(this.settings, 'scene', ['drapé', 'couture', 'robe', 't-shirt', 'chemise', 'ensemble'])
+        .add(this.settings, 'scene', ['drapé', 'couture', 'robe', 't-shirt', 'chemise', 'ensemble', 'pantalon'])
         .name('scène')
         .onChange((m: SceneMode) => this.cb.onScene(m)),
     );
