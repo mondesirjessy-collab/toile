@@ -434,18 +434,22 @@ function pantsShape(u: number, v: number): boolean {
   return x >= inner && x <= outer;
 }
 
-function isOpening(shape: PatternShape, uu: number, vv: number, p: ShapeParams = {}): boolean {
+function isOpening(shape: PatternShape, uu: number, vv: number, p: ShapeParams = {}, step = 0): boolean {
   const x = Math.abs(uu - 0.5);
+  // The exemption margins must cover at least ONE grid step beyond each
+  // opening's cut: with fixed margins, the first kept particle past a scoop
+  // can land outside the zone at coarse resolutions — and the mirror seam
+  // then sews the neckline shut (head-sized garment, no head hole).
   if (vv > 0.97) return true; // hem
-  if (shape === 'aline') return vv < 0.13 && x < (p.scoop ?? 0.1) + 0.02; // neckline
+  if (shape === 'aline') return vv < 0.13 + step && x < (p.scoop ?? 0.1) + 0.02 + step; // neckline
   if (shape === 'tshirt') {
-    if (vv < 0.1 && x < 0.12) return true; // neckline
+    if (vv < 0.1 + step && x < 0.12 + step) return true; // neckline
     if (x > 0.48) return true; // sleeve ends (the arm comes out here)
   }
   if (shape === 'skirt') return vv < 0.04; // waist
   if (shape === 'pants') return vv < 0.04; // waist (leg hems via the vv > 0.97 rule)
   if (shape === 'setin') {
-    if (vv < 0.1 && x < 0.11) return true; // neckline
+    if (vv < 0.1 + step && x < 0.11 + step) return true; // neckline
     if (x > (p.sleeve ?? 0.47) - 0.02) return true; // sleeve cuffs
     // Armhole edges (body side + the whole sleeve-cap curve) are sewn
     // island-to-island, not front-to-back — keep them out of the mirror seams.
@@ -719,7 +723,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
       for (let u = 0; u < n; u++) {
         if (!kept[v * n + u]) continue;
         if (!onBoundary(u, v)) continue;
-        if (isOpening(shape, u / (n - 1), v / (n - 1), shapeParams)) continue;
+        if (isOpening(shape, u / (n - 1), v / (n - 1), shapeParams, 1 / (n - 1))) continue;
         seamedLocal.add(v * n + u);
         seams.push({ i: index(0, u, v), j: index(1, u, v), rest: seamRest, kind: ConstraintKind.Seam });
         for (const [du, dv2] of [

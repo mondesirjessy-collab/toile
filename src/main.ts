@@ -140,9 +140,15 @@ async function main(): Promise<void> {
   let animOut: Float32Array | null = null;
   // The scanned CC0 avatar (Blender Studio realistic male via Wikimedia
   // Commons) — rendered as a real mesh, felt by the cloth as a baked SDF grid.
+  // Both avatars in parallel — serial awaits held the first paint hostage
+  // to ~4.7 MB of downloads nobody sees on the default (sculpted) scene.
+  const [scanHomme, scanFemme] = await Promise.all([
+    loadScanAvatar(`${import.meta.env.BASE_URL}avatars/homme-scan`),
+    loadScanAvatar(`${import.meta.env.BASE_URL}avatars/femme-scan`),
+  ]);
   const scans: Record<string, ScanAvatar | null> = {
-    'scan homme': await loadScanAvatar(`${import.meta.env.BASE_URL}avatars/homme-scan`),
-    'scan femme': await loadScanAvatar(`${import.meta.env.BASE_URL}avatars/femme-scan`),
+    'scan homme': scanHomme,
+    'scan femme': scanFemme,
   };
 
   // The tailor: measurements of the reference form the patterns were cut on,

@@ -8,6 +8,9 @@
 - ✅ **M** poseIdle : décision par le corps SOURCE (les formes morphées n'animent plus leurs jambes) (v59).
 - ✅ **M** (partiel) coutures trans-vêtement : particules cousues ±1 rangée exemptées de la répulsion (buffer seam_free, binding 5 de selfCollide) (v59).
 - ⚠️ **RÉGRESSION OUVERTE — robe froncée** : le bustier glisse aux hanches, EN PROD DEPUIS v56 (vérifié sur le build v56 public servi en cache — antérieur aux correctifs v59). Diagnostic mené : auto-collision OFF → toute la robe tombe au sol, donc l'élastique seul (même à 0,78) n'a JAMAIS tenu ce bustier — la « tenue » d'avant venait d'un équilibre d'encombrement des fronces que la porte same_garment de v56 a déplacé. Pistes : vrai ancrage de taille (ceinture = contrainte d'ancrage au corps, déjà au backlog), ou élargir seam_free à ±3-4 rangées, ou min_dist par vêtement. Ne PAS traiter comme un réglage : c'est le chantier « tenue des vêtements sans épaules ».
+- ✅ **M** encolures cousues fermées à certaines résolutions : marges d'exemption de isOpening désormais + un pas de grille (aline/tshirt/setin) ; test-vérité = balayage n=16…128, aucune couture miroir dans l'ellipse d'échancrure (v60).
+- ✅ **M** avatars scannés : les 4 fetchs (2 corps × mesh+sdf) passent en PARALLÈLE (Promise.all main.ts + ScanAvatar) — le premier rendu n'attend plus ~4,7 Mo en série (v60).
+- ✅ **M** import .toile.json : chaque scalaire validé fini + borné aux plages des curseurs (num() clamp), résolution sur liste blanche [32,64,128], substeps arrondi 5-40 — fini les NaN/Infinity/résolution-DoS (v60).
 - Le reste de la liste ci-dessous est à dérouler dans l'ordre.
 
 Audit adversarial mené par 33 agents (6 spécialistes : physique XPBD, GPU/WebGPU, patrons/topologie, corps/SDF, exports, produit — chaque trouvaille critique/majeure contre-vérifiée par un agent indépendant chargé de la réfuter).

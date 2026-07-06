@@ -21,8 +21,7 @@ export async function loadScanAvatar(base: string): Promise<ScanAvatar | null> {
       if (!r.ok) throw new Error(`${url}: ${r.status}`);
       return r.arrayBuffer();
     };
-    const meshBuf = await load(`${base}.mesh.bin`);
-    const sdfBuf = await load(`${base}.sdf.bin`);
+    const [meshBuf, sdfBuf] = await Promise.all([load(`${base}.mesh.bin`), load(`${base}.sdf.bin`)]);
 
     const mv = new DataView(meshBuf);
     const vertCount = mv.getUint32(0, true);

@@ -544,6 +544,41 @@ describe('combineClothMeshes (outfits)', () => {
   });
 });
 
+describe('necklines stay open at EVERY resolution', () => {
+  // Fixed exemption margins used to lose to the grid step at coarse n: the
+  // first kept particle past the scoop fell outside the opening zone and the
+  // mirror seam sewed the neckline shut. Scan the range the UI can reach
+  // (and then some) and assert no seam crosses any scoop.
+  const scoops: Array<{ shape: 'aline' | 'tshirt' | 'setin'; w: number; d: number }> = [
+    { shape: 'aline', w: 0.1, d: 0.12 },
+    { shape: 'tshirt', w: 0.11, d: 0.09 },
+    { shape: 'setin', w: 0.1, d: 0.09 },
+  ];
+  for (const n of [16, 24, 32, 48, 64, 96, 128]) {
+    it(`n=${n}: no mirror seam inside a scoop`, () => {
+      for (const { shape, w, d } of scoops) {
+        const mesh = generateSeamedPanels({ resolution: n, shape });
+        const ps = n * n;
+        const dv = new DataView(mesh.constraintData);
+        for (let k = 0; k < mesh.constraintCount; k++) {
+          if (dv.getUint32(k * 16 + 12, true) !== 3) continue; // seams only
+          const i = dv.getUint32(k * 16, true);
+          const j = dv.getUint32(k * 16 + 4, true);
+          if (Math.abs(j - i) !== ps) continue; // mirror front↔back seams only
+          const local = i % ps;
+          const uu = (local % n) / (n - 1);
+          const vv = Math.floor(local / n) / (n - 1);
+          const x = Math.abs(uu - 0.5);
+          // Inside the scoop's ellipse (with half a step of slack): sewing
+          // here closes the head hole.
+          const inScoop = vv < d && x < w * Math.sqrt(Math.max(0, 1 - (vv / d) ** 2)) + 0.5 / (n - 1);
+          expect(inScoop, `${shape} n=${n}: seam at u=${uu.toFixed(3)} v=${vv.toFixed(3)}`).toBe(false);
+        }
+      }
+    });
+  }
+});
+
 describe('set-in sleeve cap (embu)', () => {
   const n = 64;
   const mesh = generateSeamedPanels({ resolution: n, width: 1.3, height: 0.75, gap: 0.9, topY: 1.52, shape: 'setin' });

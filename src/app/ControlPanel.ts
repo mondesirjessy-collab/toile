@@ -507,30 +507,35 @@ export class ControlPanel {
     };
     if (d?.format !== 'toile-garment') return;
     const s = this.settings;
+    // A .toile.json is USER INPUT: every scalar is clamped to its slider's
+    // range and rejected unless finite — JSON happily parses 1e999 (Infinity)
+    // and a resolution of a million is a GPU allocation, not a garment.
+    const num = (v: unknown, min: number, max: number, fallback: number): number =>
+      typeof v === 'number' && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback;
     if (d.sim) {
-      s.resolution = d.sim.resolution ?? s.resolution;
-      s.substeps = d.sim.substeps ?? s.substeps;
-      s.selfCollision = d.sim.selfCollision ?? s.selfCollision;
-      s.wind = d.sim.wind ?? s.wind;
+      s.resolution = [32, 64, 128].includes(d.sim.resolution as number) ? d.sim.resolution! : s.resolution;
+      s.substeps = Math.round(num(d.sim.substeps, 5, 40, s.substeps));
+      s.selfCollision = typeof d.sim.selfCollision === 'boolean' ? d.sim.selfCollision : s.selfCollision;
+      s.wind = num(d.sim.wind, 0, 12, s.wind);
     }
     if (d.fabric) {
       if (d.fabric.preset && PRESETS[d.fabric.preset]) s.preset = d.fabric.preset;
       if (typeof d.fabric.motif === 'string' && ['uni', 'rayures', 'vichy', 'pois'].includes(d.fabric.motif)) s.motif = d.fabric.motif;
       if (typeof d.fabric.motifCm === 'number' && d.fabric.motifCm >= 1 && d.fabric.motifCm <= 30) s.motifCm = d.fabric.motifCm;
       if (Array.isArray(d.fabric.motifCouleur) && d.fabric.motifCouleur.length === 3) s.motifCouleur = d.fabric.motifCouleur;
-      s.stretchExp = d.fabric.stretchExp ?? s.stretchExp;
-      s.stretchWarpExp = d.fabric.stretchWarpExp ?? d.fabric.stretchExp ?? s.stretchWarpExp;
-      s.shearExp = d.fabric.shearExp ?? s.shearExp;
-      s.bendExp = d.fabric.bendExp ?? s.bendExp;
-      s.friction = d.fabric.friction ?? s.friction;
+      s.stretchExp = num(d.fabric.stretchExp, -8, -3, s.stretchExp);
+      s.stretchWarpExp = num(d.fabric.stretchWarpExp ?? d.fabric.stretchExp, -8, -3, s.stretchWarpExp);
+      s.shearExp = num(d.fabric.shearExp, -8, -3, s.shearExp);
+      s.bendExp = num(d.fabric.bendExp, -8, -3, s.bendExp);
+      s.friction = num(d.fabric.friction, 0, 1, s.friction);
     }
     if (d.pattern) {
-      s.dressLength = d.pattern.length ?? s.dressLength;
-      s.dressFlare = d.pattern.flare ?? s.dressFlare;
-      s.dressNeck = d.pattern.neck ?? s.dressNeck;
-      s.sleeveLen = d.pattern.sleeve ?? s.sleeveLen;
-      s.skirtLength = d.pattern.skirtLength ?? s.skirtLength;
-      s.skirtFlare = d.pattern.skirtFlare ?? s.skirtFlare;
+      s.dressLength = num(d.pattern.length, 0.9, 1.55, s.dressLength);
+      s.dressFlare = num(d.pattern.flare, 0.25, 0.5, s.dressFlare);
+      s.dressNeck = num(d.pattern.neck, 0.06, 0.16, s.dressNeck);
+      s.sleeveLen = num(d.pattern.sleeve, 0.33, 0.47, s.sleeveLen);
+      s.skirtLength = num(d.pattern.skirtLength, 0.4, 0.75, s.skirtLength);
+      s.skirtFlare = num(d.pattern.skirtFlare, 0.3, 0.46, s.skirtFlare);
     }
     const bodies = ['femme', 'homme', 'scan homme', 'scan femme'];
     if (d.body && bodies.includes(d.body)) s.body = d.body;
