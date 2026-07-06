@@ -5,7 +5,8 @@ import type { SceneMode } from './app/ControlPanel';
 import { ClothRenderer, DEFAULT_FABRIC } from './app/ClothRenderer';
 import { OrbitCamera } from './app/OrbitCamera';
 import { MouseForce } from './app/MouseForce';
-import { buildSceneMesh } from './app/SceneGeometry';
+import { buildSceneMesh, SCENE_VERTEX_FLOATS, type SceneMesh } from './app/SceneGeometry';
+import { computeNormals, downloadGlb, type GltfPiece } from './app/gltfExport';
 import { GpuProfiler } from './app/GpuProfiler';
 import { ControlPanel } from './app/ControlPanel';
 import { PatternView, type PatternHandleSpec } from './app/PatternView';
@@ -204,6 +205,7 @@ async function main(): Promise<void> {
   let lastGrade = { topScale: 1, dressScale: 1, skirtScale: 1, dyShoulder: 0, dyWaist: 0 };
 
   let currentMesh: ReturnType<typeof generateClothGrid> | null = null;
+  let currentScene: SceneMesh | null = null;
   let system!: ParticleSystem;
   let renderer!: ClothRenderer;
 
@@ -449,6 +451,7 @@ async function main(): Promise<void> {
       animOut = null;
     }
     currentMesh = mesh;
+    currentScene = sceneMesh;
     patternView.draw(mesh, patternHandles()); // refresh the 2D cutting-layout inset
   };
 
@@ -674,6 +677,104 @@ async function main(): Promise<void> {
       onFitMap: (v) => renderer.setFitMap(v),
       onPatternPdf: () => {
         if (currentMesh) exportPatternPdf(currentMesh, sceneMode);
+      },
+      onGltf: () => {
+        // Snapshot the CURRENT drape: garment positions read back from the
+        // GPU, mannequin in its current pose and podium angle — what you see
+        // is what Blender gets.
+        const mesh = currentMesh;
+        const scene = currentScene;
+        if (!mesh || !scene) return;
+        // Freeze pose and podium angle NOW: the readback resolves frames
+        // later, while the loop keeps advancing both — sampling them in the
+        // .then would export a mannequin twisted ahead of its garment.
+        const cSpin = Math.cos(podiumAngle);
+        const sSpin = Math.sin(podiumAngle);
+        const bodySnap = animOut ? new Float32Array(animOut) : null;
+        const sys = system;
+        // The pick cache refreshes every 300 ms through the same readback
+        // gate — a click landing in its busy window gets null. Retry a few
+        // frames instead of silently doing nothing.
+        const read = async (): Promise<Float32Array | null> => {
+          for (let attempt = 0; attempt < 10; attempt++) {
+            const p = await sys.readPositions();
+            if (p) return p;
+            await new Promise((r) => setTimeout(r, 50));
+          }
+          return null;
+        };
+        void read().then((raw) => {
+          if (!raw || raw.length < mesh.count * 4) return;
+          const pieces: GltfPiece[] = [];
+          // Our UI colors are sRGB values; glTF baseColorFactor is linear.
+          const lin = (c: [number, number, number]): [number, number, number] =>
+            [c[0] ** 2.2, c[1] ** 2.2, c[2] ** 2.2];
+
+          const clothPos = new Float32Array(mesh.count * 3);
+          const uvs = new Float32Array(mesh.count * 2);
+          const panelSize = mesh.resolution * mesh.resolution;
+          for (let i = 0; i < mesh.count; i++) {
+            clothPos[i * 3] = raw[i * 4]!;
+            clothPos[i * 3 + 1] = raw[i * 4 + 1]!;
+            clothPos[i * 3 + 2] = raw[i * 4 + 2]!;
+            const local = i % panelSize; // rest-pose UVs in meters, same map as the print shader
+            uvs[i * 2] = (local % mesh.resolution) * mesh.spacing;
+            uvs[i * 2 + 1] = Math.floor(local / mesh.resolution) * mesh.spacing;
+          }
+          // Both panels of a garment share the same index winding, so the
+          // back panel's faces (and thus its computed normals) point INTO
+          // the body. Flip odd panels' winding: every normal faces outward.
+          const clothIdx = new Uint32Array(mesh.triangleIndices);
+          for (let t = 0; t < clothIdx.length; t += 3) {
+            if (Math.floor(clothIdx[t]! / panelSize) % 2 === 1) {
+              const tmp = clothIdx[t + 1]!;
+              clothIdx[t + 1] = clothIdx[t + 2]!;
+              clothIdx[t + 2] = tmp;
+            }
+          }
+          pieces.push({
+            name: 'vetement',
+            positions: clothPos,
+            normals: computeNormals(clothPos, clothIdx),
+            uvs,
+            indices: clothIdx,
+            color: [...lin(fabricStyle.face), 1],
+            doubleSided: true,
+          });
+
+          // Mannequin = the scene's body block (indices [0, bodyIndexCount)),
+          // skinned vertices if the arms are animating, spun to the podium
+          // angle (stored body-space, drawn world-space — export world).
+          if (scene.bodyIndexCount > 0) {
+            let vcount = 0;
+            for (let i = 0; i < scene.bodyIndexCount; i++) {
+              if (scene.indices[i]! >= vcount) vcount = scene.indices[i]! + 1;
+            }
+            const src = bodySnap && bodySnap.length >= vcount * SCENE_VERTEX_FLOATS ? bodySnap : scene.vertices;
+            const bodyPos = new Float32Array(vcount * 3);
+            const bodyNrm = new Float32Array(vcount * 3);
+            const c = cSpin;
+            const s = sSpin;
+            for (let v = 0; v < vcount; v++) {
+              const o = v * SCENE_VERTEX_FLOATS;
+              bodyPos[v * 3] = c * src[o]! - s * src[o + 2]!;
+              bodyPos[v * 3 + 1] = src[o + 1]!;
+              bodyPos[v * 3 + 2] = s * src[o]! + c * src[o + 2]!;
+              bodyNrm[v * 3] = c * src[o + 3]! - s * src[o + 5]!;
+              bodyNrm[v * 3 + 1] = src[o + 4]!;
+              bodyNrm[v * 3 + 2] = s * src[o + 3]! + c * src[o + 5]!;
+            }
+            pieces.push({
+              name: 'mannequin',
+              positions: bodyPos,
+              normals: bodyNrm,
+              indices: scene.indices.slice(0, scene.bodyIndexCount),
+              color: [...lin([0.62, 0.53, 0.47]), 1],
+              roughness: 0.95,
+            });
+          }
+          downloadGlb(pieces, sceneMode);
+        });
       },
       onPins: (held) => {
         system.setCornerPins(held);

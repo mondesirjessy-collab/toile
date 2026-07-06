@@ -42,6 +42,7 @@ export interface PanelCallbacks {
   onShirtPattern(p: { sleeve: number }): void;
   onSkirtPattern(p: { length: number; flare: number }): void;
   onPatternPdf(): void;
+  onGltf(): void;
   onPins(held: boolean): void;
   onFitMap(on: boolean): void;
   onReset(): void;
@@ -350,6 +351,7 @@ export class ControlPanel {
     // Open garment format: save/load the whole garment as JSON.
     const file = this.gui.addFolder('fichier');
     file.add({ pdf: () => this.cb.onPatternPdf() }, 'pdf').name('imprimer le patron (PDF 1:1)');
+    file.add({ glb: () => this.cb.onGltf() }, 'glb').name('exporter en 3D (.glb)');
     file.add({ exporter: () => this.exportGarment() }, 'exporter').name('exporter le vêtement (.json)');
     file.add({ importer: () => this.importGarment() }, 'importer').name('importer un vêtement');
 
