@@ -164,7 +164,7 @@ function mirrored(prims: SdfPrim[]): SdfPrim[] {
 export const BODY_FORM: SdfPrim[] = mirrored([
   // — Head: skull dome + jaw wedge down to a chin. Featureless on purpose —
   //   a display-mannequin face reads elegant; a half-realistic one reads eerie.
-  rc([0, 1.655, 0.005], [0, 1.655, 0.005], 0.1, 0.1, [0.84, 1, 0.92]),
+  rc([0, 1.655, 0.005], [0, 1.655, 0.005], 0.1, 0.1, [0.74, 1, 0.92]),
   rc([0, 1.63, 0.015], [0, 1.575, 0.05], 0.062, 0.026, [0.8, 1, 1]), // jaw → chin
   rc([0, 1.6, -0.005], [0, 1.47, -0.005], 0.044, 0.052, [1, 1, 0.9]), // neck
   // — Shoulder girdle —
@@ -183,16 +183,64 @@ export const BODY_FORM: SdfPrim[] = mirrored([
   rc([-0.088, 0.478, 0.012], [-0.088, 0.478, 0.012], 0.051, 0.051), // knee cap
   rc([-0.088, 0.46, -0.004], [-0.089, 0.12, -0.012], 0.048, 0.03), // shank
   rc([-0.089, 0.375, -0.03], [-0.089, 0.375, -0.03], 0.047, 0.047, [0.95, 1, 1]), // calf belly
-  rc([-0.089, 0.05, -0.01], [-0.089, 0.038, 0.12], 0.032, 0.02, [1, 0.72, 1]), // foot → toes
+  rc([-0.089, 0.05, -0.015], [-0.089, 0.042, 0.14], 0.042, 0.026, [1, 0.55, 1]), // foot → toes (0.22 m)
 ]);
 
-/** Same figure with A-pose arms: deltoid → elbow → forearm → mitten hand. */
+/**
+ * Same figure with relaxed A-pose arms at TRUE anatomical length: elbow at
+ * ~0.63 of stature, wrist at ~0.49, fingertips reaching mid-thigh — half-length
+ * "dress form stubs" read fake the moment the body looks human.
+ */
 export const BODY_FORM_ARMS: SdfPrim[] = [
   ...BODY_FORM,
   ...mirrored([
-    rc([-0.2, 1.415, 0], [-0.3, 1.3, -0.004], 0.052, 0.042), // upper arm
-    rc([-0.302, 1.297, -0.004], [-0.302, 1.297, -0.004], 0.041, 0.041), // elbow
-    rc([-0.305, 1.295, 0], [-0.385, 1.2, 0.01], 0.04, 0.027), // forearm
-    rc([-0.39, 1.19, 0.012], [-0.418, 1.14, 0.024], 0.026, 0.014, [0.72, 1, 1]), // hand
+    rc([-0.2, 1.415, 0], [-0.27, 1.14, -0.004], 0.046, 0.037), // upper arm → elbow
+    rc([-0.272, 1.135, -0.004], [-0.272, 1.135, -0.004], 0.037, 0.037), // elbow
+    rc([-0.274, 1.13, 0], [-0.31, 0.9, 0.008], 0.036, 0.024), // forearm → wrist
+    rc([-0.312, 0.89, 0.01], [-0.32, 0.77, 0.028], 0.024, 0.012, [0.6, 1, 1]), // hand
+  ]),
+];
+
+/**
+ * The average male figure (~1.76 m, European means): broader shoulders
+ * (bideltoid ≈ 0.49), squarer and wider jaw, thicker neck, a flat pectoral
+ * plate instead of a bust, a straighter waist with the honest slight belly of
+ * an AVERAGE man, narrower pelvis with flatter glutes, heavier arms, bigger
+ * hands and feet. Key garment heights (shoulder ≈ 1.41, hips ≈ 0.95) match
+ * the female form so every scene's spawn positions still fit.
+ */
+export const BODY_MALE: SdfPrim[] = mirrored([
+  // — Head: larger skull, square jaw, wide chin —
+  rc([0, 1.66, 0.005], [0, 1.66, 0.005], 0.104, 0.104, [0.76, 1, 0.94]),
+  rc([0, 1.625, 0.01], [0, 1.57, 0.045], 0.072, 0.038, [0.78, 1, 1]), // jaw → chin
+  rc([0, 1.6, -0.005], [0, 1.46, -0.005], 0.056, 0.066, [1, 1, 0.92]), // thick neck
+  // — Shoulder girdle. Bideltoid ≈ 0.55 m: a bit over the true average (0.49)
+  //   on purpose — it must stay broader than the female form (0.53), whose
+  //   shoulders are themselves oversized to carry the dress-strap ring.
+  rc([0, 1.48, -0.012], [-0.17, 1.425, -0.005], 0.068, 0.055), // trapezius slope
+  rc([-0.15, 1.415, 0], [-0.215, 1.415, 0], 0.06, 0.06, [1, 1, 0.9]), // deltoid shelf
+  // — Torso: wide ribcage, pec plate, straight waist, slight belly —
+  //   The ribcage cap must top out BELOW the chin (1.53) or the neck vanishes.
+  rc([0, 1.39, 0.005], [0, 1.15, 0], 0.138, 0.158, [1, 1, 0.72]), // ribcage
+  rc([-0.07, 1.31, 0.08], [-0.07, 1.31, 0.08], 0.062, 0.062, [1, 0.9, 0.6]), // pectoral
+  rc([0, 1.15, 0.015], [0, 0.98, 0.028], 0.148, 0.138, [1, 1, 0.75]), // abdomen + belly
+  rc([0, 0.99, 0], [0, 0.9, -0.005], 0.152, 0.168, [1, 1, 0.76]), // pelvis
+  rc([-0.06, 0.92, -0.05], [-0.06, 0.95, -0.045], 0.075, 0.068, [1, 1, 0.92]), // flat glute
+  // — Legs, heavier —
+  rc([-0.095, 0.88, 0.004], [-0.097, 0.5, 0.006], 0.088, 0.061, [1, 1, 0.94]), // thigh
+  rc([-0.097, 0.478, 0.012], [-0.097, 0.478, 0.012], 0.054, 0.054), // knee cap
+  rc([-0.097, 0.46, -0.004], [-0.098, 0.12, -0.012], 0.052, 0.033), // shank
+  rc([-0.098, 0.375, -0.032], [-0.098, 0.375, -0.032], 0.05, 0.05, [0.95, 1, 1]), // calf belly
+  rc([-0.098, 0.052, -0.02], [-0.098, 0.045, 0.16], 0.048, 0.03, [1, 0.55, 1]), // foot → toes (0.26 m)
+]);
+
+/** Male figure with relaxed A-pose arms at anatomical length, heavier build. */
+export const BODY_MALE_ARMS: SdfPrim[] = [
+  ...BODY_MALE,
+  ...mirrored([
+    rc([-0.225, 1.42, 0], [-0.315, 1.135, -0.004], 0.055, 0.043), // upper arm → elbow
+    rc([-0.318, 1.13, -0.004], [-0.318, 1.13, -0.004], 0.043, 0.043), // elbow
+    rc([-0.32, 1.125, 0], [-0.36, 0.89, 0.008], 0.042, 0.028), // forearm → wrist
+    rc([-0.362, 0.88, 0.01], [-0.372, 0.75, 0.03], 0.028, 0.014, [0.6, 1, 1]), // hand
   ]),
 ];

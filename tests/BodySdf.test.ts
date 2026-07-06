@@ -3,6 +3,8 @@ import {
   BODY_BLEND,
   BODY_FORM,
   BODY_FORM_ARMS,
+  BODY_MALE,
+  BODY_MALE_ARMS,
   bodyBounds,
   bodyNormal,
   sdBody,
@@ -95,10 +97,54 @@ describe('body field', () => {
 
   it('bounds contain every primitive plus padding', () => {
     const { min, max } = bodyBounds(BODY_FORM_ARMS, 0.05);
-    expect(min[0]).toBeLessThan(-0.39);
-    expect(max[0]).toBeGreaterThan(0.39);
+    expect(min[0]).toBeLessThan(-0.35);
+    expect(max[0]).toBeGreaterThan(0.35);
     expect(min[1]).toBeLessThan(0.08);
     expect(max[1]).toBeGreaterThan(1.7);
+  });
+
+  it('arms reach anatomical length: fingertips end near mid-thigh', () => {
+    // The hand prim is the lowest arm part; its tip must sit around y ≈ 0.75.
+    const handF = BODY_FORM_ARMS[BODY_FORM_ARMS.length - 1]!;
+    expect(handF.b[1]).toBeLessThan(0.8);
+    const handM = BODY_MALE_ARMS[BODY_MALE_ARMS.length - 1]!;
+    expect(handM.b[1]).toBeLessThan(0.8);
+  });
+});
+
+describe('male figure', () => {
+  it('is broader at the shoulders and narrower at the hips than the female form', () => {
+    // Radial inside-depth at the deltoid line and at hip height.
+    const shoulderM = -sdBody(0.24, 1.415, 0, BODY_MALE, BODY_BLEND);
+    const shoulderF = -sdBody(0.24, 1.412, 0, BODY_FORM, BODY_BLEND);
+    expect(shoulderM).toBeGreaterThan(shoulderF);
+    // Hip span: male surface ends closer to the axis than the female's ±0.185+.
+    const hipM = sdBody(0.19, 0.92, 0, BODY_MALE, BODY_BLEND);
+    const hipF = sdBody(0.19, 0.92, 0, BODY_FORM, BODY_BLEND);
+    expect(hipM).toBeGreaterThan(hipF);
+  });
+
+  it('still holds a neckline: the chest dome at y≈1.45 is wider than the scoop ring', () => {
+    expect(sdBody(0.095, 1.45, 0, BODY_MALE, BODY_BLEND)).toBeLessThan(0);
+  });
+
+  it('keeps a waist-to-hip gradient (skirts must still catch)', () => {
+    const waistR = -sdBody(0, 1.06, 0, BODY_MALE, BODY_BLEND);
+    const hipR = -sdBody(0, 0.93, 0, BODY_MALE, BODY_BLEND);
+    expect(hipR).toBeGreaterThan(waistR);
+  });
+
+  it('mirrors cleanly: both figures are x-symmetric fields', () => {
+    for (const [x, y, z] of [
+      [0.2, 1.4, 0.02],
+      [0.1, 0.9, -0.06],
+      [0.4, 1.25, 0],
+    ] as const) {
+      expect(sdBody(x, y, z, BODY_MALE_ARMS, BODY_BLEND)).toBeCloseTo(
+        sdBody(-x, y, z, BODY_MALE_ARMS, BODY_BLEND),
+        6,
+      );
+    }
   });
 });
 

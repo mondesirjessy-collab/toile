@@ -25,6 +25,7 @@ export interface PanelCallbacks {
   onStyle(style: FabricStyle): void;
   onSelfCollision(enabled: boolean): void;
   onWind(strength: number): void;
+  onBody(kind: BodyKind): void;
   onPattern(p: PatternParams): void;
   onShirtPattern(p: { sleeve: number }): void;
   onSkirtPattern(p: { length: number; flare: number }): void;
@@ -32,8 +33,11 @@ export interface PanelCallbacks {
   onReset(): void;
 }
 
+export type BodyKind = 'femme' | 'homme';
+
 interface Settings {
   scene: SceneMode;
+  body: BodyKind;
   resolution: number;
   substeps: number;
   selfCollision: boolean;
@@ -102,6 +106,7 @@ export class ControlPanel {
     this.cb = cb;
     this.settings = {
       scene: 'drapé' as SceneMode,
+      body: 'femme' as BodyKind,
       resolution: initial.resolution,
       substeps: initial.substeps,
       selfCollision: true,
@@ -129,6 +134,12 @@ export class ControlPanel {
         .add(this.settings, 'scene', ['drapé', 'couture', 'robe', 't-shirt', 'chemise', 'ensemble'])
         .name('scène')
         .onChange((m: SceneMode) => this.cb.onScene(m)),
+    );
+    this.controllers.push(
+      this.gui
+        .add(this.settings, 'body', ['femme', 'homme'])
+        .name('mannequin')
+        .onChange((k: BodyKind) => this.cb.onBody(k)),
     );
     this.controllers.push(
       this.gui
@@ -248,6 +259,7 @@ export class ControlPanel {
       format: 'toile-garment',
       version: 1,
       scene: s.scene,
+      body: s.body,
       pattern: {
         length: s.dressLength,
         flare: s.dressFlare,
@@ -298,6 +310,7 @@ export class ControlPanel {
     const d = doc as {
       format?: string;
       scene?: SceneMode;
+      body?: BodyKind;
       pattern?: Partial<PatternParams> & { sleeve?: number; skirtLength?: number; skirtFlare?: number };
       fabric?: { preset?: string; stretchExp?: number; shearExp?: number; bendExp?: number; friction?: number };
       sim?: { resolution?: number; substeps?: number; selfCollision?: boolean; wind?: number };
@@ -325,10 +338,15 @@ export class ControlPanel {
       s.skirtLength = d.pattern.skirtLength ?? s.skirtLength;
       s.skirtFlare = d.pattern.skirtFlare ?? s.skirtFlare;
     }
+    if (d.body === 'femme' || d.body === 'homme') s.body = d.body;
     if (d.scene) s.scene = d.scene;
     for (const c of this.controllers) c.updateDisplay();
 
     // Apply through the live callbacks; the scene change rebuilds last.
+    // The pattern callbacks auto-jump to their own scene (and sync it back
+    // into settings), so remember the file's scene and restore it at the end.
+    const targetScene = s.scene;
+    this.cb.onBody(s.body);
     const preset = PRESETS[s.preset];
     if (preset) this.cb.onStyle(preset.style);
     this.cb.onCompliance({ stretch: 10 ** s.stretchExp, shear: 10 ** s.shearExp, bend: 10 ** s.bendExp });
@@ -339,7 +357,9 @@ export class ControlPanel {
     this.cb.onShirtPattern({ sleeve: s.sleeveLen });
     this.cb.onSkirtPattern({ length: s.skirtLength, flare: s.skirtFlare });
     this.cb.onResolution(s.resolution);
-    this.cb.onScene(s.scene); // the file's scene wins the final rebuild
+    s.scene = targetScene;
+    for (const c of this.controllers) c.updateDisplay();
+    this.cb.onScene(targetScene); // the file's scene wins the final rebuild
   }
 
   private applyPreset(name: string): void {

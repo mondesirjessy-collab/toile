@@ -10,7 +10,14 @@ import { GpuProfiler } from './app/GpuProfiler';
 import { ControlPanel } from './app/ControlPanel';
 import { PatternView, type PatternHandleSpec } from './app/PatternView';
 import { pickParticle } from './app/pick';
-import { BODY_BLEND, BODY_FORM, BODY_FORM_ARMS, type SdfPrim } from './engine/body/BodySdf';
+import {
+  BODY_BLEND,
+  BODY_FORM,
+  BODY_FORM_ARMS,
+  BODY_MALE,
+  BODY_MALE_ARMS,
+  type SdfPrim,
+} from './engine/body/BodySdf';
 
 const DEFAULT_RESOLUTION = 64;
 const DEFAULT_SUBSTEPS = 20;
@@ -108,6 +115,7 @@ async function main(): Promise<void> {
   let dressPattern = { length: 1.3, flare: 0.5, neck: 0.1 };
   let shirtPattern = { sleeve: 0.47 };
   let skirtPattern = { length: 0.6, flare: 0.46 };
+  let bodyKind: 'femme' | 'homme' = 'femme';
 
   let system!: ParticleSystem;
   let renderer!: ClothRenderer;
@@ -127,16 +135,19 @@ async function main(): Promise<void> {
     // a dress form (stacked-sphere bust), falling to the floor.
     const bodyPrims =
       sceneMode === 'robe'
-        ? BODY_FORM
+        ? (bodyKind === 'homme' ? BODY_MALE : BODY_FORM)
         : sceneMode === 't-shirt' || sceneMode === 'chemise' || sceneMode === 'ensemble'
-          ? BODY_FORM_ARMS
+          ? (bodyKind === 'homme' ? BODY_MALE_ARMS : BODY_FORM_ARMS)
           : null;
     const colliders = bodyPrims ? toColliders(bodyPrims) : SPHERE;
+    // Garment grading: the male figure is broader and longer-limbed, so tops
+    // are cut larger for him — exactly what a size chart does in real life.
+    const fit = bodyKind === 'homme' ? 1.13 : 1;
     const tee = () =>
       generateSeamedPanels({
         resolution,
-        width: 1.15, // sleeve tip to sleeve tip
-        height: 0.75,
+        width: 1.15 * fit, // sleeve tip to sleeve tip
+        height: 0.75 * (fit === 1 ? 1 : 1.05),
         gap: 0.9,
         topY: 1.52,
         shape: 'tshirt', // kimono tee: body + sleeves in one piece
@@ -147,7 +158,7 @@ async function main(): Promise<void> {
         : sceneMode === 'robe'
           ? generateSeamedPanels({
               resolution,
-              width: 0.95,
+              width: 0.95 * (fit === 1 ? 1 : 1.08),
               height: dressPattern.length,
               gap: 1.0,
               topY: 1.6,
@@ -161,8 +172,8 @@ async function main(): Promise<void> {
                 // cutting sheet, armholes stitched island-to-island.
                 generateSeamedPanels({
                   resolution,
-                  width: 1.3,
-                  height: 0.75,
+                  width: 1.3 * fit,
+                  height: 0.75 * (fit === 1 ? 1 : 1.05),
                   gap: 0.9,
                   topY: 1.52,
                   shape: 'setin',
@@ -175,7 +186,11 @@ async function main(): Promise<void> {
                   tee(),
                   generateSeamedPanels({
                     resolution,
-                    width: 0.85, // waist ring smaller than the hip bulge — cannot slip past
+                    // Waist ring smaller than the hip bulge — cannot slip past.
+                    // Honest physics: on the male body (waist ≈ hips) a skirt
+                    // has nothing to catch on and slides down at ANY size —
+                    // like in real life without a belt. Belts are future work.
+                    width: 0.85 * fit,
                     height: skirtPattern.length,
                     gap: 0.75,
                     topY: 1.14, // starts above the hips, drops onto them
@@ -279,6 +294,14 @@ async function main(): Promise<void> {
       onScene: (m) => {
         sceneMode = m;
         build();
+      },
+      onBody: (kind) => {
+        bodyKind = kind;
+        // Only rebuild where a body is actually on stage; drapé/couture keep
+        // their cloth instead of resetting for an invisible change.
+        if (sceneMode === 'robe' || sceneMode === 't-shirt' || sceneMode === 'chemise' || sceneMode === 'ensemble') {
+          build();
+        }
       },
       onResolution: (r) => {
         resolution = r;
