@@ -21,6 +21,8 @@ import {
 } from './engine/body/BodySdf';
 import { loadScanAvatar, type ScanAvatar } from './engine/body/ScanAvatar';
 import { gridSd, measureBody, type BodyMeasure } from './engine/body/measure';
+import { applySkin, buildSkin, poseIdle, type Skin } from './engine/body/pose';
+import { bodyRestVertices } from './app/SceneGeometry';
 
 const DEFAULT_RESOLUTION = 64;
 const DEFAULT_SUBSTEPS = 20;
@@ -121,6 +123,13 @@ async function main(): Promise<void> {
   let bodyKind: 'femme' | 'homme' | 'scan homme' | 'scan femme' = 'femme';
   let podium = 0; // tours/minute
   let podiumAngle = 0;
+  let animate = false;
+  let animT = 0;
+  // Articulated-animation state, prepared by build() for ARMS prim bodies.
+  let animPrims: SdfPrim[] | null = null;
+  let animSkin: Skin | null = null;
+  let animRest: Float32Array | null = null;
+  let animOut: Float32Array | null = null;
   // The scanned CC0 avatar (Blender Studio realistic male via Wikimedia
   // Commons) — rendered as a real mesh, felt by the cloth as a baked SDF grid.
   const scans: Record<string, ScanAvatar | null> = {
@@ -279,6 +288,20 @@ async function main(): Promise<void> {
     renderer.resize(canvas.width, canvas.height);
     posCache = null; // stale cache belongs to the previous system
     dragIndex = null;
+    // Arm animation applies to sculpted ARMS bodies only (the arms ARE the
+    // last 8 primitives; scans are rigid grids — podium only for them).
+    if (bodyPrims && bodyPrims !== BODY_FORM && bodyPrims !== BODY_MALE) {
+      animPrims = bodyPrims;
+      const rest = bodyRestVertices(bodyPrims, BODY_BLEND);
+      animSkin = buildSkin(bodyPrims, rest.positions);
+      animRest = rest.interleaved;
+      animOut = new Float32Array(rest.interleaved);
+    } else {
+      animPrims = null;
+      animSkin = null;
+      animRest = null;
+      animOut = null;
+    }
     patternView.draw(mesh, patternHandles()); // refresh the 2D cutting-layout inset
   };
 
@@ -379,6 +402,10 @@ async function main(): Promise<void> {
       },
       onPodium: (v) => {
         podium = v;
+      },
+      onAnimate: (v) => {
+        animate = v;
+        if (!v && animPrims) build(); // reset to the rest pose cleanly
       },
       onPattern: (p) => {
         dressPattern = p;
@@ -491,6 +518,15 @@ async function main(): Promise<void> {
     if (omega !== 0) podiumAngle = (podiumAngle + omega * dt) % (2 * Math.PI);
     system.setSpin(podiumAngle, omega);
     renderer.setSpin(podiumAngle);
+    // Articulated idle: pose the skeleton, feed the solver the live colliders,
+    // skin the visual mesh with the same transforms.
+    if (animate && animPrims && animSkin && animRest && animOut) {
+      animT += dt;
+      const posed = poseIdle(animPrims, animT);
+      system.setColliders(toColliders(posed.prims));
+      applySkin(animSkin, posed.xfs, animRest, animOut);
+      renderer.updateBodyVertices(animOut);
+    }
     system.step(dt, substeps, profiler.simSpan());
     renderer.render(camera.matrix(aspect), profiler.renderSpan());
     blit();

@@ -26,6 +26,7 @@ export interface PanelCallbacks {
   onSelfCollision(enabled: boolean): void;
   onWind(strength: number): void;
   onPodium(rpm: number): void;
+  onAnimate(on: boolean): void;
   onBody(kind: BodyKind): void;
   onPattern(p: PatternParams): void;
   onShirtPattern(p: { sleeve: number }): void;
@@ -44,6 +45,7 @@ interface Settings {
   selfCollision: boolean;
   wind: number;
   podium: number;
+  animate: boolean;
   dressLength: number;
   dressFlare: number;
   dressNeck: number;
@@ -114,6 +116,7 @@ export class ControlPanel {
       selfCollision: true,
       wind: 0,
       podium: 0,
+      animate: false,
       dressLength: 1.3,
       dressFlare: 0.5,
       dressNeck: 0.1,
@@ -170,6 +173,12 @@ export class ControlPanel {
         .add(this.settings, 'podium', 0, 6, 0.1)
         .name('podium (tr/min)')
         .onChange((v: number) => this.cb.onPodium(v)),
+    );
+    this.controllers.push(
+      this.gui
+        .add(this.settings, 'animate')
+        .name('animation bras')
+        .onChange((v: boolean) => this.cb.onAnimate(v)),
     );
 
     const fabric = this.gui.addFolder('tissu');

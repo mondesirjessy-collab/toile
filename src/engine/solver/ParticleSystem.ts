@@ -455,6 +455,29 @@ export class ParticleSystem {
   }
 
   /** Set the wind strength (m/s², 0 = calm) live. */
+  /** Live collider update (articulated pose). Same count as construction. */
+  setColliders(colliders: Collider[]): void {
+    const data = new Float32Array(Math.max(1, colliders.length) * 12);
+    const pad = this.colliderBlend + 0.05;
+    for (let i = 0; i < 3; i++) {
+      this.bodyMin[i] = Infinity;
+      this.bodyMax[i] = -Infinity;
+    }
+    colliders.forEach((c, k) => {
+      const b = c.b ?? c.a;
+      const r2 = c.radius2 ?? c.radius;
+      const s = c.scale ?? [1, 1, 1];
+      const half = Math.hypot(b[0] - c.a[0], b[1] - c.a[1], b[2] - c.a[2]) / 2;
+      const r = Math.max(c.radius, r2);
+      data.set([...c.a, c.radius, ...b, r2, ...s, half + r], k * 12);
+      for (let i = 0; i < 3; i++) {
+        this.bodyMin[i] = Math.min(this.bodyMin[i]!, Math.min(c.a[i]!, b[i]!) - r - pad);
+        this.bodyMax[i] = Math.max(this.bodyMax[i]!, Math.max(c.a[i]!, b[i]!) + r + pad);
+      }
+    });
+    this.device.queue.writeBuffer(this.colliderBuffer, 0, data);
+  }
+
   /** Podium turn: current angle + angular speed (drives surface friction). */
   setSpin(angle: number, rate: number): void {
     this.spinAngle = angle;

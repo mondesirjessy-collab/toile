@@ -351,6 +351,11 @@ export class ClothRenderer {
     this.device.queue.writeBuffer(this.spinBuffer, 0, new Float32Array([Math.cos(angle), Math.sin(angle), 0, 0]));
   }
 
+  /** Live update of the body's interleaved vertices (skinned animation). */
+  updateBodyVertices(data: Float32Array): void {
+    this.device.queue.writeBuffer(this.sceneVertexBuffer, 0, data as unknown as BufferSource);
+  }
+
   setFabric(style: FabricStyle): void {
     this.device.queue.writeBuffer(
       this.fabricBuffer,

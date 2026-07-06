@@ -49,6 +49,32 @@ function bodyMesh(prims: SdfPrim[], blend: number): ReturnType<typeof surfaceNet
   return mesh;
 }
 
+/**
+ * Rest-pose interleaved vertices (pos3, normal3, skin color3) of the sculpted
+ * body — the exact data buildSceneMesh() pushes first, exposed for skinning.
+ */
+export function bodyRestVertices(
+  prims: SdfPrim[],
+  blend: number,
+): { interleaved: Float32Array; positions: Float32Array } {
+  const mesh = bodyMesh(prims, blend);
+  const vcount = mesh.positions.length / 3;
+  const interleaved = new Float32Array(vcount * SCENE_VERTEX_FLOATS);
+  for (let v = 0; v < vcount; v++) {
+    const o = v * SCENE_VERTEX_FLOATS;
+    interleaved[o] = mesh.positions[v * 3]!;
+    interleaved[o + 1] = mesh.positions[v * 3 + 1]!;
+    interleaved[o + 2] = mesh.positions[v * 3 + 2]!;
+    interleaved[o + 3] = mesh.normals[v * 3]!;
+    interleaved[o + 4] = mesh.normals[v * 3 + 1]!;
+    interleaved[o + 5] = mesh.normals[v * 3 + 2]!;
+    interleaved[o + 6] = 0.62;
+    interleaved[o + 7] = 0.53;
+    interleaved[o + 8] = 0.47;
+  }
+  return { interleaved, positions: mesh.positions };
+}
+
 export function buildSceneMesh(p: SceneParams): SceneMesh {
   const vertices: number[] = [];
   const indices: number[] = [];
