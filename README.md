@@ -4,7 +4,7 @@
 XPBD solver running entirely on WebGPU compute shaders — zero CPU round-trips per frame.
 
 <p align="center">
-  <img src="docs/media/demo.gif" alt="A mannequin trying on a silk dress, a kimono tee, then a full tee-and-skirt outfit fluttering in the wind" width="720" />
+  <img src="docs/media/demo.gif" alt="A dress assembling itself around a realistic scanned avatar, then re-cut slimmer by dragging a handle in the 2D pattern view" width="720" />
 </p>
 
 <p align="center">
