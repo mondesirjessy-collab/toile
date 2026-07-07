@@ -16,7 +16,7 @@ struct SimParams {
   collider_count: u32,
   wind_strength: f32, // peak wind acceleration (m/s^2), 0 = calm
   wind_time: f32,     // running clock driving the gusts
-  _c2: f32,
+  cloth_spacing: f32, // rest grid spacing — sets the anti-tunnel CFL cap
   drag_target: vec3f,
   drag_stiffness: f32,
   compliance_stretch: f32,
@@ -76,7 +76,19 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     v += dir * (params.mouse_force * falloff) * params.dt;
   }
 
-  // Predict
+  // Predict, with an anti-tunnel CFL cap: a particle may not travel more than
+  // the self-collision band (0.6·spacing ≈ min_dist) in one substep. Beyond
+  // that it could leap through another cloth region between substeps, and the
+  // repulsion-only self-collision would then separate it on the WRONG side and
+  // lock the interpenetration. The cap only bites on violent motion (fast
+  // drags, tall initial drops); settling stays far below it, so drape is
+  // unchanged. Full CCD would remove the cap; this bounds the failure cheaply.
+  var disp = v * params.dt;
+  let maxDisp = 0.6 * params.cloth_spacing;
+  let dl = length(disp);
+  if (dl > maxDisp && dl > 1e-9) {
+    disp *= maxDisp / dl;
+  }
   prev_positions[i] = vec4f(x, 0.0);
-  positions[i] = vec4f(x + v * params.dt, 0.0);
+  positions[i] = vec4f(x + disp, 0.0);
 }
