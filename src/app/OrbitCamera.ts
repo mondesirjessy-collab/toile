@@ -17,14 +17,33 @@ export class OrbitCamera {
   private readonly fov = Math.PI / 4;
 
   attach(canvas: HTMLCanvasElement, shouldOrbit?: (e: PointerEvent) => boolean): void {
-    let mode: 'none' | 'orbit' | 'pan' = 'none';
-    let lastX = 0;
+    // Active CAMERA pointers, keyed by pointerId (cloth grabs stay untracked).
+    // Tracking each pointer is what lets a second finger start a pinch instead
+    // of corrupting the shared last-position and jerking the orbit around.
+    const pointers = new Map<number, { x: number; y: number }>();
+    let mode: 'none' | 'orbit' | 'pan' | 'pinch' = 'none';
+    let lastX = 0; // for a single-pointer drag, or the pinch midpoint
     let lastY = 0;
+    let pinchDist = 1;
 
     canvas.addEventListener('pointerdown', (e) => {
-      // Right button pans. Middle button, Shift+left and touch always orbit.
-      // A plain left press orbits only when `shouldOrbit` says it missed the
-      // cloth (otherwise the press becomes a fabric grab, handled by the app).
+      // A second camera pointer turns the gesture into a pinch (zoom + pan).
+      if (pointers.size === 1 && (mode === 'orbit' || mode === 'pan')) {
+        pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        canvas.setPointerCapture(e.pointerId);
+        mode = 'pinch';
+        const pts = [...pointers.values()];
+        const a = pts[0]!;
+        const b = pts[1]!;
+        pinchDist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+        lastX = (a.x + b.x) / 2;
+        lastY = (a.y + b.y) / 2;
+        return;
+      }
+      if (mode !== 'none') return; // already mid-gesture; ignore extra presses
+      // First camera pointer. Right button pans; middle / Shift+left / touch
+      // always orbit; a plain left press orbits only when `shouldOrbit` says it
+      // missed the cloth (otherwise it's a fabric grab, handled by the app).
       if (e.button === 2) {
         mode = 'pan';
       } else {
@@ -33,12 +52,33 @@ export class OrbitCamera {
         if (!orbit) return;
         mode = 'orbit';
       }
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      canvas.setPointerCapture(e.pointerId);
       lastX = e.clientX;
       lastY = e.clientY;
-      canvas.setPointerCapture(e.pointerId);
     });
+
     canvas.addEventListener('pointermove', (e) => {
-      if (mode === 'none') return;
+      const p = pointers.get(e.pointerId);
+      if (!p) return; // not a tracked camera pointer
+      p.x = e.clientX;
+      p.y = e.clientY;
+      if (mode === 'pinch') {
+        const pts = [...pointers.values()];
+        const a = pts[0]!;
+        const b = pts[1]!;
+        const dist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+        // Fingers apart → smaller ratio → closer camera (zoom in).
+        this.radius = Math.min(Math.max(this.radius * (pinchDist / dist), 2), 20);
+        pinchDist = dist;
+        const mx = (a.x + b.x) / 2;
+        const my = (a.y + b.y) / 2;
+        this.pan(mx - lastX, my - lastY); // two-finger pan by the midpoint
+        lastX = mx;
+        lastY = my;
+        return;
+      }
+      // Single-pointer drag: only the tracked pointer drives (others ignored).
       const dx = e.clientX - lastX;
       const dy = e.clientY - lastY;
       lastX = e.clientX;
@@ -47,12 +87,26 @@ export class OrbitCamera {
         this.azimuth -= dx * 0.005;
         this.elevation += dy * 0.005;
         this.elevation = Math.min(Math.max(this.elevation, 0.05), Math.PI / 2 - 0.05);
-      } else {
+      } else if (mode === 'pan') {
         this.pan(dx, dy);
       }
     });
-    canvas.addEventListener('pointerup', () => (mode = 'none'));
-    canvas.addEventListener('pointercancel', () => (mode = 'none'));
+
+    const end = (e: PointerEvent): void => {
+      if (!pointers.delete(e.pointerId)) return;
+      if (pointers.size === 1) {
+        // Pinch dropped to one finger: resume orbit, re-anchored so it doesn't jump.
+        const only = [...pointers.values()][0]!;
+        lastX = only.x;
+        lastY = only.y;
+        mode = 'orbit';
+      } else if (pointers.size === 0) {
+        mode = 'none';
+      }
+    };
+    canvas.addEventListener('pointerup', end);
+    canvas.addEventListener('pointercancel', end);
+
     canvas.addEventListener(
       'wheel',
       (e) => {
