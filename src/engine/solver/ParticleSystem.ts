@@ -156,7 +156,6 @@ export class ParticleSystem {
   private readonly headsBuffer: GPUBuffer;
   private readonly nextsBuffer: GPUBuffer;
   private readonly batchBuffers: GPUBuffer[];
-  private readonly readbackBuffer: GPUBuffer;
   private readonly uniformData: ArrayBuffer;
 
   private readonly integratePipeline: GPUComputePipeline;
@@ -343,10 +342,6 @@ export class ParticleSystem {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     this.writeSelfParams();
-    this.readbackBuffer = device.createBuffer({
-      size: this.count * 16,
-      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
-    });
 
     this.uniformData = new ArrayBuffer(UNIFORM_SIZE);
     this.uniformBuffer = device.createBuffer({
@@ -712,7 +707,6 @@ export class ParticleSystem {
     this.selfParamsBuffer.destroy();
     this.headsBuffer.destroy();
     this.nextsBuffer.destroy();
-    this.readbackBuffer.destroy();
     for (const b of this.batchBuffers) b.destroy();
   }
 

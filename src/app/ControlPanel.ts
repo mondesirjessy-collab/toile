@@ -473,17 +473,19 @@ export class ControlPanel {
       const f = input.files?.[0];
       if (!f) return;
       void f.text().then((txt) => {
+        let ok = false;
         try {
-          this.applyGarment(JSON.parse(txt));
+          ok = this.applyGarment(JSON.parse(txt));
         } catch {
-          /* fichier invalide — ignoré */
+          ok = false;
         }
+        this.toast(ok ? 'vêtement importé' : 'fichier .toile.json non reconnu', ok);
       });
     };
     input.click();
   }
 
-  private applyGarment(doc: unknown): void {
+  private applyGarment(doc: unknown): boolean {
     const d = doc as {
       format?: string;
       scene?: SceneMode;
@@ -510,7 +512,7 @@ export class ControlPanel {
       };
       sim?: { resolution?: number; substeps?: number; selfCollision?: boolean; wind?: number };
     };
-    if (d?.format !== 'toile-garment') return;
+    if (d?.format !== 'toile-garment') return false;
     const s = this.settings;
     // A .toile.json is USER INPUT: every scalar is clamped to its slider's
     // range and rejected unless finite — JSON happily parses 1e999 (Infinity)
@@ -545,7 +547,10 @@ export class ControlPanel {
     const bodies = ['femme', 'homme', 'scan homme', 'scan femme'];
     if (d.body && bodies.includes(d.body)) s.body = d.body;
     else if ((d.body as string) === 'scan') s.body = 'scan homme'; // format v36
-    if (d.scene) s.scene = d.scene;
+    // Whitelist the scene like the body — a bogus/renamed value would else
+    // fall through to a bare cloth grid while the pattern/fabric still import.
+    const scenes = ['drapé', 'couture', 'robe', 'robe froncée', 't-shirt', 'chemise', 'ensemble', 'tenue', 'pantalon'];
+    if (d.scene && scenes.includes(d.scene)) s.scene = d.scene;
     for (const c of this.controllers) c.updateDisplay();
 
     // Apply through the live callbacks; the scene change rebuilds last.
@@ -609,6 +614,30 @@ export class ControlPanel {
     s.scene = targetScene;
     for (const c of this.controllers) c.updateDisplay();
     this.cb.onScene(targetScene); // the file's scene wins the final rebuild
+    return true;
+  }
+
+  private toastTimer = 0;
+  /** Brief bottom-centre status message — the only feedback the import has. */
+  private toast(msg: string, ok = true): void {
+    let el = document.getElementById('toile-toast');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'toile-toast';
+      el.style.cssText =
+        'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:20;' +
+        'padding:8px 16px;border-radius:6px;font:13px ui-monospace,Menlo,monospace;' +
+        'color:#ede9df;background:rgba(10,11,14,0.9);border:1px solid;pointer-events:none;' +
+        'transition:opacity 0.3s;opacity:0';
+      document.body.appendChild(el);
+    }
+    el.textContent = msg;
+    el.style.borderColor = ok ? 'rgba(127,178,255,0.55)' : 'rgba(255,120,120,0.65)';
+    el.style.opacity = '1';
+    clearTimeout(this.toastTimer);
+    this.toastTimer = window.setTimeout(() => {
+      el!.style.opacity = '0';
+    }, 3200);
   }
 
   /** Current preset look + the print settings, merged. */

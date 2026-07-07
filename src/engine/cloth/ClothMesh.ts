@@ -776,9 +776,10 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
       }
     }
 
-    // PRESSING (fold angle 180°): true dihedral hinges ACROSS each seam, rest
-    // angle 0 — once sewn, the two panels are asked to continue FLAT through
-    // the seam line, like a pressed seam under the iron. The hinge edge runs
+    // PRESSING: true dihedral hinges ACROSS each seam at rest angle π — which
+    // IS flat in this acos-of-normals convention (0 = fully folded). Once sewn,
+    // the two panels are asked to continue FLAT through the seam line, like a
+    // pressed seam under the iron. The hinge edge runs
     // along the seam on panel 0; one wing is panel 0's inward neighbour, the
     // other is panel 1's — geometrically a hinge over the closed seam ridge.
     const inward = (u: number, v: number): number => {

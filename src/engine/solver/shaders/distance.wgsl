@@ -80,6 +80,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   if (c.kind == 1u) { compliance = params.compliance_shear; }
   else if (c.kind == 2u) { compliance = params.compliance_bend; }
   else if (c.kind == 4u) { compliance = params.compliance_stretch_warp; }
+  // kind 3 (Seam): a lockstitch is far stiffer than the cloth. Hold it near-
+  // rigid rather than letting it inherit the fabric's stretch — otherwise a
+  // knit preset makes every seam elastic and the panels gape at the stitch
+  // line. Stiffer than the stiffest fabric setting (min stretch slider = 1e-8).
+  else if (c.kind == 3u) { compliance = 1e-9; }
 
   let n = d / len;
   let cval = len - c.rest;
