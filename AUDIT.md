@@ -28,7 +28,8 @@
 - ℹ️ **Doublons marqués corrigés** dans la liste détaillée : M2/M12 (coutures trans-vêtement combattues → v59 seamFree), M4/M20 (cache morpho 3/6 → v58=C2), M5/M16 (surfaceNets remesh+fuite → v64), M8 (recompil pipelines → v69), M13 (strain horizontal → v58=C1).
 - ✅ **M9 (v72)** : plus de contrainte d'aplatissement contradictoire sur les paires de couture (on n'aplatit que l'anneau INTÉRIEUR, jamais les particules de bord) ; test d'invariant coutures∩aplatisseurs = ∅ sur les 5 formes ; drapé plus net.
 - ✅ **M22 (v72)** : bannière d'erreur (showFatal) sur exception de boucle (guardedFrame try/catch → arrêt propre) ET sur device.lost ; vérifié en injectant une erreur dans frame(). Note : le watchdog évalue performance.now() hors du guard, mais performance.now ne lève jamais en réel — non-problème.
-- Reste ouvert (majeures) : M3 (tunneling auto-collision à bas substeps, dur — sans CCD), M23 (tactile mobile : 2ᵉ doigt casse l'orbite + pas de zoom tactile). Puis le bloc mineur.
+- ✅ **M23 (v73)** : caméra multi-touch — carte pointerId→position, pincement = zoom (ratio distance → radius) + pan (delta du milieu), 1 doigt = orbite. Bureau souris inchangé. Vérifié : orbite souris OK + pincement synthétique zoome (setPointerCapture no-opé pour le test — il ne rejette que les pointeurs synthétiques).
+- Reste ouvert : **M3** (tunneling auto-collision à bas substeps — DUR, demande une détection de collision continue / CCD ; ou juste plancher les substeps ≥ ~12). Puis le **bloc mineur** (14 fiches non contre-vérifiées : readbackBuffer mort, α dihedral, min_dist par orientation de couture, validation connexité des silhouettes, etc.).
 - Le reste de la liste ci-dessous est à dérouler dans l'ordre.
 - **NB pour la session qui reprend** : les fiches détaillées ci-dessous décrivent l'état AU MOMENT DE L'AUDIT (v57) — les numéros de ligne ont dérivé depuis (v58-v63 ont modifié main.ts, ClothMesh.ts, measure.ts, selfCollide.wgsl, ControlPanel.ts, ClothRenderer.ts). Se repérer par NOMS de symboles/fonctions, pas par lignes. Les fiches marquées [✅ corrigé] sont soldées — détail dans cette section ÉTAT.
 
@@ -217,7 +218,7 @@ Two silent-freeze paths escape the error surfacing that showFatal/uncapturederro
 
 **Correctif proposé** : Wire device.lost to the overlay: have initGpu accept an onLost callback (or return the promise) and call showFatal('GPU perdu', ...) in main.ts. Wrap frame()'s body in try/catch and route to showFatal so the user always sees why the picture stopped.
 
-### M23. Mobile: second touch corrupts orbit (shared lastX/lastY, no pointerId), and touch has no zoom at all
+### M23. [✅ corrigé v73] Mobile: second touch corrupts orbit (shared lastX/lastY, no pointerId), and touch has no zoom at all
 **Fichier** : `/Users/jessymondesir/dev/toile/src/app/OrbitCamera.ts`
 
 attach() keeps a single mode/lastX/lastY for all pointers and never records which pointerId owns the gesture. On a touch screen (pointerType 'touch' always orbits), putting a second finger down re-enters the pointerdown handler: mode stays 'orbit' but lastX/lastY jump to finger 2; subsequent pointermove events arrive interleaved from both fingers, so dx/dy alternate between large opposite jumps — the camera spins violently. And the natural gesture the second finger was attempting (pinch-zoom) doesn't exist: zoom is wheel-only, so a phone/tablet visitor of the public demo can never zoom, and any accidental two-finger touch throws the view into chaos. pointerup from either finger also kills the other finger's gesture (mode='none' unconditionally).
