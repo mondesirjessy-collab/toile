@@ -54,9 +54,9 @@ TOILE (*French: the muslin test garment a pattern is validated on*) is the open 
 - Grab the fabric (raycast drag), orbit/pan/zoom camera, wind, a rotating **podium**, idle sleep
 - **Perf HUD** — fps plus GPU-timestamped sim vs render times
 
-| Silk dress | Kimono tee | Tee + skirt outfit |
+| A print woven into the folds | Fit map: slack (blue) → tight (red) | A dress layered over a tee |
 |---|---|---|
-| ![Silk dress on the mannequin](docs/media/dress.jpg) | ![Kimono tee on the mannequin](docs/media/tee.jpg) | ![Layered tee and skirt outfit](docs/media/outfit.jpg) |
+| ![Gingham dress draped on the mannequin, the check following every fold](docs/media/print.png) | ![Tension heatmap on the same dress: blue over the body, red along the side seams and straps](docs/media/fitmap.png) | ![A dress worn over a tee, the darker tee showing at the collar and sleeves](docs/media/outfit-layers.png) |
 
 ## Controls
 
