@@ -13,11 +13,14 @@ XPBD solver running entirely on WebGPU compute shaders — zero CPU round-trips 
 
 TOILE (*French: the muslin test garment a pattern is validated on*) is the open engine at the core of a browser-based 3D garment design tool: an open, web-first alternative to proprietary desktop suites. The engine and the garment file format are free software; anyone can build on them.
 
-> **Status: Phase 0 complete · Phase 1 (garment construction) essentially done.**
-> The engine sews: pattern pieces are cut along smooth curves, seamed along
-> their edges, and assembled onto a full mannequin — dress, kimono tee, or a
-> layered tee-and-skirt outfit — with true dihedral bending, cloth
-> self-collision and wind.
+> **Status: Phase 0 & 1 complete · Phase 2 (a real design tool) well underway.**
+> The engine sews and *dresses*: pattern pieces are cut along smooth curves,
+> seamed edge-to-edge (mirror seams, set-in armholes, gathered waists),
+> made-to-measure by a built-in tailor, and assembled onto sculpted or scanned
+> bodies — dresses, shirts with eased sleeve caps, skirts, trousers, gathered
+> bustier dresses, and layered outfits. It then leaves the browser: a garment
+> prints as a **1:1 sewing pattern** (seam allowance included) or exports as a
+> **glTF** 3D file.
 
 ## Why
 
@@ -27,15 +30,28 @@ TOILE (*French: the muslin test garment a pattern is validated on*) is the open 
 
 ## What works today
 
-- **XPBD cloth solver on GPU compute** — distance (structural + shear) and **true dihedral bending** (4-particle hinges), graph-colored for race-free parallel solving, 20 substeps per frame
-- **Garment construction** — pattern pieces cut along smooth curves (A-line dress, kimono tee, flared skirt), stitched along their full boundary except declared openings (neckline, hem, cuffs), assembled live onto the body
-- **Outfits** — several garments merged into one simulation; self-collision keeps the layers apart (tee over skirt)
+**The solver**
+- **XPBD cloth on GPU compute** — distance (structural + shear) and **true dihedral bending** (4-particle hinges), graph-colored for race-free parallel solving, 20 substeps per frame, all in a single compute pass
+- **Anisotropy** — separate warp / weft / bias stiffness and grain line, so denim, poplin, wool and silk each drape differently (7 fabric presets)
 - **Self-collision** — GPU spatial hash (atomic linked cells); folds slide instead of interpenetrating
-- **Capsule colliders** — the mannequin (head, shoulders, torso, hips, legs, optional arms) is a handful of capsules
-- **Wind** — gusty directional force on a live slider
-- **Grab the fabric** — raycast picking with a temporary drag constraint; orbit/pan/zoom camera
-- **Fabric presets** — Jersey / Denim / Silk: per-fabric stretch, shear, bending compliance, friction *and* look (face/back colors, sheen)
-- **Live tuning** — five scenes (drape / sewing / dress / tee / outfit), mesh resolution 32/64/128, substeps, log-scale compliance sliders, friction, self-collision toggle
+- **Garment layers** — stacked pieces settle in dressing order (a dress over a tee), gripping *through* the layer beneath by Coulomb friction
+
+**Pattern & fit**
+- **Made-to-measure tailor** — the engine measures the body (chest, waist, hips, shoulders, thigh) and grades every garment from ratios; six morphology sliders in **real centimetres**
+- **Bodies** — sculpted female/male mannequins (smooth-blended round-cone SDFs) *and* real scanned CC0 avatars (baked SDF grids)
+- **Garments** — A-line dress, kimono tee, **set-in-sleeve shirt with an eased sleeve cap** (the tailor's *embu*), flared skirt, trousers, gathered bustier dress, and layered outfits — cut along smooth curves, seamed edge-to-edge, waistbands **anchored to the body** so strapless tops and beltless skirts hold
+- **2D cutting-layout inset** — the flat pattern pieces, laid side by side, with **draggable handles** that re-cut and re-sew the garment live
+- **Prints** — procedural stripes / gingham / dots, scaled in true cm and woven into the weave so they follow every fold
+- **Fit map** — a per-axis tension heatmap (blue slack → red tight)
+- **Free pins** — double-click to tack any point to the body
+
+**From browser to sewing table**
+- **1:1 PDF pattern** — tiled over A4 with assembly labels, a 100 mm calibration square, grain line, and a **1 cm seam-allowance line** (cut here, sew on the solid line)
+- **glTF / .glb 3D export** — the draped garment + mannequin, ready for Blender or any 3D viewer
+- **Open `.toile.json` format** — save and reload the whole garment (pattern, fabric, measurements)
+
+**Interaction**
+- Grab the fabric (raycast drag), orbit/pan/zoom camera, wind, a rotating **podium**, idle sleep
 - **Perf HUD** — fps plus GPU-timestamped sim vs render times
 
 | Silk dress | Kimono tee | Tee + skirt outfit |
@@ -50,8 +66,12 @@ TOILE (*French: the muslin test garment a pattern is validated on*) is the open 
 | Left-drag on empty space | Orbit the camera |
 | Right-drag | Pan |
 | Wheel | Zoom |
+| Drag a **handle** in the 2D pattern inset | Re-cut the garment (length, silhouette, neckline…) |
+| Double-click the fabric | Pin/unpin that point to the body |
 | `R` | Drop the cloth again |
 | `P` | Pin/release the two corners |
+
+The **fichier** panel prints the 1:1 PDF pattern, exports the draped garment as `.glb`, and saves/loads `.toile.json`.
 
 ## Phase 0 success criteria
 
@@ -96,8 +116,9 @@ The engine never imports a rendering framework. This boundary is what makes it p
 ## Roadmap
 
 - **Phase 0** — feasibility: stable interactive drape at 60 fps ✅
-- **Phase 1** — garment construction: pattern seaming ✅, shaped pieces ✅, self-collision ✅, mannequin ✅, dihedral bending ✅, outfits ✅ — next: set-in sleeves (curved armhole seams)
-- **Phase 2** — SMPL-X avatars, pattern editor, open community fabric library
+- **Phase 1** — garment construction: pattern seaming ✅, shaped pieces ✅, self-collision ✅, mannequin ✅, dihedral bending ✅, outfits ✅
+- **Phase 2** — a real design tool: made-to-measure tailor ✅, morphology in cm ✅, scanned avatars ✅, set-in sleeves with ease ✅, fabric anisotropy ✅, prints ✅, fit map & pins ✅, garment layers ✅, waistband anchors ✅, 1:1 PDF pattern with seam allowance ✅, glTF export ✅ — next: image-based fabric prints, richer avatars, a community fabric library
+- **Phase 3** — collaboration and an open fabric/pattern exchange
 
 ## License
 
