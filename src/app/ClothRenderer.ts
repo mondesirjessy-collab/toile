@@ -76,12 +76,14 @@ struct Camera { viewProj: mat4x4f };
 // plus the PRINT: motif.x = type (0 uni, 1 rayures, 2 vichy, 3 pois),
 // motif.y = repeat size in METERS (the pattern is scaled in real cm),
 // motif.z = grid resolution n, motif.w = particle spacing (m).
+// options: x = fit map on/off, y = vertical rest spacing, z = garment count
+// (an outfit tints its UNDER piece darker so the layers read apart).
 struct Fabric {
   face: vec4f,
   back: vec4f,
   motif: vec4f,
   motifColor: vec4f,
-  options: vec4f, // x = fit map on/off
+  options: vec4f,
 };
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(0) @binding(1) var<uniform> fabric: Fabric;
@@ -91,6 +93,7 @@ struct VSOut {
   @location(0) normal: vec3f,
   @location(1) uv: vec2f, // rest-cloth coordinates in METERS
   @location(2) strain: f32,
+  @location(3) @interpolate(flat) garment: u32,
 };
 
 @vertex
@@ -102,9 +105,13 @@ fn vs(@builtin(vertex_index) vid: u32, @location(0) pos: vec4f, @location(1) nrm
   // each axis scaled by ITS rest length (options.y = vertical spacing) so a
   // gingham stays square on a non-square pattern grid.
   let n = u32(fabric.motif.z);
-  let local = vid % (n * n);
+  let panelSize = n * n;
+  let local = vid % panelSize;
   out.uv = vec2f(f32(local % n) * fabric.motif.w, f32(local / n) * fabric.options.y);
   out.strain = nrm.w;
+  // Panels pair front/back into garments; a triangle never spans a panel, so
+  // this flat index tells the outfit's under piece from its outer one.
+  out.garment = (vid / panelSize) / 2u;
   return out;
 }
 
@@ -145,6 +152,10 @@ fn fs(in: VSOut, @builtin(front_facing) front: bool) -> @location(0) vec4f {
   let wrap = clamp(dot(n, L) * 0.5 + 0.5, 0.0, 1.0);
   var base = select(fabric.back.rgb, fabric.face.rgb, front);
   if (front) { base = mix(base, fabric.motifColor.rgb, motif_mask(in.uv) * fabric.motifColor.a); }
+  // Outfit (2+ garments): the under piece (garment 0 — the tee, the bodice)
+  // reads in a deeper shade so its collar and sleeves peek apart from the
+  // outer garment instead of melting into one beige mass.
+  if (fabric.options.z > 1.5 && in.garment == 0u) { base *= 0.68; }
   if (fabric.options.x > 0.5) { base = heatmap(max(in.strain, 0.0)); }
   let ambient = fabric.back.a;
   let shade = ambient + (1.0 - ambient) * pow(wrap, fabric.face.a);
@@ -456,7 +467,9 @@ export class ClothRenderer {
         mc[3],
         this.fitMap ? 1 : 0,
         this.clothSpacingV, // options.y: vertical rest length for the print UVs
-        0,
+        // options.z: garment count — count = 2·n² per seamed garment, so a
+        // combined outfit reads 2 and triggers the under-piece tint.
+        Math.max(1, Math.round(this.count / (2 * this.clothResolution * this.clothResolution))),
         0,
       ]),
     );
