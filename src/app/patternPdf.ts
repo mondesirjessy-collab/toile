@@ -112,14 +112,50 @@ export function frontOutline(mesh: ClothMeshData): { segs: Segment[]; seam: Segm
   return { segs, seam, w: Math.max(0, cursorX - GUTTER) * 1000, h: h * 1000, pieces };
 }
 
+/**
+ * Liang–Barsky: clip segment (x1,y1)-(x2,y2) to the rectangle, or null if it
+ * lies entirely outside. Keeps a printed cut line from overstriking the page
+ * label, the frame, or spilling past the tile it belongs to.
+ */
+function clipToRect(
+  x1: number, y1: number, x2: number, y2: number,
+  xmin: number, ymin: number, xmax: number, ymax: number,
+): [number, number, number, number] | null {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const p = [-dx, dx, -dy, dy];
+  const q = [x1 - xmin, xmax - x1, y1 - ymin, ymax - y1];
+  let t0 = 0;
+  let t1 = 1;
+  for (let i = 0; i < 4; i++) {
+    if (p[i] === 0) {
+      if (q[i]! < 0) return null; // parallel and outside
+    } else {
+      const t = q[i]! / p[i]!;
+      if (p[i]! < 0) {
+        if (t > t1) return null;
+        if (t > t0) t0 = t;
+      } else {
+        if (t < t0) return null;
+        if (t < t1) t1 = t;
+      }
+    }
+  }
+  return [x1 + t0 * dx, y1 + t0 * dy, x1 + t1 * dx, y1 + t1 * dy];
+}
+
 export function exportPatternPdf(mesh: ClothMeshData, garmentName: string): void {
   const { segs, seam, w, h, pieces } = frontOutline(mesh);
   if (!segs.length || !Number.isFinite(w + h)) return;
 
   const cellW = PAGE_W - 2 * MARGIN - OVERLAP;
   const cellH = PAGE_H - 2 * MARGIN - OVERLAP;
-  const cols = Math.max(1, Math.ceil(w / cellW));
-  const rows = Math.max(1, Math.ceil(h / cellH));
+  // Each page's frame is cellW + OVERLAP wide but only ADVANCES by cellW, so k
+  // pages cover k·cellW + OVERLAP. Sizing the grid by ceil(w / cellW) prints a
+  // whole extra near-empty column whenever w spills past a multiple by ≤ OVERLAP
+  // — content already inside the previous page's glue band.
+  const cols = Math.max(1, Math.ceil((w - OVERLAP) / cellW));
+  const rows = Math.max(1, Math.ceil((h - OVERLAP) / cellH));
 
   const pdf = new jsPDF({ unit: 'mm', format: 'a4' });
   for (let r = 0; r < rows; r++) {
@@ -140,17 +176,15 @@ export function exportPatternPdf(mesh: ClothMeshData, garmentName: string): void
       pdf.setTextColor(140);
       pdf.text(`${garmentName} — page ${String.fromCharCode(65 + r)}${c + 1} / ${String.fromCharCode(65 + rows - 1)}${cols}`, MARGIN, MARGIN - 3);
 
-      // Segment drawer, clipped to this page (with a little slack).
+      // Segment drawer, clipped to this page's printable frame so no cut line
+      // spills over the label or past the tile it belongs to.
       const draw = (list: Segment[]): void => {
         for (const s of list) {
-          const x1 = s.x1 - ox + MARGIN;
-          const y1 = s.y1 - oy + MARGIN;
-          const x2 = s.x2 - ox + MARGIN;
-          const y2 = s.y2 - oy + MARGIN;
-          const pad = 5;
-          if (Math.max(x1, x2) < MARGIN - pad || Math.min(x1, x2) > PAGE_W - MARGIN + pad) continue;
-          if (Math.max(y1, y2) < MARGIN - pad || Math.min(y1, y2) > PAGE_H - MARGIN + pad) continue;
-          pdf.line(x1, y1, x2, y2);
+          const clipped = clipToRect(
+            s.x1 - ox + MARGIN, s.y1 - oy + MARGIN, s.x2 - ox + MARGIN, s.y2 - oy + MARGIN,
+            MARGIN, MARGIN, PAGE_W - MARGIN, PAGE_H - MARGIN,
+          );
+          if (clipped) pdf.line(clipped[0], clipped[1], clipped[2], clipped[3]);
         }
       };
 
