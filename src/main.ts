@@ -384,17 +384,17 @@ async function main(): Promise<void> {
                   tee(),
                   generateSeamedPanels({
                     resolution,
-                    // Waist ring smaller than the hip bulge — cannot slip past.
-                    // Honest physics: on the male body (waist ≈ hips) a skirt
-                    // has nothing to catch on and slides down at ANY size —
-                    // like in real life without a belt. Belts are future work.
+                    // Waist ring smaller than the hip bulge holds on the female
+                    // form; on the male (waist ≈ hips) it would slide with
+                    // nothing to catch on — the anchor is the belt that holds it.
                     width: 0.85 * skirtScale,
                     height: skirtPattern.length,
                     gap: 0.75,
-                    topY: 1.14 + (m.waist.y - REF.waist.y), // starts above the hips, drops onto them
+                    topY: 1.14 + (m.waist.y - REF.waist.y), // sits at the waist
                     shape: 'skirt',
                     shapeParams: { profile: skirtPattern.profile },
                     elasticTop: 0.75, // taille élastiquée : fronce et agrippe le corps
+                    anchorTop: true, // ceinture : la taille est RETENUE (sinon glisse, surtout sur l'homme)
                   }),
                   [],
                   1, // la jupe se porte SUR le t-shirt (couche 1)
@@ -451,6 +451,7 @@ async function main(): Promise<void> {
                     topY: m.waist.y + 0.08, // starts above the waist, drops onto it
                     shape: 'pants',
                     elasticTop: 0.8, // ceinture élastiquée
+                    anchorTop: true, // ceinture : retenue à la taille (sinon glisse sur l'homme)
                   })
                 : generateClothGrid({ resolution, size: CLOTH_SIZE, topY: CLOTH_TOP_Y, pin: 'none' });
     system = new ParticleSystem(device, mesh, {
