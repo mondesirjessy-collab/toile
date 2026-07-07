@@ -635,6 +635,32 @@ describe('setin side seam has no underarm hole', () => {
   }
 });
 
+describe('no mirror pair carries contradictory seam + flattening constraints', () => {
+  // A seamed boundary pair (front↔back, rest 0.15·spacing) must NOT also get
+  // the cross-seam flattening constraint (rest 2·spacing) — the two fight.
+  for (const shape of ['aline', 'skirt', 'setin', 'tshirt', 'pants'] as const) {
+    it(`${shape}: seam and flattening pairs are disjoint`, () => {
+      const mesh = generateSeamedPanels({ resolution: 48, shape });
+      const ps = mesh.resolution * mesh.resolution;
+      const dv = new DataView(mesh.constraintData);
+      const seam = new Set<number>();
+      const flat = new Set<number>();
+      for (let k = 0; k < mesh.constraintCount; k++) {
+        const i = dv.getUint32(k * 16, true);
+        const j = dv.getUint32(k * 16 + 4, true);
+        const kind = dv.getUint32(k * 16 + 12, true);
+        if (Math.abs(j - i) !== ps) continue; // front↔back pairs only
+        const key = Math.min(i, j);
+        if (kind === 3) seam.add(key); // Seam
+        else if (kind === 2) flat.add(key); // Bending (flattener)
+      }
+      for (const key of seam) {
+        expect(flat.has(key), `pair ${key} has both a seam and a flattener`).toBe(false);
+      }
+    });
+  }
+});
+
 describe('set-in sleeve cap (embu)', () => {
   const n = 64;
   const mesh = generateSeamedPanels({ resolution: n, width: 1.3, height: 0.75, gap: 0.9, topY: 1.52, shape: 'setin' });

@@ -760,7 +760,11 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
           const v2 = v + dv2;
           if (u2 < 0 || u2 >= n || v2 < 0 || v2 >= n) continue;
           const local = v2 * n + u2;
-          if (!kept[local] || flattened.has(local)) continue;
+          // Only flatten the ring INSIDE the seam. A boundary neighbour is
+          // itself seamed (front↔back at 0.15·spacing); adding the flat
+          // continuation (2·spacing) to that same pair pits two contradictory
+          // distance constraints against each other every solve.
+          if (!kept[local] || flattened.has(local) || onBoundary(u2, v2)) continue;
           flattened.add(local);
           bending.push({
             i: index(0, u2, v2),

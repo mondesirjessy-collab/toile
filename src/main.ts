@@ -94,6 +94,14 @@ async function main(): Promise<void> {
   }
 
   const { device } = gpu;
+  // A lost GPU (driver reset, laptop GPU switch, TDR) makes every later
+  // command fail. Surface it instead of freezing on a dead device — the app
+  // never destroys the device itself, so any loss is unexpected.
+  void device.lost.then((info) => {
+    if (info.reason !== 'destroyed') {
+      showFatal('Carte graphique perdue', `Le contexte WebGPU a été perdu (${info.reason}). Rechargez la page.\n${info.message}`);
+    }
+  });
   // Surface WebGPU validation/pipeline errors (e.g. a shader a browser rejects)
   // on screen — otherwise they only blank the canvas silently.
   device.addEventListener('uncapturederror', (e) => {
@@ -1031,11 +1039,24 @@ async function main(): Promise<void> {
   // 50 ms watchdog keeps the sim and interaction alive at ~20 fps.
   let rafId = 0;
   let timeoutId = 0;
+  // A throwing frame (a WebGPU validation error, a lost device mid-render)
+  // would otherwise break the rAF chain while the 50 ms watchdog keeps
+  // re-firing the same broken frame — a silent freeze with a console flood.
+  // Catch it once, stop the loop, and show the banner.
+  const guardedFrame = (now: number): void => {
+    try {
+      frame(now);
+    } catch (e) {
+      cancelAnimationFrame(rafId);
+      clearTimeout(timeoutId);
+      showFatal('Erreur de rendu', (e as Error)?.stack ?? String(e));
+    }
+  };
   const schedule = (): void => {
     cancelAnimationFrame(rafId);
     clearTimeout(timeoutId);
-    rafId = requestAnimationFrame(frame);
-    timeoutId = window.setTimeout(() => frame(performance.now()), 50);
+    rafId = requestAnimationFrame(guardedFrame);
+    timeoutId = window.setTimeout(() => guardedFrame(performance.now()), 50);
   };
 
   // Draw the initial state once so the scene shows immediately, before the loop.
