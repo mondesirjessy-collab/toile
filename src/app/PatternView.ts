@@ -71,6 +71,10 @@ export class PatternView {
   private handles: PatternHandleSpec[] = [];
   // Rest-layout → canvas transform, captured when the static layer renders.
   private tf: { minA: number; minB: number; scale: number; ox: number; oy: number; H: number } | null = null;
+  // Side-by-side layout of a combined outfit's pieces: a per-garment x-offset
+  // (layout meters) so overlapping fronts separate, plus each garment's y-range
+  // for matching a handle back to its piece. Null for a single garment.
+  private gLayout: { offsetX: number[]; gY: [number, number][] } | null = null;
 
   private hover: number | null = null;
   private drag: DragState | null = null;
@@ -116,9 +120,28 @@ export class PatternView {
     return [t.minA + (px - t.ox) / t.scale, t.minB + (t.H - py - t.oy) / t.scale];
   }
 
+  /** Layout-space x-offset for the garment this handle belongs to (0 alone). */
+  private handleOffset(h: PatternHandleSpec): number {
+    const gl = this.gLayout;
+    if (!gl) return 0;
+    // Match the handle to its garment by the y-range its grid describes.
+    const top = h.grid.topY;
+    const bot = h.grid.topY - h.grid.height;
+    let best = 0;
+    let bestErr = Infinity;
+    for (let g = 0; g < gl.gY.length; g++) {
+      const err = Math.abs(gl.gY[g]![1] - top) + Math.abs(gl.gY[g]![0] - bot);
+      if (err < bestErr) {
+        bestErr = err;
+        best = g;
+      }
+    }
+    return gl.offsetX[best] ?? 0;
+  }
+
   private handleScreenPos(h: PatternHandleSpec, value: number): [number, number] {
     const [x, y] = handleLayoutPos(h, value);
-    return this.layoutToScreen(x, y);
+    return this.layoutToScreen(x + this.handleOffset(h), y);
   }
 
   private pickHandle(px: number, py: number): number | null {
@@ -155,7 +178,8 @@ export class PatternView {
       const py = e.clientY - r.top - this.drag.grabDY;
       const h = this.handles[this.drag.index]!;
       const [lx, ly] = this.screenToLayout(px, py);
-      this.drag.value = handleValueFromLayout(h, lx, ly);
+      // Undo the garment's side-by-side offset before reading the value.
+      this.drag.value = handleValueFromLayout(h, lx - this.handleOffset(h), ly);
       e.preventDefault();
       e.stopPropagation();
       this.render();
@@ -220,42 +244,73 @@ export class PatternView {
     const panelSize = mesh.resolution * mesh.resolution;
     const kept = (i: number): boolean => mesh.invMasses[i]! > 0;
     const frontPanel = (i: number): boolean => Math.floor(i / panelSize) % 2 === 0;
+    // Panels pair front/back into garments: front panels 0, 2, 4… → garments 0, 1, 2…
+    const garmentOf = (i: number): number => Math.floor(Math.floor(i / panelSize) / 2);
 
     // The rest pose is flat: pick the two axes that actually vary.
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    let minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
     for (let i = 0; i < mesh.count; i++) {
       if (!kept(i) || !frontPanel(i)) continue;
-      const x = mesh.positions[i * 4]!;
       const y = mesh.positions[i * 4 + 1]!;
       const z = mesh.positions[i * 4 + 2]!;
-      minX = Math.min(minX, x); maxX = Math.max(maxX, x);
       minY = Math.min(minY, y); maxY = Math.max(maxY, y);
       minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
     }
-    const sx = maxX - minX;
-    const sy = maxY - minY;
-    const sz = maxZ - minZ;
-    if (!Number.isFinite(sx + sy + sz)) return;
+    if (!Number.isFinite(maxY - minY)) return;
     // Horizontal sheet → (x,z); vertical panels → (x,y).
-    const useXZ = sz > sy;
-    const axisMin: [number, number] = useXZ ? [minX, minZ] : [minX, minY];
-    const axisSpan: [number, number] = useXZ ? [sx || 1, sz || 1] : [sx || 1, sy || 1];
-    const p2d = (i: number): [number, number] => {
-      const a = mesh.positions[i * 4]!;
-      const b = useXZ ? mesh.positions[i * 4 + 2]! : mesh.positions[i * 4 + 1]!;
-      return [a, b];
-    };
+    const useXZ = maxZ - minZ > maxY - minY;
+
+    // Side-by-side: lay each garment's front piece out left to right in layout
+    // space (like the printed pattern), so a combined outfit's overlapping
+    // fronts separate instead of stacking. Vertical (x,y) layouts only.
+    const G = Math.max(1, Math.floor(mesh.count / panelSize / 2));
+    const offsetX = new Array<number>(G).fill(0);
+    const gY: [number, number][] = [];
+    const sideBySide = !useXZ && G > 1;
+    if (sideBySide) {
+      const GUTTER = 0.05; // 5 cm between pieces in layout space
+      let cursor = 0;
+      for (let g = 0; g < G; g++) {
+        let aMin = Infinity, aMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+        for (let i = 0; i < mesh.count; i++) {
+          if (!kept(i) || !frontPanel(i) || garmentOf(i) !== g) continue;
+          const x = mesh.positions[i * 4]!;
+          const y = mesh.positions[i * 4 + 1]!;
+          aMin = Math.min(aMin, x); aMax = Math.max(aMax, x);
+          yMin = Math.min(yMin, y); yMax = Math.max(yMax, y);
+        }
+        if (!Number.isFinite(aMin)) { gY.push([0, 0]); continue; }
+        offsetX[g] = cursor - aMin;
+        cursor += aMax - aMin + GUTTER;
+        gY.push([yMin, yMax]);
+      }
+    }
+    this.gLayout = sideBySide ? { offsetX, gY } : null;
+    const offOf = (i: number): number => (sideBySide ? offsetX[garmentOf(i)]! : 0);
+
+    // Axis coordinates (x shifted by the garment offset) and their bounds.
+    const aOf = (i: number): number => mesh.positions[i * 4]! + offOf(i);
+    const bOf = (i: number): number => (useXZ ? mesh.positions[i * 4 + 2]! : mesh.positions[i * 4 + 1]!);
+    let minA = Infinity, maxA = -Infinity, minB = Infinity, maxB = -Infinity;
+    for (let i = 0; i < mesh.count; i++) {
+      if (!kept(i) || !frontPanel(i)) continue;
+      const a = aOf(i), b = bOf(i);
+      minA = Math.min(minA, a); maxA = Math.max(maxA, a);
+      minB = Math.min(minB, b); maxB = Math.max(maxB, b);
+    }
+    const spanA = maxA - minA || 1;
+    const spanB = maxB - minB || 1;
 
     const margin = 16;
-    const scale = Math.min((W - 2 * margin) / axisSpan[0], (H - 2 * margin) / axisSpan[1]);
-    const ox = (W - axisSpan[0] * scale) / 2;
-    const oy = (H - axisSpan[1] * scale) / 2;
+    const scale = Math.min((W - 2 * margin) / spanA, (H - 2 * margin) / spanB);
+    const ox = (W - spanA * scale) / 2;
+    const oy = (H - spanB * scale) / 2;
     // Handles only make sense on vertical (x,y) layouts.
-    this.tf = useXZ ? null : { minA: axisMin[0], minB: axisMin[1], scale, ox, oy, H };
-    const toScreen = (i: number): [number, number] => {
-      const [a, b] = p2d(i);
-      return [ox + (a - axisMin[0]) * scale, H - (oy + (b - axisMin[1]) * scale)];
-    };
+    this.tf = useXZ ? null : { minA, minB, scale, ox, oy, H };
+    const toScreen = (i: number): [number, number] => [
+      ox + (aOf(i) - minA) * scale,
+      H - (oy + (bOf(i) - minB) * scale),
+    ];
 
     // Fabric fill from front-panel triangles.
     ctx.fillStyle = 'rgba(228, 222, 205, 0.28)';
