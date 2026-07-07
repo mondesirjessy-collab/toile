@@ -226,6 +226,71 @@ export const DEFAULT_FABRIC: FabricStyle = {
   ambient: 0.22,
 };
 
+/**
+ * Render/normals pipelines are pure functions of their (constant) WGSL and the
+ * canvas format — nothing per-instance — but a new ClothRenderer is built on
+ * every scene switch. Compiling the three shaders each time cost the other
+ * half of the ~1 s rebuild freeze. Compile once per device and reuse; bind
+ * groups and vertex/index buffers stay per-instance.
+ */
+interface RendererPipelines {
+  normals: GPUComputePipeline;
+  cloth: GPURenderPipeline;
+  scene: GPURenderPipeline;
+}
+const rendererPipelineCache = new WeakMap<GPUDevice, RendererPipelines>();
+function rendererPipelines(device: GPUDevice, format: GPUTextureFormat): RendererPipelines {
+  const cached = rendererPipelineCache.get(device);
+  if (cached) return cached;
+  const depthStencil: GPUDepthStencilState = { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' };
+  const normals = device.createComputePipeline({
+    label: 'normals-pipeline',
+    layout: 'auto',
+    compute: { module: device.createShaderModule({ code: NORMALS_SHADER, label: 'normals' }), entryPoint: 'main' },
+  });
+  const clothModule = device.createShaderModule({ code: CLOTH_SHADER, label: 'cloth' });
+  const cloth = device.createRenderPipeline({
+    label: 'cloth-pipeline',
+    layout: 'auto',
+    vertex: {
+      module: clothModule,
+      entryPoint: 'vs',
+      buffers: [
+        { arrayStride: 16, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x4' }] },
+        { arrayStride: 16, attributes: [{ shaderLocation: 1, offset: 0, format: 'float32x4' }] },
+      ],
+    },
+    fragment: { module: clothModule, entryPoint: 'fs', targets: [{ format }] },
+    primitive: { topology: 'triangle-list', cullMode: 'none' }, // fabric is two-sided
+    depthStencil,
+  });
+  const sceneModule = device.createShaderModule({ code: SCENE_SHADER, label: 'scene' });
+  const scene = device.createRenderPipeline({
+    label: 'scene-pipeline',
+    layout: 'auto',
+    vertex: {
+      module: sceneModule,
+      entryPoint: 'vs',
+      buffers: [
+        {
+          arrayStride: SCENE_VERTEX_FLOATS * 4,
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: 'float32x3' }, // position
+            { shaderLocation: 1, offset: 12, format: 'float32x3' }, // normal
+            { shaderLocation: 2, offset: 24, format: 'float32x3' }, // color
+          ],
+        },
+      ],
+    },
+    fragment: { module: sceneModule, entryPoint: 'fs', targets: [{ format }] },
+    primitive: { topology: 'triangle-list', cullMode: 'back' },
+    depthStencil,
+  });
+  const pipelines: RendererPipelines = { normals, cloth, scene };
+  rendererPipelineCache.set(device, pipelines);
+  return pipelines;
+}
+
 export class ClothRenderer {
   private readonly device: GPUDevice;
   private readonly context: GPUCanvasContext;
@@ -309,12 +374,9 @@ export class ClothRenderer {
     gi.setFloat32(12, spacingV, true);
     device.queue.writeBuffer(this.gridInfoBuffer, 0, gridInfo);
 
-    const normalsModule = device.createShaderModule({ code: NORMALS_SHADER, label: 'normals' });
-    this.normalsPipeline = device.createComputePipeline({
-      label: 'normals-pipeline',
-      layout: 'auto',
-      compute: { module: normalsModule, entryPoint: 'main' },
-    });
+    // Pipelines compiled once per device, reused across every rebuild.
+    const rp = rendererPipelines(device, this.format);
+    this.normalsPipeline = rp.normals;
     this.normalsBindGroup = device.createBindGroup({
       layout: this.normalsPipeline.getBindGroupLayout(0),
       entries: [
@@ -324,29 +386,8 @@ export class ClothRenderer {
       ],
     });
 
-    const depthStencil: GPUDepthStencilState = {
-      format: 'depth24plus',
-      depthWriteEnabled: true,
-      depthCompare: 'less',
-    };
-
     // --- Cloth surface pipeline (two-sided) ---
-    const clothModule = device.createShaderModule({ code: CLOTH_SHADER, label: 'cloth' });
-    this.clothPipeline = device.createRenderPipeline({
-      label: 'cloth-pipeline',
-      layout: 'auto',
-      vertex: {
-        module: clothModule,
-        entryPoint: 'vs',
-        buffers: [
-          { arrayStride: 16, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x4' }] },
-          { arrayStride: 16, attributes: [{ shaderLocation: 1, offset: 0, format: 'float32x4' }] },
-        ],
-      },
-      fragment: { module: clothModule, entryPoint: 'fs', targets: [{ format: this.format }] },
-      primitive: { topology: 'triangle-list', cullMode: 'none' }, // fabric is two-sided
-      depthStencil,
-    });
+    this.clothPipeline = rp.cloth;
     this.clothBindGroup = device.createBindGroup({
       layout: this.clothPipeline.getBindGroupLayout(0),
       entries: [
@@ -365,28 +406,7 @@ export class ClothRenderer {
     this.clothIndexCount = triangleIndices.length;
 
     // --- Scene colliders (lit triangles) ---
-    const sceneModule = device.createShaderModule({ code: SCENE_SHADER, label: 'scene' });
-    this.scenePipeline = device.createRenderPipeline({
-      label: 'scene-pipeline',
-      layout: 'auto',
-      vertex: {
-        module: sceneModule,
-        entryPoint: 'vs',
-        buffers: [
-          {
-            arrayStride: SCENE_VERTEX_FLOATS * 4,
-            attributes: [
-              { shaderLocation: 0, offset: 0, format: 'float32x3' }, // position
-              { shaderLocation: 1, offset: 12, format: 'float32x3' }, // normal
-              { shaderLocation: 2, offset: 24, format: 'float32x3' }, // color
-            ],
-          },
-        ],
-      },
-      fragment: { module: sceneModule, entryPoint: 'fs', targets: [{ format: this.format }] },
-      primitive: { topology: 'triangle-list', cullMode: 'back' },
-      depthStencil,
-    });
+    this.scenePipeline = rp.scene;
     this.spinBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(this.spinBuffer, 0, new Float32Array([1, 0, 0, 0]));
     this.spinIdentityBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });

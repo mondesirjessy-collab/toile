@@ -86,6 +86,53 @@ const BATCH_SIZE = 16;
 const WORKGROUP = 256;
 const DRAG_NONE = 0xffffffff;
 
+/**
+ * Compute pipelines are pure functions of their (constant) WGSL — nothing
+ * per-instance — yet every scene switch / slider release builds a new
+ * ParticleSystem. Compiling all nine shaders each time cost ~half the ~1 s
+ * rebuild freeze. Compile once per device and reuse; bind groups stay
+ * per-instance (they reference this system's buffers). Pipelines have no
+ * destroy(), so sharing them across rebuilds is safe.
+ */
+interface SolverPipelines {
+  integrate: GPUComputePipeline;
+  distance: GPUComputePipeline;
+  drag: GPUComputePipeline;
+  collide: GPUComputePipeline;
+  velocity: GPUComputePipeline;
+  hashClear: GPUComputePipeline;
+  hashInsert: GPUComputePipeline;
+  selfCollide: GPUComputePipeline;
+  dihedral: GPUComputePipeline;
+}
+const solverPipelineCache = new WeakMap<GPUDevice, SolverPipelines>();
+function solverPipelines(device: GPUDevice): SolverPipelines {
+  const cached = solverPipelineCache.get(device);
+  if (cached) return cached;
+  const compute = (code: string, label: string): GPUComputePipeline =>
+    device.createComputePipeline({
+      label,
+      layout: 'auto',
+      compute: { module: device.createShaderModule({ code, label }), entryPoint: 'main' },
+    });
+  const selfModule = device.createShaderModule({ code: selfCollideWGSL, label: 'selfCollide' });
+  const selfPipe = (entryPoint: string): GPUComputePipeline =>
+    device.createComputePipeline({ label: `self-${entryPoint}`, layout: 'auto', compute: { module: selfModule, entryPoint } });
+  const pipelines: SolverPipelines = {
+    integrate: compute(integrateWGSL, 'integrate'),
+    distance: compute(distanceWGSL, 'distance'),
+    drag: compute(dragWGSL, 'drag'),
+    collide: compute(collideWGSL, 'collide'),
+    velocity: compute(updateVelocityWGSL, 'updateVelocity'),
+    hashClear: selfPipe('clear_hash'),
+    hashInsert: selfPipe('insert'),
+    selfCollide: selfPipe('collide'),
+    dihedral: compute(dihedralWGSL, 'dihedral'),
+  };
+  solverPipelineCache.set(device, pipelines);
+  return pipelines;
+}
+
 export class ParticleSystem {
   readonly count: number;
   readonly constraintCount: number;
@@ -316,29 +363,16 @@ export class ParticleSystem {
       return buf;
     });
 
-    // --- Pipelines ---
-    const pipeline = (code: string, label: string): GPUComputePipeline =>
-      device.createComputePipeline({
-        label,
-        layout: 'auto',
-        compute: { module: device.createShaderModule({ code, label }), entryPoint: 'main' },
-      });
-    this.integratePipeline = pipeline(integrateWGSL, 'integrate');
-    this.solvePipeline = pipeline(distanceWGSL, 'distance');
-    this.dragPipeline = pipeline(dragWGSL, 'drag');
-    this.collidePipeline = pipeline(collideWGSL, 'collide');
-    this.velocityPipeline = pipeline(updateVelocityWGSL, 'updateVelocity');
-
-    const selfModule = device.createShaderModule({ code: selfCollideWGSL, label: 'selfCollide' });
-    const selfPipeline = (entryPoint: string): GPUComputePipeline =>
-      device.createComputePipeline({
-        label: `self-${entryPoint}`,
-        layout: 'auto',
-        compute: { module: selfModule, entryPoint },
-      });
-    this.hashClearPipeline = selfPipeline('clear_hash');
-    this.hashInsertPipeline = selfPipeline('insert');
-    this.selfCollidePipeline = selfPipeline('collide');
+    // --- Pipelines (compiled once per device, then reused across rebuilds) ---
+    const pipes = solverPipelines(device);
+    this.integratePipeline = pipes.integrate;
+    this.solvePipeline = pipes.distance;
+    this.dragPipeline = pipes.drag;
+    this.collidePipeline = pipes.collide;
+    this.velocityPipeline = pipes.velocity;
+    this.hashClearPipeline = pipes.hashClear;
+    this.hashInsertPipeline = pipes.hashInsert;
+    this.selfCollidePipeline = pipes.selfCollide;
 
     // --- Bind groups ---
     const bg = (p: GPUComputePipeline, buffers: GPUBuffer[]): GPUBindGroup =>
@@ -396,7 +430,7 @@ export class ParticleSystem {
     );
 
     // Dihedral bending hinges: one dispatch per hinge color, like distance.
-    this.dihedralPipeline = pipeline(dihedralWGSL, 'dihedral');
+    this.dihedralPipeline = pipes.dihedral;
     this.dihedralBindGroups =
       this.quadBuffer === null
         ? []
