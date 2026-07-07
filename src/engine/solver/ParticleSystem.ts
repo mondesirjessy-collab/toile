@@ -80,7 +80,7 @@ export interface SolverOptions {
 //  96 particle_count, 100 damping, 104 max_speed, 108 drag_index,
 //  112 body_min.xyz, 124 blend_k, 128 body_max.xyz, 140 use_grid,
 //  144 spin_cos, 148 spin_sin, 152 spin_dtheta (per substep), 156 compliance_stretch_warp,
-//  160 layer_gap (couches : la couche L est repoussée à thickness + L × gap), 164-172 pads.
+//  160 layer_gap (couches), 164 anchor_stiffness (ceinture : rappel Y/substep), 168-172 pads.
 const UNIFORM_SIZE = 176;
 const BATCH_SIZE = 16;
 const WORKGROUP = 256;
@@ -100,6 +100,7 @@ export class ParticleSystem {
   private readonly invMassBuffer: GPUBuffer;
   private readonly layerBuffer: GPUBuffer;
   private readonly seamFreeBuffer: GPUBuffer;
+  private readonly anchorBuffer: GPUBuffer;
   private readonly constraintBuffer: GPUBuffer;
   private readonly quadBuffer: GPUBuffer | null;
   private readonly colliderBuffer: GPUBuffer;
@@ -228,6 +229,8 @@ export class ParticleSystem {
     const seamFree = new Uint32Array(this.count);
     if (mesh.seamFree) for (let i = 0; i < this.count; i++) seamFree[i] = mesh.seamFree[i]!;
     this.seamFreeBuffer = this.createBufferRaw(seamFree.buffer, storage);
+    // Waistband anchor: target world-Y per particle (sentinel = free).
+    this.anchorBuffer = this.createBuffer(mesh.anchorY ?? new Float32Array(this.count).fill(-1e9), storage);
     this.constraintBuffer = this.createBufferRaw(mesh.constraintData, storage);
     this.quadColorCounts = mesh.quadColorCounts;
     this.quadBuffer = mesh.quadCount > 0 ? this.createBufferRaw(mesh.quadData, storage) : null;
@@ -367,6 +370,7 @@ export class ParticleSystem {
         { binding: 4, resource: { buffer: this.colliderBuffer } },
         { binding: 5, resource: this.sdfTexture.createView() },
         { binding: 6, resource: { buffer: this.layerBuffer } },
+        { binding: 7, resource: { buffer: this.anchorBuffer } },
       ],
     });
     this.velocityBindGroup = bg(this.velocityPipeline, [
@@ -666,6 +670,7 @@ export class ParticleSystem {
     this.invMassBuffer.destroy();
     this.layerBuffer.destroy();
     this.seamFreeBuffer.destroy();
+    this.anchorBuffer.destroy();
     this.constraintBuffer.destroy();
     this.quadBuffer?.destroy();
     this.colliderBuffer.destroy();
@@ -705,6 +710,7 @@ export class ParticleSystem {
     dv.setFloat32(88, this.complianceBend, LE);
     dv.setFloat32(92, this.clothThickness, LE);
     dv.setFloat32(160, this.clothThickness, LE); // layer_gap: one thickness per layer
+    dv.setFloat32(164, 0.12, LE); // anchor_stiffness: waistband hold per substep
     dv.setUint32(96, this.count, LE);
     dv.setFloat32(100, this.damping, LE);
     dv.setFloat32(104, this.maxSpeed, LE);

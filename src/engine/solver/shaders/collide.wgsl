@@ -42,7 +42,7 @@ struct SimParams {
   spin_dtheta: f32,  // podium angle advanced THIS substep (surface velocity)
   _c4: f32,
   layer_gap: f32,    // couches : la couche L est repoussée à thickness + L × gap
-  _c5: f32,
+  anchor_stiffness: f32, // ceinture : rappel vertical par substep vers anchor_y
   _c6: f32,
   _c7: f32,
 };
@@ -73,6 +73,8 @@ struct Prim {
 @group(0) @binding(5) var sdf_tex: texture_3d<f32>;
 // Garment layer per particle (0 = against the body, 1 = worn over 0…).
 @group(0) @binding(6) var<storage, read> layers: array<f32>;
+// Waistband anchor: target world-Y per particle (sentinel ≤ -1e8 = free).
+@group(0) @binding(7) var<storage, read> anchor_y: array<f32>;
 
 // Manual trilinear sample + the interpolant's exact gradient from the same
 // 8 corners (no filterable-float feature needed). Returns vec4(grad, dist).
@@ -240,6 +242,15 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       x.x -= disp.x * s;
       x.z -= disp.z * s;
     }
+  }
+
+  // --- Waistband anchor (the belt) ---
+  // A strapless or elastic top slides down a body that narrows below it. The
+  // anchored top band is softly pulled back to its rest HEIGHT each substep,
+  // x/z left free so the fabric still settles and turns with the podium.
+  let ay = anchor_y[i];
+  if (ay > -1.0e8) {
+    x.y += (ay - x.y) * params.anchor_stiffness;
   }
 
   positions[i] = vec4f(x, 0.0);

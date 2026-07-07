@@ -414,7 +414,8 @@ async function main(): Promise<void> {
                       height: Hb,
                       gap: 0.9,
                       topY: topB,
-                      elasticTop: 0.78, // bustier : le haut fronce et AGRIPPE (0.85 lâchait depuis v56)
+                      elasticTop: 0.78, // bustier : le haut fronce
+                      anchorTop: true, // ceinture : le haut est RETENU à sa hauteur (sinon glisse aux hanches)
                     });
                     const jupe = generateSeamedPanels({
                       resolution,

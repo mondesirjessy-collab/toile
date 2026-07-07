@@ -530,6 +530,26 @@ describe('combineClothMeshes (outfits)', () => {
     expect([...outfit.seamFree!].every((v) => v === 0)).toBe(true);
   });
 
+  it('anchors only the top band, at its rest height, and carries it through the merge', () => {
+    const NONE = -1e8;
+    const bodice = generateSeamedPanels({ resolution: n, width: 0.4, height: 0.26, gap: 0.9, topY: 1.4, anchorTop: true });
+    expect(bodice.anchorY).toHaveLength(bodice.count);
+    // Top row (v=0) of both panels is anchored to its rest height (topY).
+    expect(bodice.anchorY![0]).toBeCloseTo(1.4);
+    expect(bodice.anchorY![n * n]).toBeCloseTo(1.4); // back panel top row
+    // A row deep in the panel is free.
+    const deep = Math.floor(n / 2) * n;
+    expect(bodice.anchorY![deep]).toBeLessThan(NONE);
+    // No anchorTop → no anchor buffer at all.
+    expect(skirt.anchorY).toBeUndefined();
+    // Merge with an unanchored skirt: the bodice keeps its anchors, the skirt
+    // stays free.
+    const dress = combineClothMeshes(bodice, skirt);
+    expect(dress.anchorY).toHaveLength(dress.count);
+    expect(dress.anchorY![0]).toBeCloseTo(1.4);
+    expect(dress.anchorY![bodice.count + deep]).toBeLessThan(NONE);
+  });
+
   it('carries hinge softness through the merge (pressing survives)', () => {
     const soft = (mesh: ClothMeshData): number[] => {
       const dv = new DataView(mesh.quadData);

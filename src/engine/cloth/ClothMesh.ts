@@ -84,6 +84,11 @@ export interface ClothMeshData {
    * loose (the gathered bodice slid off exactly this way). 1 = exempt.
    */
   readonly seamFree?: Uint8Array;
+  /**
+   * Per-particle waistband anchor: target world-Y the solver softly pulls the
+   * particle toward (x/z free). Sentinel ≤ -1e8 = not anchored. Absent = none.
+   */
+  readonly anchorY?: Float32Array;
 }
 
 const CONSTRAINT_STRIDE = 16; // bytes: 2×u32 + 2×f32
@@ -331,6 +336,14 @@ export interface SeamedPanelsOptions {
    * it sits on (elasticated waists, cuffs). 1 = no elastic.
    */
   elasticTop?: number;
+  /**
+   * Waistband anchor (the belt): hold the top rows at their rest HEIGHT with a
+   * soft vertical spring while leaving x/z free, so the band still settles
+   * around the body. Without it a strapless or elastic top slides down a body
+   * that narrows below it (bust → waist), exactly like a beltless skirt. Off
+   * by default.
+   */
+  anchorTop?: boolean;
 }
 
 type PatternShape = NonNullable<SeamedPanelsOptions['shape']>;
@@ -609,6 +622,11 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
 
   const positions = new Float32Array(count * 4);
   const invMasses = new Float32Array(count).fill(1.0);
+  // Waistband anchor: hold the top band (same rows the elastic gathers) at
+  // their rest height. Sentinel = not anchored.
+  const ANCHOR_NONE = -1e9;
+  const anchorTop = opts.anchorTop ?? false;
+  const anchorY = anchorTop ? new Float32Array(count).fill(ANCHOR_NONE) : undefined;
 
   const index = (p: number, u: number, v: number): number => p * panelSize + v * n + u;
   // Same outline on both panels, so the panel index is irrelevant to the mask.
@@ -624,6 +642,9 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
           positions[i * 4 + 0] = (uAdj[local]! - 0.5) * width;
           positions[i * 4 + 1] = topY - vAdj[local]! * height;
           positions[i * 4 + 2] = z;
+          // Anchor the top band to its own rest height (matches the elastic
+          // grip zone v < 0.06), so the strapless top cannot slide down.
+          if (anchorY && vAdj[local]! < 0.06) anchorY[i] = positions[i * 4 + 1]!;
         } else {
           // Cut from the pattern: parked out of the scene, immovable.
           positions[i * 4 + 0] = 0;
@@ -922,6 +943,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
     seamCount: seams.length,
     cornerIndices: [cornerA, cornerB],
     triangleIndices,
+    anchorY,
   };
 }
 
@@ -976,6 +998,12 @@ export function combineClothMeshes(
   const seamFree = new Uint8Array(count);
   if (a.seamFree) seamFree.set(a.seamFree, 0);
   if (b.seamFree) for (let i = 0; i < b.count; i++) seamFree[a.count + i] = b.seamFree[i]!;
+  // Waistband anchors carry through (the bodice's held top ring).
+  const anchorY = a.anchorY || b.anchorY ? new Float32Array(count).fill(-1e9) : undefined;
+  if (anchorY) {
+    if (a.anchorY) anchorY.set(a.anchorY, 0);
+    if (b.anchorY) anchorY.set(b.anchorY, a.count);
+  }
   const na = a.resolution;
   for (const cs of crossSeams) {
     for (const k of [cs.i, cs.i - na, cs.j, cs.j + na]) {
@@ -1077,5 +1105,6 @@ export function combineClothMeshes(
     triangleIndices,
     layers,
     seamFree,
+    anchorY,
   };
 }
