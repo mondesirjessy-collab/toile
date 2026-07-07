@@ -229,7 +229,7 @@ attach() keeps a single mode/lastX/lastY for all pointers and never records whic
 
 ## 🟨 mineur — 37
 
-### M1. Seam constraints (kind 3) silently inherit weft stretch compliance *(non contre-vérifié)*
+### M1. [✅ corrigé v75] Seam constraints (kind 3) silently inherit weft stretch compliance *(non contre-vérifié)*
 **Fichier** : `src/engine/solver/shaders/distance.wgsl`
 
 Lines 79-82: the compliance lookup handles kinds 1 (shear), 2 (bend), 4 (warp) and defaults everything else — including kind 3 (Seam) — to params.compliance_stretch. ConstraintGraph.ts documents Seam as 'solved rigid, like structural'. That holds only while the stretch slider is at its 0 default: dial in a stretchy fabric (compliance_stretch > 0, e.g. a knit preset) and every sewn seam becomes as elastic as the fabric — seam joints of rest 0.15·spacing elongate, panel assemblies gape at the stitch line, and the elasticated-waist grip weakens, none of which matches real thread which is far stiffer than the cloth.
@@ -257,7 +257,7 @@ Line 147: `margin = cloth_thickness + 2.0 * layer_gap + blend_k + 0.012`, but th
 
 **Correctif proposé** : Either compute the margin from the actual per-particle thick (move the margin inside main and pass it into sd_body), or write a max_layer uniform from ParticleSystem (it already owns mesh.layers at construction: maxLayer = max(layers)) and use `maxLayer * layer_gap` in the margin.
 
-### M5. Dead GPU allocation: readbackBuffer (count × 16 bytes) is created and destroyed but never used *(non contre-vérifié)*
+### M5. [✅ corrigé v75] Dead GPU allocation: readbackBuffer (count × 16 bytes) is created and destroyed but never used *(non contre-vérifié)*
 **Fichier** : `src/engine/solver/ParticleSystem.ts`
 
 Lines 290-293 allocate `this.readbackBuffer` with MAP_READ | COPY_DST, but readPositions() (lines 564-589) deliberately creates a fresh disposable staging buffer per call (per its own comment about mapAsync poisoning), and nothing else references readbackBuffer except dispose(). At resolution 128 with a two-garment outfit that is 4 × 128² × 16 ≈ 1 MB of mappable GPU memory allocated per ParticleSystem for nothing — and it's re-allocated on every resolution/scene rebuild.
@@ -271,14 +271,14 @@ step() (lines 642-646) dispatches clear_hash (tableSize/256 groups, e.g. 128 wor
 
 **Correctif proposé** : Rebuild the hash once per frame (or every 4th substep) and keep only the collide dispatch per substep. Saves ~38 dispatches + associated barriers per frame; expected several-percent sim-time win at high substep counts, more on iGPUs.
 
-### M7. Seam constraints (kind 3) silently inherit weft stretch compliance — seams gape on stretchy fabrics *(non contre-vérifié)*
+### M7. [✅ corrigé v75 (=M1)] Seam constraints (kind 3) silently inherit weft stretch compliance — seams gape on stretchy fabrics *(non contre-vérifié)*
 **Fichier** : `/Users/jessymondesir/dev/toile/src/engine/solver/shaders/distance.wgsl`
 
 Lines 79-82 select compliance by kind but have no branch for kind==3 (Seam), so seams fall through to compliance_stretch. ConstraintGraph.ts:19 documents seams as 'solved rigid, like structural'. With the default 1e-7 that's near-rigid, but the panel exposes stretch compliance as a log slider up to ~1e-4 (ControlPanel stretchExp): pick a stretchy jersey and every seam thread becomes as elastic as the knit — side seams and the armhole (embu) seams open under load, gathers relax, and the 0.15·spacing rest length is no longer honored. Physically a lockstitch is far stiffer than the fabric.
 
 **Correctif proposé** : Add `else if (c.kind == 3u) { compliance = 0.0; }` (or a small fixed seam compliance) in distance.wgsl so seams stay rigid regardless of the fabric sliders.
 
-### M8. Dead GPU allocations and dead interaction path: unused readbackBuffer, never-called setMouse, single-thread drag dispatch *(non contre-vérifié)*
+### M8. [⚠️ partiel v75 (readbackBuffer retiré ; setMouse/drag-1-thread restent)] Dead GPU allocations and dead interaction path: unused readbackBuffer, never-called setMouse, single-thread drag dispatch *(non contre-vérifié)*
 **Fichier** : `/Users/jessymondesir/dev/toile/src/engine/solver/ParticleSystem.ts`
 
 (a) this.readbackBuffer (lines 110, 290-293, 669) is allocated per system (count×16 B, e.g. 262 KB for outfits) but readPositions() creates a disposable staging buffer instead — the field is pure dead weight recreated on every rebuild. (b) setMouse (line 448) is never called from main.ts, so mouse_force stays 0 forever: the integrate.wgsl mouse-force branch (lines 66-77), the ray_origin/ray_dir/mouse_radius uniform fields, MouseForce.repelMode and the mouseStrength/mouseRadius options are all dead code (right-drag was repurposed for camera pan per the UI hint). (c) While dragging, drag.wgsl runs as a @workgroup_size(1) single-thread dispatch once per substep (step() line 639) — 20 one-thread dispatches with full inter-dispatch barriers per frame.
@@ -306,7 +306,7 @@ The in-panel constraint loop (lines 641–660) starts with `if (!isKept(p,u,v)) 
 
 **Correctif proposé** : Add the ╱ shear from a cell-scoped check independent of (u,v): for each cell, if isKept(u+1,v) && isKept(u,v+1) push the anti-diagonal (guarding against double-push by keeping it only in this cell), i.e. move the ╱ case out from under the (u,v)-kept guard.
 
-### M12. combineClothMeshes: seamCount omits crossSeams; press-hinge doc comment contradicts the π convention *(non contre-vérifié)*
+### M12. [⚠️ partiel v75 (commentaire π corrigé ; seamCount reste)] combineClothMeshes: seamCount omits crossSeams; press-hinge doc comment contradicts the π convention *(non contre-vérifié)*
 **Fichier** : `src/engine/cloth/ClothMesh.ts`
 
 (a) Line 1039: seamCount = a.seamCount + b.seamCount, but the crossSeams pushed at line 970 are real Seam constraints — the HUD and any test asserting seam totals undercount by crossSeams.length (128 seams in the robe froncée scene at n=64). (b) The pressing block comment (line 733) says 'PRESSING (fold angle 180°): … rest angle 0 — once sewn, the two panels are asked to continue FLAT', while the code (line 779) correctly uses restAngle: Math.PI with the note 'π = pressed FLAT'. The stale 'rest angle 0' phrasing invites a future 'fix' that would invert every press hinge (0 rad = fully folded in this acos-of-normals convention).
@@ -355,14 +355,14 @@ sdRoundCone's conservative rescale (multiply by min(s)) and primBoundRadius (lin
 
 **Correctif proposé** : Validate at construction (in the `rc` helper or toColliders): assert every s component ∈ (0, 1], or make the bound conservative for free by multiplying primBoundRadius and the WGSL bound by max(1, s.x, s.y, s.z) and padding the AABB likewise.
 
-### M19. Imported scene string not whitelisted — spoofed scene desyncs the GUI and silently builds the default grid *(non contre-vérifié)*
+### M19. [✅ corrigé v75] Imported scene string not whitelisted — spoofed scene desyncs the GUI and silently builds the default grid *(non contre-vérifié)*
 **Fichier** : `/Users/jessymondesir/dev/toile/src/app/ControlPanel.ts`
 
 Line 538: `if (d.scene) s.scene = d.scene;` accepts any truthy value (arbitrary string, even an object) while `body` two lines above is properly whitelisted. The bogus value is then passed to `onScene()`, and main.ts's scene ternary (main.ts:318-432) falls through to the plain `generateClothGrid` drapé sheet — so a garment file with `"scene":"dress"` (e.g. an anglicized or future scene name) imports its pattern/fabric but shows a bare cloth square, and the lil-gui select is left displaying no valid option. Also relevant to forward compatibility: a v2 file with a renamed scene silently degrades the same way.
 
 **Correctif proposé** : Whitelist against the SceneMode list (the same array used at ControlPanel.ts:219) exactly like the `bodies` check at line 535, keeping the current scene on mismatch; optionally add a rename map for future/legacy scene names.
 
-### M20. Import ignores the version field and fails completely silently — no forward-compat guard, no user feedback *(non contre-vérifié)*
+### M20. [✅ corrigé v75 (retour visible ; garde de version = à faire)] Import ignores the version field and fails completely silently — no forward-compat guard, no user feedback *(non contre-vérifié)*
 **Fichier** : `/Users/jessymondesir/dev/toile/src/app/ControlPanel.ts`
 
 exportGarment writes `version: 1` (line 417) but applyGarment never reads d.version. A future v2 file with restructured fields will half-apply (whatever field names still match) with no warning — the worst compat mode. Backward compat is handled ad hoc (the `'scan'` body migration at line 537, the stretchWarpExp fallback at line 522) which works for v36-era files, but nothing gates a NEWER major version. Separately, both failure modes are invisible: importGarment's `catch { /* fichier invalide — ignoré */ }` (lines 473-475) and the `d?.format !== 'toile-garment'` early return (line 508) do nothing at all — for the non-developer target user, clicking 'importer', picking the wrong file, and seeing zero reaction reads as 'the app is broken'.
