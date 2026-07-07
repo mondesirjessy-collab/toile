@@ -26,7 +26,9 @@
 - ✅ **M21 (v71)** : les raccourcis clavier R (reset) et P (épingles) appellent désormais wake() comme leurs boutons — avant, sur un tissu endormi, ils ne faisaient rien de visible.
 - ✅ **M19 (v71)** : l'import .toile.json restaure les MENSURATIONS sauvegardées (clampées aux plages des curseurs). Cause : onBody remettait le corps à son repère APRÈS coup → les mensurations importées doivent être appliquées après onBody. Vérifié : import femme (poitrine 115) sur corps homme → 115 restauré. Hook DEV `window.__toileImport(doc)` ajouté (rejoue applyGarment sans dialogue de fichier — utile aux prochains tests).
 - ℹ️ **Doublons marqués corrigés** dans la liste détaillée : M2/M12 (coutures trans-vêtement combattues → v59 seamFree), M4/M20 (cache morpho 3/6 → v58=C2), M5/M16 (surfaceNets remesh+fuite → v64), M8 (recompil pipelines → v69), M13 (strain horizontal → v58=C1).
-- Reste ouvert (majeures) : M3 (tunneling auto-collision à bas substeps, dur — sans CCD), M9 (paire couture-miroir porte AUSSI une contrainte d'aplatissement contradictoire), M22 (perte de device GPU / exception boucle sans bannière), M23 (tactile mobile : 2ᵉ doigt + zoom).
+- ✅ **M9 (v72)** : plus de contrainte d'aplatissement contradictoire sur les paires de couture (on n'aplatit que l'anneau INTÉRIEUR, jamais les particules de bord) ; test d'invariant coutures∩aplatisseurs = ∅ sur les 5 formes ; drapé plus net.
+- ✅ **M22 (v72)** : bannière d'erreur (showFatal) sur exception de boucle (guardedFrame try/catch → arrêt propre) ET sur device.lost ; vérifié en injectant une erreur dans frame(). Note : le watchdog évalue performance.now() hors du guard, mais performance.now ne lève jamais en réel — non-problème.
+- Reste ouvert (majeures) : M3 (tunneling auto-collision à bas substeps, dur — sans CCD), M23 (tactile mobile : 2ᵉ doigt casse l'orbite + pas de zoom tactile). Puis le bloc mineur.
 - Le reste de la liste ci-dessous est à dérouler dans l'ordre.
 - **NB pour la session qui reprend** : les fiches détaillées ci-dessous décrivent l'état AU MOMENT DE L'AUDIT (v57) — les numéros de ligne ont dérivé depuis (v58-v63 ont modifié main.ts, ClothMesh.ts, measure.ts, selfCollide.wgsl, ControlPanel.ts, ClothRenderer.ts). Se repérer par NOMS de symboles/fonctions, pas par lignes. Les fiches marquées [✅ corrigé] sont soldées — détail dans cette section ÉTAT.
 
@@ -117,7 +119,7 @@ The ParticleSystem constructor (lines 310-332) creates 8 compute pipelines with 
 
 **Correctif proposé** : Cache pipelines per GPUDevice in a module-level WeakMap (build once, reuse across ParticleSystem/ClothRenderer instances); bind groups already get rebuilt per instance and can keep using pipeline.getBindGroupLayout(0). Expected: rebuilds become buffer-upload-only (a few ms).
 
-### M9. Every mirror-seamed particle pair also carries a contradictory 'flattening' distance constraint (rest 2·spacing vs seam rest 0.15·spacing)
+### M9. [✅ corrigé v72] Every mirror-seamed particle pair also carries a contradictory 'flattening' distance constraint (rest 2·spacing vs seam rest 0.15·spacing)
 **Fichier** : `src/engine/cloth/ClothMesh.ts`
 
 The cross-seam flattening loop (lines 711–730) adds a Bending distance constraint front↔back for every kept 4-neighbour of a seam particle, intending 'cells one ring inside a stitched edge'. But the neighbours of a seam particle ALONG the boundary are themselves seam particles, so the same (front, back) pair gets both a Seam constraint (rest = 0.15·gridSpacing, solved at compliance_stretch) and a Bending constraint (rest = 2·gridSpacing, compliance_bend) — verified empirically: at n=32 aline 66/66 mirror-seam pairs are duplicated (skirt 56/58, setin 70/70, pants 102/104, tshirt 62/78, and proportionally at 64/128). Every substep the bending constraint injects an opening impulse (C = 0.15s − 2s = −1.85s) that the seam must re-cancel: seams sit slightly open, the solver fights itself, jitter at low substeps. Bonus wrongness: opening-rim neighbours (neckline/hem particles adjacent to a seam particle) also get the 2·spacing front↔back tie, which is a spurious squeezing force on the neck opening (front rim to back rim distance should be the neck circumference chord, far more than 2·spacing).
@@ -208,7 +210,7 @@ The keydown handler (lines 823-832) calls system.reset() / setCornerPins() but n
 
 **Correctif proposé** : Call wake() in both keyboard branches (R and P), mirroring the panel's onReset/onPins callbacks. Optionally also wake in onSelfCollision (see separate finding).
 
-### M22. GPU device loss and frame-loop exceptions freeze the app with no error banner
+### M22. [✅ corrigé v72] GPU device loss and frame-loop exceptions freeze the app with no error banner
 **Fichier** : `/Users/jessymondesir/dev/toile/src/main.ts`
 
 Two silent-freeze paths escape the error surfacing that showFatal/uncapturederror otherwise provide. (1) Device.ts handles device.lost with only console.error ('the app layer may subscribe later' — it never did); after a driver reset (plausible at résolution 128 + self-collision on an iGPU) every queue.submit is a no-op and the canvas freezes with zero on-screen feedback. (2) frame() (line 854) runs from rAF/setTimeout; any exception inside it (e.g. renderer/system calls after a device loss, or a future logic bug) is not caught by main().catch — the throw skips the trailing schedule(), the previously armed 50 ms watchdog fires once, throws again, and then no timer is armed: the loop is permanently dead, silently. The startup banner only covers errors thrown before main() returns.
