@@ -846,15 +846,20 @@ async function main(): Promise<void> {
   // Open the measurement sliders on the default mannequin's own values.
   panel.syncMorphCm(baseCm(bodyKind, null));
 
-  // Keyboard shortcuts mirror the panel (brief §3.3 release flow).
+  // Keyboard shortcuts mirror the panel (brief §3.3 release flow). Each must
+  // wake() like its panel button — otherwise pressing R or P on a settled
+  // (asleep) garment does nothing visible: the reset/pin lands but the solver
+  // never steps to show it.
   window.addEventListener('keydown', (e) => {
     if (e.key === 'r' || e.key === 'R') {
       system.reset();
       panel.syncPins(false);
+      wake();
     } else if (e.key === 'p' || e.key === 'P') {
       const held = !system.pinsHeld;
       system.setCornerPins(held);
       panel.syncPins(held);
+      wake();
     }
   });
 

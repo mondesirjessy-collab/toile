@@ -23,6 +23,10 @@
 - ✅ **HUD « 4096 part. » suspect (audit) — CLASSÉ** : artefact de frame périmée pendant un micro-gel de reconstruction (timeout CDP concomitant), PAS un bug de compteur — la valeur est correcte une fois le rendu stabilisé (vérifié : ensemble 16384, pantalon 8192).
 - ✅ **Perf reconstruction (v69)** : les ~12 pipelines GPU (9 solveur + 3 renderer) sont désormais compilés UNE FOIS par carte graphique (WeakMap par device) au lieu de recompilés à chaque build(). MESURÉ : glisser un curseur de mensuration (corps en cache) passe de ~1,0 s → ~80 ms (~12×). Restent au coût plein : le PREMIER build d'une mensuration jamais vue (surfaceNets du corps morphé ~1 s, coût v64) et le et le maillage surfaceNets d'un corps JAMAIS VU (≈930 ms, cache par corps ensuite) — c'est LUI le ~1,7 s au 1er passage chemise (corps À BRAS différent), PAS la génération de patron (mesurée à ~6 ms — la fiche « generateSeamedPanels coûteux » était une FAUSSE PISTE).
 - ✅ **Marge de couture sur le patron PDF (v70, backlog)** : trait pointillé gris à 1 cm HORS du trait de couture plein = la ligne de coupe, tracée directement (avant : « ajouter 1 cm à la main »). Normale extérieure fiable par le 3ᵉ sommet du triangle propriétaire de chaque arête de bord → correct même à l'encolure concave (vérifié PDF : couture droite + encolure). frontOutline renvoie `seam[]` ; note page 1 réécrite ; test bbox marge ⊃ bbox coupe (~10 mm).
+- ✅ **M21 (v71)** : les raccourcis clavier R (reset) et P (épingles) appellent désormais wake() comme leurs boutons — avant, sur un tissu endormi, ils ne faisaient rien de visible.
+- ✅ **M19 (v71)** : l'import .toile.json restaure les MENSURATIONS sauvegardées (clampées aux plages des curseurs). Cause : onBody remettait le corps à son repère APRÈS coup → les mensurations importées doivent être appliquées après onBody. Vérifié : import femme (poitrine 115) sur corps homme → 115 restauré. Hook DEV `window.__toileImport(doc)` ajouté (rejoue applyGarment sans dialogue de fichier — utile aux prochains tests).
+- ℹ️ **Doublons marqués corrigés** dans la liste détaillée : M2/M12 (coutures trans-vêtement combattues → v59 seamFree), M4/M20 (cache morpho 3/6 → v58=C2), M5/M16 (surfaceNets remesh+fuite → v64), M8 (recompil pipelines → v69), M13 (strain horizontal → v58=C1).
+- Reste ouvert (majeures) : M3 (tunneling auto-collision à bas substeps, dur — sans CCD), M9 (paire couture-miroir porte AUSSI une contrainte d'aplatissement contradictoire), M22 (perte de device GPU / exception boucle sans bannière), M23 (tactile mobile : 2ᵉ doigt + zoom).
 - Le reste de la liste ci-dessous est à dérouler dans l'ordre.
 - **NB pour la session qui reprend** : les fiches détaillées ci-dessous décrivent l'état AU MOMENT DE L'AUDIT (v57) — les numéros de ligne ont dérivé depuis (v58-v63 ont modifié main.ts, ClothMesh.ts, measure.ts, selfCollide.wgsl, ControlPanel.ts, ClothRenderer.ts). Se repérer par NOMS de symboles/fonctions, pas par lignes. Les fiches marquées [✅ corrigé] sont soldées — détail dans cette section ÉTAT.
 
@@ -64,7 +68,7 @@ Line 82: `(pj == pi && dl < 2 * ni + 3)` where dl = |lj − li| is the differenc
 
 **Correctif proposé** : Decompose to 2D coords (ui = li % n, vi = li / n; same for j) and exclude same-panel pairs only when Chebyshev distance ≤ 2: `pj == pi && abs(ui−uj) <= 2 && abs(vi−vj) <= 2` — that is exactly the neighborhood the distance/shear/bend constraints already govern. (Or reuse the banded linear test from the cross-panel branch, which is equivalent up to rare row-wrap pairs.)
 
-### M2. Cross-garment seams (crossSeams / 'robe froncée') permanently fight self-collision — the gathered waist seam is repelled open every substep
+### M2. [✅ corrigé v59 (seamFree)] Cross-garment seams (crossSeams / 'robe froncée') permanently fight self-collision — the gathered waist seam is repelled open every substep
 **Fichier** : `src/engine/solver/shaders/selfCollide.wgsl`
 
 Line 80: `same_garment = (pi / 2u) == (pj / 2u)` — the seam exclusion NEVER applies between garments, by design for layered outfits. But combineClothMeshes supports crossSeams that SEW two garments together (main.ts 'robe froncée': bodice panels 0-1 sewn to skirt panels 2-3 at the waist, rest = 0.15·spacing). Those seamed pairs — and every near-waist cross-garment pair — sit far below min_dist = 0.6·spacing, so `collide` pushes them apart by 0.3·(min_dist − dist) ≈ 0.14·spacing every substep, while the rigid seam constraint yanks them back to 0.15·spacing on the next distance solve. Result: sustained substep-frequency oscillation and energy injection along the entire waist band, disturbing exactly the gathering (embu) physics this scene exists to demonstrate. Compounding it, combineClothMeshes sets spacing = max(a, b) (ClothMesh.ts:1024), and the skirt is 1.6× wider — so min_dist for the finer bodice is ≈ 0.96 of the bodice's OWN weave spacing, making the repulsion band even wider than 0.6.
@@ -78,14 +82,14 @@ The repulsion in selfCollide.wgsl has no side information: once two cloth region
 
 **Correctif proposé** : Cheap and robust: enforce a CFL-style floor in step(): effectiveSubsteps = max(substeps, ceil(frameDt · maxSpeed / (0.5 · 0.6 · spacing))), or equivalently clamp per-substep displacement (|x − x_prev| ≤ 0.5·min_dist) at the end of integrate. Longer-term, make the repulsion side-aware, e.g. bias the push direction by the local cloth normal (already computed by the normals pass) so wrong-side contacts unhook instead of locking.
 
-### M4. Morph cache keys drop 3 of the 6 sliders — stature/carrure/cuisse changes serve stale bodies and stale grading
+### M4. [✅ corrigé v58 (=C2)] Morph cache keys drop 3 of the 6 sliders — stature/carrure/cuisse changes serve stale bodies and stale grading
 **Fichier** : `/Users/jessymondesir/dev/toile/src/main.ts`
 
 measureFor's cache key (line 153) and morphCache's key (line 276) are `${kind}|${morphs.poitrine}|${morphs.taille}|${morphs.hanches}` but Morphs has six fields (stature, carrure, cuisse as well, morph.ts:17-24). Failure: set carrure to 110 %, build caches a measurement; move carrure again (poitrine/taille/hanches unchanged) → measureFor returns the FIRST carrure's measurements, so shoulderR/dressScale/topScale (lines 290-295) grade the garment for the wrong body. Worse for scan avatars: morphCache returns the previously morphed SDF grid and render mesh, so moving the stature/carrure/cuisse sliders visibly does nothing after the first morph — the collider and the displayed body stay stale.
 
 **Correctif proposé** : Include all six morph values in both keys (e.g. `${kind}|${Object.values(morphs).join('|')}`), or key on a serialized Morphs object. One-line fixes at main.ts:153 and main.ts:276.
 
-### M5. Surface-nets body re-meshed on every build for morphed bodies, and bodyMeshCache leaks unboundedly
+### M5. [✅ corrigé v64] Surface-nets body re-meshed on every build for morphed bodies, and bodyMeshCache leaks unboundedly
 **Fichier** : `/Users/jessymondesir/dev/toile/src/app/SceneGeometry.ts`
 
 bodyMeshCache (line 34) is a Map keyed by SdfPrim[] ARRAY IDENTITY. morphPrims (morph.ts:61) returns a fresh array on every build, and build() runs on every slider commit / pattern-handle release (main.ts:243). So with any non-neutral morph, each build (a) misses the cache and re-runs surfaceNets over ~1.3 M grid corners × ~30 smin'd round cones at cellSize 0.008 (bounds ~0.86×1.79×0.5 m → 108×192×63 cells) plus ~6 sdBody evals per output vertex for normals — a 0.5–2 s main-thread freeze per slider commit, not the '~100 ms' the comment claims; and (b) inserts a new ~2–3 MB mesh (≈40 k verts pos+nrm+indices) into the Map which is never evicted — dragging sliders for a minute leaks tens of MB. bodyRestVertices (used for skinning) hits the same path.
@@ -106,7 +110,7 @@ Lines 143-146: `await loadScanAvatar('homme-scan')` then `await loadScanAvatar('
 
 **Correctif proposé** : Load lazily on first selection of a scan body (cache the promise in the `scans` record; onBody awaits it then build()s), or at minimum start both with Promise.all in the background and don't await before build(). Expected: startup drops to network-free time; scan selection shows a brief one-time load instead.
 
-### M8. Every build() recompiles all 10 shader modules and pipelines synchronously
+### M8. [✅ corrigé v69] Every build() recompiles all 10 shader modules and pipelines synchronously
 **Fichier** : `/Users/jessymondesir/dev/toile/src/engine/solver/ParticleSystem.ts`
 
 The ParticleSystem constructor (lines 310-332) creates 8 compute pipelines with fresh createShaderModule + synchronous createComputePipeline, and ClothRenderer's constructor (lines 293-370) compiles 3 more modules and 2 render pipelines — on EVERY build(), i.e. every resolution/scene/morph/pattern-handle commit (main.ts:243). The WGSL is constant and pipelines are device-lifetime objects independent of mesh size; recompiling them per rebuild adds main-thread jank (sync pipeline compilation can be tens to hundreds of ms on first-run per driver) stacked on top of the mesh regeneration cost.
@@ -134,14 +138,14 @@ isOpening uses fixed v-thresholds (aline vv < 0.13 vs scoop depth 0.12; tshirt/s
 
 **Correctif proposé** : Make the opening test row-aware instead of using fixed slack: a boundary particle is a neckline opening if the CUT neighbour that made it boundary lies inside the scoop region (test the cut neighbour's (u,v) against the scoop inequality), or set the v-threshold to scoopDepth + 1.5/(n-1). Same pattern fixes the 0.01–0.02 x-slacks (e.g. tshirt x < 0.12 vs scoop 0.11, which already narrows the neck ring by one particle at n=32).
 
-### M12. Cross-garment seams (robe froncée waist/embu) are fought by self-collision: gathered seam held open at 0.6·spacing
+### M12. [✅ corrigé v59 (seamFree)] Cross-garment seams (robe froncée waist/embu) are fought by self-collision: gathered seam held open at 0.6·spacing
 **Fichier** : `src/engine/solver/shaders/selfCollide.wgsl`
 
 The 'robe froncée' scene (main.ts:407–417) sews bodice bottom row to skirt top row with seams of rest 0.15·spacing, passing layerB=0 ('they share a boundary, not a surface'). But selfCollide's exclusion (lines 80–84) sets same_garment = (pi/2 == pj/2), which is false between bodice panels {0,1} and skirt panels {2,3}, so every waist-seam pair (and their adjacent rows) is repelled to min_dist = 0.6·spacing (ParticleSystem.ts:523) with 0.3 relaxation each substep — a permanent tug-of-war against the rigid seams. The gathers (embu) that this scene exists to demonstrate are systematically pushed open, with jitter and wasted solver work concentrated at the waist. (min_dist here is even 0.6 of the COMBINED max spacing = the 1.6×-wider skirt's, i.e. ≈ 0.96× the bodice's own weave spacing.)
 
 **Correctif proposé** : Exclude cross-seamed pairs from self-collision: upload a small per-particle flag or a sorted cross-seam pair list from combineClothMeshes and skip pairs where both particles carry the seam flag and are within ~2 rows of the seam row; alternatively treat the seam-adjacent row bands of cross-seamed garment pairs as same_garment. Verify live: waist gap should settle at seamRest, not min_dist.
 
-### M13. Fit-map strain and normals use horizontal spacing for vertical neighbours — baseline strain of −35% to +37% on every non-square panel
+### M13. [✅ corrigé v58 (=C1)] Fit-map strain and normals use horizontal spacing for vertical neighbours — baseline strain of −35% to +37% on every non-square panel
 **Fichier** : `src/app/ClothRenderer.ts`
 
 The normals/strain shader (line 66: strain = sum/cnt/grid.spacing − 1) averages the distances to all four grid neighbours and divides by the single spacing = width/(n−1). Vertical rest distance is height/(n−1), which differs on every real garment: tee width 1.15 vs height 0.75 → vertical neighbours read −35% 'compression' at perfect rest; robe width ≈0.95 vs height 1.3 → +37% fake elongation. The fit map (the tailor feature smuggled in normal.w) is dominated by this constant bias rather than actual fabric strain, and the motif UV scaling has the same anisotropy. Also grid.spacing for combined outfits is max(a,b), further biasing garment a.
@@ -162,7 +166,7 @@ At thighY=0.722 on BODY_FORM, the k=0.04 smooth-min closes the gap between the t
 
 **Correctif proposé** : Treat an unset side as a miss: after the loop, if inner===0 use inner=outer (symmetric leg), and same for the z caliper; alternatively march inner from the crotch outward or measure where sd(0,y,0)>0 guarantees separated legs.
 
-### M16. Every morph-slider release re-runs surfaceNets (930 ms, main thread) and leaks the result into an unbounded identity-keyed cache
+### M16. [✅ corrigé v64] Every morph-slider release re-runs surfaceNets (930 ms, main thread) and leaks the result into an unbounded identity-keyed cache
 **Fichier** : `/Users/jessymondesir/dev/toile/src/app/SceneGeometry.ts`
 
 bodyMeshCache (line 34) is a Map keyed by the prims ARRAY. morphPrims returns a fresh array per build, so every slider release misses the cache, re-samples sdBody over ~1.2M grid corners × ~32 prims (measured 930 ms for BODY_FORM_ARMS at cellSize 0.008 — a hard UI freeze per adjustment) and permanently retains the old ~31k-vertex mesh (~1.5 MB/entry) plus its key. buildSkin, by contrast, is only 17 ms — startup skinning cost is a non-issue; the field sampling is the entire cost.
@@ -183,21 +187,21 @@ applyGarment (lines 510-533) copies nearly every numeric field with bare `??`: `
 
 **Correctif proposé** : Add a `num(v, min, max, fallback)` helper (typeof number && Number.isFinite && clamp) and route every scalar through it using the same ranges as the GUI sliders (dressLength 0.9-1.55, flare 0.25-0.5, neck 0.06-0.16, sleeve 0.33-0.47, skirtLength 0.4-0.75, skirtFlare 0.3-0.46, exps -8..-3, friction 0..1, wind 0..12, substeps round+clamp 5..40). Validate resolution against the whitelist [32,64,128], and motifCouleur elements as finite numbers in [0,1].
 
-### M19. Import silently discards the saved body measurements (d.morph never applied)
+### M19. [✅ corrigé v71] Import silently discards the saved body measurements (d.morph never applied)
 **Fichier** : `/Users/jessymondesir/dev/toile/src/app/ControlPanel.ts`
 
 exportGarment() writes a `morph:{stature,carrure,poitrine,taille,hanches,cuisse}` block (line ~420), but applyGarment() never reads `d.morph` — it handles d.sim, d.fabric, d.pattern, d.body, d.scene only. Worse, the call order guarantees loss even of session values: `this.cb.onBody(s.body)` (line 545) triggers main.ts onBody, which resets morphs to NO_MORPH and calls panel.syncMorphCm(baseCm(...)), synchronously overwriting settings.stature/carrure/... with the base body's cm. Then `this.cb.onMorph({stature: s.stature, ...})` (line 546) reads those overwritten base values → ratios all ≈1 → neutral morph. A user who saved a garment fitted on a 160 cm / 120 cm-hips mannequin reopens the file and gets the default figure; the garment file's whole point (reproducible fit) silently fails.
 
 **Correctif proposé** : In applyGarment, read d.morph into local variables (validated numbers, clamped to the slider ranges), call cb.onBody first, then assign the file's cm into settings, updateDisplay, and call cb.onMorph with the file's values (not settings read after onBody).
 
-### M20. Tailor caches keyed on only 3 of 6 morphs — stale grading for stature/carrure/cuisse changes
+### M20. [✅ corrigé v58 (=C2)] Tailor caches keyed on only 3 of 6 morphs — stale grading for stature/carrure/cuisse changes
 **Fichier** : `/Users/jessymondesir/dev/toile/src/main.ts`
 
 measureFor's cache key (line 153) and morphCache's key (line 276) are `${kind}|${morphs.poitrine}|${morphs.taille}|${morphs.hanches}`, but morphScale/morphPrims/morphGrid (morph.ts) warp with all six morphs including stature (uniform scale), carrure (shoulders) and cuisse. Concrete failure: open 'robe' on femme (caches key 'femme|1|1|1' with the unmorphed measure), then set stature to 150 cm. build() computes correctly morphed bodyPrims, but measureFor returns the cached 175 cm measure → dressScale=1, dyShoulder=0 → the dress is cut for the tall body and spawned at topY 1.6 m, floating above the 150 cm mannequin's shoulders; it drops and slides off. Same for carrure, which directly drives shoulderR → dressScale/topScale (the 70/30 grade), and for scan bodies the morphed SDF grid/mesh cache returns a body morphed with stale stature/carrure/cuisse.
 
 **Correctif proposé** : Include all six morph values in both cache keys, e.g. a helper `morphKey = (k) => `${k}|${morphs.stature}|${morphs.carrure}|${morphs.poitrine}|${morphs.taille}|${morphs.hanches}|${morphs.cuisse}``, used at lines 153 and 276.
 
-### M21. Keyboard R (reset) and P (pins) don't wake the sleeping solver — cloth freezes mid-air
+### M21. [✅ corrigé v71] Keyboard R (reset) and P (pins) don't wake the sleeping solver — cloth freezes mid-air
 **Fichier** : `/Users/jessymondesir/dev/toile/src/main.ts`
 
 The keydown handler (lines 823-832) calls system.reset() / setCornerPins() but never wake(), unlike the panel's onReset/onPins callbacks which do. With the scene settled and asleep=true (sim suspended), pressing R writes the rest-pose positions to the GPU: the renderer immediately draws the cloth teleported back to its initial drop cylinder, but `if (!sleeping) system.step(...)` keeps skipping the solve — the fabric hangs frozen in mid-air indefinitely (until some other interaction happens to wake it). Pressing P to release pinned corners while asleep likewise leaves the cloth pinned-looking: it should fall but stays frozen. Looks exactly like a crash to a non-developer.

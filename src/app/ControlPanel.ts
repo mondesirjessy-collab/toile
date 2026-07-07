@@ -212,7 +212,12 @@ export class ControlPanel {
 
     this.gui = new GUI({ title: 'TOILE — solveur' });
     // Accès de test en dev : piloter les contrôleurs sans dépendre de clics pixel.
-    if (import.meta.env.DEV) (window as unknown as { __toileGui?: GUI }).__toileGui = this.gui;
+    // __toileImport rejoue un .toile.json sans passer par le dialogue de fichier.
+    if (import.meta.env.DEV) {
+      const w = window as unknown as { __toileGui?: GUI; __toileImport?: (doc: unknown) => void };
+      w.__toileGui = this.gui;
+      w.__toileImport = (doc: unknown) => this.applyGarment(doc);
+    }
 
     this.controllers.push(
       this.gui
@@ -548,6 +553,18 @@ export class ControlPanel {
     // into settings), so remember the file's scene and restore it at the end.
     const targetScene = s.scene;
     this.cb.onBody(s.body);
+    // onBody resets the measurements to the new body's baseline, so the saved
+    // ones must be restored AFTER it — otherwise the import silently drops the
+    // figure it was cut for and reverts to the default body.
+    if (d.morph) {
+      s.stature = num(d.morph.stature, 145, 195, s.stature);
+      s.carrure = num(d.morph.carrure, 34, 60, s.carrure);
+      s.poitrine = num(d.morph.poitrine, 65, 130, s.poitrine);
+      s.taille = num(d.morph.taille, 55, 125, s.taille);
+      s.hanches = num(d.morph.hanches, 75, 140, s.hanches);
+      s.cuisse = num(d.morph.cuisse, 40, 78, s.cuisse);
+      for (const c of Object.values(this.morphControllers)) c.updateDisplay();
+    }
     this.cb.onMorph({
       stature: s.stature,
       carrure: s.carrure,
