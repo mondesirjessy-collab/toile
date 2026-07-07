@@ -15,6 +15,30 @@ describe('frontOutline (cutting layout)', () => {
     expect(h).toBeCloseTo(750, 0);
   });
 
+  it('draws a seam allowance that wraps the cut line ~10 mm outside it', () => {
+    const { segs, seam } = frontOutline(dress);
+    expect(seam.length).toBe(segs.length); // one offset per boundary edge
+    const bbox = (list: { x1: number; y1: number; x2: number; y2: number }[]) => {
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (const s of list) {
+        minX = Math.min(minX, s.x1, s.x2);
+        maxX = Math.max(maxX, s.x1, s.x2);
+        minY = Math.min(minY, s.y1, s.y2);
+        maxY = Math.max(maxY, s.y1, s.y2);
+      }
+      return { minX, maxX, minY, maxY };
+    };
+    const cut = bbox(segs);
+    const sa = bbox(seam);
+    // The allowance encloses the cut line and pushes out ~10 mm each way.
+    expect(sa.minX).toBeLessThan(cut.minX);
+    expect(sa.maxX).toBeGreaterThan(cut.maxX);
+    expect(sa.minY).toBeLessThan(cut.minY);
+    expect(sa.maxY).toBeGreaterThan(cut.maxY);
+    expect(cut.minX - sa.minX).toBeGreaterThan(5);
+    expect(cut.minX - sa.minX).toBeLessThan(15);
+  });
+
   it('an outfit lays its front pieces side by side instead of stacking them', () => {
     const outfit = combineClothMeshes(tee, dress, [], 1);
     const { segs, w, pieces } = frontOutline(outfit);

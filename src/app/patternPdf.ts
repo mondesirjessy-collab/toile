@@ -28,17 +28,23 @@ interface Segment {
  * their cut lines; instead each piece is laid out side by side on the sheet,
  * like a real cutting layout. Exposed for tests.
  */
-export function frontOutline(mesh: ClothMeshData): { segs: Segment[]; w: number; h: number; pieces: number } {
+/** Seam allowance offset, meters (drawn 1 cm outside the cut line). */
+const SEAM = 0.01;
+
+export function frontOutline(mesh: ClothMeshData): { segs: Segment[]; seam: Segment[]; w: number; h: number; pieces: number } {
   const panelSize = mesh.resolution * mesh.resolution;
 
   // Boundary = triangle edges owned by a single front triangle, per garment.
-  const byGarment = new Map<number, Map<string, [number, number]>>();
-  const addEdge = (g: number, a: number, b: number): void => {
+  // Each surviving edge keeps its owning triangle's THIRD vertex — the
+  // interior point — so the seam allowance can be offset the right way out,
+  // even around a concave neckline.
+  const byGarment = new Map<number, Map<string, [number, number, number]>>();
+  const addEdge = (g: number, a: number, b: number, third: number): void => {
     let edges = byGarment.get(g);
     if (!edges) byGarment.set(g, (edges = new Map()));
     const key = a < b ? `${a}-${b}` : `${b}-${a}`;
     if (edges.has(key)) edges.delete(key);
-    else edges.set(key, [a, b]);
+    else edges.set(key, [a, b, third]);
   };
   for (let t = 0; t < mesh.triangleIndices.length; t += 3) {
     const a = mesh.triangleIndices[t]!;
@@ -47,9 +53,9 @@ export function frontOutline(mesh: ClothMeshData): { segs: Segment[]; w: number;
     const g = panel >> 1;
     const b = mesh.triangleIndices[t + 1]!;
     const c = mesh.triangleIndices[t + 2]!;
-    addEdge(g, a, b);
-    addEdge(g, b, c);
-    addEdge(g, a, c);
+    addEdge(g, a, b, c);
+    addEdge(g, b, c, a);
+    addEdge(g, a, c, b);
   }
 
   // Rest pose is flat and vertical: (x, y) in meters → mm, y flipped so each
@@ -57,6 +63,7 @@ export function frontOutline(mesh: ClothMeshData): { segs: Segment[]; w: number;
   const GUTTER = 0.03; // 30 mm between pieces on the sheet
   const P = (i: number): [number, number] => [mesh.positions[i * 4]!, mesh.positions[i * 4 + 1]!];
   const segs: Segment[] = [];
+  const seam: Segment[] = [];
   let cursorX = 0;
   let h = 0;
   let pieces = 0;
@@ -75,25 +82,38 @@ export function frontOutline(mesh: ClothMeshData): { segs: Segment[]; w: number;
         maxY = Math.max(maxY, y);
       }
     }
-    for (const [a, b] of edges.values()) {
+    const toPaper = (x: number, y: number): [number, number] => [(x - minX + cursorX) * 1000, (maxY - y) * 1000];
+    for (const [a, b, c] of edges.values()) {
       const [ax, ay] = P(a);
       const [bx, by] = P(b);
-      segs.push({
-        x1: (ax - minX + cursorX) * 1000,
-        y1: (maxY - ay) * 1000,
-        x2: (bx - minX + cursorX) * 1000,
-        y2: (maxY - by) * 1000,
-      });
+      const [px1, py1] = toPaper(ax, ay);
+      const [px2, py2] = toPaper(bx, by);
+      segs.push({ x1: px1, y1: py1, x2: px2, y2: py2 });
+      // Outward edge normal: perpendicular to (b−a), flipped to point AWAY
+      // from the interior vertex c. Offset both ends by the seam allowance.
+      let nx = -(by - ay);
+      let ny = bx - ax;
+      const len = Math.hypot(nx, ny) || 1;
+      nx /= len;
+      ny /= len;
+      const [cx, cy] = P(c);
+      if (nx * (cx - (ax + bx) / 2) + ny * (cy - (ay + by) / 2) > 0) {
+        nx = -nx;
+        ny = -ny;
+      }
+      const [sx1, sy1] = toPaper(ax + nx * SEAM, ay + ny * SEAM);
+      const [sx2, sy2] = toPaper(bx + nx * SEAM, by + ny * SEAM);
+      seam.push({ x1: sx1, y1: sy1, x2: sx2, y2: sy2 });
     }
     cursorX += maxX - minX + GUTTER;
     h = Math.max(h, maxY - minY);
     pieces++;
   }
-  return { segs, w: Math.max(0, cursorX - GUTTER) * 1000, h: h * 1000, pieces };
+  return { segs, seam, w: Math.max(0, cursorX - GUTTER) * 1000, h: h * 1000, pieces };
 }
 
 export function exportPatternPdf(mesh: ClothMeshData, garmentName: string): void {
-  const { segs, w, h, pieces } = frontOutline(mesh);
+  const { segs, seam, w, h, pieces } = frontOutline(mesh);
   if (!segs.length || !Number.isFinite(w + h)) return;
 
   const cellW = PAGE_W - 2 * MARGIN - OVERLAP;
@@ -120,20 +140,32 @@ export function exportPatternPdf(mesh: ClothMeshData, garmentName: string): void
       pdf.setTextColor(140);
       pdf.text(`${garmentName} — page ${String.fromCharCode(65 + r)}${c + 1} / ${String.fromCharCode(65 + rows - 1)}${cols}`, MARGIN, MARGIN - 3);
 
-      // Cut lines (échelle 1:1).
+      // Segment drawer, clipped to this page (with a little slack).
+      const draw = (list: Segment[]): void => {
+        for (const s of list) {
+          const x1 = s.x1 - ox + MARGIN;
+          const y1 = s.y1 - oy + MARGIN;
+          const x2 = s.x2 - ox + MARGIN;
+          const y2 = s.y2 - oy + MARGIN;
+          const pad = 5;
+          if (Math.max(x1, x2) < MARGIN - pad || Math.min(x1, x2) > PAGE_W - MARGIN + pad) continue;
+          if (Math.max(y1, y2) < MARGIN - pad || Math.min(y1, y2) > PAGE_H - MARGIN + pad) continue;
+          pdf.line(x1, y1, x2, y2);
+        }
+      };
+
+      // Seam-allowance line (dashed, grey): 1 cm outside the cut line, the
+      // edge you actually cut along. Drawn first so the cut line sits on top.
+      pdf.setDrawColor(150);
+      pdf.setLineWidth(0.3);
+      pdf.setLineDashPattern([2.5, 1.5], 0);
+      draw(seam);
+      pdf.setLineDashPattern([], 0);
+
+      // Cut/stitch line (échelle 1:1): the seam line, where the pieces join.
       pdf.setDrawColor(0);
       pdf.setLineWidth(0.5);
-      for (const s of segs) {
-        const x1 = s.x1 - ox + MARGIN;
-        const y1 = s.y1 - oy + MARGIN;
-        const x2 = s.x2 - ox + MARGIN;
-        const y2 = s.y2 - oy + MARGIN;
-        // Keep only segments touching this page (with a little slack).
-        const pad = 5;
-        if (Math.max(x1, x2) < MARGIN - pad || Math.min(x1, x2) > PAGE_W - MARGIN + pad) continue;
-        if (Math.max(y1, y2) < MARGIN - pad || Math.min(y1, y2) > PAGE_H - MARGIN + pad) continue;
-        pdf.line(x1, y1, x2, y2);
-      }
+      draw(segs);
 
       if (r === 0 && c === 0) {
         // Calibration square + grain line + instructions.
@@ -150,7 +182,7 @@ export function exportPatternPdf(mesh: ClothMeshData, garmentName: string): void
           MARGIN + 2,
           PAGE_H - MARGIN - 6,
         );
-        pdf.text('marges de couture NON incluses : ajouter 1 cm à la coupe', MARGIN + 2, PAGE_H - MARGIN - 2);
+        pdf.text('trait plein = couture · trait pointillé extérieur = coupe (marge 1 cm incluse)', MARGIN + 2, PAGE_H - MARGIN - 2);
         // Grain arrow.
         const gx = MARGIN + 12;
         pdf.setLineWidth(0.5);
