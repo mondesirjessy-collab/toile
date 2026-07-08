@@ -128,14 +128,36 @@ async function main(): Promise<void> {
     document.getElementById('pattern') as HTMLCanvasElement,
     (id, value) => applyHandle(id, value),
     (piece) => {
-      // The freeform outline changed (vertex moved / added / deleted) — commit
-      // the new piece and re-cut.
-      if (draft) {
-        draft.piece = piece;
-        build();
-      }
+      // The freeform outline changed (vertex moved / added / deleted / drawn) —
+      // commit the new piece and re-cut.
+      draft = { format: 'toile-draft', version: 1, gridN: resolution as 32 | 64 | 128, piece };
+      build();
     },
   );
+
+  // --- Atelier CAD toolbar (freeform 2D drawing) ---
+  const atelierBar = document.getElementById('atelier-bar') as HTMLElement;
+  const patternBox = document.getElementById('patternBox') as HTMLElement;
+  let bigPanel = false;
+  const setBig = (on: boolean): void => {
+    bigPanel = on;
+    patternBox.classList.toggle('big', on);
+    // Fit the big panel to the window (leave room for the toolbar/label/padding).
+    const w = on ? Math.min(760, Math.round(window.innerWidth * 0.7)) : 250;
+    const h = on ? Math.min(720, window.innerHeight - 96) : 290;
+    patternView.resize(w, h);
+  };
+  const updateAtelierBar = (): void => {
+    atelierBar.classList.toggle('on', sceneMode === 'atelier');
+    if (sceneMode !== 'atelier' && bigPanel) setBig(false);
+  };
+  (document.getElementById('at-big') as HTMLElement).addEventListener('click', () => setBig(!bigPanel));
+  (document.getElementById('at-new') as HTMLElement).addEventListener('click', () => {
+    if (!bigPanel) setBig(true);
+    const dims = (draft ?? defaultDraft(resolution as 32 | 64 | 128)).piece;
+    patternView.startPen(dims.width, dims.height, dims.topY, dims.gap);
+  });
+  (document.getElementById('at-pen') as HTMLElement).addEventListener('click', () => patternView.finishPen());
   const profiler = new GpuProfiler(device);
 
   // Fabric params kept across rebuilds (a resolution change recreates the sim).
@@ -573,7 +595,8 @@ async function main(): Promise<void> {
     patternView.draw(mesh, patternHandles()); // refresh the 2D cutting-layout inset
     // Freeform editing: hand the atelier piece to the 2D view so its outline
     // vertices become draggable; other scenes leave draft mode.
-    patternView.setDraft(sceneMode === 'atelier' && draft ? draft.piece : null);
+    if (!(sceneMode === 'atelier' && patternView.drawing)) patternView.setDraft(sceneMode === 'atelier' && draft ? draft.piece : null);
+    updateAtelierBar();
     // Scene-aware hint: the atelier needs its drawing gestures spelled out.
     const hintEl = document.getElementById('hint');
     if (hintEl)

@@ -92,6 +92,9 @@ export class PatternView {
   // A press on an outline edge: a click adds a point; dragging inward pulls a dart.
   private draftEdge: { edge: number; downUV: UV; downSX: number; downSY: number; pointerId: number; apex: UV | null } | null = null;
   private draftSeamA: number | null = null; // first edge picked for a hand-seam (Shift+click)
+  // Pen tool: drawing a new piece from scratch (click to place points, close it).
+  private penMode = false;
+  private penPoints: UV[] = [];
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -165,6 +168,52 @@ export class PatternView {
     this.draftHover = null;
     this.draftEdge = null;
     this.draftSeamA = null;
+  }
+
+  /** Resize the 2D panel canvas (small inset ↔ large CAD panel). */
+  resize(w: number, h: number): void {
+    if (this.canvas.width === w && this.canvas.height === h) return;
+    this.canvas.width = w;
+    this.canvas.height = h;
+    this.staticLayer.width = w;
+    this.staticLayer.height = h;
+    this.staticDirty = true;
+    this.render();
+  }
+
+  /** Start drawing a NEW piece from a blank canvas (pen tool). */
+  startPen(width: number, height: number, topY: number, gap: number): void {
+    this.setDraft({ outline: [], darts: [], seams: [], openEdges: [], width, height, topY, gap });
+    this.penMode = true;
+    this.penPoints = [];
+    this.render();
+  }
+
+  get drawing(): boolean {
+    return this.penMode;
+  }
+
+  /** Close the drawn outline into a piece (≥3 points), seeding a top opening. */
+  finishPen(): void {
+    if (!this.penMode || this.penPoints.length < 3 || !this.draftPiece) return;
+    const outline = this.penPoints.map((p) => [p[0], p[1]] as UV);
+    // Seed the topmost edge as an opening so a body can enter (a fully-sewn
+    // piece would inflate like a sealed pillow).
+    let topEdge = 0;
+    let topV = Infinity;
+    for (let k = 0; k < outline.length; k++) {
+      const v = (outline[k]![1] + outline[(k + 1) % outline.length]![1]) / 2;
+      if (v < topV) {
+        topV = v;
+        topEdge = k;
+      }
+    }
+    const next = { ...this.draftPiece, outline, openEdges: [{ from: topEdge, to: (topEdge + 1) % outline.length }] };
+    this.penMode = false;
+    this.penPoints = [];
+    this.setDraft(next);
+    this.render();
+    this.onDraftChange(next);
   }
 
   /** Screen position of an outline vertex: UV → the mesh's rest layout → screen. */
@@ -271,6 +320,24 @@ export class PatternView {
       if (this.draftDrag || e.button !== 0) return;
       const p = this.canvasPoint(e);
       if (!p) return;
+      // Pen: place points to trace a new piece; clicking near the first point
+      // (with ≥3 points) closes it.
+      if (this.penMode) {
+        if (this.penPoints.length >= 3) {
+          const s0 = this.vertexScreen(this.penPoints[0]!);
+          if (s0 && (p[0] - s0[0]) ** 2 + (p[1] - s0[1]) ** 2 <= (HIT_RADIUS * 1.6) ** 2) {
+            this.finishPen();
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+          }
+        }
+        this.penPoints.push(this.screenToUV(p[0], p[1]));
+        this.render();
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       // Shift+click two edges → sew them together (a hand-defined seam).
       if (e.shiftKey) {
         const ne = this.nearestEdge(p[0], p[1]);
@@ -478,7 +545,9 @@ export class PatternView {
 
   private render(): void {
     const ctx = this.ctx;
-    if (!ctx || !this.mesh) return;
+    // Draw when there's a mesh OR a freeform draft (drawing from scratch has no
+    // mesh until the outline closes).
+    if (!ctx || (!this.mesh && !this.draftPiece)) return;
     if (this.staticDirty) {
       this.renderStatic();
       this.staticDirty = false;
@@ -493,18 +562,43 @@ export class PatternView {
   private renderDraft(): void {
     const ctx = this.ctx;
     if (!ctx || !this.tf || !this.draftPiece) return;
+
+    // Pen: draw the growing polyline + points; the first point glows once the
+    // shape can be closed.
+    if (this.penMode) {
+      const sp = this.penPoints.map((uv) => this.vertexScreen(uv)).filter((s): s is [number, number] => s !== null);
+      if (sp.length) {
+        ctx.strokeStyle = 'rgba(127, 178, 255, 0.9)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        sp.forEach((s, i) => (i === 0 ? ctx.moveTo(s[0], s[1]) : ctx.lineTo(s[0], s[1])));
+        ctx.stroke();
+        for (let i = 0; i < sp.length; i++) {
+          const closable = i === 0 && sp.length >= 3;
+          ctx.beginPath();
+          ctx.arc(sp[i]![0], sp[i]![1], closable ? 6 : 4, 0, Math.PI * 2);
+          ctx.fillStyle = closable ? 'rgba(255, 159, 107, 0.95)' : 'rgba(255, 255, 255, 0.92)';
+          ctx.fill();
+        }
+      }
+      return;
+    }
+
     const out = this.draftPreview ?? this.draftPiece.outline;
     const pts = out.map((uv) => this.vertexScreen(uv)).filter((s): s is [number, number] => s !== null);
     if (pts.length !== out.length) return;
 
-    // Preview polygon (only while dragging — the static layer shows the mesh).
-    if (this.draftPreview) {
-      ctx.strokeStyle = 'rgba(127, 178, 255, 0.9)';
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([]);
+    // The piece outline: a filled shape with its cut edges (vector, CAD-style).
+    if (pts.length >= 3) {
       ctx.beginPath();
       pts.forEach((s, i) => (i === 0 ? ctx.moveTo(s[0], s[1]) : ctx.lineTo(s[0], s[1])));
       ctx.closePath();
+      ctx.fillStyle = 'rgba(228, 222, 205, 0.14)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(230, 225, 210, 0.9)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([]);
       ctx.stroke();
     }
 
@@ -592,10 +686,43 @@ export class PatternView {
     const ctx = this.staticLayer.getContext('2d');
     const mesh = this.mesh;
     this.tf = null;
-    if (!ctx || !mesh) return;
+    if (!ctx) return;
     const W = this.staticLayer.width;
     const H = this.staticLayer.height;
     ctx.clearRect(0, 0, W, H);
+
+    // Atelier (freeform) mode: a fixed, mesh-independent transform (the full
+    // width×height cutting field fits the panel) so vertices don't jump as the
+    // outline changes and drawing works even before there's a mesh. A grid
+    // backdrop makes it read like a 2D CAD surface. The draft overlay
+    // (renderDraft) draws the outline, points, darts and seams on top.
+    if (this.draftPiece) {
+      const p = this.draftPiece;
+      const margin = 22;
+      const spanA = p.width;
+      const spanB = p.height;
+      const scale = Math.min((W - 2 * margin) / spanA, (H - 2 * margin) / spanB);
+      const ox = (W - spanA * scale) / 2;
+      const oy = (H - spanB * scale) / 2;
+      this.tf = { minA: -spanA / 2, minB: p.topY - spanB, scale, ox, oy, H };
+      // Grid every ~10 cm.
+      ctx.strokeStyle = 'rgba(237, 233, 223, 0.06)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let gx = -Math.ceil(spanA / 2 / 0.1) * 0.1; gx <= spanA / 2 + 1e-6; gx += 0.1) {
+        const [sx] = this.layoutToScreen(gx, p.topY);
+        ctx.moveTo(sx, this.layoutToScreen(0, p.topY)[1]);
+        ctx.lineTo(sx, this.layoutToScreen(0, p.topY - spanB)[1]);
+      }
+      for (let gy = 0; gy <= spanB + 1e-6; gy += 0.1) {
+        const [, sy] = this.layoutToScreen(0, p.topY - gy);
+        ctx.moveTo(this.layoutToScreen(-spanA / 2, 0)[0], sy);
+        ctx.lineTo(this.layoutToScreen(spanA / 2, 0)[0], sy);
+      }
+      ctx.stroke();
+      return;
+    }
+    if (!mesh) return;
 
     const panelSize = mesh.resolution * mesh.resolution;
     const kept = (i: number): boolean => mesh.invMasses[i]! > 0;

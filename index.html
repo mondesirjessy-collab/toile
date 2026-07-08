@@ -36,7 +36,23 @@
       font-size: 10px; letter-spacing: 0.1em; opacity: 0.55; display: block;
       margin-bottom: 4px;
     }
-    #pattern { display: block; }
+    #pattern { display: block; background: rgba(20, 22, 27, 0.6); border-radius: 3px; }
+    /* Atelier toolbar (freeform CAD): buttons over the 2D plan. */
+    #atelier-bar { display: none; gap: 6px; margin-bottom: 6px; pointer-events: auto; }
+    #atelier-bar.on { display: flex; }
+    #atelier-bar button {
+      font: inherit; font-size: 11px; letter-spacing: 0.04em;
+      color: rgba(237, 233, 223, 0.9); background: rgba(40, 44, 52, 0.9);
+      border: 1px solid rgba(237, 233, 223, 0.18); border-radius: 4px;
+      padding: 3px 9px; cursor: pointer;
+    }
+    #atelier-bar button:hover { background: rgba(60, 66, 78, 0.95); }
+    #atelier-bar button.active { border-color: rgba(255, 159, 107, 0.9); color: rgba(255, 190, 150, 1); }
+    /* Large dedicated 2D drawing panel (CLO-style 2D window). */
+    #patternBox.big {
+      left: 50%; top: 50%; bottom: auto; transform: translate(-50%, -50%);
+      background: rgba(8, 9, 12, 0.97); padding: 12px 14px 10px; z-index: 15;
+    }
     header {
       position: fixed; top: 0; left: 0; right: 0;
       display: flex; justify-content: space-between; align-items: baseline;
@@ -67,7 +83,7 @@
   <canvas id="view"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 3 — atelier : dessin · pinces · coutures · v85</small></span>
+    <span class="title">TOILE<small>phase 3 — atelier : plan 2D · plume · dessin libre · v86</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
       <span id="hint">glisser sur le tissu : le tirer · glisser à côté : tourner · clic droit + glisser : se déplacer · molette : zoom · R : reset</span>
@@ -75,6 +91,11 @@
   </header>
   <div id="patternBox">
     <span class="label">PLAN DE COUPE</span>
+    <div id="atelier-bar">
+      <button id="at-new" title="Repartir d'une toile vierge et tracer une pièce à la plume">✎ Nouvelle pièce</button>
+      <button id="at-pen" title="Fermer la forme dessinée (ou cliquer le premier point)">Terminer</button>
+      <button id="at-big" title="Basculer le grand panneau de dessin 2D">⤢ Grand plan</button>
+    </div>
     <canvas id="pattern" width="250" height="290"></canvas>
   </div>
   <div id="overlay" hidden></div>
