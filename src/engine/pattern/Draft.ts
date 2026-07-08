@@ -148,6 +148,49 @@ export function runCoversEdge(run: EdgeRun, edge: number, nV: number): boolean {
   return false;
 }
 
+/** Shift an edge-run's indices when a vertex is inserted at position `at`. */
+function shiftRunInsert(r: EdgeRun, at: number): EdgeRun {
+  return { from: r.from >= at ? r.from + 1 : r.from, to: r.to >= at ? r.to + 1 : r.to };
+}
+
+/** Shift/clamp an edge-run when the vertex at `at` is removed (nV = new length). */
+function shiftRunDelete(r: EdgeRun, at: number, nV: number): EdgeRun {
+  const adj = (i: number): number => Math.min(nV - 1, Math.max(0, i > at ? i - 1 : i === at ? Math.max(0, at - 1) : i));
+  return { from: adj(r.from), to: adj(r.to) };
+}
+
+/**
+ * Insert a new outline vertex right after edge `edge` (i.e. between vertices
+ * `edge` and `edge+1`), at UV `uv`. Returns a NEW piece with openEdges/seam
+ * runs re-indexed so they still point at the same boundary. Pure.
+ */
+export function insertOutlineVertex(piece: DraftPiece, edge: number, uv: UV): DraftPiece {
+  const at = edge + 1; // new vertex index
+  const outline = [...piece.outline.slice(0, at), [uv[0], uv[1]] as UV, ...piece.outline.slice(at)];
+  return {
+    ...piece,
+    outline,
+    openEdges: piece.openEdges.map((r) => shiftRunInsert(r, at)),
+    seams: piece.seams.map((s) => ({ a: shiftRunInsert(s.a, at), b: shiftRunInsert(s.b, at) })),
+  };
+}
+
+/**
+ * Remove the outline vertex at `index` (no-op if that would leave < 3 vertices).
+ * Returns a NEW piece with openEdges/seam runs re-indexed. Pure.
+ */
+export function deleteOutlineVertex(piece: DraftPiece, index: number): DraftPiece {
+  if (piece.outline.length <= 3) return piece;
+  const outline = piece.outline.filter((_, i) => i !== index);
+  const nV = outline.length;
+  return {
+    ...piece,
+    outline,
+    openEdges: piece.openEdges.map((r) => shiftRunDelete(r, index, nV)),
+    seams: piece.seams.map((s) => ({ a: shiftRunDelete(s.a, index, nV), b: shiftRunDelete(s.b, index, nV) })),
+  };
+}
+
 /**
  * Compile a piece's openEdges into the UV predicate generateSeamedPanels wants:
  * a boundary cell is "open" (not mirror-sewn) when its nearest outline edge

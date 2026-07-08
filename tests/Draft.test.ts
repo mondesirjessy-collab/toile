@@ -5,6 +5,8 @@ import {
   isSelfIntersecting,
   sanitizeDraft,
   defaultDraft,
+  insertOutlineVertex,
+  deleteOutlineVertex,
   type UV,
 } from '../src/engine/pattern/Draft';
 import { generateSeamedPanels, countMaskIslands, type ClothMeshData } from '../src/engine/cloth/ClothMesh';
@@ -81,6 +83,24 @@ describe('Draft geometry', () => {
   it('rejects a non-draft object', () => {
     expect(sanitizeDraft(null).format).toBe('toile-draft');
     expect(sanitizeDraft({ format: 'nope' }).piece.outline.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('insert/delete outline vertices and re-index the open runs', () => {
+    const base = defaultDraft(64).piece; // 7 vertices, openEdges [{1,3},{5,6}]
+    // Insert on edge 2 (between v2 and v3) → new vertex at index 3; runs ≥3 shift +1.
+    const ins = insertOutlineVertex(base, 2, [0.55, 0.06]);
+    expect(ins.outline.length).toBe(8);
+    expect(ins.outline[3]).toEqual([0.55, 0.06]);
+    expect(ins.openEdges[0]).toEqual({ from: 1, to: 4 }); // to 3 → 4 (was ≥3)
+    expect(ins.openEdges[1]).toEqual({ from: 6, to: 7 }); // {5,6} → {6,7}
+    // Delete brings it back toward the original count and re-indexes.
+    const del = deleteOutlineVertex(ins, 3);
+    expect(del.outline.length).toBe(7);
+    expect(del.outline).toEqual(base.outline);
+    // Never drop below a triangle.
+    let tri = { ...base, outline: base.outline.slice(0, 3) };
+    tri = deleteOutlineVertex(tri, 0);
+    expect(tri.outline.length).toBe(3);
   });
 });
 

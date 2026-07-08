@@ -127,10 +127,11 @@ async function main(): Promise<void> {
   const patternView = new PatternView(
     document.getElementById('pattern') as HTMLCanvasElement,
     (id, value) => applyHandle(id, value),
-    (outline) => {
-      // A freeform outline vertex was dragged — commit it and re-cut the piece.
+    (piece) => {
+      // The freeform outline changed (vertex moved / added / deleted) — commit
+      // the new piece and re-cut.
       if (draft) {
-        draft.piece.outline = outline.map((p) => [p[0], p[1]] as [number, number]);
+        draft.piece = piece;
         build();
       }
     },

@@ -15,7 +15,7 @@
  * actually lands on a handle; everything else falls through untouched.
  */
 import type { ClothMeshData } from '../engine/cloth/ClothMesh';
-import type { UV } from '../engine/pattern/Draft';
+import { insertOutlineVertex, deleteOutlineVertex, type UV, type DraftPiece } from '../engine/pattern/Draft';
 
 /** One draggable measurement, defined against its garment's cutting grid. */
 export interface PatternHandleSpec {
@@ -47,6 +47,7 @@ export function handleValueFromLayout(h: PatternHandleSpec, x: number, y: number
 }
 
 const HIT_RADIUS = 12;
+const EDGE_HIT = 8; // click within this many px of an outline edge → insert a vertex
 
 interface DragState {
   index: number;
@@ -82,8 +83,8 @@ export class PatternView {
 
   // Freeform "atelier" editing: when a draft piece is set, the outline vertices
   // become draggable handles (a separate path from the parametric handles).
-  private readonly onDraftChange: (outline: UV[]) => void;
-  private draftPiece: { outline: UV[]; width: number; height: number; topY: number } | null = null;
+  private readonly onDraftChange: (piece: DraftPiece) => void;
+  private draftPiece: DraftPiece | null = null;
   private draftPreview: UV[] | null = null; // live copy while dragging a vertex
   private draftDrag: { vertex: number; pointerId: number; grabDX: number; grabDY: number } | null = null;
   private draftHover: number | null = null;
@@ -91,7 +92,7 @@ export class PatternView {
   constructor(
     canvas: HTMLCanvasElement,
     onChange: (id: string, value: number) => void = () => {},
-    onDraftChange: (outline: UV[]) => void = () => {},
+    onDraftChange: (piece: DraftPiece) => void = () => {},
   ) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
@@ -104,8 +105,25 @@ export class PatternView {
     window.addEventListener('pointermove', this.onMove, true);
     window.addEventListener('pointerup', this.onUp, true);
     window.addEventListener('pointercancel', this.onCancel, true);
+    window.addEventListener('dblclick', this.onDblClick, true);
     if (import.meta.env.DEV) (window as unknown as { __toilePattern?: PatternView }).__toilePattern = this;
   }
+
+  /** Double-click an outline vertex to remove it (freeform drawing). */
+  private readonly onDblClick = (e: MouseEvent): void => {
+    if (!this.draftPiece) return;
+    const p = this.canvasPoint(e);
+    if (!p) return;
+    const v = this.pickVertex(p[0], p[1]);
+    if (v === null) return; // not on a vertex → let the 3D canvas handle it
+    const next = deleteOutlineVertex(this.draftPiece, v);
+    if (next.outline.length === this.draftPiece.outline.length) return; // ≤3 guard
+    e.preventDefault();
+    e.stopPropagation();
+    this.setDraft(next);
+    this.render();
+    this.onDraftChange(next);
+  };
 
   /** DEV: current outline vertices in canvas-local pixels (for input tests). */
   debugVertexScreens(): [number, number][] {
@@ -128,9 +146,15 @@ export class PatternView {
   }
 
   /** Enter freeform draft editing (atelier) with `piece`, or leave it (null). */
-  setDraft(piece: { outline: UV[]; width: number; height: number; topY: number } | null): void {
+  setDraft(piece: DraftPiece | null): void {
     this.draftPiece = piece
-      ? { width: piece.width, height: piece.height, topY: piece.topY, outline: piece.outline.map((p) => [p[0], p[1]] as UV) }
+      ? {
+          ...piece,
+          outline: piece.outline.map((p) => [p[0], p[1]] as UV),
+          openEdges: piece.openEdges.map((r) => ({ ...r })),
+          seams: piece.seams.map((s) => ({ a: { ...s.a }, b: { ...s.b } })),
+          darts: piece.darts.map((d) => ({ apex: [...d.apex] as UV, legA: [...d.legA] as UV, legB: [...d.legB] as UV })),
+        }
       : null;
     this.draftPreview = null;
     this.draftDrag = null;
@@ -163,11 +187,32 @@ export class PatternView {
   }
 
   /** Pointer position in canvas pixels, or null when outside the inset. */
-  private canvasPoint(e: PointerEvent): [number, number] | null {
+  private canvasPoint(e: MouseEvent): [number, number] | null {
     const r = this.canvas.getBoundingClientRect();
     const x = e.clientX - r.left;
     const y = e.clientY - r.top;
     return x >= 0 && y >= 0 && x <= r.width && y <= r.height ? [x, y] : null;
+  }
+
+  /** Nearest outline edge to a screen point + the closest point on it. */
+  private nearestEdge(px: number, py: number): { edge: number; sx: number; sy: number; dist: number } | null {
+    const out = this.draftPreview ?? this.draftPiece?.outline;
+    if (!out || !this.tf) return null;
+    let best = { edge: -1, sx: 0, sy: 0, dist: Infinity };
+    for (let k = 0; k < out.length; k++) {
+      const a = this.vertexScreen(out[k]!);
+      const b = this.vertexScreen(out[(k + 1) % out.length]!);
+      if (!a || !b) continue;
+      const abx = b[0] - a[0];
+      const aby = b[1] - a[1];
+      const len2 = abx * abx + aby * aby || 1e-6;
+      const t = Math.min(1, Math.max(0, ((px - a[0]) * abx + (py - a[1]) * aby) / len2));
+      const sx = a[0] + t * abx;
+      const sy = a[1] + t * aby;
+      const d = Math.hypot(px - sx, py - sy);
+      if (d < best.dist) best = { edge: k, sx, sy, dist: d };
+    }
+    return best.edge >= 0 ? best : null;
   }
 
   private layoutToScreen(x: number, y: number): [number, number] {
@@ -221,7 +266,20 @@ export class PatternView {
       const p = this.canvasPoint(e);
       if (!p) return;
       const v = this.pickVertex(p[0], p[1]);
-      if (v === null) return;
+      if (v === null) {
+        // Not on a vertex: a click near an outline edge INSERTS a point there
+        // (freeform drawing). Empty inset space falls through to 3D orbit.
+        const ne = this.nearestEdge(p[0], p[1]);
+        if (ne && ne.dist <= EDGE_HIT) {
+          const next = insertOutlineVertex(this.draftPiece, ne.edge, this.screenToUV(ne.sx, ne.sy));
+          this.setDraft(next);
+          this.render();
+          e.preventDefault();
+          e.stopPropagation();
+          this.onDraftChange(next); // commit + re-cut
+        }
+        return;
+      }
       const s = this.vertexScreen(this.draftPiece.outline[v]!)!;
       this.draftPreview = this.draftPiece.outline.map((q) => [q[0], q[1]] as UV);
       this.draftDrag = { vertex: v, pointerId: e.pointerId, grabDX: p[0] - s[0], grabDY: p[1] - s[1] };
@@ -305,7 +363,7 @@ export class PatternView {
         const moved = Math.abs(preview[v]![0] - old[0]) > 1e-4 || Math.abs(preview[v]![1] - old[1]) > 1e-4;
         this.draftPiece.outline = preview.map((q) => [q[0], q[1]] as UV);
         this.render();
-        if (moved) this.onDraftChange(this.draftPiece.outline); // re-cut only on a real move
+        if (moved) this.onDraftChange(this.draftPiece); // re-cut only on a real move
       } else {
         this.render();
       }
