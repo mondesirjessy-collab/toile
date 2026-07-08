@@ -1,6 +1,6 @@
 import { initGpu, WebGPUNotSupportedError } from './engine/gpu/Device';
 import { ParticleSystem } from './engine/solver/ParticleSystem';
-import { generateClothGrid, generateSeamedPanels, combineClothMeshes, type CrossSeam } from './engine/cloth/ClothMesh';
+import { generateClothGrid, generateSeamedPanels, combineClothMeshes, type CrossSeam, type ClothMeshData } from './engine/cloth/ClothMesh';
 import { defaultDraft, compileDraft, compileAssembly, sanitizeDraft, type DraftDoc, type AssemblySeam } from './engine/pattern/Draft';
 import type { SceneMode } from './app/ControlPanel';
 import { ClothRenderer, DEFAULT_FABRIC } from './app/ClothRenderer';
@@ -163,6 +163,51 @@ function avatarSilhouette(positions: Float32Array, indices: Uint32Array): Avatar
   return { minX, maxX, minY, maxY, rects };
 }
 
+/**
+ * A rectangular tube "sleeve" (multi-piece stage 1): its own 2-panel mesh from
+ * the EXISTING generateSeamedPanels, spawned beside the body on the given side.
+ * Sewn to the body's armhole by armholeCrossSeams + combineClothMeshes (the same
+ * cross-garment sewing proven on the gathered dress). It hangs from the armhole
+ * at this stage; wrapping the arm is a later step.
+ */
+function sleeveMesh(n: number, side: 'L' | 'R', bodyTopY: number): ClothMeshData {
+  const mesh = generateSeamedPanels({ resolution: n, width: 0.28, height: 0.45, gap: 0.3, topY: bodyTopY - 0.04, shape: 'rect' });
+  const dx = (side === 'R' ? 1 : -1) * 0.55; // spawn beside the arm; the seam pulls it in
+  for (let i = 0; i < mesh.count; i++) mesh.positions[i * 4] = mesh.positions[i * 4]! + dx;
+  return mesh;
+}
+
+/**
+ * Cross-seams sewing a sleeve's top edge (row 0 of both panels) to the body's
+ * upper-side boundary (the armhole, by convention until the 2D editor lets the
+ * user pick the armhole edge). Every sleeve-top cell is sewn, gathering onto the
+ * shorter armhole run (embu), on both front and back panels.
+ */
+function armholeCrossSeams(base: ClothMeshData, side: 'L' | 'R', n: number): CrossSeam[] {
+  const ps = n * n;
+  const kept = (local: number): boolean => base.invMasses[local]! > 0;
+  const armBot = Math.max(2, Math.round(0.22 * n)); // shoulder band, top ~22% of rows
+  const arm: number[] = []; // body front-panel local cells: one per row of the upper side
+  for (let v = 1; v <= armBot; v++) {
+    let best = -1;
+    for (let u = 0; u < n; u++) {
+      if (!kept(v * n + u)) continue;
+      if (side === 'R') best = u; // rightmost kept
+      else if (best < 0) best = u; // leftmost kept
+    }
+    if (best >= 0) arm.push(v * n + best);
+  }
+  const cross: CrossSeam[] = [];
+  if (!arm.length) return cross;
+  for (let p = 0; p < 2; p++) {
+    for (let k = 0; k < n; k++) {
+      const bodyLocal = arm[Math.min(arm.length - 1, Math.floor((k * arm.length) / n))]!;
+      cross.push({ i: p * ps + bodyLocal, j: base.count + p * ps + k /* sleeve top row */ });
+    }
+  }
+  return cross;
+}
+
 async function main(): Promise<void> {
   const canvas = document.getElementById('view') as HTMLCanvasElement;
   const mirror = document.getElementById('mirror') as HTMLCanvasElement;
@@ -274,6 +319,7 @@ async function main(): Promise<void> {
   // pressing Simuler drops it onto the mannequin. Opening the 2D plan / editing
   // returns to design. Only meaningful in the 'atelier' scene.
   let atelierDesign = true;
+  let atelierSleeves = false; // multi-piece stage 1: add system sleeves to the atelier garment
   const simBtn = (): HTMLElement => document.getElementById('at-sim') as HTMLElement;
   const setBig = (on: boolean): void => {
     bigPanel = on;
@@ -323,6 +369,14 @@ async function main(): Promise<void> {
   });
   (document.getElementById('at-pen') as HTMLElement).addEventListener('click', () => patternView.finishPen());
   (document.getElementById('at-sim') as HTMLElement).addEventListener('click', () => simulate());
+  // Multi-piece stage 1: toggle system sleeves on the atelier garment.
+  (document.getElementById('at-sleeves') as HTMLElement).addEventListener('click', (e) => {
+    atelierSleeves = !atelierSleeves;
+    (e.currentTarget as HTMLElement).classList.toggle('active', atelierSleeves);
+    atelierDesign = true; // re-freeze flat so the new pieces are visible before draping
+    simBtn().classList.remove('running');
+    build();
+  });
   const profiler = new GpuProfiler(device);
 
   // Fabric params kept across rebuilds (a resolution change recreates the sim).
@@ -585,7 +639,7 @@ async function main(): Promise<void> {
             const bc = back ? compileDraft(back, resolution) : null;
             // Manual assembly: nothing auto-sews; the user's seams hold it.
             const manual = doc.manual === true;
-            return generateSeamedPanels({
+            const body = generateSeamedPanels({
               resolution,
               width: d.width,
               height: d.height,
@@ -604,6 +658,14 @@ async function main(): Promise<void> {
                 : {}),
               ...(manual ? { manualAssembly: true, assemblySeams: compileAssembly(doc, resolution) } : {}),
             });
+            // Multi-piece (stage 1): sew a rectangular sleeve to each armhole,
+            // via the SAME combineClothMeshes cross-seaming the gathered dress
+            // uses. Gated on the button — without it the mesh is exactly the body.
+            if (!atelierSleeves) return body;
+            const sL = sleeveMesh(resolution, 'L', d.topY);
+            const withL = combineClothMeshes(body, sL, armholeCrossSeams(body, 'L', resolution));
+            const sR = sleeveMesh(resolution, 'R', d.topY);
+            return combineClothMeshes(withL, sR, armholeCrossSeams(withL, 'R', resolution));
           })()
         : sceneMode === 'couture'
         ? generateSeamedPanels({ resolution, width: 1.2, height: 1.2, gap: 1.3, topY: 1.9 })
