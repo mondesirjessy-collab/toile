@@ -346,6 +346,17 @@ export class PatternView {
     return null;
   }
 
+  /** Real length (cm) of an outline edge on a face — for the walk/true-up
+   * feedback (matching two edges' lengths, showing a seam's gather ratio). */
+  private edgeLenCm(face: 'front' | 'back', edge: number): number {
+    const piece = face === 'back' ? this.draftBack : this.draftFront;
+    if (!piece) return 0;
+    const o = piece.outline;
+    const a = o[edge % o.length]!;
+    const b = o[(edge + 1) % o.length]!;
+    return Math.hypot((b[0] - a[0]) * piece.width, (b[1] - a[1]) * piece.height) * 100;
+  }
+
   private pickVertex(px: number, py: number): number | null {
     const out = this.draftPreview ?? this.draftPiece?.outline;
     if (!out) return null;
@@ -870,18 +881,29 @@ export class PatternView {
     };
     drawFree('front', sewnF);
     if (this.draftBack) drawFree('back', sewnB);
-    // Sewn seams: a blue link between the two edges' midpoints (across columns).
-    ctx.strokeStyle = 'rgba(127, 178, 255, 0.95)';
-    ctx.lineWidth = 2;
+    // Sewn seams: a blue link between the two edges' midpoints (across columns),
+    // labelled with the gather ratio (1:1 = flat, >1 = the longer edge fronces).
     for (const s of this.assembly) {
       const pa = edgePts(s.a.face, s.a.from);
       const pb = edgePts(s.b.face, s.b.from);
-      if (pa && pb) {
-        ctx.beginPath();
-        ctx.moveTo((pa[0][0] + pa[1][0]) / 2, (pa[0][1] + pa[1][1]) / 2);
-        ctx.lineTo((pb[0][0] + pb[1][0]) / 2, (pb[0][1] + pb[1][1]) / 2);
-        ctx.stroke();
-      }
+      if (!pa || !pb) continue;
+      const ma: [number, number] = [(pa[0][0] + pa[1][0]) / 2, (pa[0][1] + pa[1][1]) / 2];
+      const mb: [number, number] = [(pb[0][0] + pb[1][0]) / 2, (pb[0][1] + pb[1][1]) / 2];
+      const lo = Math.min(this.edgeLenCm(s.a.face, s.a.from), this.edgeLenCm(s.b.face, s.b.from)) || 1;
+      const hi = Math.max(this.edgeLenCm(s.a.face, s.a.from), this.edgeLenCm(s.b.face, s.b.from));
+      const ratio = hi / lo;
+      const gathered = ratio >= 1.12;
+      ctx.strokeStyle = gathered ? 'rgba(255, 190, 120, 0.95)' : 'rgba(127, 178, 255, 0.95)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(ma[0], ma[1]);
+      ctx.lineTo(mb[0], mb[1]);
+      ctx.stroke();
+      ctx.font = '9px ui-monospace, monospace';
+      ctx.fillStyle = gathered ? 'rgba(255, 190, 120, 1)' : 'rgba(150, 195, 255, 0.9)';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(gathered ? `${ratio.toFixed(1).replace('.', ',')}:1` : '1:1', (ma[0] + mb[0]) / 2, (ma[1] + mb[1]) / 2 - 6);
     }
     // First-picked edge, awaiting the second click.
     if (this.seamPickA) {
@@ -894,6 +916,37 @@ export class PatternView {
         ctx.lineTo(pts[1][0], pts[1][1]);
         ctx.stroke();
       }
+    }
+    // Status line (bottom-left): the picked edge's length while sewing, else how
+    // many edges are still free to sew (0 = fully assembled).
+    const freeOf = (f: 'front' | 'back', sewn: Set<number>): number => {
+      const piece = faceOf(f);
+      if (!piece) return 0;
+      const open = runSet(piece, piece.openEdges);
+      let c = 0;
+      for (let k = 0; k < piece.outline.length; k++) if (!sewn.has(k) && !open.has(k)) c++;
+      return c;
+    };
+    const freeCount = freeOf('front', sewnF) + (this.draftBack ? freeOf('back', sewnB) : 0);
+    ctx.font = '10px ui-monospace, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    if (this.seamPickA) {
+      ctx.fillStyle = 'rgba(255, 159, 107, 0.98)';
+      ctx.fillText(
+        `bord : ${Math.round(this.edgeLenCm(this.seamPickA.face, this.seamPickA.edge))} cm — cliquez le bord à assembler`,
+        8,
+        this.canvas.height - 20,
+      );
+    } else {
+      ctx.fillStyle = freeCount === 0 ? 'rgba(120, 220, 150, 0.95)' : 'rgba(233, 96, 70, 0.9)';
+      ctx.fillText(
+        freeCount === 0
+          ? `${this.assembly.length} coutures · tout est assemblé ✓`
+          : `${this.assembly.length} couture(s) · ${freeCount} bord(s) à coudre`,
+        8,
+        this.canvas.height - 20,
+      );
     }
     } // end assembly overlay (skipped during a vertex drag)
 
