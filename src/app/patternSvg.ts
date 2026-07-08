@@ -13,7 +13,7 @@ const escapeXml = (s: string): string =>
   s.replace(/[<>&'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' })[c]!);
 
 export function exportPatternSvg(mesh: ClothMeshData, garmentName: string, hasIndependentBack = false): void {
-  const { segs, seam, w, h, pieces } = frontOutline(mesh);
+  const { segs, seam, notches, w, h, pieces } = frontOutline(mesh);
   if (!segs.length || !Number.isFinite(w + h)) return; // no front piece → export nothing (parity with the PDF)
   const M = 22; // outer margin, mm
   const PAD = 16; // headroom below the header so the top seam-allowance line clears it
@@ -50,10 +50,11 @@ export function exportPatternSvg(mesh: ClothMeshData, garmentName: string, hasIn
   const body =
     seam.map((s) => line(s, 'seam')).join('') +
     segs.map((s) => line(s, 'cut')).join('') +
+    notches.map((s) => line(s, 'cut')).join('') +
     grain +
     `<rect x="0" y="${cy.toFixed(1)}" width="${sq}" height="${sq}" class="ctrl"/>` +
     `<text x="3" y="${(cy + sq / 2).toFixed(1)}" class="lbl">carré 100 mm — vérifier l'échelle</text>` +
-    `<text x="0" y="${(cy + sq + 8).toFixed(1)}" class="lbl">trait plein = ligne de coupe · pointillé = ligne de couture (marge 1 cm)</text>`;
+    `<text x="0" y="${(cy + sq + 8).toFixed(1)}" class="lbl">trait plein = coupe · pointillé = couture (marge 1 cm) · petits traits = repères de montage (aligner devant/dos)</text>`;
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" width="${totalW.toFixed(1)}mm" height="${totalH.toFixed(1)}mm" ` +
     `viewBox="${(-M).toFixed(1)} ${(-M).toFixed(1)} ${totalW.toFixed(1)} ${totalH.toFixed(1)}">` +

@@ -782,6 +782,30 @@ export class PatternView {
         ctx.stroke();
       }
     }
+
+    // Live size readout of the ACTIVE piece, in real centimetres (its outline
+    // extent × the piece's physical dimensions). Updates as the outline changes.
+    const ap = this.draftPiece;
+    if (ap && ap.outline.length >= 2) {
+      const src = this.draftPreview ?? ap.outline;
+      let uMin = 1;
+      let uMax = 0;
+      let vMin = 1;
+      let vMax = 0;
+      for (const [u, v] of src) {
+        uMin = Math.min(uMin, u);
+        uMax = Math.max(uMax, u);
+        vMin = Math.min(vMin, v);
+        vMax = Math.max(vMax, v);
+      }
+      const wCm = Math.round((uMax - uMin) * ap.width * 100);
+      const hCm = Math.round((vMax - vMin) * ap.height * 100);
+      ctx.font = '10px ui-monospace, monospace';
+      ctx.fillStyle = 'rgba(237, 233, 223, 0.6)';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(`${this.activeBack ? 'dos' : 'devant'} ≈ ${wCm} × ${hCm} cm`, 8, this.canvas.height - 6);
+    }
   }
 
   private renderStatic(): void {
@@ -854,6 +878,17 @@ export class PatternView {
         ctx.lineTo(b[0], b[1]);
       }
       ctx.stroke();
+      // Height ruler: label each 10 cm gridline with its height in cm (0 at the
+      // floor) down the left edge — so pieces read in real centimeters.
+      ctx.font = '9px ui-monospace, monospace';
+      ctx.fillStyle = 'rgba(237, 233, 223, 0.34)';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      for (let gy = Math.ceil(minY / 0.1) * 0.1; gy <= maxY + 1e-6; gy += 0.1) {
+        const cm = Math.round(gy * 100);
+        const [sx, sy] = this.layoutToScreen(minX, gy);
+        ctx.fillText(`${cm}`, sx + 2, sy);
+      }
       // Column labels above each silhouette.
       const cx = (fMinX + fMaxX) / 2;
       ctx.font = '600 11px ui-monospace, monospace';

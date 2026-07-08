@@ -15,6 +15,17 @@ describe('frontOutline (cutting layout)', () => {
     expect(h).toBeCloseTo(750, 0);
   });
 
+  it('emits short balance notches, kept apart from the boundary cut lines', () => {
+    const { segs, seam, notches } = frontOutline(dress);
+    expect(seam.length).toBe(segs.length); // notches do NOT inflate the boundary sets
+    expect(notches.length).toBeGreaterThan(0); // the dress is wide enough for side notches
+    for (const s of notches) {
+      const len = Math.hypot(s.x2 - s.x1, s.y2 - s.y1);
+      expect(len).toBeGreaterThan(3);
+      expect(len).toBeLessThan(10); // a tick, not a seam
+    }
+  });
+
   it('draws a seam allowance that wraps the cut line ~10 mm outside it', () => {
     const { segs, seam } = frontOutline(dress);
     expect(seam.length).toBe(segs.length); // one offset per boundary edge

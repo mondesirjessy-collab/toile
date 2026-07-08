@@ -31,7 +31,9 @@ interface Segment {
 /** Seam allowance offset, meters (drawn 1 cm outside the cut line). */
 const SEAM = 0.01;
 
-export function frontOutline(mesh: ClothMeshData): { segs: Segment[]; seam: Segment[]; w: number; h: number; pieces: number } {
+export function frontOutline(
+  mesh: ClothMeshData,
+): { segs: Segment[]; seam: Segment[]; notches: Segment[]; w: number; h: number; pieces: number } {
   const panelSize = mesh.resolution * mesh.resolution;
 
   // Boundary = triangle edges owned by a single front triangle, per garment.
@@ -64,6 +66,7 @@ export function frontOutline(mesh: ClothMeshData): { segs: Segment[]; seam: Segm
   const P = (i: number): [number, number] => [mesh.positions[i * 4]!, mesh.positions[i * 4 + 1]!];
   const segs: Segment[] = [];
   const seam: Segment[] = [];
+  const notches: Segment[] = []; // short assembly ticks, kept apart from the boundary cut lines
   let cursorX = 0;
   let h = 0;
   let pieces = 0;
@@ -83,12 +86,14 @@ export function frontOutline(mesh: ClothMeshData): { segs: Segment[]; seam: Segm
       }
     }
     const toPaper = (x: number, y: number): [number, number] => [(x - minX + cursorX) * 1000, (maxY - y) * 1000];
+    const gSegs: Segment[] = []; // this piece's cut lines, for the notch scanlines
     for (const [a, b, c] of edges.values()) {
       const [ax, ay] = P(a);
       const [bx, by] = P(b);
       const [px1, py1] = toPaper(ax, ay);
       const [px2, py2] = toPaper(bx, by);
       segs.push({ x1: px1, y1: py1, x2: px2, y2: py2 });
+      gSegs.push({ x1: px1, y1: py1, x2: px2, y2: py2 });
       // Outward edge normal: perpendicular to (b−a), flipped to point AWAY
       // from the interior vertex c. Offset both ends by the seam allowance.
       let nx = -(by - ay);
@@ -105,11 +110,30 @@ export function frontOutline(mesh: ClothMeshData): { segs: Segment[]; seam: Segm
       const [sx2, sy2] = toPaper(bx + nx * SEAM, by + ny * SEAM);
       seam.push({ x1: sx1, y1: sy1, x2: sx2, y2: sy2 });
     }
+    // Balance notches (repères de montage): short inward ticks on each side seam
+    // at 1/3 and 2/3 of the piece height, so the front and its back can be
+    // aligned when sewing. A horizontal scanline gives the two seam edges.
+    const gh = (maxY - minY) * 1000;
+    const TICK = 6; // mm
+    for (const frac of [0.34, 0.66]) {
+      const yy = gh * frac;
+      const xs: number[] = [];
+      for (const s of gSegs) {
+        if (s.y1 === s.y2) continue;
+        if ((s.y1 <= yy) !== (s.y2 <= yy)) xs.push(s.x1 + ((yy - s.y1) / (s.y2 - s.y1)) * (s.x2 - s.x1));
+      }
+      if (xs.length < 2) continue;
+      const lo = Math.min(...xs);
+      const hi = Math.max(...xs);
+      if (hi - lo < 2 * TICK + 4) continue; // too narrow here for a readable notch
+      notches.push({ x1: lo, y1: yy, x2: lo + TICK, y2: yy });
+      notches.push({ x1: hi, y1: yy, x2: hi - TICK, y2: yy });
+    }
     cursorX += maxX - minX + GUTTER;
     h = Math.max(h, maxY - minY);
     pieces++;
   }
-  return { segs, seam, w: Math.max(0, cursorX - GUTTER) * 1000, h: h * 1000, pieces };
+  return { segs, seam, notches, w: Math.max(0, cursorX - GUTTER) * 1000, h: h * 1000, pieces };
 }
 
 /**
@@ -145,7 +169,7 @@ function clipToRect(
 }
 
 export function exportPatternPdf(mesh: ClothMeshData, garmentName: string, hasIndependentBack = false): void {
-  const { segs, seam, w, h, pieces } = frontOutline(mesh);
+  const { segs, seam, notches, w, h, pieces } = frontOutline(mesh);
   if (!segs.length || !Number.isFinite(w + h)) return;
 
   const cellW = PAGE_W - 2 * MARGIN - OVERLAP;
@@ -199,6 +223,7 @@ export function exportPatternPdf(mesh: ClothMeshData, garmentName: string, hasIn
       hasIndependentBack
         ? '5. Le trait plein = ligne de couture. Le DOS a été dessiné à part (non inclus dans ces pages).'
         : '5. Le trait plein = ligne de couture. Couper chaque dos à l’identique.',
+      '6. Les petits traits sur les côtés = repères de montage : les faire coïncider pour aligner devant et dos.',
     ],
     MARGIN,
     MARGIN + 130,
@@ -250,6 +275,10 @@ export function exportPatternPdf(mesh: ClothMeshData, garmentName: string, hasIn
       pdf.setDrawColor(0);
       pdf.setLineWidth(0.5);
       draw(segs);
+
+      // Balance notches (assembly marks), same clip so they never spill a tile.
+      pdf.setLineWidth(0.7);
+      draw(notches);
     }
   }
   pdf.save(`patron-${garmentName.replace(/[^a-z0-9]/gi, '-')}.pdf`);
