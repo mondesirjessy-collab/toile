@@ -46,6 +46,14 @@ export interface ClothMeshData {
    * exported UVs each need the axis-correct rest length, not one for both.
    */
   readonly spacingV: number;
+  /**
+   * The SECOND garment's rest spacing in a combined outfit (garment ≥ 1) — the
+   * two pieces usually differ (a tee is coarser than the skirt it's worn with),
+   * so prints and exported UVs pick per-garment to keep a check square on both.
+   * Absent = single garment (garment 0 spacing applies throughout).
+   */
+  readonly spacing2?: number;
+  readonly spacingV2?: number;
   readonly count: number;
   /** count × 4 floats (xyz + unused w), grid rest pose. */
   readonly positions: Float32Array;
@@ -1087,10 +1095,13 @@ export function combineClothMeshes(
 
   return {
     resolution: a.resolution,
-    spacing: Math.max(a.spacing, b.spacing),
-    // Still one value per axis for the whole outfit (the coarser garment
-    // wins) — per-garment rest lengths are the audit's remaining step.
-    spacingV: Math.max(a.spacingV, b.spacingV),
+    // Per-garment rest lengths: garment 0 = a, garment ≥1 = b (spacing2), so
+    // prints stay square on each piece. The solver takes max(spacing, spacing2)
+    // itself for its mesh-wide CFL/dihedral scale, so its behaviour is unchanged.
+    spacing: a.spacing,
+    spacingV: a.spacingV,
+    spacing2: b.spacing,
+    spacingV2: b.spacingV,
     count,
     positions,
     invMasses,

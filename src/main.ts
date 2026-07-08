@@ -491,6 +491,8 @@ async function main(): Promise<void> {
       mesh.spacingV,
       mesh.triangleIndices,
       sceneMesh,
+      mesh.spacing2,
+      mesh.spacingV2,
     );
     renderer.setFabric(fabricStyle); // keep the preset's look across rebuilds
     renderer.resize(canvas.width, canvas.height);
@@ -781,8 +783,14 @@ async function main(): Promise<void> {
             clothPos[i * 3 + 1] = raw[i * 4 + 1]!;
             clothPos[i * 3 + 2] = raw[i * 4 + 2]!;
             const local = i % panelSize; // rest-pose UVs in meters, same map as the print shader
-            uvs[i * 2] = (local % mesh.resolution) * mesh.spacing;
-            uvs[i * 2 + 1] = Math.floor(local / mesh.resolution) * mesh.spacingV;
+            // Garment index (front+back = 2 panels): the second piece of a
+            // combined outfit prints at its OWN spacing, or the motif scale
+            // is wrong on one of the two garments (M24).
+            const garment = Math.floor(i / panelSize) >> 1;
+            const sp = garment >= 1 ? mesh.spacing2 ?? mesh.spacing : mesh.spacing;
+            const spV = garment >= 1 ? mesh.spacingV2 ?? mesh.spacingV : mesh.spacingV;
+            uvs[i * 2] = (local % mesh.resolution) * sp;
+            uvs[i * 2 + 1] = Math.floor(local / mesh.resolution) * spV;
           }
           // Both panels of a garment share the same index winding, so the
           // back panel's faces (and thus its computed normals) point INTO

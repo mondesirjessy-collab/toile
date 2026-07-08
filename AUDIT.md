@@ -1,7 +1,7 @@
 # TOILE — Audit complet du moteur (v57, 06/07/2026)
 
 ## ÉTAT (07/07/2026, v59) — fait / à faire
-- ✅ **C1** mailles anisotropes (v58) : spacingV partout, strain par axe, UV motifs + glTF. *Reste : spacing par vêtement dans les combinés, normalisation dihedral (volontairement non touchée — presets réglés dessus).*
+- ✅ **C1** mailles anisotropes (v58) : spacingV partout, strain par axe, UV motifs + glTF. *Solde restant clos par M24 (v77, spacing par vêtement). Normalisation dihedral volontairement non touchée — presets réglés dessus.*
 - ✅ **C2** clés de cache morpho sur les 6 curseurs (v58).
 - ✅ **C3** hauteur du tailleur × stature (v58).
 - ✅ **M** auto-collision même-panneau : exclusion 2D Chebyshev ≤ 2 (les contacts d'une même rangée repoussent enfin) + rayon même-panneau réduit ×0,5 (le tissu replié sur lui-même se serre plus fort que deux vêtements) (v59).
@@ -30,7 +30,8 @@
 - ✅ **M22 (v72)** : bannière d'erreur (showFatal) sur exception de boucle (guardedFrame try/catch → arrêt propre) ET sur device.lost ; vérifié en injectant une erreur dans frame(). Note : le watchdog évalue performance.now() hors du guard, mais performance.now ne lève jamais en réel — non-problème.
 - ✅ **M23 (v73)** : caméra multi-touch — carte pointerId→position, pincement = zoom (ratio distance → radius) + pan (delta du milieu), 1 doigt = orbite. Bureau souris inchangé. Vérifié : orbite souris OK + pincement synthétique zoome (setPointerCapture no-opé pour le test — il ne rejette que les pointeurs synthétiques).
 - ✅ **M3 (v74, BORNÉ)** : plafond CFL de déplacement par sous-pas (0,6·spacing = min_dist) dans integrate.wgsl → le tunneling auto-collision est impossible par construction (une particule ne peut plus franchir la bande de collision en un sous-pas). Transparent à 20 sous-pas (ne mord que sur mouvement violent). PAS une CCD complète (qui resterait la solution totale), mais borne le défaut à moindre coût. Vérifié : robe identique à 20 sous-pas + sim tourne à 5. NB : le glissement à très bas sous-pas = friction faible pré-existante, PAS ce cap.
-- **Toutes les majeures traitées.** Reste le **bloc mineur** (14 fiches non contre-vérifiées : readbackBuffer mort, α dihedral fold-dependent, min_dist par orientation de couture, validation connexité des silhouettes, etc.) — à trier si besoin.
+- ✅ **M24 (v77)** : motifs à la BONNE échelle sur les DEUX pièces d'une tenue. combineClothMeshes expose le spacing du 2ᵉ vêtement (spacing2/spacingV2) au lieu d'un seul max ; le shader tissu (grain2, 6ᵉ vec4f de Fabric) et l'export glTF choisissent le spacing par n° de vêtement (garment = vid/n² >> 1, comme la teinte v65) ; le solveur garde max(spacing, spacing2) pour CFL/dihedral. AVANT : la jupe (0,85 m) empruntait le spacing du t-shirt (1,15 m) → ses carreaux ~74 % trop petits. Test unité (spacing2 = jupe.spacing ≠ spacing) + QC entrées-réelles : ensemble vichy 8 cm, carreaux IDENTIQUES sur haut et jupe (16 384 part., 92 fps).
+- **Toutes les majeures ET le dernier mineur VISIBLE (M24) traités.** Reste le **bloc mineur non visible** (~13 fiches non contre-vérifiées : α dihedral fold-dependent, min_dist par orientation de couture, invariants dépendants de la résolution M10/M14/M15, raffinements mesure M16/M17, s≤1 non borné M18, latence pose glTF M23-mineur, carré de calibration chevauche le patron page A1 M22-reste) — à trier si besoin.
 - Le reste de la liste ci-dessous est à dérouler dans l'ordre.
 - **NB pour la session qui reprend** : les fiches détaillées ci-dessous décrivent l'état AU MOMENT DE L'AUDIT (v57) — les numéros de ligne ont dérivé depuis (v58-v63 ont modifié main.ts, ClothMesh.ts, measure.ts, selfCollide.wgsl, ControlPanel.ts, ClothRenderer.ts). Se repérer par NOMS de symboles/fonctions, pas par lignes. Les fiches marquées [✅ corrigé] sont soldées — détail dans cette section ÉTAT.
 
@@ -390,8 +391,11 @@ onGltf (lines 719-733) snapshots cSpin/sSpin and animOut synchronously at click,
 
 **Correctif proposé** : Sample podiumAngle and copy animOut inside the retry loop, immediately before each readPositions() call, and use the values from the attempt that succeeded — the pose is then frozen at the same tick the GPU copy is encoded.
 
-### M24. Combined outfits export/render UVs with one global spacing — pattern-space UVs (and motif scale) are wrong for one garment of the pair *(non contre-vérifié)*
+### M24. [✅ corrigé v77] Combined outfits export/render UVs with one global spacing — pattern-space UVs (and motif scale) are wrong for one garment of the pair
 **Fichier** : `/Users/jessymondesir/dev/toile/src/main.ts`
+
+**Correctif appliqué (v77)** : au lieu d'un tableau par panneau, on expose le spacing du 2ᵉ vêtement (`spacing2`/`spacingV2`, optionnels sur ClothMeshData ; combineClothMeshes renvoie `spacing: a.spacing, spacing2: b.spacing`). Le shader tissu ajoute un 6ᵉ vec4f `grain2` et sélectionne par n° de vêtement (`garment = vid/n² >> 1`, même dérivation que la teinte v65) ; l'export glTF fait pareil dans sa boucle UV. Le solveur garde `max(spacing, spacing2)` (CFL/dihedral inchangés). Détail complet dans la section ÉTAT (M24). Fiche d'origine conservée ci-dessous.
+
 
 combineClothMeshes returns `spacing: Math.max(a.spacing, b.spacing)` (ClothMesh.ts:1024) — the two garments generally differ (ensemble: tee width 1.15·topScale vs skirt 0.85·skirtScale over the same n → spacings differ ~25-35%). The glTF UV build (main.ts:748-750) computes `uvs = (local % n) * mesh.spacing` for ALL panels with that single max value, so the smaller garment's 'rest-pose UVs in meters' are inflated by the ratio — a texture authored at real-world scale in Blender lands visibly oversized on one garment. The same single-spacing assumption feeds the renderer's print shader, so a 5 cm vichy check is only 5 cm on one of the two garments in 'ensemble'/'tenue'.
 

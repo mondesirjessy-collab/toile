@@ -254,7 +254,10 @@ export class ParticleSystem {
     this.maxSpeed = opts.maxSpeed ?? 12.0;
     this.dragStiffness = opts.dragStiffness ?? 0.4;
     this.selfEnabled = opts.selfCollision ?? true;
-    this.spacing = mesh.spacing;
+    // Mesh-wide spacing for the CFL cap and dihedral scale: the coarser of the
+    // two garments in a combined outfit (spacing is now per-garment for prints).
+    // Matches the old combined value (max of the two horizontal spacings).
+    this.spacing = Math.max(mesh.spacing, mesh.spacing2 ?? mesh.spacing);
     this.gridN = mesh.resolution;
     this.tableSize = 1 << Math.ceil(Math.log2(Math.max(1024, this.count * 2)));
 

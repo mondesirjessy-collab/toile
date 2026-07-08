@@ -84,6 +84,7 @@ struct Fabric {
   motif: vec4f,
   motifColor: vec4f,
   options: vec4f,
+  grain2: vec4f, // x = garment-1 spacing, y = garment-1 vertical spacing
 };
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(0) @binding(1) var<uniform> fabric: Fabric;
@@ -107,11 +108,14 @@ fn vs(@builtin(vertex_index) vid: u32, @location(0) pos: vec4f, @location(1) nrm
   let n = u32(fabric.motif.z);
   let panelSize = n * n;
   let local = vid % panelSize;
-  out.uv = vec2f(f32(local % n) * fabric.motif.w, f32(local / n) * fabric.options.y);
-  out.strain = nrm.w;
   // Panels pair front/back into garments; a triangle never spans a panel, so
   // this flat index tells the outfit's under piece from its outer one.
   out.garment = (vid / panelSize) / 2u;
+  // Each garment uses ITS OWN rest spacing, so a 5 cm check reads 5 cm on both
+  // the tee and the skirt of an outfit, not just the coarser one.
+  let sp = select(vec2f(fabric.motif.w, fabric.options.y), fabric.grain2.xy, out.garment >= 1u);
+  out.uv = vec2f(f32(local % n) * sp.x, f32(local / n) * sp.y);
+  out.strain = nrm.w;
   return out;
 }
 
@@ -315,6 +319,8 @@ export class ClothRenderer {
   private lastStyle: FabricStyle | null = null;
   private readonly clothSpacing: number;
   private readonly clothSpacingV: number;
+  private readonly clothSpacing2: number;
+  private readonly clothSpacingV2: number;
   private readonly clothIndexBuffer: GPUBuffer;
   private readonly clothIndexCount: number;
   private readonly sceneVertexBuffer: GPUBuffer;
@@ -333,12 +339,16 @@ export class ClothRenderer {
     spacingV: number,
     triangleIndices: Uint32Array,
     scene: SceneMesh,
+    spacing2 = spacing,
+    spacingV2 = spacingV,
   ) {
     this.device = device;
     this.count = count;
     this.clothResolution = resolution;
     this.clothSpacing = spacing;
     this.clothSpacingV = spacingV;
+    this.clothSpacing2 = spacing2;
+    this.clothSpacingV2 = spacingV2;
     this.positionBuffer = positionBuffer;
 
     const ctx = canvas.getContext('webgpu');
@@ -352,7 +362,7 @@ export class ClothRenderer {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     this.fabricBuffer = device.createBuffer({
-      size: 80, // Fabric: 5 × vec4f (look + print + options)
+      size: 96, // Fabric: 6 × vec4f (look + print + options + garment-1 spacing)
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     this.setFabric(DEFAULT_FABRIC);
@@ -490,6 +500,12 @@ export class ClothRenderer {
         // options.z: garment count — count = 2·n² per seamed garment, so a
         // combined outfit reads 2 and triggers the under-piece tint.
         Math.max(1, Math.round(this.count / (2 * this.clothResolution * this.clothResolution))),
+        0,
+        // grain2 (6th vec4f): the SECOND garment's spacing, so an outfit's
+        // print stays true to cm on the piece worn under it too.
+        this.clothSpacing2,
+        this.clothSpacingV2,
+        0,
         0,
       ]),
     );

@@ -492,8 +492,19 @@ describe('combineClothMeshes (outfits)', () => {
     // tee: 1.15 × 0.75 over the same n×n — the two axes differ by 53 %.
     expect(tee.spacing).toBeCloseTo(1.15 / (n - 1));
     expect(tee.spacingV).toBeCloseTo(0.75 / (n - 1));
-    expect(outfit.spacing).toBeCloseTo(Math.max(tee.spacing, skirt.spacing));
-    expect(outfit.spacingV).toBeCloseTo(Math.max(tee.spacingV, skirt.spacingV));
+  });
+
+  it('keeps each garment its OWN rest spacing (per-vêtement prints, M24)', () => {
+    // Garment 0 (a = tee) keeps its spacing; garment 1 (b = skirt) is exposed
+    // separately as spacing2/spacingV2 so its motif prints at true cm even when
+    // the two pieces differ in width — the tee (1.15 m) is wider than the
+    // skirt (1.0 m), so a single shared spacing would stretch one motif.
+    expect(outfit.spacing).toBeCloseTo(tee.spacing);
+    expect(outfit.spacingV).toBeCloseTo(tee.spacingV);
+    expect(outfit.spacing2).toBeCloseTo(skirt.spacing);
+    expect(outfit.spacingV2).toBeCloseTo(skirt.spacingV);
+    // The two pieces genuinely differ — otherwise the test proves nothing.
+    expect(outfit.spacing).not.toBeCloseTo(outfit.spacing2!);
   });
 
   it('assigns garment b to the requested layer (dressing order)', () => {
