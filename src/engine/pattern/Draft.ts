@@ -206,6 +206,87 @@ export function draftOpenings(piece: DraftPiece): (uu: number, vv: number) => bo
   };
 }
 
+/** Fractional projection of p onto segment a→b (0 at a, 1 at b), clamped. */
+function projFrac(p: UV, a: UV, b: UV): number {
+  const abx = b[0] - a[0];
+  const aby = b[1] - a[1];
+  const len2 = abx * abx + aby * aby || 1e-9;
+  return Math.min(1, Math.max(0, ((p[0] - a[0]) * abx + (p[1] - a[1]) * aby) / len2));
+}
+
+/**
+ * Compile a freeform piece to the sim inputs at grid resolution n: which
+ * boundary cells are OPEN (openEdges + dart legs — not mirror-sewn) and the
+ * front-panel LOCAL cell pairs to sew (each dart's two legs, paired by
+ * arc-length from the apex, so the wedge closes and cups the flat piece into
+ * 3D). Mirrors generateSeamedPanels' own rasterization (same pointInPolygon +
+ * dart subtraction), so the cell indices line up.
+ */
+export function compileDraft(piece: DraftPiece, n: number): { extraSeams: { i: number; j: number }[]; openCells: Set<number> } {
+  const { outline, darts, openEdges } = piece;
+  const nV = outline.length;
+  const uvOf = (u: number, v: number): UV => [u / (n - 1), v / (n - 1)];
+
+  // 1. Rasterize the kept mask (polygon minus dart wedges).
+  const kept = new Array<boolean>(n * n);
+  for (let v = 0; v < n; v++)
+    for (let u = 0; u < n; u++) {
+      const p = uvOf(u, v);
+      let inside = pointInPolygon(p, outline);
+      if (inside) for (const d of darts) if (pointInTriangle(p, d.apex, d.legA, d.legB)) { inside = false; break; }
+      kept[v * n + u] = inside;
+    }
+  const isBoundary = (u: number, v: number): boolean => {
+    if (!kept[v * n + u]) return false;
+    return (
+      u === 0 || u === n - 1 || v === 0 || v === n - 1 ||
+      !kept[v * n + (u - 1)] || !kept[v * n + (u + 1)] || !kept[(v - 1) * n + u] || !kept[(v + 1) * n + u]
+    );
+  };
+
+  const openCells = new Set<number>();
+  // 2. openEdges → open boundary cells (nearest outline edge in an open run).
+  for (let v = 0; v < n; v++)
+    for (let u = 0; u < n; u++) {
+      if (!isBoundary(u, v)) continue;
+      const e = nearestOutlineEdge(uvOf(u, v), outline);
+      if (openEdges.some((r) => runCoversEdge(r, e, nV))) openCells.add(v * n + u);
+    }
+
+  // 3. Each dart: partition the wedge's boundary cells into the two legs (by
+  // whichever leg they sit closer to), open them, and pair by arc-length.
+  const extraSeams: { i: number; j: number }[] = [];
+  const thresh2 = (1.6 / (n - 1)) ** 2;
+  for (const d of darts) {
+    const A: { cell: number; t: number }[] = [];
+    const B: { cell: number; t: number }[] = [];
+    for (let v = 0; v < n; v++)
+      for (let u = 0; u < n; u++) {
+        if (!isBoundary(u, v)) continue;
+        const p = uvOf(u, v);
+        const dA = segDist2(p, d.apex, d.legA);
+        const dB = segDist2(p, d.apex, d.legB);
+        if (Math.min(dA, dB) > thresh2) continue;
+        const cell = v * n + u;
+        if (dA <= dB) A.push({ cell, t: projFrac(p, d.apex, d.legA) });
+        else B.push({ cell, t: projFrac(p, d.apex, d.legB) });
+      }
+    A.sort((x, y) => x.t - y.t);
+    B.sort((x, y) => x.t - y.t);
+    for (const c of A) openCells.add(c.cell);
+    for (const c of B) openCells.add(c.cell);
+    // Pair by normalized position along each leg (pro-rata, like the gathered
+    // waist), resampling to the shorter list.
+    const m = Math.min(A.length, B.length);
+    for (let k = 0; k < m; k++) {
+      const a = A[Math.floor((k * A.length) / m)]!;
+      const b = B[Math.floor((k * B.length) / m)]!;
+      if (a.cell !== b.cell) extraSeams.push({ i: a.cell, j: b.cell });
+    }
+  }
+  return { extraSeams, openCells };
+}
+
 
 /** A centered rectangular piece — the atelier's blank canvas (wearable tube:
  * sides auto-sewn, the top edge seeded OPEN so it isn't a sealed pillow). */

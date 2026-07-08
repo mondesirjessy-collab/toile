@@ -1,7 +1,7 @@
 import { initGpu, WebGPUNotSupportedError } from './engine/gpu/Device';
 import { ParticleSystem } from './engine/solver/ParticleSystem';
 import { generateClothGrid, generateSeamedPanels, combineClothMeshes, type CrossSeam } from './engine/cloth/ClothMesh';
-import { defaultDraft, draftOpenings, type DraftDoc } from './engine/pattern/Draft';
+import { defaultDraft, compileDraft, type DraftDoc } from './engine/pattern/Draft';
 import type { SceneMode } from './app/ControlPanel';
 import { ClothRenderer, DEFAULT_FABRIC } from './app/ClothRenderer';
 import { OrbitCamera } from './app/OrbitCamera';
@@ -380,6 +380,8 @@ async function main(): Promise<void> {
             // Freeform piece: the user's drawn outline + darts + hand-seams
             // compiled straight to the mask / seam machinery (the atelier editor).
             const d = (draft ??= defaultDraft(resolution as 32 | 64 | 128)).piece;
+            const { extraSeams, openCells } = compileDraft(d, resolution);
+            const rN = resolution;
             return generateSeamedPanels({
               resolution,
               width: d.width,
@@ -388,7 +390,8 @@ async function main(): Promise<void> {
               topY: d.topY,
               shape: 'freeform',
               mask: { outline: d.outline, darts: d.darts },
-              extraOpenings: draftOpenings(d),
+              extraSeams,
+              extraOpenings: (uu, vv) => openCells.has(Math.round(vv * (rN - 1)) * rN + Math.round(uu * (rN - 1))),
             });
           })()
         : sceneMode === 'couture'
@@ -576,7 +579,7 @@ async function main(): Promise<void> {
     if (hintEl)
       hintEl.textContent =
         sceneMode === 'atelier'
-          ? 'atelier · plan de coupe : glisser un point = déformer · cliquer un bord = ajouter un point · double-clic sur un point = supprimer'
+          ? 'atelier · plan de coupe : glisser un point = déformer · cliquer un bord = ajouter · tirer depuis un bord = pince · double-clic = supprimer'
           : 'glisser sur le tissu : le tirer · glisser à côté : tourner · clic droit + glisser : se déplacer · molette : zoom · R : reset';
   };
 
@@ -670,6 +673,18 @@ async function main(): Promise<void> {
     build();
   };
   build();
+
+  // DEV: inject a dart into the current atelier piece (test the cup before the
+  // placement UI lands).
+  if (import.meta.env.DEV) {
+    (window as unknown as { __toileDart?: (a: [number, number], la: [number, number], lb: [number, number]) => void }).__toileDart =
+      (apex, legA, legB) => {
+        if (draft) {
+          draft.piece.darts.push({ apex, legA, legB });
+          build();
+        }
+      };
+  }
 
   // CLO3D-style pointer model: a left press ON the fabric grabs it; a left
   // press on empty space orbits the camera. Returns true when orbit is allowed.

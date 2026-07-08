@@ -47,7 +47,8 @@ export function handleValueFromLayout(h: PatternHandleSpec, x: number, y: number
 }
 
 const HIT_RADIUS = 12;
-const EDGE_HIT = 8; // click within this many px of an outline edge → insert a vertex
+const EDGE_HIT = 8; // click within this many px of an outline edge → add point / dart
+const DART_DRAG = 7; // drag farther than this from an edge → it's a dart, not an add
 
 interface DragState {
   index: number;
@@ -88,6 +89,8 @@ export class PatternView {
   private draftPreview: UV[] | null = null; // live copy while dragging a vertex
   private draftDrag: { vertex: number; pointerId: number; grabDX: number; grabDY: number } | null = null;
   private draftHover: number | null = null;
+  // A press on an outline edge: a click adds a point; dragging inward pulls a dart.
+  private draftEdge: { edge: number; downUV: UV; downSX: number; downSY: number; pointerId: number; apex: UV | null } | null = null;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -267,16 +270,14 @@ export class PatternView {
       if (!p) return;
       const v = this.pickVertex(p[0], p[1]);
       if (v === null) {
-        // Not on a vertex: a click near an outline edge INSERTS a point there
-        // (freeform drawing). Empty inset space falls through to 3D orbit.
+        // Not on a vertex but near an outline edge: hold the gesture — a click
+        // adds a point there, a drag inward pulls out a dart. Empty inset space
+        // falls through to 3D orbit.
         const ne = this.nearestEdge(p[0], p[1]);
         if (ne && ne.dist <= EDGE_HIT) {
-          const next = insertOutlineVertex(this.draftPiece, ne.edge, this.screenToUV(ne.sx, ne.sy));
-          this.setDraft(next);
-          this.render();
+          this.draftEdge = { edge: ne.edge, downUV: this.screenToUV(ne.sx, ne.sy), downSX: ne.sx, downSY: ne.sy, pointerId: e.pointerId, apex: null };
           e.preventDefault();
           e.stopPropagation();
-          this.onDraftChange(next); // commit + re-cut
         }
         return;
       }
@@ -306,6 +307,18 @@ export class PatternView {
 
   private readonly onMove = (e: PointerEvent): void => {
     if (this.draftPiece) {
+      if (this.draftEdge && e.pointerId === this.draftEdge.pointerId) {
+        const r = this.canvas.getBoundingClientRect();
+        const px = e.clientX - r.left;
+        const py = e.clientY - r.top;
+        const dist = Math.hypot(px - this.draftEdge.downSX, py - this.draftEdge.downSY);
+        // Dragged far enough inward → the drag point is the dart apex (preview).
+        this.draftEdge.apex = dist > DART_DRAG ? this.screenToUV(px, py) : null;
+        e.preventDefault();
+        e.stopPropagation();
+        this.render();
+        return;
+      }
       if (this.draftDrag) {
         if (e.pointerId !== this.draftDrag.pointerId) return;
         const r = this.canvas.getBoundingClientRect();
@@ -351,6 +364,36 @@ export class PatternView {
 
   private readonly onUp = (e: PointerEvent): void => {
     if (this.draftPiece) {
+      // An edge press resolved: no drag → add a point; dragged inward → a dart.
+      if (this.draftEdge && e.pointerId === this.draftEdge.pointerId) {
+        const g = this.draftEdge;
+        this.draftEdge = null;
+        e.preventDefault();
+        e.stopPropagation();
+        let next: DraftPiece;
+        if (g.apex) {
+          // Dart: legs a small span either side of the mouth along the edge,
+          // apex at the drag end. The wedge is cut and its legs sewn shut.
+          const out = this.draftPiece.outline;
+          const a = out[g.edge]!;
+          const b = out[(g.edge + 1) % out.length]!;
+          let dx = b[0] - a[0];
+          let dy = b[1] - a[1];
+          const len = Math.hypot(dx, dy) || 1e-6;
+          dx /= len;
+          dy /= len;
+          const d = 0.045;
+          const legA: UV = [g.downUV[0] - dx * d, g.downUV[1] - dy * d];
+          const legB: UV = [g.downUV[0] + dx * d, g.downUV[1] + dy * d];
+          next = { ...this.draftPiece, darts: [...this.draftPiece.darts, { apex: g.apex, legA, legB }] };
+        } else {
+          next = insertOutlineVertex(this.draftPiece, g.edge, g.downUV);
+        }
+        this.setDraft(next);
+        this.render();
+        this.onDraftChange(next);
+        return;
+      }
       if (!this.draftDrag || e.pointerId !== this.draftDrag.pointerId) return;
       const preview = this.draftPreview;
       const v = this.draftDrag.vertex;
@@ -386,6 +429,11 @@ export class PatternView {
   };
 
   private readonly onCancel = (e: PointerEvent): void => {
+    if (this.draftEdge && e.pointerId === this.draftEdge.pointerId) {
+      this.draftEdge = null;
+      this.render();
+      return;
+    }
     if (this.draftDrag && e.pointerId === this.draftDrag.pointerId) {
       this.draftDrag = null;
       this.draftPreview = null; // discard the half-drag, keep the committed outline
@@ -446,6 +494,37 @@ export class PatternView {
       ctx.strokeStyle = active ? 'rgba(255, 159, 107, 0.95)' : 'rgba(127, 178, 255, 0.95)';
       ctx.stroke();
     }
+
+    // Darts: draw each as its two legs meeting at the apex (orange), plus the
+    // live preview wedge while pulling one out.
+    ctx.strokeStyle = 'rgba(255, 159, 107, 0.9)';
+    ctx.lineWidth = 1.2;
+    ctx.setLineDash([3, 2]);
+    const drawDart = (apex: UV, legA: UV, legB: UV): void => {
+      const a = this.vertexScreen(apex);
+      const la = this.vertexScreen(legA);
+      const lb = this.vertexScreen(legB);
+      if (!a || !la || !lb) return;
+      ctx.beginPath();
+      ctx.moveTo(la[0], la[1]);
+      ctx.lineTo(a[0], a[1]);
+      ctx.lineTo(lb[0], lb[1]);
+      ctx.stroke();
+    };
+    for (const d of this.draftPiece.darts) drawDart(d.apex, d.legA, d.legB);
+    if (this.draftEdge?.apex) {
+      const out = this.draftPiece.outline;
+      const a = out[this.draftEdge.edge]!;
+      const b = out[(this.draftEdge.edge + 1) % out.length]!;
+      let dx = b[0] - a[0];
+      let dy = b[1] - a[1];
+      const len = Math.hypot(dx, dy) || 1e-6;
+      dx /= len;
+      dy /= len;
+      const m = this.draftEdge.downUV;
+      drawDart(this.draftEdge.apex, [m[0] - dx * 0.045, m[1] - dy * 0.045], [m[0] + dx * 0.045, m[1] + dy * 0.045]);
+    }
+    ctx.setLineDash([]);
   }
 
   private renderStatic(): void {

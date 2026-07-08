@@ -7,6 +7,7 @@ import {
   defaultDraft,
   insertOutlineVertex,
   deleteOutlineVertex,
+  compileDraft,
   type UV,
 } from '../src/engine/pattern/Draft';
 import { generateSeamedPanels, countMaskIslands, type ClothMeshData } from '../src/engine/cloth/ClothMesh';
@@ -101,6 +102,22 @@ describe('Draft geometry', () => {
     let tri = { ...base, outline: base.outline.slice(0, 3) };
     tri = deleteOutlineVertex(tri, 0);
     expect(tri.outline.length).toBe(3);
+  });
+
+  it('compileDraft: openEdges without darts, and darts pair their legs', () => {
+    const base = defaultDraft(64).piece;
+    const plain = compileDraft(base, 64);
+    expect(plain.extraSeams.length).toBe(0); // no darts
+    expect(plain.openCells.size).toBeGreaterThan(0); // neckline + hem cells open
+
+    const withDart = compileDraft(
+      { ...base, darts: [{ apex: [0.5, 0.45], legA: [0.45, 0.92], legB: [0.55, 0.92] }] },
+      64,
+    );
+    expect(withDart.extraSeams.length).toBeGreaterThan(0); // legs sewn together
+    for (const s of withDart.extraSeams) expect(s.i).not.toBe(s.j);
+    // The dart opened MORE boundary cells (its two legs) than the plain piece.
+    expect(withDart.openCells.size).toBeGreaterThan(plain.openCells.size);
   });
 });
 
