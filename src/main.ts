@@ -57,7 +57,15 @@ function showFatal(title: string, detail: string): void {
   p.className = 'detail';
   p.style.whiteSpace = 'pre-wrap';
   p.textContent = detail;
-  overlay.append(h, p);
+  // Recovery path (audit — robustness): a lost device (laptop GPU switch, a
+  // driver TDR reset) or a one-off render error otherwise leaves a dead page.
+  // A reload re-inits WebGPU cleanly — far simpler and safer than programmatic
+  // device re-creation (the device is a const wired through the whole engine).
+  const retry = document.createElement('button');
+  retry.textContent = 'Recharger';
+  retry.style.cssText = 'margin-top:1rem;padding:0.5rem 1.2rem;font:inherit;cursor:pointer;';
+  retry.addEventListener('click', () => window.location.reload());
+  overlay.append(h, p, retry);
 }
 
 async function main(): Promise<void> {
@@ -934,8 +942,13 @@ async function main(): Promise<void> {
 
   const resize = (): void => {
     const dpr = Math.min(window.devicePixelRatio, 2);
-    canvas.width = Math.floor(canvas.clientWidth * dpr);
-    canvas.height = Math.floor(canvas.clientHeight * dpr);
+    // Clamp to the GPU's max texture size (audit — HiDPI robustness): a 5K/6K
+    // display at dpr 2 exceeds the guaranteed 8192 limit, and an over-size
+    // swapchain texture fails to create → blank canvas. The depth texture in
+    // renderer.resize() gets the same clamped dims, so colour/depth stay matched.
+    const maxDim = device.limits.maxTextureDimension2D;
+    canvas.width = Math.min(maxDim, Math.floor(canvas.clientWidth * dpr));
+    canvas.height = Math.min(maxDim, Math.floor(canvas.clientHeight * dpr));
     mirror.width = canvas.width;
     mirror.height = canvas.height;
     renderer.resize(canvas.width, canvas.height);
@@ -951,11 +964,20 @@ async function main(): Promise<void> {
   let frames = 0;
   let fpsAccum = 0;
   let cpuAccum = 0;
+  let rawAccum = 0; // real wall-clock frame time (unclamped), for the substep governor
+  // Adaptive substep governor (audit — runs well on most machines): the slider
+  // is the CEILING; on a weak GPU the effective substep count is scaled down to
+  // keep the frame rate playable, floored at 8 for physics quality. Driven by
+  // REAL frame time, not the clamped dt or the GPU timestamp (which reads 0 on
+  // the very machines that need this).
+  let govSubsteps = DEFAULT_SUBSTEPS;
 
   const frame = (now: number): void => {
     const t0 = performance.now();
+    const rawMs = now - last; // before the dt clamp below
     const dt = Math.min((now - last) / 1000, 1 / 30); // clamp tab-switch spikes
     last = now;
+    rawAccum += Math.min(rawMs, 200); // ignore tab-switch spikes in the governor's average
 
     // Skip while the canvas has no size (some webviews report a 0×0 viewport
     // until laid out) — rendering into a 0-sized surface errors.
@@ -1060,7 +1082,7 @@ async function main(): Promise<void> {
       }
     }
 
-    const substeps = panel.substeps;
+    const substeps = Math.min(panel.substeps, govSubsteps);
     // Podium: advance the turn, hand the solver the per-second rate (it
     // derives the per-substep surface motion for friction), spin the visual.
     const omega = (podium * 2 * Math.PI) / 60;
@@ -1087,6 +1109,13 @@ async function main(): Promise<void> {
     cpuAccum += performance.now() - t0;
     if (fpsAccum >= 0.5) {
       const fps = Math.round(frames / fpsAccum);
+      // Governor: adapt only while actually stepping (a sleeping sim's frames
+      // are cheap and would wrongly ramp up). Real frame time = rawAccum/frames.
+      if (!asleep && frames > 0) {
+        const realFrameMs = rawAccum / frames;
+        if (realFrameMs > 38) govSubsteps = Math.max(8, govSubsteps - 2); // < ~26 fps: shed load
+        else if (realFrameMs < 22) govSubsteps = Math.min(panel.substeps, govSubsteps + 1); // > ~45 fps: restore
+      }
       const timing = asleep
         ? `sim en veille 💤 · rendu ${profiler.enabled ? profiler.renderMs.toFixed(2) : '—'} ms (GPU)`
         : profiler.enabled
@@ -1094,10 +1123,11 @@ async function main(): Promise<void> {
           : `${(cpuAccum / frames).toFixed(2)} ms/frame (CPU)`;
       hud.textContent =
         `${fps} fps · ${timing} · ${liveParticleCount.toLocaleString('fr-FR')} part. · ` +
-        `${system.constraintCount.toLocaleString('fr-FR')} contr. · ${substeps} substeps`;
+        `${system.constraintCount.toLocaleString('fr-FR')} contr. · ${substeps} substeps${substeps < panel.substeps ? ' (auto)' : ''}`;
       frames = 0;
       fpsAccum = 0;
       cpuAccum = 0;
+      rawAccum = 0;
     }
 
     schedule();

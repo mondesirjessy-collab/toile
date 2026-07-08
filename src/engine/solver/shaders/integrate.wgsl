@@ -42,6 +42,15 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   let x = positions[i].xyz;
 
+  // NaN firewall (audit — mobile/relaxed-fp robustness): if a particle blew up
+  // (a bad contact, a near-zero denominator on a permissive GPU), freeze it at
+  // its previous position instead of letting the NaN propagate through the
+  // constraint graph and take down the whole mesh. positions is read_write.
+  if (any(x != x)) {
+    positions[i] = prev_positions[i];
+    return;
+  }
+
   // Pinned particle: frozen. prev = current so its derived velocity is zero.
   if (inv_masses[i] == 0.0) {
     prev_positions[i] = vec4f(x, 0.0);

@@ -21,7 +21,13 @@ export async function initGpu(): Promise<GpuContext> {
     throw new WebGPUNotSupportedError('navigator.gpu is undefined (browser does not expose WebGPU)');
   }
 
-  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+  // Prefer the discrete GPU, but fall back to whatever the machine has: on many
+  // integrated-only laptops `high-performance` returns null while the default
+  // request succeeds, so requesting only high-performance would lock out a
+  // perfectly capable GPU (audit — cross-machine robustness).
+  const adapter =
+    (await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })) ??
+    (await navigator.gpu.requestAdapter());
   if (!adapter) {
     throw new WebGPUNotSupportedError('no suitable GPU adapter found');
   }
