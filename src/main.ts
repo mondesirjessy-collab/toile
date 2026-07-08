@@ -579,7 +579,7 @@ async function main(): Promise<void> {
     if (hintEl)
       hintEl.textContent =
         sceneMode === 'atelier'
-          ? 'atelier · plan de coupe : glisser un point = déformer · cliquer un bord = ajouter · tirer depuis un bord = pince · double-clic = supprimer'
+          ? 'atelier : glisser = déformer · cliquer un bord = ajouter · tirer d’un bord = pince · Maj+clic 2 bords = coudre · double-clic = supprimer un point'
           : 'glisser sur le tissu : le tirer · glisser à côté : tourner · clic droit + glisser : se déplacer · molette : zoom · R : reset';
   };
 

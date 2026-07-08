@@ -284,6 +284,48 @@ export function compileDraft(piece: DraftPiece, n: number): { extraSeams: { i: n
       if (a.cell !== b.cell) extraSeams.push({ i: a.cell, j: b.cell });
     }
   }
+
+  // 4. Hand-defined seams: sew two boundary runs of the piece together. Resolve
+  // each run to its ordered boundary cells, pick the direction that zips them
+  // together (not twisted), open them, and pair by arc-length.
+  const runCells = (run: EdgeRun): { cell: number; t: number }[] => {
+    const a = outline[run.from]!;
+    const b = outline[run.to % nV]!;
+    const res: { cell: number; t: number }[] = [];
+    for (let v = 0; v < n; v++)
+      for (let u = 0; u < n; u++) {
+        if (!isBoundary(u, v)) continue;
+        const p = uvOf(u, v);
+        if (runCoversEdge(run, nearestOutlineEdge(p, outline), nV)) res.push({ cell: v * n + u, t: projFrac(p, a, b) });
+      }
+    return res.sort((x, y) => x.t - y.t);
+  };
+  for (const hs of piece.seams) {
+    const A = runCells(hs.a);
+    const B = runCells(hs.b);
+    if (!A.length || !B.length) continue;
+    for (const c of A) openCells.add(c.cell);
+    for (const c of B) openCells.add(c.cell);
+    const m = Math.min(A.length, B.length);
+    const cellUV = (cell: number): UV => [(cell % n) / (n - 1), Math.floor(cell / n) / (n - 1)];
+    const bAt = (k: number, reversed: boolean): { cell: number } => B[Math.floor(((reversed ? m - 1 - k : k) * B.length) / m)]!;
+    // Direction check: forward vs reversed B — keep whichever zips closer.
+    const cost = (reversed: boolean): number => {
+      let s = 0;
+      for (let k = 0; k < m; k++) {
+        const pa = cellUV(A[Math.floor((k * A.length) / m)]!.cell);
+        const pb = cellUV(bAt(k, reversed).cell);
+        s += (pa[0] - pb[0]) ** 2 + (pa[1] - pb[1]) ** 2;
+      }
+      return s;
+    };
+    const reversed = cost(true) < cost(false);
+    for (let k = 0; k < m; k++) {
+      const a = A[Math.floor((k * A.length) / m)]!;
+      const b = bAt(k, reversed);
+      if (a.cell !== b.cell) extraSeams.push({ i: a.cell, j: b.cell });
+    }
+  }
   return { extraSeams, openCells };
 }
 

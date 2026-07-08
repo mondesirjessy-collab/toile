@@ -119,6 +119,16 @@ describe('Draft geometry', () => {
     // The dart opened MORE boundary cells (its two legs) than the plain piece.
     expect(withDart.openCells.size).toBeGreaterThan(plain.openCells.size);
   });
+
+  it('compileDraft: a hand-seam sews two picked edges together', () => {
+    const base = defaultDraft(64).piece; // outline edges: 4→5 (right side), 6→0 (left side)
+    const withSeam = compileDraft(
+      { ...base, seams: [{ a: { from: 4, to: 5 }, b: { from: 6, to: 0 } }] },
+      64,
+    );
+    expect(withSeam.extraSeams.length).toBeGreaterThan(0); // the two sides zipped
+    for (const s of withSeam.extraSeams) expect(s.i).not.toBe(s.j);
+  });
 });
 
 describe('freeform mesh (shape: freeform)', () => {

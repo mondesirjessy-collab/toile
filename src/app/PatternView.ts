@@ -91,6 +91,7 @@ export class PatternView {
   private draftHover: number | null = null;
   // A press on an outline edge: a click adds a point; dragging inward pulls a dart.
   private draftEdge: { edge: number; downUV: UV; downSX: number; downSY: number; pointerId: number; apex: UV | null } | null = null;
+  private draftSeamA: number | null = null; // first edge picked for a hand-seam (Shift+click)
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -162,6 +163,8 @@ export class PatternView {
     this.draftPreview = null;
     this.draftDrag = null;
     this.draftHover = null;
+    this.draftEdge = null;
+    this.draftSeamA = null;
   }
 
   /** Screen position of an outline vertex: UV → the mesh's rest layout → screen. */
@@ -268,6 +271,30 @@ export class PatternView {
       if (this.draftDrag || e.button !== 0) return;
       const p = this.canvasPoint(e);
       if (!p) return;
+      // Shift+click two edges → sew them together (a hand-defined seam).
+      if (e.shiftKey) {
+        const ne = this.nearestEdge(p[0], p[1]);
+        if (ne && ne.dist <= EDGE_HIT) {
+          const out = this.draftPiece.outline;
+          if (this.draftSeamA === null) {
+            this.draftSeamA = ne.edge; // first edge picked
+            this.render();
+          } else if (this.draftSeamA !== ne.edge) {
+            const seam = { a: { from: this.draftSeamA, to: (this.draftSeamA + 1) % out.length }, b: { from: ne.edge, to: (ne.edge + 1) % out.length } };
+            const next = { ...this.draftPiece, seams: [...this.draftPiece.seams, seam] };
+            this.draftSeamA = null;
+            this.setDraft(next);
+            this.render();
+            this.onDraftChange(next);
+          } else {
+            this.draftSeamA = null; // clicked the same edge → cancel the pick
+            this.render();
+          }
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        return;
+      }
       const v = this.pickVertex(p[0], p[1]);
       if (v === null) {
         // Not on a vertex but near an outline edge: hold the gesture — a click
@@ -525,6 +552,40 @@ export class PatternView {
       drawDart(this.draftEdge.apex, [m[0] - dx * 0.045, m[1] - dy * 0.045], [m[0] + dx * 0.045, m[1] + dy * 0.045]);
     }
     ctx.setLineDash([]);
+
+    // Hand-seams: a blue link between each pair of sewn edges; a thick orange
+    // highlight on the first edge picked while awaiting the second.
+    const edgeMid = (k: number): [number, number] | null => {
+      const o = this.draftPiece!.outline;
+      const a = this.vertexScreen(o[k % o.length]!);
+      const b = this.vertexScreen(o[(k + 1) % o.length]!);
+      return a && b ? [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] : null;
+    };
+    ctx.strokeStyle = 'rgba(127, 178, 255, 0.9)';
+    ctx.lineWidth = 2;
+    for (const s of this.draftPiece.seams) {
+      const ma = edgeMid(s.a.from);
+      const mb = edgeMid(s.b.from);
+      if (ma && mb) {
+        ctx.beginPath();
+        ctx.moveTo(ma[0], ma[1]);
+        ctx.lineTo(mb[0], mb[1]);
+        ctx.stroke();
+      }
+    }
+    if (this.draftSeamA !== null) {
+      const o = this.draftPiece.outline;
+      const a = this.vertexScreen(o[this.draftSeamA]!);
+      const b = this.vertexScreen(o[(this.draftSeamA + 1) % o.length]!);
+      if (a && b) {
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = 'rgba(255, 159, 107, 0.95)';
+        ctx.beginPath();
+        ctx.moveTo(a[0], a[1]);
+        ctx.lineTo(b[0], b[1]);
+        ctx.stroke();
+      }
+    }
   }
 
   private renderStatic(): void {
