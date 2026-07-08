@@ -20,6 +20,7 @@ import {
   type BendQuad,
   type Edge,
 } from '../solver/ConstraintGraph';
+import { pointInPolygon, pointInTriangle, type UV } from '../pattern/Draft';
 
 export interface ClothMeshOptions {
   /** Particles per side; total = resolution². 64 → 4 096 (brief S1). */
@@ -343,9 +344,29 @@ export interface SeamedPanelsOptions {
    * THREE pieces — body plus two separate sleeves beside it — whose armhole
    * edges are stitched together at assembly time (set-in sleeves).
    */
-  shape?: 'rect' | 'aline' | 'tshirt' | 'skirt' | 'setin' | 'pants';
+  shape?: 'rect' | 'aline' | 'tshirt' | 'skirt' | 'setin' | 'pants' | 'freeform';
   /** Pattern measurements (grading): shape-specific, all in normalized [0,1] pattern units. */
   shapeParams?: { hem?: number; scoop?: number; sleeve?: number; profile?: number[] };
+  /**
+   * FREEFORM piece (shape==='freeform', the "atelier" editor): an arbitrary
+   * outline polygon in [0,1]² UV, minus dart wedges cut from it. Rasterized to
+   * the same kept-mask every archetype produces, so all downstream machinery
+   * (edge-snap, mirror seams, seamDist, triangulation) is reused unchanged.
+   */
+  mask?: { outline: UV[]; darts: { apex: UV; legA: UV; legB: UV }[] };
+  /**
+   * Extra front↔back Seam edges beyond the automatic mirror seams: LOCAL
+   * front-panel cell indices (v·n+u), mirrored to the back panel internally.
+   * Dart legs and hand-defined seams are emitted here. Registered in the seam
+   * cell set so seamDist/seamFree cover them (else self-collision fights them).
+   */
+  extraSeams?: readonly { i: number; j: number }[];
+  /**
+   * Freeform openings: a UV predicate marking boundary runs to EXCLUDE from the
+   * automatic mirror seam (necklines, hems, hand-seam/dart runs the caller sews
+   * itself). Only consulted when shape==='freeform'.
+   */
+  extraOpenings?: (uu: number, vv: number) => boolean;
   /**
    * Elastic band at the top edge: rest-length ratio (< 1) applied to the
    * horizontal weave in the top rows — the fabric gathers and GRIPS whatever
@@ -464,6 +485,7 @@ function pantsShape(u: number, v: number): boolean {
 }
 
 function isOpening(shape: PatternShape, uu: number, vv: number, p: ShapeParams = {}, step = 0): boolean {
+  if (shape === 'freeform') return false; // freeform openings are fully caller-controlled (extraOpenings)
   const x = Math.abs(uu - 0.5);
   // The exemption margins must cover at least ONE grid step beyond each
   // opening's cut: with fixed margins, the first kept particle past a scoop
@@ -603,6 +625,13 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
     if (shape === 'skirt') return skirtShape(uu, vv, shapeParams);
     if (shape === 'setin') return setinShape(uu, vv, shapeParams);
     if (shape === 'pants') return pantsShape(uu, vv);
+    if (shape === 'freeform' && opts.mask) {
+      const p: UV = [uu, vv];
+      if (!pointInPolygon(p, opts.mask.outline)) return false;
+      // Subtract each dart wedge — a V-notch that closes when its legs are sewn.
+      for (const d of opts.mask.darts) if (pointInTriangle(p, d.apex, d.legA, d.legB)) return false;
+      return true;
+    }
     return true;
   };
   const inside = (u: number, v: number): boolean => insideUV(u / (n - 1), v / (n - 1));
@@ -822,6 +851,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
         if (!kept[v * n + u]) continue;
         if (!onBoundary(u, v)) continue;
         if (isOpening(shape, u / (n - 1), v / (n - 1), shapeParams, 1 / (n - 1))) continue;
+        if (shape === 'freeform' && opts.extraOpenings?.(u / (n - 1), v / (n - 1))) continue;
         seamedLocal.add(v * n + u);
         seamLocalCells.add(v * n + u);
         seams.push({ i: index(0, u, v), j: index(1, u, v), rest: seamRest, kind: ConstraintKind.Seam });
@@ -939,6 +969,22 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
           });
         }
       }
+    }
+  }
+
+  // Freeform extra seams (dart legs + hand-defined seams): LOCAL front-panel
+  // cell indices i,j to sew together, WITHIN each panel (front-to-front,
+  // back-to-back — a dart/edge join is a single-layer operation), mirrored to
+  // both panels. Register both cells in seamLocalCells so the seamDist BFS and
+  // the self-collision exemption cover them — otherwise self-collision fights
+  // the closure and the piece shakes loose (the gathered-bodice slide-off).
+  if (opts.extraSeams) {
+    for (const s of opts.extraSeams) {
+      for (const p of [0, 1] as const) {
+        seams.push({ i: p * panelSize + s.i, j: p * panelSize + s.j, rest: seamRest, kind: ConstraintKind.Seam });
+      }
+      seamLocalCells.add(s.i);
+      seamLocalCells.add(s.j);
     }
   }
 
