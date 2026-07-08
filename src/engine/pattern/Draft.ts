@@ -52,7 +52,8 @@ export interface DraftDoc {
   format: 'toile-draft';
   version: 1;
   gridN: 32 | 64 | 128; // authoring/sim resolution
-  piece: DraftPiece; // v1 = exactly one freeform piece
+  piece: DraftPiece; // the FRONT face
+  back?: DraftPiece; // optional INDEPENDENT back face (côte-à-côte). Absent/blank → the back mirrors the front.
 }
 
 /** Ray-cast point-in-polygon (odd crossings = inside). Winding-agnostic. */
@@ -377,45 +378,45 @@ export function sanitizeDraft(raw: unknown): DraftDoc {
   const d = raw as Partial<DraftDoc>;
   if (d.format !== 'toile-draft') return fallback;
   const gridN = [32, 64, 128].includes(d.gridN as number) ? (d.gridN as 32 | 64 | 128) : 64;
-  const p = d.piece;
-  if (!p || !Array.isArray(p.outline) || p.outline.length < 3) return fallback;
 
   const uv = (a: unknown): UV => {
     const t = a as [number, number];
     return [clamp01(Array.isArray(t) ? t[0] : 0.5), clamp01(Array.isArray(t) ? t[1] : 0.5)];
   };
-  const outline = p.outline.slice(0, 128).map(uv);
-  if (isSelfIntersecting(outline)) return fallback;
-
-  const nV = outline.length;
-  const run = (r: unknown): EdgeRun => {
-    const e = r as EdgeRun;
-    const idx = (v: unknown): number =>
-      typeof v === 'number' && Number.isFinite(v) ? Math.min(nV - 1, Math.max(0, Math.round(v))) : 0;
-    return { from: idx(e?.from), to: idx(e?.to) };
-  };
   const num = (v: unknown, min: number, max: number, fb: number): number =>
     typeof v === 'number' && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fb;
-
-  return {
-    format: 'toile-draft',
-    version: 1,
-    gridN,
-    piece: {
+  // Parse one face; null (→ dropped) if its outline is missing/degenerate/self-
+  // intersecting, so a bad file can't produce a GPU blowup.
+  const parsePiece = (pp: Partial<DraftPiece> | undefined): DraftPiece | null => {
+    if (!pp || !Array.isArray(pp.outline) || pp.outline.length < 3) return null;
+    const outline = pp.outline.slice(0, 128).map(uv);
+    if (isSelfIntersecting(outline)) return null;
+    const nV = outline.length;
+    const run = (r: unknown): EdgeRun => {
+      const e = r as EdgeRun;
+      const idx = (v: unknown): number =>
+        typeof v === 'number' && Number.isFinite(v) ? Math.min(nV - 1, Math.max(0, Math.round(v))) : 0;
+      return { from: idx(e?.from), to: idx(e?.to) };
+    };
+    return {
       outline,
-      darts: (Array.isArray(p.darts) ? p.darts : []).slice(0, 16).map((x) => {
+      darts: (Array.isArray(pp.darts) ? pp.darts : []).slice(0, 16).map((x) => {
         const dd = x as Dart;
         return { apex: uv(dd?.apex), legA: uv(dd?.legA), legB: uv(dd?.legB) };
       }),
-      seams: (Array.isArray(p.seams) ? p.seams : []).slice(0, 16).map((x) => {
+      seams: (Array.isArray(pp.seams) ? pp.seams : []).slice(0, 16).map((x) => {
         const hs = x as HandSeam;
         return { a: run(hs?.a), b: run(hs?.b) };
       }),
-      openEdges: (Array.isArray(p.openEdges) ? p.openEdges : []).slice(0, 16).map(run),
-      width: num(p.width, 0.3, 2.0, 0.95),
-      height: num(p.height, 0.3, 2.0, 1.15),
-      topY: num(p.topY, 0.5, 2.2, 1.55),
-      gap: num(p.gap, 0.3, 1.6, 0.9),
-    },
+      openEdges: (Array.isArray(pp.openEdges) ? pp.openEdges : []).slice(0, 16).map(run),
+      width: num(pp.width, 0.3, 2.0, 0.95),
+      height: num(pp.height, 0.3, 2.0, 1.15),
+      topY: num(pp.topY, 0.5, 2.2, 1.55),
+      gap: num(pp.gap, 0.3, 1.6, 0.9),
+    };
   };
+  const front = parsePiece(d.piece);
+  if (!front) return fallback;
+  const back = parsePiece(d.back);
+  return { format: 'toile-draft', version: 1, gridN, piece: front, ...(back ? { back } : {}) };
 }

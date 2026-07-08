@@ -220,11 +220,16 @@ async function main(): Promise<void> {
   const patternView = new PatternView(
     document.getElementById('pattern') as HTMLCanvasElement,
     (id, value) => applyHandle(id, value),
-    (piece) => {
-      // The freeform outline changed (vertex moved / added / deleted / drawn) —
-      // commit the new piece and re-cut. Editing returns to the flat design view
-      // (physics paused) so the change is visible without the piece draping away.
-      draft = { format: 'toile-draft', version: 1, gridN: resolution as 32 | 64 | 128, piece };
+    (piece, isBack) => {
+      // A face changed (vertex moved / added / deleted / drawn). Commit it into
+      // the current draft — front, or the côte-à-côte BACK — and re-cut. Editing
+      // returns to the flat design view (physics paused) so the change shows
+      // without the piece draping away.
+      const gridN = resolution as 32 | 64 | 128;
+      if (!draft) draft = { format: 'toile-draft', version: 1, gridN, piece: defaultDraft(gridN).piece };
+      draft.gridN = gridN;
+      if (isBack) draft.back = piece;
+      else draft.piece = piece;
       atelierDesign = true;
       document.getElementById('at-sim')?.classList.remove('running');
       build();
@@ -278,6 +283,14 @@ async function main(): Promise<void> {
     simBtn().classList.remove('running');
     const dims = (draft ?? defaultDraft(resolution as 32 | 64 | 128)).piece;
     patternView.startPen(dims.width, dims.height, dims.topY, dims.gap);
+  });
+  // Draw the BACK face from scratch (côte-à-côte): pen on the right column.
+  (document.getElementById('at-back') as HTMLElement).addEventListener('click', () => {
+    if (!bigPanel) setBig(true);
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    const dims = (draft ?? defaultDraft(resolution as 32 | 64 | 128)).piece;
+    patternView.startPen(dims.width, dims.height, dims.topY, dims.gap, true);
   });
   (document.getElementById('at-pen') as HTMLElement).addEventListener('click', () => patternView.finishPen());
   (document.getElementById('at-sim') as HTMLElement).addEventListener('click', () => simulate());
@@ -524,9 +537,17 @@ async function main(): Promise<void> {
         ? (() => {
             // Freeform piece: the user's drawn outline + darts + hand-seams
             // compiled straight to the mask / seam machinery (the atelier editor).
-            const d = (draft ??= defaultDraft(resolution as 32 | 64 | 128)).piece;
+            const doc = (draft ??= defaultDraft(resolution as 32 | 64 | 128));
+            const d = doc.piece;
             const { extraSeams, openCells } = compileDraft(d, resolution);
             const rN = resolution;
+            const cellOpen =
+              (set: Set<number>) =>
+              (uu: number, vv: number): boolean =>
+                set.has(Math.round(vv * (rN - 1)) * rN + Math.round(uu * (rN - 1)));
+            // Independent back face (côte-à-côte), if the user drew one.
+            const back = doc.back && doc.back.outline.length >= 3 ? doc.back : null;
+            const bc = back ? compileDraft(back, resolution) : null;
             return generateSeamedPanels({
               resolution,
               width: d.width,
@@ -536,7 +557,14 @@ async function main(): Promise<void> {
               shape: 'freeform',
               mask: { outline: d.outline, darts: d.darts },
               extraSeams,
-              extraOpenings: (uu, vv) => openCells.has(Math.round(vv * (rN - 1)) * rN + Math.round(uu * (rN - 1))),
+              extraOpenings: cellOpen(openCells),
+              ...(back && bc
+                ? {
+                    maskBack: { outline: back.outline, darts: back.darts },
+                    extraSeamsBack: bc.extraSeams,
+                    extraOpeningsBack: cellOpen(bc.openCells),
+                  }
+                : {}),
             });
           })()
         : sceneMode === 'couture'
@@ -718,7 +746,11 @@ async function main(): Promise<void> {
     patternView.draw(mesh, patternHandles()); // refresh the 2D cutting-layout inset
     // Freeform editing: hand the atelier piece to the 2D view so its outline
     // vertices become draggable; other scenes leave draft mode.
-    if (!(sceneMode === 'atelier' && patternView.drawing)) patternView.setDraft(sceneMode === 'atelier' && draft ? draft.piece : null);
+    if (!(sceneMode === 'atelier' && patternView.drawing))
+      patternView.setDraft(
+        sceneMode === 'atelier' && draft ? draft.piece : null,
+        sceneMode === 'atelier' && draft?.back ? draft.back : null,
+      );
     // Show the EXACT avatar silhouette (projected from the rendered scan mesh)
     // behind the 2D plan, so pieces are drawn over the real body shown in 3D.
     patternView.setBodySilhouette(

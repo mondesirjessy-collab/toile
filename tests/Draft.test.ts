@@ -191,4 +191,37 @@ describe('freeform mesh (shape: freeform)', () => {
     const allOpen = generateSeamedPanels({ resolution: n, width: 1, height: 1, gap: 1, topY: 1.5, shape: 'freeform', mask: { outline: fullOutline, darts: [] }, extraOpenings: () => true });
     expect(allOpen.seamCount).toBeLessThan(sealed.seamCount);
   });
+
+  const panelSize = n * n;
+  const keptInPanel = (m: ClothMeshData, p: number): number => {
+    let c = 0;
+    for (let i = 0; i < panelSize; i++) if (m.invMasses[p * panelSize + i]! > 0) c++;
+    return c;
+  };
+
+  it('an independent back mask (côte-à-côte) cuts the back panel differently from the front', () => {
+    const backTri: UV[] = [
+      [0.5, 0.05],
+      [0.9, 0.9],
+      [0.1, 0.9],
+    ];
+    const mesh = generateSeamedPanels({
+      resolution: n, width: 1, height: 1, gap: 1, topY: 1.5, shape: 'freeform',
+      mask: { outline: fullOutline, darts: [] },
+      maskBack: { outline: backTri, darts: [] },
+    });
+    expect(keptInPanel(mesh, 0)).toBe(panelSize); // full front
+    expect(keptInPanel(mesh, 1)).toBeLessThan(keptInPanel(mesh, 0)); // back cut to a triangle
+    expect(keptInPanel(mesh, 1)).toBeGreaterThan(0);
+  });
+
+  it('no back mask → the back panel mirrors the front exactly', () => {
+    const tri: UV[] = [
+      [0.5, 0.02],
+      [0.95, 0.95],
+      [0.05, 0.95],
+    ];
+    const mesh = generateSeamedPanels({ resolution: n, width: 1, height: 1, gap: 1, topY: 1.5, shape: 'freeform', mask: { outline: tri, darts: [] } });
+    expect(keptInPanel(mesh, 1)).toBe(keptInPanel(mesh, 0)); // mirror
+  });
 });

@@ -121,7 +121,7 @@ function buildBendQuads(
   positions: Float32Array,
   panelCount: number,
   n: number,
-  keptLocal: (u: number, v: number) => boolean,
+  keptLocal: (p: number, u: number, v: number) => boolean,
   extra: BendQuad[] = [],
 ): Pick<ClothMeshData, 'quadData' | 'quadCount' | 'quadColorOffsets' | 'quadColorCounts'> {
   const panelSize = n * n;
@@ -158,20 +158,20 @@ function buildBendQuads(
         // Hinge across the vertical grid edge shared with the next cell right.
         if (
           u + 2 < n &&
-          keptLocal(u, v + 1) &&
-          keptLocal(u + 1, v) &&
-          keptLocal(u + 1, v + 1) &&
-          keptLocal(u + 2, v)
+          keptLocal(p, u, v + 1) &&
+          keptLocal(p, u + 1, v) &&
+          keptLocal(p, u + 1, v + 1) &&
+          keptLocal(p, u + 2, v)
         ) {
           push(idx(u + 1, v), idx(u + 1, v + 1), idx(u, v + 1), idx(u + 2, v));
         }
         // Hinge across the horizontal grid edge shared with the cell below.
         if (
           v + 2 < n &&
-          keptLocal(u + 1, v) &&
-          keptLocal(u, v + 1) &&
-          keptLocal(u + 1, v + 1) &&
-          keptLocal(u, v + 2)
+          keptLocal(p, u + 1, v) &&
+          keptLocal(p, u, v + 1) &&
+          keptLocal(p, u + 1, v + 1) &&
+          keptLocal(p, u, v + 2)
         ) {
           push(idx(u, v + 1), idx(u + 1, v + 1), idx(u + 1, v), idx(u, v + 2));
         }
@@ -367,6 +367,16 @@ export interface SeamedPanelsOptions {
    * itself). Only consulted when shape==='freeform'.
    */
   extraOpenings?: (uu: number, vv: number) => boolean;
+  /**
+   * INDEPENDENT BACK face (freeform côte-à-côte): panel 1 (−z) gets its own
+   * drawn outline/darts, openings and dart/hand-seam pairs instead of mirroring
+   * the front. All absent → the back mirrors the front (every archetype and
+   * single-face freeform piece is byte-for-byte unchanged). Only consulted when
+   * shape==='freeform'.
+   */
+  maskBack?: { outline: UV[]; darts: { apex: UV; legA: UV; legB: UV }[] };
+  extraSeamsBack?: readonly { i: number; j: number }[];
+  extraOpeningsBack?: (uu: number, vv: number) => boolean;
   /**
    * Elastic band at the top edge: rest-length ratio (< 1) applied to the
    * horizontal weave in the top rows — the fabric gathers and GRIPS whatever
@@ -708,6 +718,72 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
     }
   }
 
+  // Independent BACK mask (freeform côte à côte): panel 1 (the −z face) gets its
+  // OWN drawn outline instead of mirroring the front. Absent → keptB aliases the
+  // front mask, so EVERY archetype and single-face freeform piece is byte-for-
+  // byte unchanged (the whole delta below is gated on `hasBack`).
+  const hasBack = shape === 'freeform' && !!opts.maskBack;
+  const keptB = hasBack ? new Array<boolean>(panelSize) : kept;
+  const uAdjB = hasBack ? new Float32Array(panelSize) : uAdj;
+  const vAdjB = hasBack ? new Float32Array(panelSize) : vAdj;
+  if (hasBack) {
+    const mb = opts.maskBack!;
+    const insideB = (uu: number, vv: number): boolean => {
+      const p: UV = [uu, vv];
+      if (!pointInPolygon(p, mb.outline)) return false;
+      for (const d of mb.darts) if (pointInTriangle(p, d.apex, d.legA, d.legB)) return false;
+      return true;
+    };
+    for (let v = 0; v < n; v++) for (let u = 0; u < n; u++) keptB[v * n + u] = insideB(u / (n - 1), v / (n - 1));
+    for (let v = 0; v < n; v++)
+      for (let u = 0; u < n; u++) {
+        uAdjB[v * n + u] = u / (n - 1);
+        vAdjB[v * n + u] = v / (n - 1);
+      }
+    // Same cut-edge snapping the front gets (bisect toward each cut neighbour).
+    const crossingB = (u0: number, v0: number, u1: number, v1: number): [number, number] => {
+      let a = 0;
+      let b = 1;
+      for (let it = 0; it < 10; it++) {
+        const m = (a + b) / 2;
+        if (insideB(u0 + (u1 - u0) * m, v0 + (v1 - v0) * m)) a = m;
+        else b = m;
+      }
+      const t = (a + b) / 2;
+      return [u0 + (u1 - u0) * t, v0 + (v1 - v0) * t];
+    };
+    for (let v = 0; v < n; v++)
+      for (let u = 0; u < n; u++) {
+        if (!keptB[v * n + u]) continue;
+        const u0 = u / (n - 1);
+        const v0 = v / (n - 1);
+        let sumU = 0;
+        let sumV = 0;
+        let cuts = 0;
+        for (const [du, dv2] of [
+          [-1, 0],
+          [1, 0],
+          [0, -1],
+          [0, 1],
+        ] as const) {
+          const u1 = u + du;
+          const v1 = v + dv2;
+          if (u1 < 0 || u1 >= n || v1 < 0 || v1 >= n) continue;
+          if (keptB[v1 * n + u1]) continue;
+          const [cu, cv] = crossingB(u0, v0, u1 / (n - 1), v1 / (n - 1));
+          sumU += cu;
+          sumV += cv;
+          cuts++;
+        }
+        if (cuts > 0) {
+          uAdjB[v * n + u] = sumU / cuts;
+          vAdjB[v * n + u] = sumV / cuts;
+        }
+      }
+    const backIslands = countMaskIslands(keptB, n);
+    if (backIslands !== 1) console.warn(`ClothMesh: dos déconnecté — ${backIslands} îlot(s)`);
+  }
+
   const positions = new Float32Array(count * 4);
   const invMasses = new Float32Array(count).fill(1.0);
   // Waistband anchor: hold the top band (same rows the elastic gathers) at
@@ -717,22 +793,26 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
   const anchorY = anchorTop ? new Float32Array(count).fill(ANCHOR_NONE) : undefined;
 
   const index = (p: number, u: number, v: number): number => p * panelSize + v * n + u;
-  // Same outline on both panels, so the panel index is irrelevant to the mask.
-  const isKept = (_p: number, u: number, v: number): boolean => kept[v * n + u]!;
+  // Panel 0 = front mask, panel 1 = back mask (identical arrays unless a
+  // côte-à-côte back outline was drawn).
+  const isKept = (p: number, u: number, v: number): boolean => (p === 0 ? kept : keptB)[v * n + u]!;
 
   for (let p = 0; p < 2; p++) {
+    const kp = p === 0 ? kept : keptB;
+    const ua = p === 0 ? uAdj : uAdjB;
+    const va = p === 0 ? vAdj : vAdjB;
     const z = (p === 0 ? 1 : -1) * (gap / 2);
     for (let v = 0; v < n; v++) {
       for (let u = 0; u < n; u++) {
         const i = index(p, u, v);
         const local = v * n + u;
-        if (kept[local]) {
-          positions[i * 4 + 0] = (uAdj[local]! - 0.5) * width;
-          positions[i * 4 + 1] = topY - vAdj[local]! * height;
+        if (kp[local]) {
+          positions[i * 4 + 0] = (ua[local]! - 0.5) * width;
+          positions[i * 4 + 1] = topY - va[local]! * height;
           positions[i * 4 + 2] = z;
           // Anchor the top band to its own rest height (matches the elastic
           // grip zone v < 0.06), so the strapless top cannot slide down.
-          if (anchorY && vAdj[local]! < 0.06) anchorY[i] = positions[i * 4 + 1]!;
+          if (anchorY && va[local]! < 0.06) anchorY[i] = positions[i * 4 + 1]!;
         } else {
           // Cut from the pattern: parked out of the scene, immovable.
           positions[i * 4 + 0] = 0;
@@ -831,15 +911,27 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
     // Shaped garment: stitch the ENTIRE cut boundary of the pattern — except
     // the openings (neckline, hem, sleeve ends) where the body passes through.
     // A particle is on the boundary when a 4-neighbour is missing or cut.
-    const onBoundary = (u: number, v: number): boolean =>
-      u === 0 ||
-      u === n - 1 ||
-      v === 0 ||
-      v === n - 1 ||
-      !kept[v * n + (u - 1)] ||
-      !kept[v * n + (u + 1)] ||
-      !kept[(v - 1) * n + u] ||
-      !kept[(v + 1) * n + u];
+    // A cell is on a face's boundary when a 4-neighbour is missing/cut on THAT
+    // face's own mask (front and back may differ in côte-à-côte mode).
+    const onB = (kp: readonly boolean[], u: number, v: number): boolean =>
+      !!kp[v * n + u] &&
+      (u === 0 ||
+        u === n - 1 ||
+        v === 0 ||
+        v === n - 1 ||
+        !kp[v * n + (u - 1)] ||
+        !kp[v * n + (u + 1)] ||
+        !kp[(v - 1) * n + u] ||
+        !kp[(v + 1) * n + u]);
+    const onBoundary = (u: number, v: number): boolean => onB(kept, u, v); // front, for pressing
+    const openFront = (u: number, v: number): boolean =>
+      isOpening(shape, u / (n - 1), v / (n - 1), shapeParams, 1 / (n - 1)) ||
+      (shape === 'freeform' && !!opts.extraOpenings?.(u / (n - 1), v / (n - 1)));
+    const openBack = (u: number, v: number): boolean =>
+      hasBack
+        ? isOpening(shape, u / (n - 1), v / (n - 1), shapeParams, 1 / (n - 1)) ||
+          !!opts.extraOpeningsBack?.(u / (n - 1), v / (n - 1))
+        : openFront(u, v);
     // Cross-seam flattening: for cells one ring inside a stitched edge, a soft
     // bending constraint ties front↔back at the flat-continuation distance
     // (2 × spacing), so the fabric behaves as if continuous through the seam —
@@ -848,12 +940,14 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
     const seamedLocal = new Set<number>();
     for (let v = 0; v < n; v++) {
       for (let u = 0; u < n; u++) {
-        if (!kept[v * n + u]) continue;
-        if (!onBoundary(u, v)) continue;
-        if (isOpening(shape, u / (n - 1), v / (n - 1), shapeParams, 1 / (n - 1))) continue;
-        if (shape === 'freeform' && opts.extraOpenings?.(u / (n - 1), v / (n - 1))) continue;
-        seamedLocal.add(v * n + u);
-        seamLocalCells.add(v * n + u);
+        const cell = v * n + u;
+        // Stitch front↔back where BOTH faces keep the cell, it lies on a face
+        // boundary, and neither face left it open (neckline/hem/dart/hand-seam).
+        if (!kept[cell] || !keptB[cell]) continue;
+        if (!onB(kept, u, v) && !onB(keptB, u, v)) continue;
+        if (openFront(u, v) || openBack(u, v)) continue;
+        seamedLocal.add(cell);
+        seamLocalCells.add(cell);
         seams.push({ i: index(0, u, v), j: index(1, u, v), rest: seamRest, kind: ConstraintKind.Seam });
         for (const [du, dv2] of [
           [-1, 0],
@@ -869,7 +963,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
           // itself seamed (front↔back at 0.15·spacing); adding the flat
           // continuation (2·spacing) to that same pair pits two contradictory
           // distance constraints against each other every solve.
-          if (!kept[local] || flattened.has(local) || onBoundary(u2, v2)) continue;
+          if (!kept[local] || !keptB[local] || flattened.has(local) || onB(kept, u2, v2) || onB(keptB, u2, v2)) continue;
           flattened.add(local);
           bending.push({
             i: index(0, u2, v2),
@@ -978,15 +1072,16 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
   // both panels. Register both cells in seamLocalCells so the seamDist BFS and
   // the self-collision exemption cover them — otherwise self-collision fights
   // the closure and the piece shakes loose (the gathered-bodice slide-off).
-  if (opts.extraSeams) {
-    for (const s of opts.extraSeams) {
-      for (const p of [0, 1] as const) {
-        seams.push({ i: p * panelSize + s.i, j: p * panelSize + s.j, rest: seamRest, kind: ConstraintKind.Seam });
-      }
+  const injectExtra = (pairs: readonly { i: number; j: number }[] | undefined, p: number): void => {
+    if (!pairs) return;
+    for (const s of pairs) {
+      seams.push({ i: p * panelSize + s.i, j: p * panelSize + s.j, rest: seamRest, kind: ConstraintKind.Seam });
       seamLocalCells.add(s.i);
       seamLocalCells.add(s.j);
     }
-  }
+  };
+  injectExtra(opts.extraSeams, 0); // front darts / hand-seams
+  injectExtra(hasBack ? opts.extraSeamsBack : opts.extraSeams, 1); // back's own (else mirror)
 
   // Seam-distance field (M3): grid hops from the nearest sewn cell, over kept
   // cells, clamped to 3. Both panels share the local grid so the same value
@@ -1027,7 +1122,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
 
   const all = structural.concat(shear, bending, seams);
   const { ordered, colorOffsets, colorCounts } = colorConstraints(all, count);
-  const quads = buildBendQuads(positions, 2, n, (u, v) => kept[v * n + u]!, pressHinges);
+  const quads = buildBendQuads(positions, 2, n, (p, u, v) => (p === 0 ? kept : keptB)[v * n + u]!, pressHinges);
 
   const constraintData = new ArrayBuffer(ordered.length * CONSTRAINT_STRIDE);
   const dv = new DataView(constraintData);

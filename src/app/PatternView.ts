@@ -84,8 +84,24 @@ export class PatternView {
 
   // Freeform "atelier" editing: when a draft piece is set, the outline vertices
   // become draggable handles (a separate path from the parametric handles).
-  private readonly onDraftChange: (piece: DraftPiece) => void;
-  private draftPiece: DraftPiece | null = null;
+  private readonly onDraftChange: (piece: DraftPiece, isBack: boolean) => void;
+  // Côte-à-côte faces: the FRONT column (left) and an optional BACK column
+  // (right, drawn from scratch). Gestures edit whichever column the pointer went
+  // down in (`activeBack`); `draftPiece` is that active face.
+  private draftFront: DraftPiece | null = null;
+  private draftBack: DraftPiece | null = null;
+  private activeBack = false;
+  private colGap = 0; // world-x offset of the back column from the front
+  private get draftPiece(): DraftPiece | null {
+    return this.activeBack ? this.draftBack : this.draftFront;
+  }
+  private setActive(piece: DraftPiece | null): void {
+    if (this.activeBack) this.draftBack = piece;
+    else this.draftFront = piece;
+  }
+  private activeOffset(): number {
+    return this.activeBack ? this.colGap : 0;
+  }
   private draftPreview: UV[] | null = null; // live copy while dragging a vertex
   private draftDrag: { vertex: number; pointerId: number; grabDX: number; grabDY: number } | null = null;
   private draftHover: number | null = null;
@@ -103,7 +119,7 @@ export class PatternView {
   constructor(
     canvas: HTMLCanvasElement,
     onChange: (id: string, value: number) => void = () => {},
-    onDraftChange: (piece: DraftPiece) => void = () => {},
+    onDraftChange: (piece: DraftPiece, isBack: boolean) => void = () => {},
   ) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
@@ -122,18 +138,20 @@ export class PatternView {
 
   /** Double-click an outline vertex to remove it (freeform drawing). */
   private readonly onDblClick = (e: MouseEvent): void => {
-    if (!this.draftPiece) return;
+    if (!this.draftFront && !this.draftBack) return;
     const p = this.canvasPoint(e);
     if (!p) return;
+    this.pickColumn(p[0]);
+    if (!this.draftPiece) return;
     const v = this.pickVertex(p[0], p[1]);
     if (v === null) return; // not on a vertex → let the 3D canvas handle it
     const next = deleteOutlineVertex(this.draftPiece, v);
     if (next.outline.length === this.draftPiece.outline.length) return; // ≤3 guard
     e.preventDefault();
     e.stopPropagation();
-    this.setDraft(next);
+    this.applyActive(next);
     this.render();
-    this.onDraftChange(next);
+    this.onDraftChange(next, this.activeBack);
   };
 
   /** DEV: current outline vertices in canvas-local pixels (for input tests). */
@@ -156,9 +174,8 @@ export class PatternView {
     this.render();
   }
 
-  /** Enter freeform draft editing (atelier) with `piece`, or leave it (null). */
-  setDraft(piece: DraftPiece | null): void {
-    this.draftPiece = piece
+  private clonePiece(piece: DraftPiece | null): DraftPiece | null {
+    return piece
       ? {
           ...piece,
           outline: piece.outline.map((p) => [p[0], p[1]] as UV),
@@ -167,11 +184,32 @@ export class PatternView {
           darts: piece.darts.map((d) => ({ apex: [...d.apex] as UV, legA: [...d.legA] as UV, legB: [...d.legB] as UV })),
         }
       : null;
+  }
+  private resetDraftTransient(): void {
     this.draftPreview = null;
     this.draftDrag = null;
     this.draftHover = null;
     this.draftEdge = null;
     this.draftSeamA = null;
+  }
+
+  /**
+   * Enter freeform draft editing (atelier) with the FRONT `piece` and an optional
+   * independent BACK face, or leave draft mode (both null).
+   */
+  setDraft(piece: DraftPiece | null, back: DraftPiece | null = null): void {
+    this.draftFront = this.clonePiece(piece);
+    this.draftBack = this.clonePiece(back);
+    if (!this.draftBack) this.activeBack = false; // no back to edit
+    this.penMode = false;
+    this.penPoints = [];
+    this.resetDraftTransient();
+  }
+
+  /** Replace the ACTIVE face after an edit (keeps the other face + which column). */
+  private applyActive(next: DraftPiece): void {
+    this.setActive(this.clonePiece(next));
+    this.resetDraftTransient();
   }
 
   /** Show the avatar silhouette behind the atelier grid (or null to hide). */
@@ -194,9 +232,12 @@ export class PatternView {
     this.render();
   }
 
-  /** Start drawing a NEW piece from a blank canvas (pen tool). */
-  startPen(width: number, height: number, topY: number, gap: number): void {
-    this.setDraft({ outline: [], darts: [], seams: [], openEdges: [], width, height, topY, gap });
+  /** Start drawing a NEW piece from a blank canvas (pen tool), on the front or
+   * back column. Only the target face is reset — the other column is kept. */
+  startPen(width: number, height: number, topY: number, gap: number, isBack = false): void {
+    this.activeBack = isBack;
+    this.setActive({ outline: [], darts: [], seams: [], openEdges: [], width, height, topY, gap });
+    this.resetDraftTransient();
     this.penMode = true;
     this.penPoints = [];
     this.render();
@@ -224,24 +265,40 @@ export class PatternView {
     const next = { ...this.draftPiece, outline, openEdges: [{ from: topEdge, to: (topEdge + 1) % outline.length }] };
     this.penMode = false;
     this.penPoints = [];
-    this.setDraft(next);
+    this.applyActive(next);
     this.render();
-    this.onDraftChange(next);
+    this.onDraftChange(next, this.activeBack);
   }
 
-  /** Screen position of an outline vertex: UV → the mesh's rest layout → screen. */
-  private vertexScreen(uv: UV): [number, number] | null {
-    if (!this.tf || !this.draftPiece) return null;
-    const x = (uv[0] - 0.5) * this.draftPiece.width;
-    const y = this.draftPiece.topY - uv[1] * this.draftPiece.height;
+  /** Screen position of an outline vertex: UV → world layout (+ the face's column
+   * offset) → screen. Defaults to the active face; pass (piece, offset) to draw
+   * the other column. */
+  private vertexScreen(uv: UV, piece: DraftPiece | null = this.draftPiece, offset: number = this.activeOffset()): [number, number] | null {
+    if (!this.tf || !piece) return null;
+    const x = (uv[0] - 0.5) * piece.width + offset;
+    const y = piece.topY - uv[1] * piece.height;
     return this.layoutToScreen(x, y);
   }
 
-  /** A screen point → outline UV, clamped to [0,1]². */
+  /** A screen point → the ACTIVE face's outline UV, clamped to [0,1]². */
   private screenToUV(px: number, py: number): UV {
     const [x, y] = this.screenToLayout(px, py);
     const p = this.draftPiece!;
-    return [Math.min(1, Math.max(0, x / p.width + 0.5)), Math.min(1, Math.max(0, (p.topY - y) / p.height))];
+    return [
+      Math.min(1, Math.max(0, (x - this.activeOffset()) / p.width + 0.5)),
+      Math.min(1, Math.max(0, (p.topY - y) / p.height)),
+    ];
+  }
+
+  /** Route a gesture to the column it fell in: past the midpoint between the two
+   * columns (and only if a back face exists) → the back, else the front. */
+  private pickColumn(px: number): void {
+    if (!this.tf || !this.draftBack || this.colGap <= 0) {
+      this.activeBack = false;
+      return;
+    }
+    const [lx] = this.screenToLayout(px, 0);
+    this.activeBack = lx > this.colGap / 2;
   }
 
   private pickVertex(px: number, py: number): number | null {
@@ -329,10 +386,12 @@ export class PatternView {
 
   private readonly onDown = (e: PointerEvent): void => {
     // Freeform draft: grab an outline vertex; empty inset space falls through.
-    if (this.draftPiece) {
+    if (this.draftFront || this.draftBack) {
       if (this.draftDrag || e.button !== 0) return;
       const p = this.canvasPoint(e);
       if (!p) return;
+      if (!this.penMode) this.pickColumn(p[0]); // the pen stays on the face it started
+      if (!this.draftPiece) return; // empty column with nothing to grab yet
       // Pen: place points to trace a new piece; clicking near the first point
       // (with ≥3 points) closes it.
       if (this.penMode) {
@@ -363,9 +422,9 @@ export class PatternView {
             const seam = { a: { from: this.draftSeamA, to: (this.draftSeamA + 1) % out.length }, b: { from: ne.edge, to: (ne.edge + 1) % out.length } };
             const next = { ...this.draftPiece, seams: [...this.draftPiece.seams, seam] };
             this.draftSeamA = null;
-            this.setDraft(next);
+            this.applyActive(next);
             this.render();
-            this.onDraftChange(next);
+            this.onDraftChange(next, this.activeBack);
           } else {
             this.draftSeamA = null; // clicked the same edge → cancel the pick
             this.render();
@@ -496,9 +555,9 @@ export class PatternView {
         } else {
           next = insertOutlineVertex(this.draftPiece, g.edge, g.downUV);
         }
-        this.setDraft(next);
+        this.applyActive(next);
         this.render();
-        this.onDraftChange(next);
+        this.onDraftChange(next, this.activeBack);
         return;
       }
       if (!this.draftDrag || e.pointerId !== this.draftDrag.pointerId) return;
@@ -508,12 +567,13 @@ export class PatternView {
       document.body.style.cursor = '';
       e.preventDefault();
       e.stopPropagation();
-      if (preview) {
-        const old = this.draftPiece.outline[v]!;
+      const piece = this.draftPiece;
+      if (preview && piece) {
+        const old = piece.outline[v]!;
         const moved = Math.abs(preview[v]![0] - old[0]) > 1e-4 || Math.abs(preview[v]![1] - old[1]) > 1e-4;
-        this.draftPiece.outline = preview.map((q) => [q[0], q[1]] as UV);
+        piece.outline = preview.map((q) => [q[0], q[1]] as UV);
         this.render();
-        if (moved) this.onDraftChange(this.draftPiece); // re-cut only on a real move
+        if (moved) this.onDraftChange(piece, this.activeBack); // re-cut only on a real move
       } else {
         this.render();
       }
@@ -560,7 +620,7 @@ export class PatternView {
     const ctx = this.ctx;
     // Draw when there's a mesh OR a freeform draft (drawing from scratch has no
     // mesh until the outline closes).
-    if (!ctx || (!this.mesh && !this.draftPiece)) return;
+    if (!ctx || (!this.mesh && !this.draftFront && !this.draftBack)) return;
     if (this.staticDirty) {
       this.renderStatic();
       this.staticDirty = false;
@@ -568,13 +628,42 @@ export class PatternView {
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     ctx.drawImage(this.staticLayer, 0, 0);
     this.renderHandles();
-    if (this.draftPiece) this.renderDraft();
+    if (this.draftFront || this.draftBack) this.renderDraft();
+  }
+
+  /** Draw a face's outline + vertices with no live/transient decoration — used
+   * for the INACTIVE column (dimmed) so both faces are always visible. */
+  private drawFaceStatic(ctx: CanvasRenderingContext2D, piece: DraftPiece, offset: number): void {
+    const pts = piece.outline
+      .map((uv) => this.vertexScreen(uv, piece, offset))
+      .filter((s): s is [number, number] => s !== null);
+    if (pts.length >= 3) {
+      ctx.beginPath();
+      pts.forEach((s, i) => (i === 0 ? ctx.moveTo(s[0], s[1]) : ctx.lineTo(s[0], s[1])));
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(228, 222, 205, 0.07)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(230, 225, 210, 0.4)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([]);
+      ctx.stroke();
+    }
+    for (const s of pts) {
+      ctx.beginPath();
+      ctx.arc(s[0], s[1], 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(210, 210, 210, 0.5)';
+      ctx.fill();
+    }
   }
 
   /** Freeform outline: the live preview polygon (while dragging) + vertex handles. */
   private renderDraft(): void {
     const ctx = this.ctx;
-    if (!ctx || !this.tf || !this.draftPiece) return;
+    if (!ctx || !this.tf) return;
+    // The OTHER column first (dimmed, underneath the active one).
+    const other = this.activeBack ? this.draftFront : this.draftBack;
+    if (other) this.drawFaceStatic(ctx, other, this.activeBack ? 0 : this.colGap);
+    if (!this.draftPiece) return;
 
     // Pen: draw the growing polyline + points; the first point glows once the
     // shape can be closed.
@@ -709,21 +798,23 @@ export class PatternView {
     // outline changes and drawing works even before there's a mesh. A grid
     // backdrop makes it read like a 2D CAD surface. The draft overlay
     // (renderDraft) draws the outline, points, darts and seams on top.
-    if (this.draftPiece) {
-      const p = this.draftPiece;
-      // Fit the panel to the mannequin silhouette (so pieces are drawn to the
-      // body's real scale) UNIONED with the piece's own extent — else just the
-      // piece. World (x, y) is the same plane the flat pattern lives in.
-      let minX = -p.width / 2;
-      let maxX = p.width / 2;
+    if (this.draftFront || this.draftBack) {
+      const p = this.draftFront ?? this.draftBack!;
+      // FRONT-column bounds: the piece's extent unioned with the silhouette.
+      let fMinX = -p.width / 2;
+      let fMaxX = p.width / 2;
       let minY = p.topY - p.height;
       let maxY = p.topY;
       if (this.bodySil) {
-        minX = Math.min(minX, this.bodySil.minX);
-        maxX = Math.max(maxX, this.bodySil.maxX);
+        fMinX = Math.min(fMinX, this.bodySil.minX);
+        fMaxX = Math.max(fMaxX, this.bodySil.maxX);
         minY = Math.min(minY, this.bodySil.minY);
         maxY = Math.max(maxY, this.bodySil.maxY);
       }
+      // Two columns side by side (CLO-style): DEVANT at offset 0, DOS at colGap.
+      this.colGap = fMaxX - fMinX + 0.12;
+      const minX = fMinX;
+      const maxX = fMaxX + this.colGap;
       const margin = 22;
       const spanA = maxX - minX || p.width;
       const spanB = maxY - minY || p.height;
@@ -731,20 +822,22 @@ export class PatternView {
       const ox = (W - spanA * scale) / 2;
       const oy = (H - spanB * scale) / 2;
       this.tf = { minA: minX, minB: minY, scale, ox, oy, H };
-      // Avatar silhouette behind the grid: the exact body shape, filled as one
-      // path (a slight pad closes hairlines between adjacent cells; a single
-      // fill keeps the alpha uniform instead of double-darkening overlaps).
-      if (this.bodySil) {
+      // Avatar silhouette behind EACH column: the exact body shape, filled as one
+      // padded path (closes hairlines; a single fill keeps the alpha uniform).
+      const drawSil = (offset: number): void => {
+        if (!this.bodySil) return;
         ctx.beginPath();
         for (const [x0, y0, x1, y1] of this.bodySil.rects) {
-          const a = this.layoutToScreen(x0, y1);
-          const b = this.layoutToScreen(x1, y0);
+          const a = this.layoutToScreen(x0 + offset, y1);
+          const b = this.layoutToScreen(x1 + offset, y0);
           ctx.rect(a[0], a[1], b[0] - a[0] + 0.7, b[1] - a[1] + 0.7);
         }
         ctx.fillStyle = 'rgba(214, 205, 190, 0.16)';
         ctx.fill();
-      }
-      // Grid every ~10 cm across the fitted field.
+      };
+      drawSil(0);
+      drawSil(this.colGap);
+      // Grid every ~10 cm across the whole field.
       ctx.strokeStyle = 'rgba(237, 233, 223, 0.06)';
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -761,6 +854,17 @@ export class PatternView {
         ctx.lineTo(b[0], b[1]);
       }
       ctx.stroke();
+      // Column labels above each silhouette.
+      const cx = (fMinX + fMaxX) / 2;
+      ctx.font = '600 11px ui-monospace, monospace';
+      ctx.fillStyle = 'rgba(237, 233, 223, 0.5)';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      const labY = this.layoutToScreen(0, maxY)[1] - 3;
+      ctx.fillText('DEVANT', this.layoutToScreen(cx, maxY)[0], labY);
+      ctx.fillText('DOS', this.layoutToScreen(cx + this.colGap, maxY)[0], labY);
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
       return;
     }
     if (!mesh) return;
