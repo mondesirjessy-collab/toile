@@ -47,8 +47,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   var v = (positions[i].xyz - prev_positions[i].xyz) / params.dt;
 
-  // Light damping then hard speed clamp for stability.
-  v *= max(0.0, 1.0 - params.damping * params.dt);
+  // Linear damping + quadratic aerodynamic drag (audit — realism): fast motion
+  // (a falling hem, a gust-caught panel) is braked harder than a slow settle, so
+  // cloth floats and flutters like fabric moving through air instead of a rigid
+  // sheet. The quadratic term ∝ speed vanishes at rest, so the SETTLED drape is
+  // unchanged — this only enriches motion (wind, podium, dragging). Then the
+  // hard speed clamp for stability.
+  let speed0 = length(v);
+  v *= max(0.0, 1.0 - params.damping * params.dt - 0.1 * speed0 * params.dt);
   let speed = length(v);
   if (speed > params.max_speed) { v *= params.max_speed / speed; }
 
