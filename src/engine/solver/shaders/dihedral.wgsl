@@ -97,17 +97,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // (and resolution-independent): low = leather-stiff, high = chiffon-floppy.
   let sp2 = params.cloth_spacing * params.cloth_spacing;
   let alpha = max(q.softness, 1.0) * params.compliance_bend / (params.dt * params.dt * max(sp2, 1e-8));
-  // KNOWN, INTENTIONALLY UNCHANGED (audit M2): q1..q4 are gradients of
-  // d = n1·n2, so the exact XPBD projection for C = acos(d) − φ0 is
-  //   s = -c·√(1−d²) / (denom + alpha·(1−d²)).
-  // We divide by (denom + alpha) instead — omitting the (1−d²) on alpha — which
-  // makes bending slightly SOFTER than nominal, most near flat/fully-folded
-  // (d→±1). This is NOT a bug to blind-fix: the mathematically-correct form
-  // stiffens every fabric non-uniformly and would break all 7 hand-tuned
-  // presets (Jersey…Soie) + the pressing hinges, which are calibrated against
-  // THIS response. Changing it is a coupled shader + preset re-tune under
-  // visual review, not a one-liner. Left as-is deliberately.
-  let s = -c * sqrt(max(1.0 - d * d, 0.0)) / (denom + alpha);
+  // Exact XPBD for the acos formulation (audit M2): q1..q4 are gradients of
+  // d = n1·n2, so ∇C = −q/√(1−d²) and Σw|∇C|² = denom/(1−d²). The compliance
+  // term must therefore carry the same (1−d²) factor as the numerator —
+  // dividing by (denom + alpha) alone made bending fold-angle dependent
+  // (softer than the dialed compliance, worst near flat). Guard the factor with
+  // the same max(…,0) as the numerator so float error can't flip alpha's sign.
+  let fold = max(1.0 - d * d, 0.0);
+  let s = -c * sqrt(fold) / (denom + alpha * fold);
 
   positions[q.e0] = vec4f(x1 + s * w1 * q1, 0.0);
   positions[q.e1] = vec4f(x1 + p2 + s * w2 * q2, 0.0);
