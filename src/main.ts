@@ -224,6 +224,38 @@ function armholeCrossSeams(base: ClothMeshData, side: 'L' | 'R', n: number): Cro
   return cross;
 }
 
+/** A short standing band (collar) — its own 2-panel rect band, spawned at the
+ * neck; its bottom edge is sewn to the body's neckline. Additive, same path. */
+function collarMesh(n: number, neckWidth: number, neckY: number): ClothMeshData {
+  return generateSeamedPanels({ resolution: n, width: neckWidth, height: 0.09, gap: 0.09, topY: neckY + 0.09, shape: 'rect' });
+}
+
+/** Cross-seams sewing the collar's BOTTOM edge (last row) to the body's neckline
+ * — the top-boundary cells of the centre columns that DIP below the shoulders
+ * (the scoop), so the band rings the neck hole rather than the whole shoulder. */
+function collarCrossSeams(base: ClothMeshData, n: number): CrossSeam[] {
+  const ps = n * n;
+  const kept = (local: number): boolean => base.invMasses[local]! > 0;
+  const neck: number[] = []; // body front-panel neckline cells, left→right
+  for (let u = Math.floor(0.24 * n); u <= Math.ceil(0.76 * n) && u < n; u++) {
+    for (let v = 0; v < n; v++) {
+      if (kept(v * n + u)) {
+        if (v >= 1) neck.push(v * n + u); // dipped below the shoulder row = the scoop
+        break;
+      }
+    }
+  }
+  const cross: CrossSeam[] = [];
+  if (!neck.length) return cross;
+  for (let p = 0; p < 2; p++) {
+    for (let k = 0; k < n; k++) {
+      const bodyLocal = neck[Math.min(neck.length - 1, Math.floor((k * neck.length) / n))]!;
+      cross.push({ i: p * ps + bodyLocal, j: base.count + p * ps + (n - 1) * n + k /* collar bottom row */ });
+    }
+  }
+  return cross;
+}
+
 async function main(): Promise<void> {
   const canvas = document.getElementById('view') as HTMLCanvasElement;
   const mirror = document.getElementById('mirror') as HTMLCanvasElement;
@@ -336,6 +368,7 @@ async function main(): Promise<void> {
   // returns to design. Only meaningful in the 'atelier' scene.
   let atelierDesign = true;
   let atelierSleeves = false; // multi-piece stage 1: add system sleeves to the atelier garment
+  let atelierCollar = false; // multi-piece: add a system collar band at the neckline
   const simBtn = (): HTMLElement => document.getElementById('at-sim') as HTMLElement;
   const setBig = (on: boolean): void => {
     bigPanel = on;
@@ -390,6 +423,14 @@ async function main(): Promise<void> {
     atelierSleeves = !atelierSleeves;
     (e.currentTarget as HTMLElement).classList.toggle('active', atelierSleeves);
     atelierDesign = true; // re-freeze flat so the new pieces are visible before draping
+    simBtn().classList.remove('running');
+    build();
+  });
+  // Multi-piece: toggle a system collar at the neckline.
+  (document.getElementById('at-collar') as HTMLElement).addEventListener('click', (e) => {
+    atelierCollar = !atelierCollar;
+    (e.currentTarget as HTMLElement).classList.toggle('active', atelierCollar);
+    atelierDesign = true;
     simBtn().classList.remove('running');
     build();
   });
@@ -677,11 +718,18 @@ async function main(): Promise<void> {
             // Multi-piece (stage 1): sew a rectangular sleeve to each armhole,
             // via the SAME combineClothMeshes cross-seaming the gathered dress
             // uses. Gated on the button — without it the mesh is exactly the body.
-            if (!atelierSleeves) return body;
-            const sL = sleeveMesh(resolution, 'L', m.shoulderHalfW, m.shoulderY);
-            const withL = combineClothMeshes(body, sL, armholeCrossSeams(body, 'L', resolution));
-            const sR = sleeveMesh(resolution, 'R', m.shoulderHalfW, m.shoulderY);
-            return combineClothMeshes(withL, sR, armholeCrossSeams(withL, 'R', resolution));
+            let garment = body;
+            if (atelierSleeves) {
+              const sL = sleeveMesh(resolution, 'L', m.shoulderHalfW, m.shoulderY);
+              garment = combineClothMeshes(garment, sL, armholeCrossSeams(garment, 'L', resolution));
+              const sR = sleeveMesh(resolution, 'R', m.shoulderHalfW, m.shoulderY);
+              garment = combineClothMeshes(garment, sR, armholeCrossSeams(garment, 'R', resolution));
+            }
+            if (atelierCollar) {
+              const col = collarMesh(resolution, 0.42, m.shoulderY);
+              garment = combineClothMeshes(garment, col, collarCrossSeams(garment, resolution));
+            }
+            return garment;
           })()
         : sceneMode === 'couture'
         ? generateSeamedPanels({ resolution, width: 1.2, height: 1.2, gap: 1.3, topY: 1.9 })
