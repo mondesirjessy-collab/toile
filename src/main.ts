@@ -124,8 +124,16 @@ async function main(): Promise<void> {
   mouse.attach(canvas);
   // Dragging a handle in the 2D layout edits the measurement: update the
   // pattern state, mirror it into the panel sliders, then re-cut and re-sew.
-  const patternView = new PatternView(document.getElementById('pattern') as HTMLCanvasElement, (id, value) =>
-    applyHandle(id, value),
+  const patternView = new PatternView(
+    document.getElementById('pattern') as HTMLCanvasElement,
+    (id, value) => applyHandle(id, value),
+    (outline) => {
+      // A freeform outline vertex was dragged — commit it and re-cut the piece.
+      if (draft) {
+        draft.piece.outline = outline.map((p) => [p[0], p[1]] as [number, number]);
+        build();
+      }
+    },
   );
   const profiler = new GpuProfiler(device);
 
@@ -559,6 +567,9 @@ async function main(): Promise<void> {
     liveParticleCount = 0;
     for (let i = 0; i < mesh.invMasses.length; i++) if (mesh.invMasses[i]! > 0) liveParticleCount++;
     patternView.draw(mesh, patternHandles()); // refresh the 2D cutting-layout inset
+    // Freeform editing: hand the atelier piece to the 2D view so its outline
+    // vertices become draggable; other scenes leave draft mode.
+    patternView.setDraft(sceneMode === 'atelier' && draft ? draft.piece : null);
   };
 
   // The editable measurements of the current scene, pinned to their cut edges.

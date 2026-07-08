@@ -15,6 +15,7 @@
  * actually lands on a handle; everything else falls through untouched.
  */
 import type { ClothMeshData } from '../engine/cloth/ClothMesh';
+import type { UV } from '../engine/pattern/Draft';
 
 /** One draggable measurement, defined against its garment's cutting grid. */
 export interface PatternHandleSpec {
@@ -79,10 +80,23 @@ export class PatternView {
   private hover: number | null = null;
   private drag: DragState | null = null;
 
-  constructor(canvas: HTMLCanvasElement, onChange: (id: string, value: number) => void = () => {}) {
+  // Freeform "atelier" editing: when a draft piece is set, the outline vertices
+  // become draggable handles (a separate path from the parametric handles).
+  private readonly onDraftChange: (outline: UV[]) => void;
+  private draftPiece: { outline: UV[]; width: number; height: number; topY: number } | null = null;
+  private draftPreview: UV[] | null = null; // live copy while dragging a vertex
+  private draftDrag: { vertex: number; pointerId: number; grabDX: number; grabDY: number } | null = null;
+  private draftHover: number | null = null;
+
+  constructor(
+    canvas: HTMLCanvasElement,
+    onChange: (id: string, value: number) => void = () => {},
+    onDraftChange: (outline: UV[]) => void = () => {},
+  ) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.onChange = onChange;
+    this.onDraftChange = onDraftChange;
     this.staticLayer = document.createElement('canvas');
     this.staticLayer.width = canvas.width;
     this.staticLayer.height = canvas.height;
@@ -90,6 +104,15 @@ export class PatternView {
     window.addEventListener('pointermove', this.onMove, true);
     window.addEventListener('pointerup', this.onUp, true);
     window.addEventListener('pointercancel', this.onCancel, true);
+    if (import.meta.env.DEV) (window as unknown as { __toilePattern?: PatternView }).__toilePattern = this;
+  }
+
+  /** DEV: current outline vertices in canvas-local pixels (for input tests). */
+  debugVertexScreens(): [number, number][] {
+    if (!this.draftPiece) return [];
+    return this.draftPiece.outline
+      .map((uv) => this.vertexScreen(uv))
+      .filter((s): s is [number, number] => s !== null);
   }
 
   draw(mesh: ClothMeshData, handles: PatternHandleSpec[] = []): void {
@@ -98,8 +121,45 @@ export class PatternView {
     this.staticDirty = true;
     this.drag = null;
     this.hover = null;
+    this.draftPreview = null; // the rebuild committed the drag
+    this.draftDrag = null;
     document.body.style.cursor = '';
     this.render();
+  }
+
+  /** Enter freeform draft editing (atelier) with `piece`, or leave it (null). */
+  setDraft(piece: { outline: UV[]; width: number; height: number; topY: number } | null): void {
+    this.draftPiece = piece
+      ? { width: piece.width, height: piece.height, topY: piece.topY, outline: piece.outline.map((p) => [p[0], p[1]] as UV) }
+      : null;
+    this.draftPreview = null;
+    this.draftDrag = null;
+    this.draftHover = null;
+  }
+
+  /** Screen position of an outline vertex: UV → the mesh's rest layout → screen. */
+  private vertexScreen(uv: UV): [number, number] | null {
+    if (!this.tf || !this.draftPiece) return null;
+    const x = (uv[0] - 0.5) * this.draftPiece.width;
+    const y = this.draftPiece.topY - uv[1] * this.draftPiece.height;
+    return this.layoutToScreen(x, y);
+  }
+
+  /** A screen point → outline UV, clamped to [0,1]². */
+  private screenToUV(px: number, py: number): UV {
+    const [x, y] = this.screenToLayout(px, py);
+    const p = this.draftPiece!;
+    return [Math.min(1, Math.max(0, x / p.width + 0.5)), Math.min(1, Math.max(0, (p.topY - y) / p.height))];
+  }
+
+  private pickVertex(px: number, py: number): number | null {
+    const out = this.draftPreview ?? this.draftPiece?.outline;
+    if (!out) return null;
+    for (let i = 0; i < out.length; i++) {
+      const s = this.vertexScreen(out[i]!);
+      if (s && (px - s[0]) ** 2 + (py - s[1]) ** 2 <= HIT_RADIUS * HIT_RADIUS) return i;
+    }
+    return null;
   }
 
   /** Pointer position in canvas pixels, or null when outside the inset. */
@@ -155,6 +215,22 @@ export class PatternView {
   }
 
   private readonly onDown = (e: PointerEvent): void => {
+    // Freeform draft: grab an outline vertex; empty inset space falls through.
+    if (this.draftPiece) {
+      if (this.draftDrag || e.button !== 0) return;
+      const p = this.canvasPoint(e);
+      if (!p) return;
+      const v = this.pickVertex(p[0], p[1]);
+      if (v === null) return;
+      const s = this.vertexScreen(this.draftPiece.outline[v]!)!;
+      this.draftPreview = this.draftPiece.outline.map((q) => [q[0], q[1]] as UV);
+      this.draftDrag = { vertex: v, pointerId: e.pointerId, grabDX: p[0] - s[0], grabDY: p[1] - s[1] };
+      document.body.style.cursor = 'grabbing';
+      e.preventDefault();
+      e.stopPropagation();
+      this.render();
+      return;
+    }
     // One gesture at a time; secondary buttons stay with the 3D view.
     if (this.drag || e.button !== 0) return;
     const p = this.canvasPoint(e);
@@ -171,6 +247,27 @@ export class PatternView {
   };
 
   private readonly onMove = (e: PointerEvent): void => {
+    if (this.draftPiece) {
+      if (this.draftDrag) {
+        if (e.pointerId !== this.draftDrag.pointerId) return;
+        const r = this.canvas.getBoundingClientRect();
+        const px = e.clientX - r.left - this.draftDrag.grabDX;
+        const py = e.clientY - r.top - this.draftDrag.grabDY;
+        this.draftPreview![this.draftDrag.vertex] = this.screenToUV(px, py);
+        e.preventDefault();
+        e.stopPropagation();
+        this.render();
+        return;
+      }
+      const p = this.canvasPoint(e);
+      const v = p === null ? null : this.pickVertex(p[0], p[1]);
+      if (v !== this.draftHover) {
+        this.draftHover = v;
+        document.body.style.cursor = v === null ? '' : 'grab';
+        this.render();
+      }
+      return;
+    }
     if (this.drag) {
       if (e.pointerId !== this.drag.pointerId) return;
       const r = this.canvas.getBoundingClientRect();
@@ -195,6 +292,25 @@ export class PatternView {
   };
 
   private readonly onUp = (e: PointerEvent): void => {
+    if (this.draftPiece) {
+      if (!this.draftDrag || e.pointerId !== this.draftDrag.pointerId) return;
+      const preview = this.draftPreview;
+      const v = this.draftDrag.vertex;
+      this.draftDrag = null;
+      document.body.style.cursor = '';
+      e.preventDefault();
+      e.stopPropagation();
+      if (preview) {
+        const old = this.draftPiece.outline[v]!;
+        const moved = Math.abs(preview[v]![0] - old[0]) > 1e-4 || Math.abs(preview[v]![1] - old[1]) > 1e-4;
+        this.draftPiece.outline = preview.map((q) => [q[0], q[1]] as UV);
+        this.render();
+        if (moved) this.onDraftChange(this.draftPiece.outline); // re-cut only on a real move
+      } else {
+        this.render();
+      }
+      return;
+    }
     if (!this.drag || e.pointerId !== this.drag.pointerId) return;
     const h = this.handles[this.drag.index]!;
     const value = this.drag.value;
@@ -212,6 +328,13 @@ export class PatternView {
   };
 
   private readonly onCancel = (e: PointerEvent): void => {
+    if (this.draftDrag && e.pointerId === this.draftDrag.pointerId) {
+      this.draftDrag = null;
+      this.draftPreview = null; // discard the half-drag, keep the committed outline
+      document.body.style.cursor = '';
+      this.render();
+      return;
+    }
     // An interrupted gesture (OS gesture, palm rejection) must not re-cut the
     // garment with a half-dragged value: revert to the pre-drag state.
     if (!this.drag || e.pointerId !== this.drag.pointerId) return;
@@ -230,6 +353,41 @@ export class PatternView {
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     ctx.drawImage(this.staticLayer, 0, 0);
     this.renderHandles();
+    if (this.draftPiece) this.renderDraft();
+  }
+
+  /** Freeform outline: the live preview polygon (while dragging) + vertex handles. */
+  private renderDraft(): void {
+    const ctx = this.ctx;
+    if (!ctx || !this.tf || !this.draftPiece) return;
+    const out = this.draftPreview ?? this.draftPiece.outline;
+    const pts = out.map((uv) => this.vertexScreen(uv)).filter((s): s is [number, number] => s !== null);
+    if (pts.length !== out.length) return;
+
+    // Preview polygon (only while dragging — the static layer shows the mesh).
+    if (this.draftPreview) {
+      ctx.strokeStyle = 'rgba(127, 178, 255, 0.9)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      pts.forEach((s, i) => (i === 0 ? ctx.moveTo(s[0], s[1]) : ctx.lineTo(s[0], s[1])));
+      ctx.closePath();
+      ctx.stroke();
+    }
+
+    // Vertex handles.
+    for (let i = 0; i < pts.length; i++) {
+      const s = pts[i]!;
+      const active = this.draftDrag?.vertex === i;
+      const r = active || this.draftHover === i ? 6.5 : 4.5;
+      ctx.beginPath();
+      ctx.arc(s[0], s[1], r, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = active ? 'rgba(255, 159, 107, 0.95)' : 'rgba(127, 178, 255, 0.95)';
+      ctx.stroke();
+    }
   }
 
   private renderStatic(): void {
