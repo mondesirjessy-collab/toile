@@ -113,6 +113,57 @@ function segsCross(p1: UV, p2: UV, p3: UV, p4: UV): boolean {
 
 const clamp01 = (v: number): number => (Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0.5);
 
+/** Squared distance from point p to segment a-b. */
+function segDist2(p: UV, a: UV, b: UV): number {
+  const abx = b[0] - a[0];
+  const aby = b[1] - a[1];
+  const apx = p[0] - a[0];
+  const apy = p[1] - a[1];
+  const len2 = abx * abx + aby * aby || 1e-12;
+  const t = Math.min(1, Math.max(0, (apx * abx + apy * aby) / len2));
+  const dx = a[0] + t * abx - p[0];
+  const dy = a[1] + t * aby - p[1];
+  return dx * dx + dy * dy;
+}
+
+/** Index of the outline edge (k = vertex k → vertex (k+1)%N) nearest to p. */
+export function nearestOutlineEdge(p: UV, outline: readonly UV[]): number {
+  const N = outline.length;
+  let best = 0;
+  let bestD = Infinity;
+  for (let k = 0; k < N; k++) {
+    const d = segDist2(p, outline[k]!, outline[(k + 1) % N]!);
+    if (d < bestD) {
+      bestD = d;
+      best = k;
+    }
+  }
+  return best;
+}
+
+/** Does the edge-run (vertices from..to, CCW) contain outline edge `edge`? */
+export function runCoversEdge(run: EdgeRun, edge: number, nV: number): boolean {
+  const steps = (run.to - run.from + nV) % nV; // number of edges spanned
+  for (let k = 0; k < steps; k++) if ((run.from + k) % nV === edge) return true;
+  return false;
+}
+
+/**
+ * Compile a piece's openEdges into the UV predicate generateSeamedPanels wants:
+ * a boundary cell is "open" (not mirror-sewn) when its nearest outline edge
+ * falls inside any open run.
+ */
+export function draftOpenings(piece: DraftPiece): (uu: number, vv: number) => boolean {
+  const { outline, openEdges } = piece;
+  const nV = outline.length;
+  if (!openEdges.length) return () => false;
+  return (uu: number, vv: number): boolean => {
+    const e = nearestOutlineEdge([uu, vv], outline);
+    return openEdges.some((run) => runCoversEdge(run, e, nV));
+  };
+}
+
+
 /** A centered rectangular piece — the atelier's blank canvas (wearable tube:
  * sides auto-sewn, the top edge seeded OPEN so it isn't a sealed pillow). */
 export function defaultDraft(gridN: 32 | 64 | 128 = 64): DraftDoc {
@@ -121,25 +172,30 @@ export function defaultDraft(gridN: 32 | 64 | 128 = 64): DraftDoc {
     version: 1,
     gridN,
     piece: {
-      // top-left, top-right, bottom-right, bottom-left (v grows downward)
+      // A simple sleeveless A-line dress (v grows downward): two shoulders with
+      // a scooped neckline between them, sides flaring gently to the hem. The
+      // shoulders (edges 0→1, 3→4) and the two sides (4→5, 6→0) auto-sew
+      // front↔back so it hangs from the shoulders on the dress form; the
+      // neckline (1→2→3) and the hem (5→6) stay open. The user reshapes it.
       outline: [
-        [0.08, 0.03],
-        [0.92, 0.03],
-        [0.92, 0.97],
-        [0.08, 0.97],
+        [0.24, 0.03], // 0 left shoulder outer
+        [0.42, 0.03], // 1 left shoulder inner (neckline start)
+        [0.5, 0.12], // 2 neckline bottom
+        [0.58, 0.03], // 3 right shoulder inner
+        [0.76, 0.03], // 4 right shoulder outer
+        [0.9, 0.97], // 5 hem right
+        [0.1, 0.97], // 6 hem left
       ],
       darts: [],
       seams: [],
-      // Top (0→1, neckline) and bottom (2→3, hem) stay open → a wearable tube;
-      // the two sides auto-sew front↔back.
       openEdges: [
-        { from: 0, to: 1 },
-        { from: 2, to: 3 },
+        { from: 1, to: 3 }, // neckline
+        { from: 5, to: 6 }, // hem
       ],
       width: 0.95,
-      height: 1.15,
-      topY: 1.55,
-      gap: 0.9,
+      height: 1.1,
+      topY: 1.6,
+      gap: 1.0,
     },
   };
 }

@@ -17,7 +17,8 @@ export type SceneMode =
   | 'chemise'
   | 'ensemble'
   | 'tenue'
-  | 'pantalon';
+  | 'pantalon'
+  | 'atelier';
 
 /** Parametric pattern measurements (grading) for the dress. */
 export interface PatternParams {
@@ -226,7 +227,7 @@ export class ControlPanel {
 
     this.controllers.push(
       this.gui
-        .add(this.settings, 'scene', ['drapé', 'couture', 'robe', 'robe froncée', 't-shirt', 'chemise', 'ensemble', 'tenue', 'pantalon'])
+        .add(this.settings, 'scene', ['drapé', 'couture', 'robe', 'robe froncée', 't-shirt', 'chemise', 'ensemble', 'tenue', 'pantalon', 'atelier'])
         .name('scène')
         .onChange((m: SceneMode) => this.cb.onScene(m)),
     );
@@ -563,7 +564,7 @@ export class ControlPanel {
     else if ((d.body as string) === 'scan') s.body = 'scan homme'; // format v36
     // Whitelist the scene like the body — a bogus/renamed value would else
     // fall through to a bare cloth grid while the pattern/fabric still import.
-    const scenes = ['drapé', 'couture', 'robe', 'robe froncée', 't-shirt', 'chemise', 'ensemble', 'tenue', 'pantalon'];
+    const scenes = ['drapé', 'couture', 'robe', 'robe froncée', 't-shirt', 'chemise', 'ensemble', 'tenue', 'pantalon', 'atelier'];
     if (d.scene && scenes.includes(d.scene)) s.scene = d.scene;
     for (const c of this.controllers) c.updateDisplay();
 

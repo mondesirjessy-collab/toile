@@ -1,6 +1,7 @@
 import { initGpu, WebGPUNotSupportedError } from './engine/gpu/Device';
 import { ParticleSystem } from './engine/solver/ParticleSystem';
 import { generateClothGrid, generateSeamedPanels, combineClothMeshes, type CrossSeam } from './engine/cloth/ClothMesh';
+import { defaultDraft, draftOpenings, type DraftDoc } from './engine/pattern/Draft';
 import type { SceneMode } from './app/ControlPanel';
 import { ClothRenderer, DEFAULT_FABRIC } from './app/ClothRenderer';
 import { OrbitCamera } from './app/OrbitCamera';
@@ -146,6 +147,9 @@ async function main(): Promise<void> {
     Array.from({ length: 6 }, (_, k) => 0.21 + (flare - 0.21) * (k / 5));
   let dressPattern = { length: 1.3, flare: 0.5, neck: 0.1, profile: linearProfile(0.5) };
   let shirtPattern = { sleeve: 0.47, profile: [0.22, 0.22, 0.22] }; // stations v=0.57/0.79/1
+  // Freeform "atelier" pattern (draw-your-own piece). Lazily created; a peer of
+  // the archetype patterns, reached only by sceneMode 'atelier'.
+  let draft: DraftDoc | null = null;
   const skirtLinear = (flare: number): number[] =>
     Array.from({ length: 4 }, (_, k) => 0.22 + (flare - 0.22) * (k / 3));
   let skirtPattern = { length: 0.6, flare: 0.46, profile: skirtLinear(0.46) };
@@ -289,7 +293,8 @@ async function main(): Promise<void> {
       sceneMode === 'chemise' ||
       sceneMode === 'ensemble' ||
       sceneMode === 'tenue' ||
-      sceneMode === 'pantalon';
+      sceneMode === 'pantalon' ||
+      sceneMode === 'atelier';
     const scanAvatar = bodyKind.startsWith('scan') ? scans[bodyKind] : null;
     const useScan = bodyScene && scanAvatar !== null;
     const basePrims =
@@ -297,7 +302,7 @@ async function main(): Promise<void> {
         ? null
         : // Sleeveless dresses have no armholes: on an ARMS body the arms end
           // up trapped INSIDE the garment. Dress scenes use the dress form.
-          sceneMode === 'robe' || sceneMode === 'robe froncée' || sceneMode === 'tenue'
+          sceneMode === 'robe' || sceneMode === 'robe froncée' || sceneMode === 'tenue' || sceneMode === 'atelier'
           ? (bodyKind === 'homme' ? BODY_MALE : BODY_FORM)
           : bodyKind === 'homme'
             ? BODY_MALE_ARMS
@@ -361,7 +366,23 @@ async function main(): Promise<void> {
         shapeParams: { profile: dressPattern.profile, scoop: dressPattern.neck },
       });
     const mesh =
-      sceneMode === 'couture'
+      sceneMode === 'atelier'
+        ? (() => {
+            // Freeform piece: the user's drawn outline + darts + hand-seams
+            // compiled straight to the mask / seam machinery (the atelier editor).
+            const d = (draft ??= defaultDraft(resolution as 32 | 64 | 128)).piece;
+            return generateSeamedPanels({
+              resolution,
+              width: d.width,
+              height: d.height,
+              gap: d.gap,
+              topY: d.topY,
+              shape: 'freeform',
+              mask: { outline: d.outline, darts: d.darts },
+              extraOpenings: draftOpenings(d),
+            });
+          })()
+        : sceneMode === 'couture'
         ? generateSeamedPanels({ resolution, width: 1.2, height: 1.2, gap: 1.3, topY: 1.9 })
         : sceneMode === 'robe'
           ? robe()
