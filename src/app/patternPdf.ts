@@ -28,11 +28,12 @@ interface Segment {
  * their cut lines; instead each piece is laid out side by side on the sheet,
  * like a real cutting layout. Exposed for tests.
  */
-/** Seam allowance offset, meters (drawn 1 cm outside the cut line). */
+/** Default seam allowance offset, meters (1 cm outside the cut line). */
 const SEAM = 0.01;
 
 export function frontOutline(
   mesh: ClothMeshData,
+  margin: number = SEAM,
 ): { segs: Segment[]; seam: Segment[]; notches: Segment[]; w: number; h: number; pieces: number } {
   const panelSize = mesh.resolution * mesh.resolution;
 
@@ -106,8 +107,8 @@ export function frontOutline(
         nx = -nx;
         ny = -ny;
       }
-      const [sx1, sy1] = toPaper(ax + nx * SEAM, ay + ny * SEAM);
-      const [sx2, sy2] = toPaper(bx + nx * SEAM, by + ny * SEAM);
+      const [sx1, sy1] = toPaper(ax + nx * margin, ay + ny * margin);
+      const [sx2, sy2] = toPaper(bx + nx * margin, by + ny * margin);
       seam.push({ x1: sx1, y1: sy1, x2: sx2, y2: sy2 });
     }
     // Balance notches (repères de montage): short inward ticks on each side seam
@@ -168,9 +169,11 @@ function clipToRect(
   return [x1 + t0 * dx, y1 + t0 * dy, x1 + t1 * dx, y1 + t1 * dy];
 }
 
-export function exportPatternPdf(mesh: ClothMeshData, garmentName: string, hasIndependentBack = false): void {
-  const { segs, seam, notches, w, h, pieces } = frontOutline(mesh);
+export function exportPatternPdf(mesh: ClothMeshData, garmentName: string, hasIndependentBack = false, margin: number = SEAM): void {
+  const { segs, seam, notches, w, h, pieces } = frontOutline(mesh, margin);
   if (!segs.length || !Number.isFinite(w + h)) return;
+  const cm = margin * 100;
+  const marginCm = (Number.isInteger(cm) ? String(cm) : cm.toFixed(1)).replace('.', ',');
 
   const cellW = PAGE_W - 2 * MARGIN - OVERLAP;
   const cellH = PAGE_H - 2 * MARGIN - OVERLAP;
@@ -219,7 +222,7 @@ export function exportPatternPdf(mesh: ClothMeshData, garmentName: string, hasIn
       '1. Imprimer toutes les pages à 100 % (échelle réelle) — vérifier le carré de contrôle ci-dessus.',
       '2. Assembler les pages en suivant les repères de ligne/colonne (A1, A2… en marge).',
       '3. Coller le long des bandes pointillées.',
-      '4. Couper sur le trait pointillé extérieur (marge de couture 1 cm incluse).',
+      `4. Couper sur le trait pointillé extérieur (marge de couture ${marginCm} cm incluse).`,
       hasIndependentBack
         ? '5. Le trait plein = ligne de couture. Le DOS a été dessiné à part (non inclus dans ces pages).'
         : '5. Le trait plein = ligne de couture. Couper chaque dos à l’identique.',
@@ -249,7 +252,7 @@ export function exportPatternPdf(mesh: ClothMeshData, garmentName: string, hasIn
       pdf.text(`${garmentName} — page ${String.fromCharCode(65 + r)}${c + 1} / ${String.fromCharCode(65 + rows - 1)}${cols}`, MARGIN, MARGIN - 3);
       // Repeat the seam-allowance caveat on every sheet (audit M22): a sewer
       // working from page D3 shouldn't have to flip back to the cover.
-      pdf.text('trait plein = couture · pointillé extérieur = coupe (marge 1 cm incluse)', PAGE_W - MARGIN, MARGIN - 3, { align: 'right' });
+      pdf.text(`trait plein = couture · pointillé extérieur = coupe (marge ${marginCm} cm incluse)`, PAGE_W - MARGIN, MARGIN - 3, { align: 'right' });
 
       // Segment drawer, clipped to this page's printable frame so no cut line
       // spills over the label or past the tile it belongs to.

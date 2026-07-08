@@ -334,6 +334,7 @@ async function main(): Promise<void> {
   let resolution = DEFAULT_RESOLUTION;
   let selfCollision = true;
   let wind = 0;
+  let seamAllowanceM = 0.01; // seam allowance drawn on the pattern (meters)
   let liveParticleCount = 0; // kept (non-cut) particles, for the HUD (M33)
   // Import batching (M26): while an import replays its callback cascade, every
   // build() is suppressed so the ~8-9 intermediate GPU teardowns collapse into
@@ -1009,6 +1010,10 @@ async function main(): Promise<void> {
         wind = v;
         system.setWind(v);
       },
+      onSeamAllowance: (cm) => {
+        seamAllowanceM = cm / 100;
+        patternView.setSeamAllowance(seamAllowanceM); // show the cut line in the 2D plan
+      },
       onPodium: (v) => {
         podium = v;
       },
@@ -1074,11 +1079,11 @@ async function main(): Promise<void> {
         // A drawn côte-à-côte back is NOT identical to the front — don't tell
         // the tailor to cut it "the same" when the user shaped it differently.
         const hasBack = sceneMode === 'atelier' && !!(draft?.back && draft.back.outline.length >= 3);
-        if (currentMesh) exportPatternPdf(currentMesh, sceneMode, hasBack);
+        if (currentMesh) exportPatternPdf(currentMesh, sceneMode, hasBack, seamAllowanceM);
       },
       onPatternSvg: () => {
         const hasBack = sceneMode === 'atelier' && !!(draft?.back && draft.back.outline.length >= 3);
-        if (currentMesh) exportPatternSvg(currentMesh, sceneMode, hasBack);
+        if (currentMesh) exportPatternSvg(currentMesh, sceneMode, hasBack, seamAllowanceM);
       },
       // Atelier draft persistence: only hand out a draft the user actually drew
       // (draftTouched) — never the lazy build() default. On import, null clears

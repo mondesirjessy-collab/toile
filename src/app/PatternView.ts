@@ -114,6 +114,7 @@ export class PatternView {
   // edge picked while awaiting the second (Shift+click), which may be on either face.
   private assembly: AssemblySeam[] = [];
   private seamPickA: { face: 'front' | 'back'; edge: number } | null = null;
+  private seamAllowanceM = 0.01; // shown as a dashed cut line outside each piece
   // Pen tool: drawing a new piece from scratch (click to place points, close it).
   private penMode = false;
   private penPoints: UV[] = [];
@@ -209,6 +210,12 @@ export class PatternView {
   /** Update the manual-assembly seams to render (front/back edge ↔ edge). */
   setAssembly(seams: AssemblySeam[]): void {
     this.assembly = seams.map((s) => ({ a: { ...s.a }, b: { ...s.b } }));
+    this.render();
+  }
+
+  /** Seam allowance (meters) drawn as a dashed cut line outside each piece. */
+  setSeamAllowance(m: number): void {
+    this.seamAllowanceM = m;
     this.render();
   }
 
@@ -881,6 +888,51 @@ export class PatternView {
     };
     drawFree('front', sewnF);
     if (this.draftBack) drawFree('back', sewnB);
+    // Seam-allowance cut line: a dashed line offset OUTWARD from each edge by the
+    // margin (meters → pixels via the transform scale) — what you actually cut on.
+    const drawCutLine = (f: 'front' | 'back'): void => {
+      const piece = faceOf(f);
+      if (!piece || !this.tf) return;
+      const marginPx = this.seamAllowanceM * this.tf.scale;
+      if (marginPx < 0.6) return; // 0 margin → no cut line
+      const off = faceOffset(f);
+      const scr = piece.outline
+        .map((uv) => this.vertexScreen(uv, piece, off))
+        .filter((s): s is [number, number] => s !== null);
+      if (scr.length < 3) return;
+      let cx = 0;
+      let cy = 0;
+      for (const s of scr) {
+        cx += s[0];
+        cy += s[1];
+      }
+      cx /= scr.length;
+      cy /= scr.length;
+      ctx.strokeStyle = 'rgba(210, 200, 185, 0.5)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      for (let k = 0; k < scr.length; k++) {
+        const a = scr[k]!;
+        const b = scr[(k + 1) % scr.length]!;
+        let nx = -(b[1] - a[1]);
+        let ny = b[0] - a[0];
+        const len = Math.hypot(nx, ny) || 1;
+        nx /= len;
+        ny /= len;
+        // Point the normal AWAY from the piece centroid (outward).
+        if (nx * ((a[0] + b[0]) / 2 - cx) + ny * ((a[1] + b[1]) / 2 - cy) < 0) {
+          nx = -nx;
+          ny = -ny;
+        }
+        ctx.beginPath();
+        ctx.moveTo(a[0] + nx * marginPx, a[1] + ny * marginPx);
+        ctx.lineTo(b[0] + nx * marginPx, b[1] + ny * marginPx);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+    };
+    drawCutLine('front');
+    if (this.draftBack) drawCutLine('back');
     // Sewn seams: a blue link between the two edges' midpoints (across columns),
     // labelled with the gather ratio (1:1 = flat, >1 = the longer edge fronces).
     for (const s of this.assembly) {

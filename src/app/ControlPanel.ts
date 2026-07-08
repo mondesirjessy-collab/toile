@@ -45,6 +45,7 @@ export interface PanelCallbacks {
   onSkirtPattern(p: { length: number; flare: number }): void;
   onPatternPdf(): void;
   onPatternSvg(): void;
+  onSeamAllowance(cm: number): void;
   onGltf(): void;
   onPins(held: boolean): void;
   onFitMap(on: boolean): void;
@@ -95,6 +96,7 @@ interface Settings {
   motif: string;
   motifCm: number;
   motifCouleur: [number, number, number];
+  seamAllowance: number;
 }
 
 // Fabric presets (brief §4: Jersey/Denim/Soie — the seed of the fabric library).
@@ -220,6 +222,7 @@ export class ControlPanel {
       motif: 'uni',
       motifCm: 5,
       motifCouleur: [1, 1, 1] as [number, number, number],
+      seamAllowance: 1.0, // seam allowance printed on the pattern, cm
     };
 
     this.gui = new GUI({ title: 'TOILE — solveur' });
@@ -370,6 +373,12 @@ export class ControlPanel {
     const file = this.gui.addFolder('fichier');
     file.add({ pdf: () => this.cb.onPatternPdf() }, 'pdf').name('imprimer le patron (PDF 1:1)');
     file.add({ svg: () => this.cb.onPatternSvg() }, 'svg').name('exporter le patron (SVG)');
+    this.controllers.push(
+      file
+        .add(this.settings, 'seamAllowance', 0, 4, 0.5)
+        .name('marge de couture (cm)')
+        .onChange((v: number) => this.cb.onSeamAllowance(v)),
+    );
     file.add({ glb: () => this.cb.onGltf() }, 'glb').name('exporter en 3D (.glb)');
     file.add({ exporter: () => this.exportGarment() }, 'exporter').name('exporter le vêtement (.json)');
     file.add({ importer: () => this.importGarment() }, 'importer').name('importer un vêtement');
@@ -466,6 +475,7 @@ export class ControlPanel {
         friction: s.friction,
       },
       sim: { resolution: s.resolution, substeps: s.substeps, selfCollision: s.selfCollision, wind: s.wind },
+      seamAllowance: s.seamAllowance,
       // Atelier draft (freeform pattern): only present once the user has drawn
       // one — so a plain archetype file stays small and unchanged.
       ...((): object => {
@@ -530,6 +540,7 @@ export class ControlPanel {
         motifCouleur?: [number, number, number];
       };
       sim?: { resolution?: number; substeps?: number; selfCollision?: boolean; wind?: number };
+      seamAllowance?: number;
       draft?: unknown;
     };
     if (d?.format !== 'toile-garment') return false;
@@ -545,6 +556,7 @@ export class ControlPanel {
       s.selfCollision = typeof d.sim.selfCollision === 'boolean' ? d.sim.selfCollision : s.selfCollision;
       s.wind = num(d.sim.wind, 0, 12, s.wind);
     }
+    s.seamAllowance = num(d.seamAllowance, 0, 4, s.seamAllowance);
     if (d.fabric) {
       if (d.fabric.preset && PRESETS[d.fabric.preset]) s.preset = d.fabric.preset;
       if (typeof d.fabric.motif === 'string' && ['uni', 'rayures', 'vichy', 'pois'].includes(d.fabric.motif)) s.motif = d.fabric.motif;
@@ -624,6 +636,7 @@ export class ControlPanel {
     this.cb.onFriction(s.friction);
     this.cb.onSelfCollision(s.selfCollision);
     this.cb.onWind(s.wind);
+    this.cb.onSeamAllowance(s.seamAllowance);
     this.cb.onPattern({ length: s.dressLength, flare: s.dressFlare, neck: s.dressNeck });
     this.cb.onShirtPattern({ sleeve: s.sleeveLen });
     this.cb.onSkirtPattern({ length: s.skirtLength, flare: s.skirtFlare });
