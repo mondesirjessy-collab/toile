@@ -69,6 +69,47 @@ function showFatal(title: string, detail: string): void {
   overlay.append(h, p, retry);
 }
 
+/**
+ * A schematic front-view silhouette (croquis) of the measured mannequin, in the
+ * SAME world (x, y) plane the flat pattern lives in — so a piece drawn over it
+ * in the 2D atelier is sized against the real body. Built from the tailor's
+ * measured bands (shoulders, bust, waist, hips at their true heights and
+ * half-widths) plus an estimated head and legs. Returns a closed polygon:
+ * the right side crown→crotch, then mirrored back up the left side.
+ */
+function bodyCroquis(m: BodyMeasure): Array<[number, number]> {
+  const H = m.neckY / 0.83; // stature estimate: the neck sits ~83% of height up
+  const kneeY = 0.28 * H;
+  const ankleY = 0.05 * H;
+  const crotchY = Math.max(ankleY + 0.12, m.hip.y - 0.13);
+  const half = (v: number, floor: number): number => Math.max(floor, v);
+  // Right-side profile, crown → right crotch (x = half-width at height y).
+  const right: Array<[number, number]> = [
+    [0, H], // crown
+    [0.058, H - 0.02],
+    [0.082, (H + m.neckY) / 2 + 0.015], // temple
+    [0.05, m.neckY + 0.03], // jaw
+    [0.044, m.neckY], // neck base
+    [half(m.shoulderHalfW, 0.12), m.shoulderY], // shoulder point
+    [half(m.chest.halfW, 0.1), m.chest.y], // bust
+    [half(m.waist.halfW, 0.085), m.waist.y], // waist
+    [half(m.hip.halfW, 0.11), m.hip.y], // hip
+    [half(m.hip.halfW * 0.72, 0.085), crotchY + 0.05], // outer upper thigh
+    [0.1, kneeY], // outer knee
+    [0.072, ankleY], // outer ankle
+    [0.11, 0.004], // toe (outer)
+    [0.02, 0.004], // foot inner
+    [0.035, ankleY + 0.02], // inner ankle
+    [0.05, kneeY], // inner knee
+    [0.03, crotchY], // right inner top (crotch)
+  ];
+  const left = right
+    .slice()
+    .reverse()
+    .map(([x, y]) => [-x, y] as [number, number]);
+  return right.concat(left);
+}
+
 async function main(): Promise<void> {
   const canvas = document.getElementById('view') as HTMLCanvasElement;
   const mirror = document.getElementById('mirror') as HTMLCanvasElement;
@@ -129,8 +170,11 @@ async function main(): Promise<void> {
     (id, value) => applyHandle(id, value),
     (piece) => {
       // The freeform outline changed (vertex moved / added / deleted / drawn) —
-      // commit the new piece and re-cut.
+      // commit the new piece and re-cut. Editing returns to the flat design view
+      // (physics paused) so the change is visible without the piece draping away.
       draft = { format: 'toile-draft', version: 1, gridN: resolution as 32 | 64 | 128, piece };
+      atelierDesign = true;
+      document.getElementById('at-sim')?.classList.remove('running');
       build();
     },
   );
@@ -139,6 +183,12 @@ async function main(): Promise<void> {
   const atelierBar = document.getElementById('atelier-bar') as HTMLElement;
   const patternBox = document.getElementById('patternBox') as HTMLElement;
   let bigPanel = false;
+  // Atelier "design vs simulate" (CLO-style): in DESIGN the drawn piece hangs
+  // FLAT and FROZEN where it was drawn (weightless), so it can be reshaped;
+  // pressing Simuler drops it onto the mannequin. Opening the 2D plan / editing
+  // returns to design. Only meaningful in the 'atelier' scene.
+  let atelierDesign = true;
+  const simBtn = (): HTMLElement => document.getElementById('at-sim') as HTMLElement;
   const setBig = (on: boolean): void => {
     bigPanel = on;
     patternBox.classList.toggle('big', on);
@@ -147,17 +197,38 @@ async function main(): Promise<void> {
     const h = on ? Math.min(720, window.innerHeight - 96) : 290;
     patternView.resize(w, h);
   };
+  // Back to the drawing board: re-freeze flat (a rebuild re-spawns the piece at
+  // its flat rest pose) so it can be edited without physics moving it.
+  const enterDesign = (): void => {
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    build();
+  };
+  // "The assembly is done" — let the solver drape the piece onto the body.
+  const simulate = (): void => {
+    atelierDesign = false;
+    setBig(false); // reveal the 3D drape
+    simBtn().classList.add('running');
+    wake();
+  };
   const updateAtelierBar = (): void => {
     atelierBar.classList.toggle('on', sceneMode === 'atelier');
     if (sceneMode !== 'atelier' && bigPanel) setBig(false);
   };
-  (document.getElementById('at-big') as HTMLElement).addEventListener('click', () => setBig(!bigPanel));
+  (document.getElementById('at-big') as HTMLElement).addEventListener('click', () => {
+    const on = !bigPanel;
+    setBig(on);
+    if (on) enterDesign(); // opening the 2D plan returns to the flat design view
+  });
   (document.getElementById('at-new') as HTMLElement).addEventListener('click', () => {
     if (!bigPanel) setBig(true);
+    atelierDesign = true;
+    simBtn().classList.remove('running');
     const dims = (draft ?? defaultDraft(resolution as 32 | 64 | 128)).piece;
     patternView.startPen(dims.width, dims.height, dims.topY, dims.gap);
   });
   (document.getElementById('at-pen') as HTMLElement).addEventListener('click', () => patternView.finishPen());
+  (document.getElementById('at-sim') as HTMLElement).addEventListener('click', () => simulate());
   const profiler = new GpuProfiler(device);
 
   // Fabric params kept across rebuilds (a resolution change recreates the sim).
@@ -184,7 +255,7 @@ async function main(): Promise<void> {
   const skirtLinear = (flare: number): number[] =>
     Array.from({ length: 4 }, (_, k) => 0.22 + (flare - 0.22) * (k / 3));
   let skirtPattern = { length: 0.6, flare: 0.46, profile: skirtLinear(0.46) };
-  let bodyKind: 'femme' | 'homme' | 'scan homme' | 'scan femme' = 'femme';
+  let bodyKind: 'femme' | 'homme' | 'scan homme' | 'scan femme' = 'scan femme';
   let morphs: Morphs = { ...NO_MORPH };
   let podium = 0; // tours/minute
   let podiumAngle = 0;
@@ -596,6 +667,9 @@ async function main(): Promise<void> {
     // Freeform editing: hand the atelier piece to the 2D view so its outline
     // vertices become draggable; other scenes leave draft mode.
     if (!(sceneMode === 'atelier' && patternView.drawing)) patternView.setDraft(sceneMode === 'atelier' && draft ? draft.piece : null);
+    // Show the mannequin's silhouette behind the 2D plan so pieces are drawn to
+    // the body's real dimensions (like tracing over an avatar in CLO).
+    patternView.setBodySilhouette(sceneMode === 'atelier' ? bodyCroquis(m) : null);
     updateAtelierBar();
     // Scene-aware hint: the atelier needs its drawing gestures spelled out.
     const hintEl = document.getElementById('hint');
@@ -746,6 +820,9 @@ async function main(): Promise<void> {
     {
       onScene: (m) => {
         sceneMode = m;
+        // The atelier opens in DESIGN mode: the piece hangs flat/frozen until
+        // the user presses Simuler.
+        if (m === 'atelier') atelierDesign = true;
         build();
       },
       onMorph: (cm) => {
@@ -1176,7 +1253,10 @@ async function main(): Promise<void> {
       applySkin(animSkin, posed.xfs, animRest, animOut);
       renderer.updateBodyVertices(animOut);
     }
-    const sleeping = asleep && sleepEligible;
+    // Atelier design mode freezes the drawn piece flat (weightless) where it was
+    // drawn, until the user presses Simuler — like arranging 2D pieces in CLO.
+    const frozen = sceneMode === 'atelier' && atelierDesign;
+    const sleeping = (asleep && sleepEligible) || frozen;
     if (!sleeping) system.step(dt, substeps, profiler.simSpan());
     renderer.render(camera.matrix(aspect), profiler.renderSpan());
     blit();
@@ -1189,16 +1269,18 @@ async function main(): Promise<void> {
       const fps = Math.round(frames / fpsAccum);
       // Governor: adapt only while actually stepping (a sleeping sim's frames
       // are cheap and would wrongly ramp up). Real frame time = rawAccum/frames.
-      if (!asleep && frames > 0) {
+      if (!asleep && !frozen && frames > 0) {
         const realFrameMs = rawAccum / frames;
         if (realFrameMs > 38) govSubsteps = Math.max(8, govSubsteps - 2); // < ~26 fps: shed load
         else if (realFrameMs < 22) govSubsteps = Math.min(panel.substeps, govSubsteps + 1); // > ~45 fps: restore
       }
-      const timing = asleep
-        ? `sim en veille 💤 · rendu ${profiler.enabled ? profiler.renderMs.toFixed(2) : '—'} ms (GPU)`
-        : profiler.enabled
-          ? `sim ${profiler.simMs.toFixed(2)} ms · rendu ${profiler.renderMs.toFixed(2)} ms (GPU)`
-          : `${(cpuAccum / frames).toFixed(2)} ms/frame (CPU)`;
+      const timing = frozen
+        ? 'conception · à plat, en apesanteur ✎ — ▶ Simuler pour draper'
+        : asleep
+          ? `sim en veille 💤 · rendu ${profiler.enabled ? profiler.renderMs.toFixed(2) : '—'} ms (GPU)`
+          : profiler.enabled
+            ? `sim ${profiler.simMs.toFixed(2)} ms · rendu ${profiler.renderMs.toFixed(2)} ms (GPU)`
+            : `${(cpuAccum / frames).toFixed(2)} ms/frame (CPU)`;
       hud.textContent =
         `${fps} fps · ${timing} · ${liveParticleCount.toLocaleString('fr-FR')} part. · ` +
         `${system.constraintCount.toLocaleString('fr-FR')} contr. · ${substeps} substeps${substeps < panel.substeps ? ' (auto)' : ''}`;

@@ -184,7 +184,7 @@ export class ControlPanel {
     this.cb = cb;
     this.settings = {
       scene: 'drapé' as SceneMode,
-      body: 'femme' as BodyKind,
+      body: 'scan femme' as BodyKind,
       stature: 175,
       carrure: 52,
       poitrine: 79,
@@ -233,7 +233,7 @@ export class ControlPanel {
     );
     this.controllers.push(
       this.gui
-        .add(this.settings, 'body', ['femme', 'homme', 'scan homme', 'scan femme'])
+        .add(this.settings, 'body', ['scan femme', 'scan homme'])
         .name('mannequin')
         .onChange((k: BodyKind) => this.cb.onBody(k)),
     );
@@ -559,9 +559,12 @@ export class ControlPanel {
       s.skirtLength = num(d.pattern.skirtLength, 0.4, 0.75, s.skirtLength);
       s.skirtFlare = num(d.pattern.skirtFlare, 0.3, 0.46, s.skirtFlare);
     }
-    const bodies = ['femme', 'homme', 'scan homme', 'scan femme'];
+    // Only the scanned (realistic) mannequins remain selectable; map any legacy
+    // sculpted/older value onto its closest scan so old files still open.
+    const bodies = ['scan homme', 'scan femme'];
     if (d.body && bodies.includes(d.body)) s.body = d.body;
-    else if ((d.body as string) === 'scan') s.body = 'scan homme'; // format v36
+    else if ((d.body as string) === 'femme') s.body = 'scan femme';
+    else if ((d.body as string) === 'homme' || (d.body as string) === 'scan') s.body = 'scan homme'; // sculpted / format v36
     // Whitelist the scene like the body — a bogus/renamed value would else
     // fall through to a bare cloth grid while the pattern/fabric still import.
     const scenes = ['drapé', 'couture', 'robe', 'robe froncée', 't-shirt', 'chemise', 'ensemble', 'tenue', 'pantalon', 'atelier'];

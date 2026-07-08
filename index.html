@@ -48,6 +48,9 @@
     }
     #atelier-bar button:hover { background: rgba(60, 66, 78, 0.95); }
     #atelier-bar button.active { border-color: rgba(255, 159, 107, 0.9); color: rgba(255, 190, 150, 1); }
+    /* The Simulate button stands out: it's the "drape it" action. */
+    #at-sim { border-color: rgba(120, 220, 150, 0.7); color: rgba(170, 240, 195, 1); font-weight: 700; }
+    #at-sim.running { background: rgba(120, 220, 150, 0.22); }
     /* Large dedicated 2D drawing panel (CLO-style 2D window). */
     #patternBox.big {
       left: 50%; top: 50%; bottom: auto; transform: translate(-50%, -50%);
@@ -83,7 +86,7 @@
   <canvas id="view"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 3 — atelier : plan 2D · plume · dessin libre · v86</small></span>
+    <span class="title">TOILE<small>phase 3 — atelier CAO : silhouette · à plat · simuler · v87</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
       <span id="hint">glisser sur le tissu : le tirer · glisser à côté : tourner · clic droit + glisser : se déplacer · molette : zoom · R : reset</span>
@@ -95,6 +98,7 @@
       <button id="at-new" title="Repartir d'une toile vierge et tracer une pièce à la plume">✎ Nouvelle pièce</button>
       <button id="at-pen" title="Fermer la forme dessinée (ou cliquer le premier point)">Terminer</button>
       <button id="at-big" title="Basculer le grand panneau de dessin 2D">⤢ Grand plan</button>
+      <button id="at-sim" title="Draper la pièce sur le mannequin (lancer la simulation)">▶ Simuler</button>
     </div>
     <canvas id="pattern" width="250" height="290"></canvas>
   </div>

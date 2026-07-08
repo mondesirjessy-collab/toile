@@ -95,6 +95,9 @@ export class PatternView {
   // Pen tool: drawing a new piece from scratch (click to place points, close it).
   private penMode = false;
   private penPoints: UV[] = [];
+  // Mannequin silhouette (world x,y closed polygon) drawn behind the atelier grid
+  // as a size reference, or null to hide it.
+  private bodySil: Array<[number, number]> | null = null;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -168,6 +171,13 @@ export class PatternView {
     this.draftHover = null;
     this.draftEdge = null;
     this.draftSeamA = null;
+  }
+
+  /** Show the mannequin silhouette behind the atelier grid (or null to hide). */
+  setBodySilhouette(pts: Array<[number, number]> | null): void {
+    this.bodySil = pts && pts.length >= 3 ? pts.map((p) => [p[0], p[1]] as [number, number]) : null;
+    this.staticDirty = true;
+    this.render();
   }
 
   /** Resize the 2D panel canvas (small inset ↔ large CAD panel). */
@@ -698,26 +708,57 @@ export class PatternView {
     // (renderDraft) draws the outline, points, darts and seams on top.
     if (this.draftPiece) {
       const p = this.draftPiece;
+      // Fit the panel to the mannequin silhouette (so pieces are drawn to the
+      // body's real scale) UNIONED with the piece's own extent — else just the
+      // piece. World (x, y) is the same plane the flat pattern lives in.
+      let minX = -p.width / 2;
+      let maxX = p.width / 2;
+      let minY = p.topY - p.height;
+      let maxY = p.topY;
+      if (this.bodySil) {
+        for (const [x, y] of this.bodySil) {
+          minX = Math.min(minX, x);
+          maxX = Math.max(maxX, x);
+          minY = Math.min(minY, y);
+          maxY = Math.max(maxY, y);
+        }
+      }
       const margin = 22;
-      const spanA = p.width;
-      const spanB = p.height;
+      const spanA = maxX - minX || p.width;
+      const spanB = maxY - minY || p.height;
       const scale = Math.min((W - 2 * margin) / spanA, (H - 2 * margin) / spanB);
       const ox = (W - spanA * scale) / 2;
       const oy = (H - spanB * scale) / 2;
-      this.tf = { minA: -spanA / 2, minB: p.topY - spanB, scale, ox, oy, H };
-      // Grid every ~10 cm.
+      this.tf = { minA: minX, minB: minY, scale, ox, oy, H };
+      // Mannequin silhouette behind the grid: a soft filled body shape.
+      if (this.bodySil) {
+        ctx.beginPath();
+        this.bodySil.forEach(([x, y], i) => {
+          const [sx, sy] = this.layoutToScreen(x, y);
+          i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
+        });
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(212, 202, 186, 0.10)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(212, 202, 186, 0.30)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+      // Grid every ~10 cm across the fitted field.
       ctx.strokeStyle = 'rgba(237, 233, 223, 0.06)';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      for (let gx = -Math.ceil(spanA / 2 / 0.1) * 0.1; gx <= spanA / 2 + 1e-6; gx += 0.1) {
-        const [sx] = this.layoutToScreen(gx, p.topY);
-        ctx.moveTo(sx, this.layoutToScreen(0, p.topY)[1]);
-        ctx.lineTo(sx, this.layoutToScreen(0, p.topY - spanB)[1]);
+      for (let gx = Math.ceil(minX / 0.1) * 0.1; gx <= maxX + 1e-6; gx += 0.1) {
+        const a = this.layoutToScreen(gx, minY);
+        const b = this.layoutToScreen(gx, maxY);
+        ctx.moveTo(a[0], a[1]);
+        ctx.lineTo(b[0], b[1]);
       }
-      for (let gy = 0; gy <= spanB + 1e-6; gy += 0.1) {
-        const [, sy] = this.layoutToScreen(0, p.topY - gy);
-        ctx.moveTo(this.layoutToScreen(-spanA / 2, 0)[0], sy);
-        ctx.lineTo(this.layoutToScreen(spanA / 2, 0)[0], sy);
+      for (let gy = Math.ceil(minY / 0.1) * 0.1; gy <= maxY + 1e-6; gy += 0.1) {
+        const a = this.layoutToScreen(minX, gy);
+        const b = this.layoutToScreen(maxX, gy);
+        ctx.moveTo(a[0], a[1]);
+        ctx.lineTo(b[0], b[1]);
       }
       ctx.stroke();
       return;
