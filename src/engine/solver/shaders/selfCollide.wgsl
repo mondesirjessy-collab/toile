@@ -24,6 +24,9 @@ struct SelfParams {
 @group(0) @binding(4) var<storage, read_write> nexts: array<u32>;
 // 1 = stitched across garments (cross-seam ring): never repel two of these.
 @group(0) @binding(5) var<storage, read> seam_free: array<u32>;
+// Grid hops to the nearest sewn boundary (clamped to 3). The cross-panel
+// mirror exclusion applies only where BOTH particles are ≤ 2 hops from a seam.
+@group(0) @binding(6) var<storage, read> seam_dist: array<u32>;
 
 const NIL: u32 = 0xffffffffu;
 
@@ -89,7 +92,12 @@ fn collide(@builtin(global_invocation_id) gid: vec3u) {
             let dv = abs((lj / ni) - (li / ni));
             let near_weave =
               (pj == pi && du <= 2 && dv <= 2) ||
-              (pj != pi && same_garment &&
+              // Cross-panel (front↔back) mirror exclusion, but ONLY within ~2
+              // hops of a sewn edge — otherwise an interior mirror pair (a
+              // body-free tube collapsing flat) gets no repulsion and the
+              // panels tunnel through each other (audit M3). Near a seam the
+              // exclusion stays so the sewn edge can still close.
+              (pj != pi && same_garment && seam_dist[i] <= 2u && seam_dist[j] <= 2u &&
                 (dl <= 2 || (dl >= ni - 2 && dl <= ni + 2) || (dl >= 2 * ni - 2 && dl <= 2 * ni + 2))) ||
               // A waist seam sewing two garments together holds its rows at
               // seam distance ON PURPOSE — repelling them shakes the garment

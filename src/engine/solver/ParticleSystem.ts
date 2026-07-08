@@ -148,6 +148,7 @@ export class ParticleSystem {
   private readonly layerBuffer: GPUBuffer;
   private readonly maxLayer: number; // deepest garment layer, for the sd_body reject margin (M4)
   private readonly seamFreeBuffer: GPUBuffer;
+  private readonly seamDistBuffer: GPUBuffer;
   private readonly anchorBuffer: GPUBuffer;
   private readonly constraintBuffer: GPUBuffer;
   private readonly quadBuffer: GPUBuffer | null;
@@ -280,6 +281,12 @@ export class ParticleSystem {
     const seamFree = new Uint32Array(this.count);
     if (mesh.seamFree) for (let i = 0; i < this.count; i++) seamFree[i] = mesh.seamFree[i]!;
     this.seamFreeBuffer = this.createBufferRaw(seamFree.buffer, storage);
+    // Seam-distance (M3): hops from the nearest seam, clamped to 3. Absent (a
+    // single-sheet grid) → all 3 = "far", so the cross-panel exclusion never
+    // fires for it, which is correct (a plain sheet has no front/back panels).
+    const seamDist = new Uint32Array(this.count).fill(3);
+    if (mesh.seamDist) for (let i = 0; i < this.count; i++) seamDist[i] = mesh.seamDist[i]!;
+    this.seamDistBuffer = this.createBufferRaw(seamDist.buffer, storage);
     // Waistband anchor: target world-Y per particle (sentinel = free).
     this.anchorBuffer = this.createBuffer(mesh.anchorY ?? new Float32Array(this.count).fill(-1e9), storage);
     this.constraintBuffer = this.createBufferRaw(mesh.constraintData, storage);
@@ -482,7 +489,11 @@ export class ParticleSystem {
     });
     this.selfCollideBindGroup = device.createBindGroup({
       layout: this.selfCollidePipeline.getBindGroupLayout(0),
-      entries: [...selfAll, { binding: 5, resource: { buffer: this.seamFreeBuffer } }],
+      entries: [
+        ...selfAll,
+        { binding: 5, resource: { buffer: this.seamFreeBuffer } },
+        { binding: 6, resource: { buffer: this.seamDistBuffer } },
+      ],
     });
   }
 
@@ -726,6 +737,7 @@ export class ParticleSystem {
     this.invMassBuffer.destroy();
     this.layerBuffer.destroy();
     this.seamFreeBuffer.destroy();
+    this.seamDistBuffer.destroy();
     this.anchorBuffer.destroy();
     this.constraintBuffer.destroy();
     this.quadBuffer?.destroy();

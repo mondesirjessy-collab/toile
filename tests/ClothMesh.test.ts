@@ -447,6 +447,36 @@ describe("generateSeamedPanels shape 'setin' (set-in sleeves)", () => {
   });
 });
 
+describe('seam-distance field (audit M3)', () => {
+  const n = 16;
+  const rect = generateSeamedPanels({ resolution: n, width: 1.0, height: 1.0, gap: 1.0, topY: 1.8 });
+
+  it('is 0 on the side seams and grows inward, clamped to 3', () => {
+    expect(rect.seamDist).toBeDefined();
+    expect(rect.seamDist!).toHaveLength(rect.count);
+    const at = (p: number, u: number, v: number): number => rect.seamDist![p * n * n + v * n + u]!;
+    const v = Math.floor(n / 2);
+    // Full rect: side seams at columns 0 and n-1 → hop distance 0.
+    expect(at(0, 0, v)).toBe(0);
+    expect(at(0, n - 1, v)).toBe(0);
+    expect(at(1, 0, v)).toBe(0); // both panels share the field
+    // One column in → 1 hop.
+    expect(at(0, 1, v)).toBe(1);
+    // The middle is far from either side seam → clamped to 3.
+    expect(at(0, Math.floor(n / 2), v)).toBe(3);
+  });
+
+  it('carries through the merge, per garment', () => {
+    const skirt = generateSeamedPanels({ resolution: n, width: 0.8, height: 0.6, gap: 0.75, topY: 1.0, shape: 'skirt' });
+    const outfit = combineClothMeshes(rect, skirt);
+    expect(outfit.seamDist).toBeDefined();
+    expect(outfit.seamDist!).toHaveLength(outfit.count);
+    // Garment a's field is copied verbatim into the front of the merged field.
+    expect(outfit.seamDist![0]).toBe(rect.seamDist![0]);
+    expect(outfit.seamDist![rect.count]).toBe(skirt.seamDist![0]);
+  });
+});
+
 describe('combineClothMeshes (outfits)', () => {
   const n = 16;
   const tee = generateSeamedPanels({ resolution: n, width: 1.15, height: 0.75, gap: 0.9, topY: 1.52, shape: 'tshirt' });

@@ -93,6 +93,14 @@ export interface ClothMeshData {
    */
   readonly seamFree?: Uint8Array;
   /**
+   * Grid-hop distance from the nearest sewn boundary cell, per particle,
+   * clamped to 3 (0 = on a seam, 3 = far). Self-collision's cross-panel mirror
+   * exclusion applies only where BOTH particles are ≤ 2 hops from a seam — so a
+   * sewn edge can still close, but an interior front↔back mirror contact (a
+   * body-free tube collapsing flat) is repelled instead of tunnelling (M3).
+   */
+  readonly seamDist?: Uint8Array;
+  /**
    * Per-particle waistband anchor: target world-Y the solver softly pulls the
    * particle toward (x/z free). Sentinel ≤ -1e8 = not anchored. Absent = none.
    */
@@ -768,6 +776,9 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
   const gridSpacing = width / (n - 1);
   const seamRest = Math.min(gridSpacing, height / (n - 1)) * 0.15;
   const pressHinges: BendQuad[] = [];
+  // Local cells that carry a front↔back seam — seeds for the seam-distance BFS
+  // that gates the cross-panel self-collision exclusion (M3).
+  const seamLocalCells = new Set<number>();
   if (shape === 'rect') {
     // Plain tube: side seams only (leftmost/rightmost of each row), top open.
     for (let v = 0; v < n; v++) {
@@ -781,8 +792,11 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
       }
       if (uMin < 0) continue;
       seams.push({ i: index(0, uMin, v), j: index(1, uMin, v), rest: seamRest, kind: ConstraintKind.Seam });
-      if (uMax !== uMin)
+      seamLocalCells.add(v * n + uMin);
+      if (uMax !== uMin) {
         seams.push({ i: index(0, uMax, v), j: index(1, uMax, v), rest: seamRest, kind: ConstraintKind.Seam });
+        seamLocalCells.add(v * n + uMax);
+      }
     }
   } else {
     // Shaped garment: stitch the ENTIRE cut boundary of the pattern — except
@@ -809,6 +823,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
         if (!onBoundary(u, v)) continue;
         if (isOpening(shape, u / (n - 1), v / (n - 1), shapeParams, 1 / (n - 1))) continue;
         seamedLocal.add(v * n + u);
+        seamLocalCells.add(v * n + u);
         seams.push({ i: index(0, u, v), j: index(1, u, v), rest: seamRest, kind: ConstraintKind.Seam });
         for (const [du, dv2] of [
           [-1, 0],
@@ -927,6 +942,43 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
     }
   }
 
+  // Seam-distance field (M3): grid hops from the nearest sewn cell, over kept
+  // cells, clamped to 3. Both panels share the local grid so the same value
+  // applies to each. Self-collision uses it to keep the cross-panel mirror
+  // exclusion only near seams (so the sewn edge closes) while letting an
+  // interior front↔back mirror contact repel (a body-free tube no longer
+  // tunnels flat). Absent for a single-sheet grid (no seams).
+  const SEAM_FAR = 3;
+  const seamDistLocal = new Uint8Array(panelSize).fill(SEAM_FAR);
+  {
+    const queue: number[] = [];
+    for (const c of seamLocalCells) {
+      seamDistLocal[c] = 0;
+      queue.push(c);
+    }
+    for (let head = 0; head < queue.length; head++) {
+      const c = queue[head]!;
+      const d = seamDistLocal[c]!;
+      if (d >= SEAM_FAR) continue;
+      const cu = c % n;
+      const cv = (c / n) | 0;
+      for (const [du, dv2] of [[-1, 0], [1, 0], [0, -1], [0, 1]] as const) {
+        const u2 = cu + du;
+        const v2 = cv + dv2;
+        if (u2 < 0 || u2 >= n || v2 < 0 || v2 >= n) continue;
+        const nb = v2 * n + u2;
+        if (!kept[nb]) continue;
+        if (seamDistLocal[nb]! > d + 1) {
+          seamDistLocal[nb] = d + 1;
+          queue.push(nb);
+        }
+      }
+    }
+  }
+  const seamDist = new Uint8Array(count);
+  for (let p = 0; p < 2; p++)
+    for (let local = 0; local < panelSize; local++) seamDist[p * panelSize + local] = seamDistLocal[local]!;
+
   const all = structural.concat(shear, bending, seams);
   const { ordered, colorOffsets, colorCounts } = colorConstraints(all, count);
   const quads = buildBendQuads(positions, 2, n, (u, v) => kept[v * n + u]!, pressHinges);
@@ -1008,6 +1060,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
     seamCount: seams.length,
     cornerIndices: [cornerA, cornerB],
     triangleIndices,
+    seamDist,
     anchorY,
   };
 }
@@ -1063,6 +1116,13 @@ export function combineClothMeshes(
   const seamFree = new Uint8Array(count);
   if (a.seamFree) seamFree.set(a.seamFree, 0);
   if (b.seamFree) for (let i = 0; i < b.count; i++) seamFree[a.count + i] = b.seamFree[i]!;
+  // Seam-distance field carries through the merge (each garment keeps its own
+  // BFS; the cross-panel exclusion is per-garment so no cross term is needed).
+  const seamDist = a.seamDist || b.seamDist ? new Uint8Array(count).fill(3) : undefined;
+  if (seamDist) {
+    if (a.seamDist) seamDist.set(a.seamDist, 0);
+    if (b.seamDist) seamDist.set(b.seamDist, a.count);
+  }
   // Waistband anchors carry through (the bodice's held top ring).
   const anchorY = a.anchorY || b.anchorY ? new Float32Array(count).fill(-1e9) : undefined;
   if (anchorY) {
@@ -1179,6 +1239,7 @@ export function combineClothMeshes(
     triangleIndices,
     layers,
     seamFree,
+    seamDist,
     anchorY,
   };
 }
