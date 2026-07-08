@@ -170,10 +170,26 @@ function avatarSilhouette(positions: Float32Array, indices: Uint32Array): Avatar
  * cross-garment sewing proven on the gathered dress). It hangs from the armhole
  * at this stage; wrapping the arm is a later step.
  */
-function sleeveMesh(n: number, side: 'L' | 'R', bodyTopY: number): ClothMeshData {
-  const mesh = generateSeamedPanels({ resolution: n, width: 0.28, height: 0.45, gap: 0.3, topY: bodyTopY - 0.04, shape: 'rect' });
-  const dx = (side === 'R' ? 1 : -1) * 0.55; // spawn beside the arm; the seam pulls it in
-  for (let i = 0; i < mesh.count; i++) mesh.positions[i * 4] = mesh.positions[i * 4]! + dx;
+function sleeveMesh(n: number, side: 'L' | 'R', shoulderX: number, shoulderY: number): ClothMeshData {
+  const armLen = 0.5; // shoulder → wrist
+  const outX = 0.11; // A-pose: the arm angles slightly outward
+  const SPAWN_TOP = 1.0; // the tube's top-centre y before we reposition it
+  const mesh = generateSeamedPanels({ resolution: n, width: 0.26, height: armLen, gap: 0.24, topY: SPAWN_TOP, shape: 'rect' });
+  // Rotate the vertical tube to follow the shoulder→wrist axis, then drop its top
+  // onto the shoulder so the tube WRAPS the arm (front/back straddle it in z) and
+  // the armhole seam attaches it. A small gap keeps it OUTSIDE the arm (spawning
+  // inside the collider ejects it).
+  const sign = side === 'R' ? 1 : -1;
+  const theta = Math.atan2(outX * sign, armLen); // tilt from vertical toward the arm
+  const cos = Math.cos(theta);
+  const sin = Math.sin(theta);
+  for (let i = 0; i < mesh.count; i++) {
+    const px = mesh.positions[i * 4]!;
+    const py = mesh.positions[i * 4 + 1]! - SPAWN_TOP; // relative to the top-centre pivot
+    mesh.positions[i * 4] = px * cos - py * sin + shoulderX * sign;
+    mesh.positions[i * 4 + 1] = px * sin + py * cos + shoulderY;
+    // z untouched: the tube straddles the arm (arm at z≈0 between the two panels).
+  }
   return mesh;
 }
 
@@ -662,9 +678,9 @@ async function main(): Promise<void> {
             // via the SAME combineClothMeshes cross-seaming the gathered dress
             // uses. Gated on the button — without it the mesh is exactly the body.
             if (!atelierSleeves) return body;
-            const sL = sleeveMesh(resolution, 'L', d.topY);
+            const sL = sleeveMesh(resolution, 'L', m.shoulderHalfW, m.shoulderY);
             const withL = combineClothMeshes(body, sL, armholeCrossSeams(body, 'L', resolution));
-            const sR = sleeveMesh(resolution, 'R', d.topY);
+            const sR = sleeveMesh(resolution, 'R', m.shoulderHalfW, m.shoulderY);
             return combineClothMeshes(withL, sR, armholeCrossSeams(withL, 'R', resolution));
           })()
         : sceneMode === 'couture'
