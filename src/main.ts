@@ -571,6 +571,13 @@ async function main(): Promise<void> {
     // Freeform editing: hand the atelier piece to the 2D view so its outline
     // vertices become draggable; other scenes leave draft mode.
     patternView.setDraft(sceneMode === 'atelier' && draft ? draft.piece : null);
+    // Scene-aware hint: the atelier needs its drawing gestures spelled out.
+    const hintEl = document.getElementById('hint');
+    if (hintEl)
+      hintEl.textContent =
+        sceneMode === 'atelier'
+          ? 'atelier · plan de coupe : glisser un point = déformer · cliquer un bord = ajouter un point · double-clic sur un point = supprimer'
+          : 'glisser sur le tissu : le tirer · glisser à côté : tourner · clic droit + glisser : se déplacer · molette : zoom · R : reset';
   };
 
   // The editable measurements of the current scene, pinned to their cut edges.
