@@ -1,7 +1,7 @@
 import { initGpu, WebGPUNotSupportedError } from './engine/gpu/Device';
 import { ParticleSystem } from './engine/solver/ParticleSystem';
 import { generateClothGrid, generateSeamedPanels, combineClothMeshes, type CrossSeam } from './engine/cloth/ClothMesh';
-import { defaultDraft, compileDraft, type DraftDoc } from './engine/pattern/Draft';
+import { defaultDraft, compileDraft, sanitizeDraft, type DraftDoc } from './engine/pattern/Draft';
 import type { SceneMode } from './app/ControlPanel';
 import { ClothRenderer, DEFAULT_FABRIC } from './app/ClothRenderer';
 import { OrbitCamera } from './app/OrbitCamera';
@@ -12,6 +12,7 @@ import { GpuProfiler } from './app/GpuProfiler';
 import { ControlPanel } from './app/ControlPanel';
 import { PatternView, type PatternHandleSpec } from './app/PatternView';
 import { exportPatternPdf } from './app/patternPdf';
+import { exportPatternSvg } from './app/patternSvg';
 import { pickParticle } from './app/pick';
 import {
   BODY_BLEND,
@@ -230,6 +231,7 @@ async function main(): Promise<void> {
       draft.gridN = gridN;
       if (isBack) draft.back = piece;
       else draft.piece = piece;
+      draftTouched = true; // a real edit — this draft is now worth saving
       atelierDesign = true;
       document.getElementById('at-sim')?.classList.remove('running');
       build();
@@ -317,6 +319,11 @@ async function main(): Promise<void> {
   // Freeform "atelier" pattern (draw-your-own piece). Lazily created; a peer of
   // the archetype patterns, reached only by sceneMode 'atelier'.
   let draft: DraftDoc | null = null;
+  // Did the user ACTUALLY draw/import a draft? `draft` alone can't tell: build()
+  // lazily fills it with defaultDraft on the first atelier visit (a render
+  // fallback), so a plain atelier peek must NOT make archetype exports carry a
+  // parasitic draft. Only real edits + import set this.
+  let draftTouched = false;
   const skirtLinear = (flare: number): number[] =>
     Array.from({ length: 4 }, (_, k) => 0.22 + (flare - 0.22) * (k / 3));
   let skirtPattern = { length: 0.6, flare: 0.46, profile: skirtLinear(0.46) };
@@ -864,6 +871,7 @@ async function main(): Promise<void> {
       (apex, legA, legB) => {
         if (draft) {
           draft.piece.darts.push({ apex, legA, legB });
+          draftTouched = true;
           build();
         }
       };
@@ -941,6 +949,9 @@ async function main(): Promise<void> {
       },
       onResolution: (r) => {
         resolution = r;
+        // Keep the persisted draft grid in sync with the sim resolution (the
+        // atelier cuts on `resolution`, so a stale gridN would lie in the file).
+        if (draft) draft.gridN = r as 32 | 64 | 128;
         build();
       },
       onCompliance: (c) => {
@@ -1028,7 +1039,27 @@ async function main(): Promise<void> {
         renderer.setFitMap(v);
       },
       onPatternPdf: () => {
-        if (currentMesh) exportPatternPdf(currentMesh, sceneMode);
+        // A drawn côte-à-côte back is NOT identical to the front — don't tell
+        // the tailor to cut it "the same" when the user shaped it differently.
+        const hasBack = sceneMode === 'atelier' && !!(draft?.back && draft.back.outline.length >= 3);
+        if (currentMesh) exportPatternPdf(currentMesh, sceneMode, hasBack);
+      },
+      onPatternSvg: () => {
+        const hasBack = sceneMode === 'atelier' && !!(draft?.back && draft.back.outline.length >= 3);
+        if (currentMesh) exportPatternSvg(currentMesh, sceneMode, hasBack);
+      },
+      // Atelier draft persistence: only hand out a draft the user actually drew
+      // (draftTouched) — never the lazy build() default. On import, null clears
+      // it so a draftless file wipes the previous session instead of leaking it.
+      onGetDraft: () => (draftTouched ? draft ?? undefined : undefined),
+      onDraft: (raw) => {
+        if (raw == null) {
+          draft = null;
+          draftTouched = false;
+        } else {
+          draft = sanitizeDraft(raw); // validates/clamps both faces
+          draftTouched = true;
+        }
       },
       onGltf: () => {
         // Snapshot the CURRENT drape: garment positions read back from the

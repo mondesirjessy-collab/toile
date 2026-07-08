@@ -144,7 +144,7 @@ function clipToRect(
   return [x1 + t0 * dx, y1 + t0 * dy, x1 + t1 * dx, y1 + t1 * dy];
 }
 
-export function exportPatternPdf(mesh: ClothMeshData, garmentName: string): void {
+export function exportPatternPdf(mesh: ClothMeshData, garmentName: string, hasIndependentBack = false): void {
   const { segs, seam, w, h, pieces } = frontOutline(mesh);
   if (!segs.length || !Number.isFinite(w + h)) return;
 
@@ -196,7 +196,9 @@ export function exportPatternPdf(mesh: ClothMeshData, garmentName: string): void
       '2. Assembler les pages en suivant les repères de ligne/colonne (A1, A2… en marge).',
       '3. Coller le long des bandes pointillées.',
       '4. Couper sur le trait pointillé extérieur (marge de couture 1 cm incluse).',
-      '5. Le trait plein = ligne de couture. Couper chaque dos à l’identique.',
+      hasIndependentBack
+        ? '5. Le trait plein = ligne de couture. Le DOS a été dessiné à part (non inclus dans ces pages).'
+        : '5. Le trait plein = ligne de couture. Couper chaque dos à l’identique.',
     ],
     MARGIN,
     MARGIN + 130,

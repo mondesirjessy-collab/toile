@@ -331,6 +331,10 @@ export function compileDraft(piece: DraftPiece, n: number): { extraSeams: { i: n
 }
 
 
+/** Physical placement of the blank canvas (meters). Single source of truth so
+ * defaultDraft and the sanitizeDraft fallbacks can't drift apart. */
+const DEFAULT_PIECE_DIMS = { width: 0.95, height: 1.1, topY: 1.6, gap: 1.0 };
+
 /** A centered rectangular piece — the atelier's blank canvas (wearable tube:
  * sides auto-sewn, the top edge seeded OPEN so it isn't a sealed pillow). */
 export function defaultDraft(gridN: 32 | 64 | 128 = 64): DraftDoc {
@@ -359,10 +363,7 @@ export function defaultDraft(gridN: 32 | 64 | 128 = 64): DraftDoc {
         { from: 1, to: 3 }, // neckline
         { from: 5, to: 6 }, // hem
       ],
-      width: 0.95,
-      height: 1.1,
-      topY: 1.6,
-      gap: 1.0,
+      ...DEFAULT_PIECE_DIMS,
     },
   };
 }
@@ -409,10 +410,10 @@ export function sanitizeDraft(raw: unknown): DraftDoc {
         return { a: run(hs?.a), b: run(hs?.b) };
       }),
       openEdges: (Array.isArray(pp.openEdges) ? pp.openEdges : []).slice(0, 16).map(run),
-      width: num(pp.width, 0.3, 2.0, 0.95),
-      height: num(pp.height, 0.3, 2.0, 1.15),
-      topY: num(pp.topY, 0.5, 2.2, 1.55),
-      gap: num(pp.gap, 0.3, 1.6, 0.9),
+      width: num(pp.width, 0.3, 2.0, DEFAULT_PIECE_DIMS.width),
+      height: num(pp.height, 0.3, 2.0, DEFAULT_PIECE_DIMS.height),
+      topY: num(pp.topY, 0.5, 2.2, DEFAULT_PIECE_DIMS.topY),
+      gap: num(pp.gap, 0.3, 1.6, DEFAULT_PIECE_DIMS.gap),
     };
   };
   const front = parsePiece(d.piece);

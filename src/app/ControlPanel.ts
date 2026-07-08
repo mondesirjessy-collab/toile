@@ -44,10 +44,16 @@ export interface PanelCallbacks {
   onShirtPattern(p: { sleeve: number }): void;
   onSkirtPattern(p: { length: number; flare: number }): void;
   onPatternPdf(): void;
+  onPatternSvg(): void;
   onGltf(): void;
   onPins(held: boolean): void;
   onFitMap(on: boolean): void;
   onReset(): void;
+  // Freeform atelier draft (dessin libre, pinces, coutures, dos) — persisted in
+  // the .toile.json: the panel ASKS main for the current draft on export, and
+  // HANDS it back on import. Optional so tests/other hosts can omit them.
+  onGetDraft?(): unknown;
+  onDraft?(raw: unknown): void;
   // Import batching (M26): suspend rebuilds while a .toile.json replays its
   // callback cascade, then rebuild exactly once. Optional so tests/other hosts
   // can omit them (import falls back to per-callback rebuilds).
@@ -363,6 +369,7 @@ export class ControlPanel {
     // Open garment format: save/load the whole garment as JSON.
     const file = this.gui.addFolder('fichier');
     file.add({ pdf: () => this.cb.onPatternPdf() }, 'pdf').name('imprimer le patron (PDF 1:1)');
+    file.add({ svg: () => this.cb.onPatternSvg() }, 'svg').name('exporter le patron (SVG)');
     file.add({ glb: () => this.cb.onGltf() }, 'glb').name('exporter en 3D (.glb)');
     file.add({ exporter: () => this.exportGarment() }, 'exporter').name('exporter le vêtement (.json)');
     file.add({ importer: () => this.importGarment() }, 'importer').name('importer un vêtement');
@@ -459,6 +466,12 @@ export class ControlPanel {
         friction: s.friction,
       },
       sim: { resolution: s.resolution, substeps: s.substeps, selfCollision: s.selfCollision, wind: s.wind },
+      // Atelier draft (freeform pattern): only present once the user has drawn
+      // one — so a plain archetype file stays small and unchanged.
+      ...((): object => {
+        const draft = this.cb.onGetDraft?.();
+        return draft ? { draft } : {};
+      })(),
     };
     const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
     const a = document.createElement('a');
@@ -517,6 +530,7 @@ export class ControlPanel {
         motifCouleur?: [number, number, number];
       };
       sim?: { resolution?: number; substeps?: number; selfCollision?: boolean; wind?: number };
+      draft?: unknown;
     };
     if (d?.format !== 'toile-garment') return false;
     const s = this.settings;
@@ -632,6 +646,11 @@ export class ControlPanel {
       pj[0] = Math.min(0.3, Math.max(0.2, pj[0]!)); // waist ring must close AND stay under the hips
       this.cb.onProfile('jupe', pj);
     }
+    // Freeform draft BEFORE the scene rebuilds (onScene 'atelier' cuts from it):
+    // main sanitizes and stores it, so the atelier scene shows the saved piece.
+    // ALWAYS called (like the chemise profile): a draftless file must clear any
+    // leftover session draft (null) instead of leaking it into the next export.
+    this.cb.onDraft?.(d.draft ?? null);
     this.cb.onResolution(s.resolution);
     s.scene = targetScene;
     for (const c of this.controllers) c.updateDisplay();
