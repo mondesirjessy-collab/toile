@@ -726,6 +726,11 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
   });
 
   const elasticTop = opts.elasticTop ?? 1;
+  // Elastic band height in ROWS, floored at 2 (audit M15): `v/(n-1) < 0.06`
+  // alone collapses to a single row at n ≤ 17, so grip strength jumps with
+  // resolution. round(0.06·(n-1)) is identical at the selectable 32/64/128
+  // (4/2/8 rows there); the max(2,…) only bites at the unreachable low n.
+  const elasticRows = Math.max(2, Math.round(0.06 * (n - 1)));
   // In-panel constraints, identical topology to the single sheet, restricted
   // to particles inside the pattern (bending also requires the middle particle
   // so it never bridges across a cut).
@@ -737,7 +742,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
           const e = edge(index(p, u, v), index(p, u + 1, v), ConstraintKind.Structural);
           // Elastic band: the top rows want to be SHORTER than they are cut —
           // the weave gathers and grips (elasticated waist).
-          if (elasticTop < 1 && v / (n - 1) < 0.06) e.rest *= elasticTop;
+          if (elasticTop < 1 && v < elasticRows) e.rest *= elasticTop;
           structural.push(e);
         }
         if (v + 1 < n && isKept(p, u, v + 1))
@@ -756,8 +761,12 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
   // Seams stitch the two panels along their edges, the way a garment is sewn.
   // Rest length well under the fabric spacing: a sewn seam has no play — the
   // two pieces touch (self-collision excludes mirror pairs so it can close).
+  // Derive it from the LOCAL weave (the tighter axis), not just the horizontal
+  // spacing, so an anisotropic panel (width ≠ height) doesn't get orientation-
+  // dependent seam slack (audit M13). Sub-mm on near-zero rests; the separate
+  // flattening heuristic (2·gridSpacing below) is left as a pressing distance.
   const gridSpacing = width / (n - 1);
-  const seamRest = gridSpacing * 0.15;
+  const seamRest = Math.min(gridSpacing, height / (n - 1)) * 0.15;
   const pressHinges: BendQuad[] = [];
   if (shape === 'rect') {
     // Plain tube: side seams only (leftmost/rightmost of each row), top open.
@@ -1082,7 +1091,10 @@ export function combineClothMeshes(
     return edges;
   };
   const all = decode(a, 0).concat(decode(b, a.count));
-  const seamRest = a.spacing * 0.15;
+  // Cross-garment seam rest: the tighter of the two pieces' weaves, not just
+  // a's, so a waist seam between a narrow bodice and a 1.6× skirt isn't slack
+  // toward the wider piece (audit M13).
+  const seamRest = Math.min(a.spacing, b.spacing) * 0.15;
   for (const cs of crossSeams) {
     all.push({ i: cs.i, j: cs.j, rest: seamRest, kind: ConstraintKind.Seam });
   }

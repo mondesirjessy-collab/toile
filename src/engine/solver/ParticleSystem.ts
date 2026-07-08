@@ -80,7 +80,7 @@ export interface SolverOptions {
 //  96 particle_count, 100 damping, 104 max_speed, 108 drag_index,
 //  112 body_min.xyz, 124 blend_k, 128 body_max.xyz, 140 use_grid,
 //  144 spin_cos, 148 spin_sin, 152 spin_dtheta (per substep), 156 compliance_stretch_warp,
-//  160 layer_gap (couches), 164 anchor_stiffness (ceinture : rappel Y/substep), 168-172 pads.
+//  160 layer_gap (couches), 164 anchor_stiffness (ceinture : rappel Y/substep), 168 max_layer, 172 pad.
 const UNIFORM_SIZE = 176;
 const BATCH_SIZE = 16;
 const WORKGROUP = 256;
@@ -146,6 +146,7 @@ export class ParticleSystem {
   private readonly velocityBuffer: GPUBuffer;
   private readonly invMassBuffer: GPUBuffer;
   private readonly layerBuffer: GPUBuffer;
+  private readonly maxLayer: number; // deepest garment layer, for the sd_body reject margin (M4)
   private readonly seamFreeBuffer: GPUBuffer;
   private readonly anchorBuffer: GPUBuffer;
   private readonly constraintBuffer: GPUBuffer;
@@ -273,6 +274,7 @@ export class ParticleSystem {
     // Garment layer per particle: collide pushes layer L to thickness + L·gap,
     // so a dress worn over a tee rests ON the tee instead of inside it.
     this.layerBuffer = this.createBuffer(mesh.layers ?? new Float32Array(this.count), storage);
+    this.maxLayer = mesh.layers ? mesh.layers.reduce((m, v) => Math.max(m, v), 0) : 0;
     // Cross-seam ring: these particles are held at seam distance on purpose —
     // self-collision must not repel them (u32 per particle for the shader).
     const seamFree = new Uint32Array(this.count);
@@ -764,6 +766,7 @@ export class ParticleSystem {
     dv.setFloat32(92, this.clothThickness, LE);
     dv.setFloat32(160, this.clothThickness, LE); // layer_gap: one thickness per layer
     dv.setFloat32(164, 0.12, LE); // anchor_stiffness: waistband hold per substep
+    dv.setFloat32(168, this.maxLayer, LE); // max_layer: sd_body reject margin covers the deepest stack (M4)
     dv.setUint32(96, this.count, LE);
     dv.setFloat32(100, this.damping, LE);
     dv.setFloat32(104, this.maxSpeed, LE);

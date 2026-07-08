@@ -43,7 +43,7 @@ struct SimParams {
   _c4: f32,
   layer_gap: f32,    // couches : la couche L est repoussée à thickness + L × gap
   anchor_stiffness: f32, // ceinture : rappel vertical par substep vers anchor_y
-  _c6: f32,
+  max_layer: f32,    // couche la plus profonde de l'empilement (marge de rejet sd_body, M4)
   _c7: f32,
 };
 
@@ -145,8 +145,11 @@ fn smin(a: f32, b: f32, k: f32) -> f32 {
 
 fn sd_body(p: vec3f) -> f32 {
   // Beyond this distance a primitive cannot influence the contact test (its
-  // smin contribution stays above the largest layered offset), so skip it.
-  let margin = params.cloth_thickness + 2.0 * params.layer_gap + params.blend_k + 0.012;
+  // smin contribution stays above the largest layered offset), so skip it. The
+  // margin must cover the DEEPEST layer's contact offset (thickness + L·gap);
+  // max(2, max_layer) keeps the historical 2-gap slack for shallow stacks
+  // (identical drape ≤ layer 1) and grows it for a 4+ garment stack (M4).
+  let margin = params.cloth_thickness + max(2.0, params.max_layer) * params.layer_gap + params.blend_k + 0.012;
   var d = 1e9;
   for (var s = 0u; s < params.collider_count; s++) {
     let prim = colliders[s];
