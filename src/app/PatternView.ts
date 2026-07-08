@@ -15,7 +15,7 @@
  * actually lands on a handle; everything else falls through untouched.
  */
 import type { ClothMeshData } from '../engine/cloth/ClothMesh';
-import { insertOutlineVertex, deleteOutlineVertex, type UV, type DraftPiece } from '../engine/pattern/Draft';
+import { insertOutlineVertex, deleteOutlineVertex, reindexAssemblySeams, type UV, type DraftPiece, type AssemblySeam } from '../engine/pattern/Draft';
 
 /** One draggable measurement, defined against its garment's cutting grid. */
 export interface PatternHandleSpec {
@@ -84,7 +84,10 @@ export class PatternView {
 
   // Freeform "atelier" editing: when a draft piece is set, the outline vertices
   // become draggable handles (a separate path from the parametric handles).
-  private readonly onDraftChange: (piece: DraftPiece, isBack: boolean) => void;
+  private readonly onDraftChange: (piece: DraftPiece, isBack: boolean, seams?: AssemblySeam[]) => void;
+  // Manual-assembly callbacks: add a seam (edge A ↔ edge B), or delete seam #i.
+  private readonly onAssemblySeam: (seam: AssemblySeam) => void;
+  private readonly onAssemblyDelete: (index: number) => void;
   // Côte-à-côte faces: the FRONT column (left) and an optional BACK column
   // (right, drawn from scratch). Gestures edit whichever column the pointer went
   // down in (`activeBack`); `draftPiece` is that active face.
@@ -107,7 +110,10 @@ export class PatternView {
   private draftHover: number | null = null;
   // A press on an outline edge: a click adds a point; dragging inward pulls a dart.
   private draftEdge: { edge: number; downUV: UV; downSX: number; downSY: number; pointerId: number; apex: UV | null } | null = null;
-  private draftSeamA: number | null = null; // first edge picked for a hand-seam (Shift+click)
+  // Manual assembly: user-defined seams (front/back edge ↔ edge), plus the first
+  // edge picked while awaiting the second (Shift+click), which may be on either face.
+  private assembly: AssemblySeam[] = [];
+  private seamPickA: { face: 'front' | 'back'; edge: number } | null = null;
   // Pen tool: drawing a new piece from scratch (click to place points, close it).
   private penMode = false;
   private penPoints: UV[] = [];
@@ -119,12 +125,16 @@ export class PatternView {
   constructor(
     canvas: HTMLCanvasElement,
     onChange: (id: string, value: number) => void = () => {},
-    onDraftChange: (piece: DraftPiece, isBack: boolean) => void = () => {},
+    onDraftChange: (piece: DraftPiece, isBack: boolean, seams?: AssemblySeam[]) => void = () => {},
+    onAssemblySeam: (seam: AssemblySeam) => void = () => {},
+    onAssemblyDelete: (index: number) => void = () => {},
   ) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.onChange = onChange;
     this.onDraftChange = onDraftChange;
+    this.onAssemblySeam = onAssemblySeam;
+    this.onAssemblyDelete = onAssemblyDelete;
     this.staticLayer = document.createElement('canvas');
     this.staticLayer.width = canvas.width;
     this.staticLayer.height = canvas.height;
@@ -149,9 +159,12 @@ export class PatternView {
     if (next.outline.length === this.draftPiece.outline.length) return; // ≤3 guard
     e.preventDefault();
     e.stopPropagation();
+    // Removing a point shifts edge indices → re-index the assembly seams so they
+    // keep pointing at the same physical edges.
+    this.assembly = reindexAssemblySeams(this.assembly, this.activeBack ? 'back' : 'front', 'delete', v, next.outline.length);
     this.applyActive(next);
     this.render();
-    this.onDraftChange(next, this.activeBack);
+    this.onDraftChange(next, this.activeBack, this.assembly);
   };
 
   /** DEV: current outline vertices in canvas-local pixels (for input tests). */
@@ -190,7 +203,13 @@ export class PatternView {
     this.draftDrag = null;
     this.draftHover = null;
     this.draftEdge = null;
-    this.draftSeamA = null;
+    this.seamPickA = null;
+  }
+
+  /** Update the manual-assembly seams to render (front/back edge ↔ edge). */
+  setAssembly(seams: AssemblySeam[]): void {
+    this.assembly = seams.map((s) => ({ a: { ...s.a }, b: { ...s.b } }));
+    this.render();
   }
 
   /**
@@ -299,6 +318,32 @@ export class PatternView {
     }
     const [lx] = this.screenToLayout(px, 0);
     this.activeBack = lx > this.colGap / 2;
+  }
+
+  /** Screen midpoint of an outline edge on a face (with its column offset). */
+  private faceEdgeMidScreen(face: 'front' | 'back', edge: number): [number, number] | null {
+    const piece = face === 'back' ? this.draftBack : this.draftFront;
+    if (!piece) return null;
+    const o = piece.outline;
+    const off = face === 'back' ? this.colGap : 0;
+    const a = this.vertexScreen(o[edge % o.length]!, piece, off);
+    const b = this.vertexScreen(o[(edge + 1) % o.length]!, piece, off);
+    return a && b ? [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] : null;
+  }
+
+  /** Index of the assembly seam whose link (between the two edge midpoints) is
+   * clicked, or null — used to delete a seam. */
+  private pickSeam(px: number, py: number): number | null {
+    for (let i = 0; i < this.assembly.length; i++) {
+      const s = this.assembly[i]!;
+      const ma = this.faceEdgeMidScreen(s.a.face, s.a.from);
+      const mb = this.faceEdgeMidScreen(s.b.face, s.b.from);
+      if (!ma || !mb) continue;
+      const mx = (ma[0] + mb[0]) / 2;
+      const my = (ma[1] + mb[1]) / 2;
+      if ((px - mx) ** 2 + (py - my) ** 2 <= HIT_RADIUS * HIT_RADIUS) return i;
+    }
+    return null;
   }
 
   private pickVertex(px: number, py: number): number | null {
@@ -410,24 +455,29 @@ export class PatternView {
         e.stopPropagation();
         return;
       }
-      // Shift+click two edges → sew them together (a hand-defined seam).
+      // Shift+click two edges → sew them together (MANUAL assembly). The two
+      // edges can be on different faces (front shoulder ↔ back shoulder) — the
+      // column the pointer went down in (pickColumn, above) sets the face.
       if (e.shiftKey) {
         const ne = this.nearestEdge(p[0], p[1]);
         if (ne && ne.dist <= EDGE_HIT) {
-          const out = this.draftPiece.outline;
-          if (this.draftSeamA === null) {
-            this.draftSeamA = ne.edge; // first edge picked
+          const face: 'front' | 'back' = this.activeBack ? 'back' : 'front';
+          const lenOf = (f: 'front' | 'back'): number => (f === 'back' ? this.draftBack : this.draftFront)?.outline.length ?? 1;
+          if (this.seamPickA === null) {
+            this.seamPickA = { face, edge: ne.edge }; // first edge picked
             this.render();
-          } else if (this.draftSeamA !== ne.edge) {
-            const seam = { a: { from: this.draftSeamA, to: (this.draftSeamA + 1) % out.length }, b: { from: ne.edge, to: (ne.edge + 1) % out.length } };
-            const next = { ...this.draftPiece, seams: [...this.draftPiece.seams, seam] };
-            this.draftSeamA = null;
-            this.applyActive(next);
+          } else if (this.seamPickA.face === face && this.seamPickA.edge === ne.edge) {
+            this.seamPickA = null; // clicked the same edge → cancel the pick
             this.render();
-            this.onDraftChange(next, this.activeBack);
           } else {
-            this.draftSeamA = null; // clicked the same edge → cancel the pick
+            const a = this.seamPickA;
+            const seam: AssemblySeam = {
+              a: { face: a.face, from: a.edge, to: (a.edge + 1) % lenOf(a.face) },
+              b: { face, from: ne.edge, to: (ne.edge + 1) % lenOf(face) },
+            };
+            this.seamPickA = null;
             this.render();
+            this.onAssemblySeam(seam);
           }
           e.preventDefault();
           e.stopPropagation();
@@ -436,9 +486,18 @@ export class PatternView {
       }
       const v = this.pickVertex(p[0], p[1]);
       if (v === null) {
-        // Not on a vertex but near an outline edge: hold the gesture — a click
-        // adds a point there, a drag inward pulls out a dart. Empty inset space
-        // falls through to 3D orbit.
+        // Not on a vertex: a seam link? delete it (a vertex grab wins over this,
+        // so it can't steal a click meant for editing the outline). Otherwise,
+        // near an outline edge? hold the gesture — a click adds a point, a drag
+        // inward pulls out a dart. Empty inset space falls through to 3D orbit.
+        const si = this.pickSeam(p[0], p[1]);
+        if (si !== null) {
+          this.seamPickA = null;
+          this.onAssemblyDelete(si);
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
         const ne = this.nearestEdge(p[0], p[1]);
         if (ne && ne.dist <= EDGE_HIT) {
           this.draftEdge = { edge: ne.edge, downUV: this.screenToUV(ne.sx, ne.sy), downSX: ne.sx, downSY: ne.sy, pointerId: e.pointerId, apex: null };
@@ -537,6 +596,7 @@ export class PatternView {
         e.preventDefault();
         e.stopPropagation();
         let next: DraftPiece;
+        let reidx: AssemblySeam[] | undefined;
         if (g.apex) {
           // Dart: legs a small span either side of the mouth along the edge,
           // apex at the drag end. The wedge is cut and its legs sewn shut.
@@ -554,10 +614,13 @@ export class PatternView {
           next = { ...this.draftPiece, darts: [...this.draftPiece.darts, { apex: g.apex, legA, legB }] };
         } else {
           next = insertOutlineVertex(this.draftPiece, g.edge, g.downUV);
+          // A new vertex shifts edge indices → re-index the assembly seams.
+          this.assembly = reindexAssemblySeams(this.assembly, this.activeBack ? 'back' : 'front', 'insert', g.edge + 1, next.outline.length);
+          reidx = this.assembly;
         }
         this.applyActive(next);
         this.render();
-        this.onDraftChange(next, this.activeBack);
+        this.onDraftChange(next, this.activeBack, reidx);
         return;
       }
       if (!this.draftDrag || e.pointerId !== this.draftDrag.pointerId) return;
@@ -749,39 +812,90 @@ export class PatternView {
     }
     ctx.setLineDash([]);
 
-    // Hand-seams: a blue link between each pair of sewn edges; a thick orange
-    // highlight on the first edge picked while awaiting the second.
-    const edgeMid = (k: number): [number, number] | null => {
-      const o = this.draftPiece!.outline;
-      const a = this.vertexScreen(o[k % o.length]!);
-      const b = this.vertexScreen(o[(k + 1) % o.length]!);
-      return a && b ? [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] : null;
+    // Skip the assembly overlay while a vertex is being dragged: it reads the
+    // committed outline, so it would lag the live preview until the drag commits.
+    if (!this.draftDrag) {
+    // MANUAL ASSEMBLY overlay: free edges (still to sew) in red, the sewn seams
+    // as blue links across the two columns, and the first-picked edge in orange.
+    ctx.setLineDash([]);
+    const faceOf = (f: 'front' | 'back'): DraftPiece | null => (f === 'back' ? this.draftBack : this.draftFront);
+    const faceOffset = (f: 'front' | 'back'): number => (f === 'back' ? this.colGap : 0);
+    const edgePts = (f: 'front' | 'back', edge: number): [[number, number], [number, number]] | null => {
+      const piece = faceOf(f);
+      if (!piece) return null;
+      const o = piece.outline;
+      const off = faceOffset(f);
+      const a = this.vertexScreen(o[edge % o.length]!, piece, off);
+      const b = this.vertexScreen(o[(edge + 1) % o.length]!, piece, off);
+      return a && b ? [a, b] : null;
     };
-    ctx.strokeStyle = 'rgba(127, 178, 255, 0.9)';
+    const runSet = (piece: DraftPiece, runs: readonly { from: number; to: number }[]): Set<number> => {
+      const set = new Set<number>();
+      const nV = piece.outline.length;
+      for (const r of runs) {
+        let steps = ((r.to - r.from) + nV) % nV;
+        if (steps === 0) steps = 1;
+        for (let k = 0; k < steps; k++) set.add((r.from + k) % nV);
+      }
+      return set;
+    };
+    // Which edges are already sewn (touched by an assembly seam run), per face.
+    const sewnF = new Set<number>();
+    const sewnB = new Set<number>();
+    for (const s of this.assembly) {
+      for (const fr of [s.a, s.b]) {
+        const piece = faceOf(fr.face);
+        if (!piece) continue;
+        const set = fr.face === 'back' ? sewnB : sewnF;
+        runSet(piece, [{ from: fr.from, to: fr.to }]).forEach((e) => set.add(e));
+      }
+    }
+    // Free edges = neither sewn nor an intentional opening → the seams to still make.
+    const drawFree = (f: 'front' | 'back', sewn: Set<number>): void => {
+      const piece = faceOf(f);
+      if (!piece) return;
+      const open = runSet(piece, piece.openEdges);
+      ctx.strokeStyle = 'rgba(233, 96, 70, 0.9)';
+      ctx.lineWidth = 2.5;
+      for (let k = 0; k < piece.outline.length; k++) {
+        if (sewn.has(k) || open.has(k)) continue;
+        const pts = edgePts(f, k);
+        if (pts) {
+          ctx.beginPath();
+          ctx.moveTo(pts[0][0], pts[0][1]);
+          ctx.lineTo(pts[1][0], pts[1][1]);
+          ctx.stroke();
+        }
+      }
+    };
+    drawFree('front', sewnF);
+    if (this.draftBack) drawFree('back', sewnB);
+    // Sewn seams: a blue link between the two edges' midpoints (across columns).
+    ctx.strokeStyle = 'rgba(127, 178, 255, 0.95)';
     ctx.lineWidth = 2;
-    for (const s of this.draftPiece.seams) {
-      const ma = edgeMid(s.a.from);
-      const mb = edgeMid(s.b.from);
-      if (ma && mb) {
+    for (const s of this.assembly) {
+      const pa = edgePts(s.a.face, s.a.from);
+      const pb = edgePts(s.b.face, s.b.from);
+      if (pa && pb) {
         ctx.beginPath();
-        ctx.moveTo(ma[0], ma[1]);
-        ctx.lineTo(mb[0], mb[1]);
+        ctx.moveTo((pa[0][0] + pa[1][0]) / 2, (pa[0][1] + pa[1][1]) / 2);
+        ctx.lineTo((pb[0][0] + pb[1][0]) / 2, (pb[0][1] + pb[1][1]) / 2);
         ctx.stroke();
       }
     }
-    if (this.draftSeamA !== null) {
-      const o = this.draftPiece.outline;
-      const a = this.vertexScreen(o[this.draftSeamA]!);
-      const b = this.vertexScreen(o[(this.draftSeamA + 1) % o.length]!);
-      if (a && b) {
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = 'rgba(255, 159, 107, 0.95)';
+    // First-picked edge, awaiting the second click.
+    if (this.seamPickA) {
+      const pts = edgePts(this.seamPickA.face, this.seamPickA.edge);
+      if (pts) {
+        ctx.lineWidth = 3.5;
+        ctx.strokeStyle = 'rgba(255, 159, 107, 0.98)';
         ctx.beginPath();
-        ctx.moveTo(a[0], a[1]);
-        ctx.lineTo(b[0], b[1]);
+        ctx.moveTo(pts[0][0], pts[0][1]);
+        ctx.lineTo(pts[1][0], pts[1][1]);
         ctx.stroke();
       }
     }
+    } // end assembly overlay (skipped during a vertex drag)
 
     // Live size readout of the ACTIVE piece, in real centimetres (its outline
     // extent × the piece's physical dimensions). Updates as the outline changes.

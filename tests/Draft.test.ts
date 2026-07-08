@@ -8,6 +8,8 @@ import {
   insertOutlineVertex,
   deleteOutlineVertex,
   compileDraft,
+  compileAssembly,
+  reindexAssemblySeams,
   type UV,
 } from '../src/engine/pattern/Draft';
 import { generateSeamedPanels, countMaskIslands, type ClothMeshData } from '../src/engine/cloth/ClothMesh';
@@ -223,5 +225,45 @@ describe('freeform mesh (shape: freeform)', () => {
     ];
     const mesh = generateSeamedPanels({ resolution: n, width: 1, height: 1, gap: 1, topY: 1.5, shape: 'freeform', mask: { outline: tri, darts: [] } });
     expect(keptInPanel(mesh, 1)).toBe(keptInPanel(mesh, 0)); // mirror
+  });
+
+  it('manual assembly sews nothing by itself; assemblySeams add exactly their constraints', () => {
+    const opts = { resolution: n, width: 1, height: 1, gap: 1, topY: 1.5, shape: 'freeform' as const, mask: { outline: fullOutline, darts: [] } };
+    const auto = generateSeamedPanels(opts);
+    const manual = generateSeamedPanels({ ...opts, manualAssembly: true });
+    expect(auto.seamCount).toBeGreaterThan(0); // the automatic perimeter sew
+    expect(manual.seamCount).toBe(0); // manual: nothing holds it until the user sews
+    const sewn = generateSeamedPanels({
+      ...opts,
+      manualAssembly: true,
+      assemblySeams: [{ i: 5 * n + 5, j: panelSize + 5 * n + 5 }, { i: 6 * n + 6, j: panelSize + 6 * n + 6 }],
+    });
+    expect(sewn.seamCount).toBe(2); // exactly the two user seams
+  });
+});
+
+describe('compileAssembly (manual seams)', () => {
+  it('pairs a front edge with a back edge into cross-panel cell pairs', () => {
+    const doc = defaultDraft(32);
+    doc.seams = [{ a: { face: 'front', from: 0, to: 1 }, b: { face: 'back', from: 0, to: 1 } }];
+    const cross = compileAssembly(doc, 32);
+    expect(cross.length).toBeGreaterThan(0);
+    const panelSize = 32 * 32;
+    for (const s of cross) {
+      expect(s.i).toBeLessThan(panelSize); // front cell → panel 0
+      expect(s.j).toBeGreaterThanOrEqual(panelSize); // back cell → panel 1
+    }
+  });
+
+  it('no seams → no pairs', () => {
+    expect(compileAssembly(defaultDraft(32), 32).length).toBe(0);
+  });
+
+  it('reindexAssemblySeams shifts only the edited face after inserting a point', () => {
+    const seams = [{ a: { face: 'front' as const, from: 3, to: 4 }, b: { face: 'back' as const, from: 0, to: 1 } }];
+    // A point inserted at index 1 on the FRONT pushes front edges ≥ 1 up by one.
+    const out = reindexAssemblySeams(seams, 'front', 'insert', 1, 8);
+    expect(out[0]!.a).toEqual({ face: 'front', from: 4, to: 5 }); // front run followed its edge
+    expect(out[0]!.b).toEqual({ face: 'back', from: 0, to: 1 }); // back face untouched
   });
 });

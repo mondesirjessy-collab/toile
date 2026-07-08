@@ -378,6 +378,14 @@ export interface SeamedPanelsOptions {
   extraSeamsBack?: readonly { i: number; j: number }[];
   extraOpeningsBack?: (uu: number, vv: number) => boolean;
   /**
+   * MANUAL assembly (freeform atelier): when true, the automatic perimeter
+   * front↔back sew is SKIPPED — the garment holds only where `assemblySeams`
+   * place a seam. `assemblySeams` are pairs of GLOBAL cell indices (panel-
+   * offset: front = panel 0, back = panel 1), from compileAssembly().
+   */
+  manualAssembly?: boolean;
+  assemblySeams?: readonly { i: number; j: number }[];
+  /**
    * Elastic band at the top edge: rest-length ratio (< 1) applied to the
    * horizontal weave in the top rows — the fabric gathers and GRIPS whatever
    * it sits on (elasticated waists, cuffs). 1 = no elastic.
@@ -941,6 +949,9 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
     for (let v = 0; v < n; v++) {
       for (let u = 0; u < n; u++) {
         const cell = v * n + u;
+        // Manual assembly (CLO-style): nothing auto-sews — the garment holds
+        // only where the user placed a seam (injected below via assemblySeams).
+        if (opts.manualAssembly) continue;
         // Stitch front↔back where BOTH faces keep the cell, it lies on a face
         // boundary, and neither face left it open (neckline/hem/dart/hand-seam).
         if (!kept[cell] || !keptB[cell]) continue;
@@ -1082,6 +1093,17 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
   };
   injectExtra(opts.extraSeams, 0); // front darts / hand-seams
   injectExtra(hasBack ? opts.extraSeamsBack : opts.extraSeams, 1); // back's own (else mirror)
+
+  // Manual assembly seams: user-defined pairs of GLOBAL cell indices (already
+  // panel-offset, front = panel 0, back = panel 1). This is what holds a
+  // manually-assembled garment together.
+  if (opts.assemblySeams) {
+    for (const s of opts.assemblySeams) {
+      seams.push({ i: s.i, j: s.j, rest: seamRest, kind: ConstraintKind.Seam });
+      seamLocalCells.add(s.i % panelSize);
+      seamLocalCells.add(s.j % panelSize);
+    }
+  }
 
   // Seam-distance field (M3): grid hops from the nearest sewn cell, over kept
   // cells, clamped to 3. Both panels share the local grid so the same value

@@ -36,6 +36,21 @@ export interface HandSeam {
   b: EdgeRun;
 }
 
+/** An outline edge on a named FACE (front or back column). */
+export interface FaceRun {
+  face: 'front' | 'back';
+  from: number;
+  to: number;
+}
+
+/** A user-defined ASSEMBLY seam: sew a run of one face to a run of another
+ * (or the same) face. This is the manual "click edge A, click edge B" join —
+ * front↔back shoulders/sides, or within one face. */
+export interface AssemblySeam {
+  a: FaceRun;
+  b: FaceRun;
+}
+
 export interface DraftPiece {
   outline: UV[]; // closed polygon, ≥3 pts, in [0,1]²
   darts: Dart[];
@@ -54,6 +69,11 @@ export interface DraftDoc {
   gridN: 32 | 64 | 128; // authoring/sim resolution
   piece: DraftPiece; // the FRONT face
   back?: DraftPiece; // optional INDEPENDENT back face (côte-à-côte). Absent/blank → the back mirrors the front.
+  // MANUAL assembly (CLO-style): when true, NOTHING is auto-sewn — the garment
+  // holds only where the user defined `seams`. Absent/false → the old automatic
+  // perimeter sew (back-compat with pre-manual saved drafts).
+  manual?: boolean;
+  seams?: AssemblySeam[]; // user-defined assembly seams (edge A ↔ edge B, cross-face)
 }
 
 /** Ray-cast point-in-polygon (odd crossings = inside). Winding-agnostic. */
@@ -330,42 +350,134 @@ export function compileDraft(piece: DraftPiece, n: number): { extraSeams: { i: n
   return { extraSeams, openCells };
 }
 
+/** Ordered boundary cells (by arc-length along the run) that a run of a piece's
+ * outline resolves to at grid resolution n. Shared by hand-seams and manual
+ * assembly seams to pair two edges cell-by-cell. */
+function boundaryRunCells(
+  outline: readonly UV[],
+  darts: readonly Dart[],
+  run: { from: number; to: number },
+  n: number,
+): { cell: number; t: number }[] {
+  const nV = outline.length;
+  const uvOf = (u: number, v: number): UV => [u / (n - 1), v / (n - 1)];
+  const kept = new Array<boolean>(n * n);
+  for (let v = 0; v < n; v++)
+    for (let u = 0; u < n; u++) {
+      const p = uvOf(u, v);
+      let inside = pointInPolygon(p, outline);
+      if (inside) for (const d of darts) if (pointInTriangle(p, d.apex, d.legA, d.legB)) { inside = false; break; }
+      kept[v * n + u] = inside;
+    }
+  const isBoundary = (u: number, v: number): boolean => {
+    if (!kept[v * n + u]) return false;
+    return (
+      u === 0 || u === n - 1 || v === 0 || v === n - 1 ||
+      !kept[v * n + (u - 1)] || !kept[v * n + (u + 1)] || !kept[(v - 1) * n + u] || !kept[(v + 1) * n + u]
+    );
+  };
+  const a = outline[run.from % nV]!;
+  const b = outline[run.to % nV]!;
+  const res: { cell: number; t: number }[] = [];
+  for (let v = 0; v < n; v++)
+    for (let u = 0; u < n; u++) {
+      if (!isBoundary(u, v)) continue;
+      const p = uvOf(u, v);
+      if (runCoversEdge(run, nearestOutlineEdge(p, outline), nV)) res.push({ cell: v * n + u, t: projFrac(p, a, b) });
+    }
+  return res.sort((x, y) => x.t - y.t);
+}
+
+/**
+ * Resolve a draft's user-defined ASSEMBLY seams into GLOBAL cell-index pairs to
+ * sew (panel 0 = front, panel 1 = back). Each seam pairs its two edge-runs by
+ * arc-length, choosing the direction that zips (anti-twist), like a hand-seam —
+ * but the runs can live on DIFFERENT faces (front shoulder ↔ back shoulder).
+ */
+export function compileAssembly(doc: DraftDoc, n: number): { i: number; j: number }[] {
+  const panelSize = n * n;
+  const faces: Record<'front' | 'back', DraftPiece | undefined> = { front: doc.piece, back: doc.back };
+  const cellUV = (cell: number): UV => [(cell % n) / (n - 1), Math.floor(cell / n) / (n - 1)];
+  const out: { i: number; j: number }[] = [];
+  for (const s of doc.seams ?? []) {
+    const pa = faces[s.a.face];
+    const pb = faces[s.b.face];
+    if (!pa || !pb || pa.outline.length < 3 || pb.outline.length < 3) continue;
+    const A = boundaryRunCells(pa.outline, pa.darts, { from: s.a.from, to: s.a.to }, n);
+    const B = boundaryRunCells(pb.outline, pb.darts, { from: s.b.from, to: s.b.to }, n);
+    if (!A.length || !B.length) continue;
+    const m = Math.min(A.length, B.length);
+    const bAt = (k: number, reversed: boolean): { cell: number } => B[Math.floor(((reversed ? m - 1 - k : k) * B.length) / m)]!;
+    const cost = (reversed: boolean): number => {
+      let sum = 0;
+      for (let k = 0; k < m; k++) {
+        const paUV = cellUV(A[Math.floor((k * A.length) / m)]!.cell);
+        const pbUV = cellUV(bAt(k, reversed).cell);
+        sum += (paUV[0] - pbUV[0]) ** 2 + (paUV[1] - pbUV[1]) ** 2;
+      }
+      return sum;
+    };
+    const reversed = cost(true) < cost(false);
+    const offA = (s.a.face === 'front' ? 0 : 1) * panelSize;
+    const offB = (s.b.face === 'front' ? 0 : 1) * panelSize;
+    for (let k = 0; k < m; k++) {
+      const gi = offA + A[Math.floor((k * A.length) / m)]!.cell;
+      const gj = offB + bAt(k, reversed).cell;
+      if (gi !== gj) out.push({ i: gi, j: gj });
+    }
+  }
+  return out;
+}
+
+/**
+ * Re-index assembly seams after a vertex was inserted at / removed from `at` on
+ * ONE face's outline, so each seam keeps pointing at the same physical edge
+ * (the outline edge indices shift, exactly like openEdges/hand-seams do).
+ */
+export function reindexAssemblySeams(
+  seams: readonly AssemblySeam[],
+  face: 'front' | 'back',
+  kind: 'insert' | 'delete',
+  at: number,
+  nV: number,
+): AssemblySeam[] {
+  const shift = (r: FaceRun): FaceRun => {
+    if (r.face !== face) return { ...r };
+    const s = kind === 'insert' ? shiftRunInsert(r, at) : shiftRunDelete(r, at, nV);
+    return { face: r.face, from: s.from, to: s.to };
+  };
+  return seams.map((s) => ({ a: shift(s.a), b: shift(s.b) }));
+}
+
 
 /** Physical placement of the blank canvas (meters). Single source of truth so
  * defaultDraft and the sanitizeDraft fallbacks can't drift apart. */
 const DEFAULT_PIECE_DIMS = { width: 0.95, height: 1.1, topY: 1.6, gap: 1.0 };
 
-/** A centered rectangular piece — the atelier's blank canvas (wearable tube:
- * sides auto-sewn, the top edge seeded OPEN so it isn't a sealed pillow). */
+/** The atelier's starting pieces: a sleeveless A-line dress FRONT and an
+ * identical BACK, laid out côte-à-côte and UNSEWN (manual assembly). The user
+ * sews shoulders (edges 0→1, 3→4) and sides (4→5, 6→0) front↔back, and leaves
+ * the neckline (1→2→3) and hem (5→6) open. Nothing is auto-sewn. */
 export function defaultDraft(gridN: 32 | 64 | 128 = 64): DraftDoc {
-  return {
-    format: 'toile-draft',
-    version: 1,
-    gridN,
-    piece: {
-      // A simple sleeveless A-line dress (v grows downward): two shoulders with
-      // a scooped neckline between them, sides flaring gently to the hem. The
-      // shoulders (edges 0→1, 3→4) and the two sides (4→5, 6→0) auto-sew
-      // front↔back so it hangs from the shoulders on the dress form; the
-      // neckline (1→2→3) and the hem (5→6) stay open. The user reshapes it.
-      outline: [
-        [0.24, 0.03], // 0 left shoulder outer
-        [0.42, 0.03], // 1 left shoulder inner (neckline start)
-        [0.5, 0.12], // 2 neckline bottom
-        [0.58, 0.03], // 3 right shoulder inner
-        [0.76, 0.03], // 4 right shoulder outer
-        [0.9, 0.97], // 5 hem right
-        [0.1, 0.97], // 6 hem left
-      ],
-      darts: [],
-      seams: [],
-      openEdges: [
-        { from: 1, to: 3 }, // neckline
-        { from: 5, to: 6 }, // hem
-      ],
-      ...DEFAULT_PIECE_DIMS,
-    },
-  };
+  const face = (): DraftPiece => ({
+    outline: [
+      [0.24, 0.03], // 0 left shoulder outer
+      [0.42, 0.03], // 1 left shoulder inner (neckline start)
+      [0.5, 0.12], // 2 neckline bottom
+      [0.58, 0.03], // 3 right shoulder inner
+      [0.76, 0.03], // 4 right shoulder outer
+      [0.9, 0.97], // 5 hem right
+      [0.1, 0.97], // 6 hem left
+    ],
+    darts: [],
+    seams: [],
+    openEdges: [
+      { from: 1, to: 3 }, // neckline
+      { from: 5, to: 6 }, // hem
+    ],
+    ...DEFAULT_PIECE_DIMS,
+  });
+  return { format: 'toile-draft', version: 1, gridN, piece: face(), back: face(), manual: true, seams: [] };
 }
 
 /**
@@ -419,5 +531,30 @@ export function sanitizeDraft(raw: unknown): DraftDoc {
   const front = parsePiece(d.piece);
   if (!front) return fallback;
   const back = parsePiece(d.back);
-  return { format: 'toile-draft', version: 1, gridN, piece: front, ...(back ? { back } : {}) };
+  // Assembly seams (manual mode): validate the face + edge indices. Runs are
+  // taken modulo the outline length at compile time, so a loose cap is enough.
+  const faceRun = (r: unknown): FaceRun => {
+    const e = r as FaceRun;
+    const idx = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? Math.min(256, Math.max(0, Math.round(v))) : 0);
+    return { face: e?.face === 'back' ? 'back' : 'front', from: idx(e?.from), to: idx(e?.to) };
+  };
+  // Drop "ghost" seams that reference the back face when there is no back piece
+  // (a hand-edited/older file) — they'd persist and re-export but never sew.
+  const hasBack = !!back;
+  const seams = (Array.isArray(d.seams) ? d.seams : [])
+    .slice(0, 128)
+    .map((x) => {
+      const s = x as AssemblySeam;
+      return { a: faceRun(s?.a), b: faceRun(s?.b) };
+    })
+    .filter((s) => hasBack || (s.a.face !== 'back' && s.b.face !== 'back'));
+  return {
+    format: 'toile-draft',
+    version: 1,
+    gridN,
+    piece: front,
+    ...(back ? { back } : {}),
+    manual: d.manual === true,
+    seams,
+  };
 }

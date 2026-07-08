@@ -1,7 +1,7 @@
 import { initGpu, WebGPUNotSupportedError } from './engine/gpu/Device';
 import { ParticleSystem } from './engine/solver/ParticleSystem';
 import { generateClothGrid, generateSeamedPanels, combineClothMeshes, type CrossSeam } from './engine/cloth/ClothMesh';
-import { defaultDraft, compileDraft, sanitizeDraft, type DraftDoc } from './engine/pattern/Draft';
+import { defaultDraft, compileDraft, compileAssembly, sanitizeDraft, type DraftDoc, type AssemblySeam } from './engine/pattern/Draft';
 import type { SceneMode } from './app/ControlPanel';
 import { ClothRenderer, DEFAULT_FABRIC } from './app/ClothRenderer';
 import { OrbitCamera } from './app/OrbitCamera';
@@ -221,7 +221,7 @@ async function main(): Promise<void> {
   const patternView = new PatternView(
     document.getElementById('pattern') as HTMLCanvasElement,
     (id, value) => applyHandle(id, value),
-    (piece, isBack) => {
+    (piece, isBack, seams) => {
       // A face changed (vertex moved / added / deleted / drawn). Commit it into
       // the current draft — front, or the côte-à-côte BACK — and re-cut. Editing
       // returns to the flat design view (physics paused) so the change shows
@@ -231,7 +231,34 @@ async function main(): Promise<void> {
       draft.gridN = gridN;
       if (isBack) draft.back = piece;
       else draft.piece = piece;
+      // Adding/removing an outline point shifts the edge indices; the editor
+      // re-indexes the assembly seams so they keep pointing at the same edges.
+      if (seams) draft.seams = seams;
       draftTouched = true; // a real edit — this draft is now worth saving
+      atelierDesign = true;
+      document.getElementById('at-sim')?.classList.remove('running');
+      build();
+    },
+    // Manual assembly: the user sewed edge A ↔ edge B (Shift+click).
+    (seam: AssemblySeam) => {
+      const gridN = resolution as 32 | 64 | 128;
+      if (!draft) draft = { format: 'toile-draft', version: 1, gridN, piece: defaultDraft(gridN).piece, manual: true, seams: [] };
+      // Going manual disables the automatic front↔back perimeter sew; without an
+      // explicit back to sew to, the garment would fall apart. Materialise one
+      // (a copy of the front) so front↔back seams are possible (old files).
+      if (!draft.back) draft.back = structuredClone(draft.piece);
+      draft.seams = [...(draft.seams ?? []), seam];
+      draft.manual = true;
+      draftTouched = true;
+      atelierDesign = true;
+      document.getElementById('at-sim')?.classList.remove('running');
+      build();
+    },
+    // Delete assembly seam #i (clicked its link).
+    (index: number) => {
+      if (!draft?.seams) return;
+      draft.seams = draft.seams.filter((_, k) => k !== index);
+      draftTouched = true;
       atelierDesign = true;
       document.getElementById('at-sim')?.classList.remove('running');
       build();
@@ -555,6 +582,8 @@ async function main(): Promise<void> {
             // Independent back face (côte-à-côte), if the user drew one.
             const back = doc.back && doc.back.outline.length >= 3 ? doc.back : null;
             const bc = back ? compileDraft(back, resolution) : null;
+            // Manual assembly: nothing auto-sews; the user's seams hold it.
+            const manual = doc.manual === true;
             return generateSeamedPanels({
               resolution,
               width: d.width,
@@ -572,6 +601,7 @@ async function main(): Promise<void> {
                     extraOpeningsBack: cellOpen(bc.openCells),
                   }
                 : {}),
+              ...(manual ? { manualAssembly: true, assemblySeams: compileAssembly(doc, resolution) } : {}),
             });
           })()
         : sceneMode === 'couture'
@@ -763,13 +793,15 @@ async function main(): Promise<void> {
     patternView.setBodySilhouette(
       sceneMode === 'atelier' && effScan ? avatarSilhouette(effScan.mesh.positions, effScan.mesh.indices) : null,
     );
+    // Manual-assembly seams (red free edges / blue sewn links) for the 2D editor.
+    patternView.setAssembly(sceneMode === 'atelier' && draft ? draft.seams ?? [] : []);
     updateAtelierBar();
     // Scene-aware hint: the atelier needs its drawing gestures spelled out.
     const hintEl = document.getElementById('hint');
     if (hintEl)
       hintEl.textContent =
         sceneMode === 'atelier'
-          ? 'atelier : glisser = déformer · cliquer un bord = ajouter · tirer d’un bord = pince · Maj+clic 2 bords = coudre · double-clic = supprimer un point'
+          ? 'atelier : bords ROUGES = à coudre · Maj+clic un bord puis un autre = coudre (devant↔dos) · clic sur une couture = défaire · glisser = déformer · ▶ Simuler'
           : 'glisser sur le tissu : le tirer · glisser à côté : tourner · clic droit + glisser : se déplacer · molette : zoom · R : reset';
   };
 
