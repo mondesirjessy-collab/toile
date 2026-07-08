@@ -158,9 +158,54 @@ export function exportPatternPdf(mesh: ClothMeshData, garmentName: string): void
   const rows = Math.max(1, Math.ceil((h - OVERLAP) / cellH));
 
   const pdf = new jsPDF({ unit: 'mm', format: 'a4' });
+
+  // Cover page (audit M22): the 100 mm calibration square, grain arrow and
+  // instructions used to be drawn ON page A1, on top of the pattern geometry —
+  // a garment wider than ~80 mm ran under the square and its solid edges read
+  // as stray cut lines. They now live on their own page so they never collide
+  // with the pieces; the pattern grid starts on page 2.
+  pdf.setFontSize(16);
+  pdf.setTextColor(0);
+  pdf.text('TOILE — patron 1:1', MARGIN, MARGIN + 6);
+  pdf.setFontSize(9);
+  pdf.setTextColor(60);
+  pdf.text(`${garmentName} · ${pieces > 1 ? `${pieces} pièces AVANT` : 'pièce AVANT'} · droit-fil vertical`, MARGIN, MARGIN + 13);
+  // Calibration square.
+  pdf.setDrawColor(0);
+  pdf.setLineWidth(0.4);
+  pdf.rect(PAGE_W - MARGIN - 105, MARGIN + 3, 100, 100);
+  pdf.setFontSize(8);
+  pdf.setTextColor(0);
+  pdf.text('carré de contrôle : 100 × 100 mm — imprimer à 100 % (échelle réelle)', PAGE_W - MARGIN - 105, MARGIN + 108);
+  // Grain arrow.
+  {
+    const gx = MARGIN + 12;
+    pdf.setLineWidth(0.5);
+    pdf.line(gx, MARGIN + 30, gx, MARGIN + 80);
+    pdf.line(gx, MARGIN + 30, gx - 2, MARGIN + 35);
+    pdf.line(gx, MARGIN + 30, gx + 2, MARGIN + 35);
+    pdf.setFontSize(8);
+    pdf.text('droit-fil', gx + 4, MARGIN + 55);
+  }
+  // Instructions.
+  pdf.setFontSize(10);
+  pdf.setTextColor(0);
+  pdf.text(
+    [
+      '1. Imprimer toutes les pages à 100 % (échelle réelle) — vérifier le carré de contrôle ci-dessus.',
+      '2. Assembler les pages en suivant les repères de ligne/colonne (A1, A2… en marge).',
+      '3. Coller le long des bandes pointillées.',
+      '4. Couper sur le trait pointillé extérieur (marge de couture 1 cm incluse).',
+      '5. Le trait plein = ligne de couture. Couper chaque dos à l’identique.',
+    ],
+    MARGIN,
+    MARGIN + 130,
+    { maxWidth: PAGE_W - 2 * MARGIN, lineHeightFactor: 1.6 },
+  );
+
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      if (r > 0 || c > 0) pdf.addPage();
+      pdf.addPage(); // cover is page 1; every pattern tile gets its own page
       const ox = c * cellW; // pattern-space origin of this page, mm
       const oy = r * cellH;
 
@@ -175,6 +220,9 @@ export function exportPatternPdf(mesh: ClothMeshData, garmentName: string): void
       pdf.setFontSize(9);
       pdf.setTextColor(140);
       pdf.text(`${garmentName} — page ${String.fromCharCode(65 + r)}${c + 1} / ${String.fromCharCode(65 + rows - 1)}${cols}`, MARGIN, MARGIN - 3);
+      // Repeat the seam-allowance caveat on every sheet (audit M22): a sewer
+      // working from page D3 shouldn't have to flip back to the cover.
+      pdf.text('trait plein = couture · pointillé extérieur = coupe (marge 1 cm incluse)', PAGE_W - MARGIN, MARGIN - 3, { align: 'right' });
 
       // Segment drawer, clipped to this page's printable frame so no cut line
       // spills over the label or past the tile it belongs to.
@@ -200,30 +248,6 @@ export function exportPatternPdf(mesh: ClothMeshData, garmentName: string): void
       pdf.setDrawColor(0);
       pdf.setLineWidth(0.5);
       draw(segs);
-
-      if (r === 0 && c === 0) {
-        // Calibration square + grain line + instructions.
-        pdf.setDrawColor(0);
-        pdf.setLineWidth(0.4);
-        pdf.rect(PAGE_W - MARGIN - 105, MARGIN + 3, 100, 100);
-        pdf.setFontSize(8);
-        pdf.setTextColor(0);
-        pdf.text('carré de contrôle : 100 × 100 mm — imprimer à 100 % (échelle réelle)', PAGE_W - MARGIN - 105, MARGIN + 108);
-        pdf.text(
-          pieces > 1
-            ? `TOILE — ${pieces} pièces AVANT côte à côte · couper chaque dos à l’identique · droit-fil vertical`
-            : 'TOILE — pièce AVANT · couper le dos à l’identique · droit-fil vertical',
-          MARGIN + 2,
-          PAGE_H - MARGIN - 6,
-        );
-        pdf.text('trait plein = couture · trait pointillé extérieur = coupe (marge 1 cm incluse)', MARGIN + 2, PAGE_H - MARGIN - 2);
-        // Grain arrow.
-        const gx = MARGIN + 12;
-        pdf.setLineWidth(0.5);
-        pdf.line(gx, MARGIN + 20, gx, MARGIN + 70);
-        pdf.line(gx, MARGIN + 20, gx - 2, MARGIN + 25);
-        pdf.line(gx, MARGIN + 20, gx + 2, MARGIN + 25);
-      }
     }
   }
   pdf.save(`patron-${garmentName.replace(/[^a-z0-9]/gi, '-')}.pdf`);

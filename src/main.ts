@@ -124,10 +124,16 @@ async function main(): Promise<void> {
   let compliance = { stretch: 1e-7, stretchWarp: 1e-7, shear: 1e-6, bend: 2e-5 };
   let friction = 0.5;
   let fabricStyle = DEFAULT_FABRIC;
+  let fitMap = false; // tension view: survives rebuilds so it isn't lost on a slider (M29)
   let sceneMode: SceneMode = 'drapé';
   let resolution = DEFAULT_RESOLUTION;
   let selfCollision = true;
   let wind = 0;
+  let liveParticleCount = 0; // kept (non-cut) particles, for the HUD (M33)
+  // Import batching (M26): while an import replays its callback cascade, every
+  // build() is suppressed so the ~8-9 intermediate GPU teardowns collapse into
+  // a single rebuild at the end (onImportEnd).
+  let buildSuspended = false;
   const linearProfile = (flare: number): number[] =>
     Array.from({ length: 6 }, (_, k) => 0.21 + (flare - 0.21) * (k / 5));
   let dressPattern = { length: 1.3, flare: 0.5, neck: 0.1, profile: linearProfile(0.5) };
@@ -262,6 +268,7 @@ async function main(): Promise<void> {
   let dragDepth = 0;
 
   const build = (): void => {
+    if (buildSuspended) return; // an import is batching; the final build wins (M26)
     system?.dispose();
     renderer?.dispose();
     // 'drapé': one sheet falling onto the sphere. 'couture': two pattern pieces
@@ -495,6 +502,7 @@ async function main(): Promise<void> {
       mesh.spacingV2,
     );
     renderer.setFabric(fabricStyle); // keep the preset's look across rebuilds
+    renderer.setFitMap(fitMap); // the tension view is a rebuild-surviving setting (M29)
     renderer.resize(canvas.width, canvas.height);
     posCache = null; // stale cache belongs to the previous system
     dragIndex = null;
@@ -517,13 +525,24 @@ async function main(): Promise<void> {
     }
     currentMesh = mesh;
     currentScene = sceneMesh;
+    // HUD count = SIMULATED fabric (cut-away particles are parked dead at
+    // invMass 0), not the full 2·n² grid (audit M33).
+    liveParticleCount = 0;
+    for (let i = 0; i < mesh.invMasses.length; i++) if (mesh.invMasses[i]! > 0) liveParticleCount++;
     patternView.draw(mesh, patternHandles()); // refresh the 2D cutting-layout inset
   };
 
   // The editable measurements of the current scene, pinned to their cut edges.
   const patternHandles = (): PatternHandleSpec[] => {
-    if (sceneMode === 'robe') {
-      const grid = { width: 0.95 * lastGrade.dressScale, topY: 1.6 + lastGrade.dyShoulder, height: dressPattern.length };
+    if (sceneMode === 'robe' || sceneMode === 'tenue') {
+      // 'tenue' renders the same dressPattern (dress over tee) at a higher cut,
+      // so it gets the same silhouette handles — matching the build's tenue
+      // topY (1.78 + dyShoulder) so the handles land on the piece (M34).
+      const grid = {
+        width: 0.95 * lastGrade.dressScale,
+        topY: (sceneMode === 'tenue' ? 1.78 : 1.6) + lastGrade.dyShoulder,
+        height: dressPattern.length,
+      };
       // Pattern drafting: one handle per side-seam station — sculpt the
       // silhouette point by point, the dress is re-cut and re-sewn to match.
       const stations: PatternHandleSpec[] = dressPattern.profile.map((w, k) => ({
@@ -613,7 +632,10 @@ async function main(): Promise<void> {
     const ndcY = 1 - ((e.clientY - rect.top) / rect.height) * 2;
     const ray = camera.pickRay(ndcX, ndcY, canvas.width / canvas.height);
     const count = Math.min(system.count, posCache.length / 4);
-    const hit = pickParticle(posCache, count, ray.origin, ray.dir, 0.15);
+    // Skip immovable particles (pinned/tacked/cut) so a press on one falls
+    // through to camera orbit instead of a dead click (audit M37); the dblclick
+    // tack picker below stays unfiltered so tacks remain removable.
+    const hit = pickParticle(posCache, count, ray.origin, ray.dir, 0.15, (i) => system.isMovable(i));
     if (!hit) return true;
     dragIndex = hit.index;
     dragDepth = hit.depth;
@@ -689,6 +711,7 @@ async function main(): Promise<void> {
       onSelfCollision: (enabled) => {
         selfCollision = enabled;
         system.setSelfCollision(enabled);
+        wake(); // toggling contact resolution must re-settle a sleeping scene (M36)
       },
       onWind: (v) => {
         wind = v;
@@ -699,15 +722,27 @@ async function main(): Promise<void> {
       },
       onAnimate: (v) => {
         animate = v;
-        if (!v && animPrims) build(); // reset to the rest pose cleanly
+        // Turning arm animation OFF must NOT rebuild the cloth (that re-drops
+        // the settled garment from the spawn cylinder). Restore the rest pose
+        // IN PLACE — un-posed colliders + rest body mesh — and let the drape
+        // relax onto it (audit M35).
+        if (!v && animPrims && animRest && animOut) {
+          animT = 0;
+          animOut.set(animRest);
+          system.setColliders(toColliders(animPrims));
+          renderer.updateBodyVertices(animRest);
+          wake();
+        }
       },
       onPattern: (p) => {
         // The FLARE slider resets the draft (straight grade); length/neck keep it.
         dressPattern = { ...p, profile: p.flare === dressPattern.flare ? dressPattern.profile : linearProfile(p.flare) };
         panel.setProfiles({ robe: dressPattern.profile });
         // The pattern sliders describe the dress: jump to the dress scene so
-        // the adjustment is always visible, then re-cut and re-sew.
-        if (sceneMode !== 'robe') {
+        // the adjustment is always visible, then re-cut and re-sew. 'tenue'
+        // ALSO renders this dressPattern (dress over tee), so don't teleport a
+        // user out of their outfit into the lone dress (audit M34).
+        if (sceneMode !== 'robe' && sceneMode !== 'tenue') {
           sceneMode = 'robe';
           panel.syncScene('robe');
         }
@@ -739,7 +774,10 @@ async function main(): Promise<void> {
         }
         build();
       },
-      onFitMap: (v) => renderer.setFitMap(v),
+      onFitMap: (v) => {
+        fitMap = v;
+        renderer.setFitMap(v);
+      },
       onPatternPdf: () => {
         if (currentMesh) exportPatternPdf(currentMesh, sceneMode);
       },
@@ -750,18 +788,24 @@ async function main(): Promise<void> {
         const mesh = currentMesh;
         const scene = currentScene;
         if (!mesh || !scene) return;
-        // Freeze pose and podium angle NOW: the readback resolves frames
-        // later, while the loop keeps advancing both — sampling them in the
-        // .then would export a mannequin twisted ahead of its garment.
-        const cSpin = Math.cos(podiumAngle);
-        const sSpin = Math.sin(podiumAngle);
-        const bodySnap = animOut ? new Float32Array(animOut) : null;
+        // Freeze pose and podium angle to match the CLOTH copy, not the click:
+        // readPositions() encodes its GPU copy synchronously before its first
+        // await, so sampling the pose on the SAME tick as the attempt that wins
+        // keeps the mannequin and the garment on the same frame — freezing only
+        // at click would still let the pose drift over the retry window (M23).
         const sys = system;
+        let cSpin = Math.cos(podiumAngle);
+        let sSpin = Math.sin(podiumAngle);
+        let bodySnap = animOut ? new Float32Array(animOut) : null;
         // The pick cache refreshes every 300 ms through the same readback
         // gate — a click landing in its busy window gets null. Retry a few
         // frames instead of silently doing nothing.
         const read = async (): Promise<Float32Array | null> => {
           for (let attempt = 0; attempt < 10; attempt++) {
+            // Sample the pose in the same tick readPositions encodes its copy.
+            cSpin = Math.cos(podiumAngle);
+            sSpin = Math.sin(podiumAngle);
+            bodySnap = animOut ? new Float32Array(animOut) : null;
             const p = await sys.readPositions();
             if (p) return p;
             await new Promise((r) => setTimeout(r, 50));
@@ -856,6 +900,15 @@ async function main(): Promise<void> {
         panel.syncPins(false);
         wake();
       },
+      // Import batching (M26): suppress the cascade's intermediate rebuilds,
+      // then rebuild once with the final imported state.
+      onImportBegin: () => {
+        buildSuspended = true;
+      },
+      onImportEnd: () => {
+        buildSuspended = false;
+        build();
+      },
     },
     { resolution: DEFAULT_RESOLUTION, substeps: DEFAULT_SUBSTEPS },
   );
@@ -915,17 +968,28 @@ async function main(): Promise<void> {
     const ray = camera.pickRay(mouse.ndcX, mouse.ndcY, aspect);
 
     // Anything that keeps the cloth alive also keeps the solver awake.
+    // Gate on animate && animPrims: checking 'animation bras' on a scan/drapé/
+    // dress-form scene (animPrims null) moves nothing, so it must not block
+    // sleep forever (audit M35).
     const sleepEligible =
-      wind === 0 && podium === 0 && !animate && dragIndex === null && !mouse.leftDown;
+      wind === 0 && podium === 0 && !(animate && animPrims) && dragIndex === null && !mouse.leftDown;
     if (!sleepEligible && asleep) wake();
 
     // Refresh the CPU position cache used by the instant grab test (time-based
     // ~3 Hz — frame counters mislead when rAF throttles); consecutive
     // snapshots double as the stillness detector for sleep.
-    if (now - lastSnapReqT > 300) {
+    // Gate the poll on !asleep (M9): a sleeping sim's positions are frozen and
+    // posCache stays valid for picking, so the staging-buffer create + copy +
+    // map every 300 ms is pure waste on a page whose point is to idle at ~0.
+    // Any wake() path re-arms it. Capture the system identity (M28): if build()
+    // swaps the ParticleSystem while this read is in flight, the resolved
+    // positions belong to the OLD garment — bail rather than clobber posCache /
+    // the sleep-detector references with stale geometry.
+    if (!asleep && now - lastSnapReqT > 300) {
       lastSnapReqT = now;
-      void system.readPositions().then((p) => {
-        if (!p) return;
+      const sys = system;
+      void sys.readPositions().then((p) => {
+        if (!p || sys !== system) return;
         const tArrive = performance.now();
         if (sleepEligible && driftBase && sleepSnapshot && driftBase.length === p.length) {
           // A settled tube garment can keep ROTATING imperceptibly around the
@@ -1029,7 +1093,7 @@ async function main(): Promise<void> {
           ? `sim ${profiler.simMs.toFixed(2)} ms · rendu ${profiler.renderMs.toFixed(2)} ms (GPU)`
           : `${(cpuAccum / frames).toFixed(2)} ms/frame (CPU)`;
       hud.textContent =
-        `${fps} fps · ${timing} · ${system.count.toLocaleString('fr-FR')} part. · ` +
+        `${fps} fps · ${timing} · ${liveParticleCount.toLocaleString('fr-FR')} part. · ` +
         `${system.constraintCount.toLocaleString('fr-FR')} contr. · ${substeps} substeps`;
       frames = 0;
       fpsAccum = 0;

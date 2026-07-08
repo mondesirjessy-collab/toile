@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   generateClothGrid,
   generateSeamedPanels,
   combineClothMeshes,
+  countMaskIslands,
   type ClothMeshData,
 } from '../src/engine/cloth/ClothMesh';
 
@@ -528,6 +529,10 @@ describe('combineClothMeshes (outfits)', () => {
     }));
     const sewn = combineClothMeshes(tee, skirt, cross);
     expect(sewn.seamFree).toHaveLength(sewn.count);
+    // Cross-seams are real Seam edges, so seamCount must include them (M12).
+    expect(sewn.seamCount).toBe(tee.seamCount + skirt.seamCount + cross.length);
+    // The per-kind counts sum to constraintCount for a sewn combination.
+    expect(sewn.structuralCount + sewn.shearCount + sewn.bendingCount + sewn.seamCount).toBe(sewn.constraintCount);
     for (const cs of cross) {
       expect(sewn.seamFree![cs.i]).toBe(1); // seam endpoints…
       expect(sewn.seamFree![cs.i - n]).toBe(1); // …and one row inward
@@ -839,5 +844,49 @@ describe('couture v1 — repassage et élastique', () => {
     const ratio = sumTopRest(elast) / sumTopRest(plain);
     expect(ratio).toBeGreaterThan(0.7);
     expect(ratio).toBeLessThan(0.8);
+  });
+});
+
+describe('connectivity guard (audit M14/M10)', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('countMaskIslands: 4-neighbour components over a mask', () => {
+    const n = 4;
+    const full = new Array<boolean>(n * n).fill(true);
+    expect(countMaskIslands(full, n)).toBe(1);
+    const empty = new Array<boolean>(n * n).fill(false);
+    expect(countMaskIslands(empty, n)).toBe(0);
+    // Two vertical stripes separated by an empty column → 2 islands.
+    const split = new Array<boolean>(n * n).fill(false);
+    for (let v = 0; v < n; v++) {
+      split[v * n + 0] = true; // column 0
+      split[v * n + 3] = true; // column 3 (column 1,2 empty)
+    }
+    expect(countMaskIslands(split, n)).toBe(2);
+    // A lone diagonal touch does NOT connect (4-neighbour only).
+    const diag = new Array<boolean>(n * n).fill(false);
+    diag[0] = true; // (0,0)
+    diag[n + 1] = true; // (1,1) — diagonal neighbour
+    expect(countMaskIslands(diag, n)).toBe(2);
+  });
+
+  it('a normal garment stays in one piece (no warning)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    generateSeamedPanels({ resolution: 64, width: 0.95, height: 1.2, gap: 1.0, topY: 1.6, shape: 'aline', shapeParams: { profile: [0.21, 0.25, 0.3, 0.35, 0.4, 0.45], scoop: 0.1 } });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('a set-in cutting sheet is exactly 3 islands (no warning)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    generateSeamedPanels({ resolution: 64, width: 1.3, height: 0.75, gap: 0.9, topY: 1.52, shape: 'setin', shapeParams: { sleeve: 0.4, profile: [0.22, 0.2, 0.2, 0.2] } });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('an over-scooped neckline severs the strap and warns', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // neck 0.16 with a pinched top station → strap columns vanish (M14 repro).
+    generateSeamedPanels({ resolution: 64, width: 0.95, height: 1.2, gap: 1.0, topY: 1.6, shape: 'aline', shapeParams: { profile: [0.18, 0.1, 0.1, 0.1, 0.1, 0.1], scoop: 0.16 } });
+    expect(warn).toHaveBeenCalled();
+    expect(String(warn.mock.calls[0]?.[0])).toContain('déconnecté');
   });
 });

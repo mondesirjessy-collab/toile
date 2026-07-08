@@ -47,6 +47,11 @@ export interface PanelCallbacks {
   onPins(held: boolean): void;
   onFitMap(on: boolean): void;
   onReset(): void;
+  // Import batching (M26): suspend rebuilds while a .toile.json replays its
+  // callback cascade, then rebuild exactly once. Optional so tests/other hosts
+  // can omit them (import falls back to per-callback rebuilds).
+  onImportBegin?(): void;
+  onImportEnd?(): void;
 }
 
 export type BodyKind = 'femme' | 'homme' | 'scan homme' | 'scan femme';
@@ -529,7 +534,16 @@ export class ControlPanel {
       if (d.fabric.preset && PRESETS[d.fabric.preset]) s.preset = d.fabric.preset;
       if (typeof d.fabric.motif === 'string' && ['uni', 'rayures', 'vichy', 'pois'].includes(d.fabric.motif)) s.motif = d.fabric.motif;
       if (typeof d.fabric.motifCm === 'number' && d.fabric.motifCm >= 1 && d.fabric.motifCm <= 30) s.motifCm = d.fabric.motifCm;
-      if (Array.isArray(d.fabric.motifCouleur) && d.fabric.motifCouleur.length === 3) s.motifCouleur = d.fabric.motifCouleur;
+      // Validate each element finite ∈ [0,1] (audit M30 residual): a raw array
+      // like ["x", NaN, 1e99] would coerce to NaN/Infinity in the fabric
+      // uniform (a garbled print tint — not a solver input, but still wrong).
+      if (
+        Array.isArray(d.fabric.motifCouleur) &&
+        d.fabric.motifCouleur.length === 3 &&
+        d.fabric.motifCouleur.every((v) => typeof v === 'number' && Number.isFinite(v))
+      ) {
+        s.motifCouleur = d.fabric.motifCouleur.map((v) => Math.min(1, Math.max(0, v))) as [number, number, number];
+      }
       s.stretchExp = num(d.fabric.stretchExp, -8, -3, s.stretchExp);
       s.stretchWarpExp = num(d.fabric.stretchWarpExp ?? d.fabric.stretchExp, -8, -3, s.stretchWarpExp);
       s.shearExp = num(d.fabric.shearExp, -8, -3, s.shearExp);
@@ -557,6 +571,10 @@ export class ControlPanel {
     // The pattern callbacks auto-jump to their own scene (and sync it back
     // into settings), so remember the file's scene and restore it at the end.
     const targetScene = s.scene;
+    // Batch the rebuilds (audit M26): the callback cascade below would trigger
+    // build() ~8-9 times (each a full ParticleSystem + renderer teardown). Defer
+    // them so only the final onScene rebuilds — same end state, one rebuild.
+    this.cb.onImportBegin?.();
     this.cb.onBody(s.body);
     // onBody resets the measurements to the new body's baseline, so the saved
     // ones must be restored AFTER it — otherwise the import silently drops the
@@ -613,7 +631,8 @@ export class ControlPanel {
     this.cb.onResolution(s.resolution);
     s.scene = targetScene;
     for (const c of this.controllers) c.updateDisplay();
-    this.cb.onScene(targetScene); // the file's scene wins the final rebuild
+    this.cb.onScene(targetScene); // sets sceneMode (its build is still deferred)
+    this.cb.onImportEnd?.(); // release the batch → exactly one rebuild
     return true;
   }
 

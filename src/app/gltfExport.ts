@@ -94,10 +94,25 @@ export function buildGlb(rawPieces: GltfPiece[]): ArrayBuffer {
     const max = [-Infinity, -Infinity, -Infinity];
     for (let i = 0; i < piece.positions.length; i += 3) {
       for (let k = 0; k < 3; k++) {
-        const v = piece.positions[i + k]!;
+        let v = piece.positions[i + k]!;
+        // Sanitize non-finite components in place (audit M25): an exploded
+        // self-collision state or a bad import can leave NaN/Infinity in a
+        // position. Left alone it either poisons min/max into ±Infinity (which
+        // JSON.stringify writes as null → the glTF validator/Blender reject the
+        // file) or ships a NaN float in the bin chunk. Zeroing the component
+        // collapses that vertex to the origin — an obviously-broken but VALID
+        // .glb, strictly better than an unopenable one. Must write the stored
+        // array, not just the local: the same buffer is copied into the view.
+        if (!Number.isFinite(v)) { v = 0; piece.positions[i + k] = 0; }
         if (v < min[k]!) min[k] = v;
         if (v > max[k]!) max[k] = v;
       }
+    }
+    // Normals have no min/max scan and are written verbatim; a NaN position
+    // poisons computeNormals (hypot(NaN)=NaN, past the degenerate guard), so
+    // sweep them too.
+    for (let i = 0; i < piece.normals.length; i++) {
+      if (!Number.isFinite(piece.normals[i]!)) piece.normals[i] = 0;
     }
     const posAcc = accessors.length;
     accessors.push({

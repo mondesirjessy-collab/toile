@@ -547,6 +547,34 @@ function alineShape(u: number, v: number, p: ShapeParams = {}): boolean {
  * shut around whatever stands between them (the scene sphere): the CLO-style
  * garment-assembly moment. The tube then drapes as one garment.
  */
+/**
+ * Count the connected components of a kept-cell mask over an n×n grid
+ * (4-neighbour). Used as a topology invariant on cut patterns (audit M14):
+ * a garment panel should stay in one piece (or exactly 3 islands for a
+ * set-in cutting sheet). Exported for the invariant tests.
+ */
+export function countMaskIslands(kept: readonly boolean[], n: number): number {
+  const seen = new Uint8Array(n * n);
+  const stack: number[] = [];
+  let comps = 0;
+  for (let s = 0; s < n * n; s++) {
+    if (!kept[s] || seen[s]) continue;
+    comps++;
+    stack.push(s);
+    seen[s] = 1;
+    while (stack.length) {
+      const c = stack.pop()!;
+      const cu = c % n;
+      const cv = (c / n) | 0;
+      if (cu + 1 < n && kept[c + 1] && !seen[c + 1]) { seen[c + 1] = 1; stack.push(c + 1); }
+      if (cu - 1 >= 0 && kept[c - 1] && !seen[c - 1]) { seen[c - 1] = 1; stack.push(c - 1); }
+      if (cv + 1 < n && kept[c + n] && !seen[c + n]) { seen[c + n] = 1; stack.push(c + n); }
+      if (cv - 1 >= 0 && kept[c - n] && !seen[c - n]) { seen[c - n] = 1; stack.push(c - n); }
+    }
+  }
+  return comps;
+}
+
 export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
   const n = opts.resolution;
   const width = opts.width ?? 1.2;
@@ -572,6 +600,21 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
   const inside = (u: number, v: number): boolean => insideUV(u / (n - 1), v / (n - 1));
   const kept = new Array<boolean>(panelSize);
   for (let v = 0; v < n; v++) for (let u = 0; u < n; u++) kept[v * n + u] = inside(u, v);
+
+  // Connectivity guard (audit M14): an over-scooped neckline or a pinched
+  // silhouette station can sever the cut mask into free-falling fragments —
+  // silently, the same way an under-drafted set-in gap would weld the islands
+  // (M10). Expected islands: 3 for the set-in cutting sheet (body + 2 sleeves,
+  // rejoined at assembly), 1 otherwise. Warning-only: changes no geometry,
+  // rest length or constraint — it just surfaces the split so a future draft
+  // change can't break the topology unnoticed. O(n²) 4-neighbour flood fill.
+  const expectedIslands = shape === 'setin' ? 3 : 1;
+  const islandCount = countMaskIslands(kept, n);
+  if (islandCount !== expectedIslands) {
+    console.warn(
+      `ClothMesh: patron déconnecté — ${islandCount} îlot(s), attendu ${expectedIslands} (shape=${shape ?? 'rect'})`,
+    );
+  }
 
   // Smooth cut edges: boundary particles slide onto the exact pattern curve
   // (bisecting inside/outside toward each cut neighbour), so the outline is a
@@ -1116,7 +1159,10 @@ export function combineClothMeshes(
     structuralCount: a.structuralCount + b.structuralCount,
     shearCount: a.shearCount + b.shearCount,
     bendingCount: a.bendingCount + b.bendingCount,
-    seamCount: a.seamCount + b.seamCount,
+    // Cross-garment seams (embu / robe froncée waist) are real Seam edges in
+    // `ordered`, so count them too — otherwise the per-kind totals no longer
+    // sum to constraintCount for any sewn combination (audit M12).
+    seamCount: a.seamCount + b.seamCount + crossSeams.length,
     cornerIndices: a.cornerIndices,
     triangleIndices,
     layers,

@@ -28,11 +28,17 @@ export interface SdfPrim {
   s?: V3;
 }
 
-/** World-space bounding-sphere radius (scale ≤ 1 keeps this conservative). */
+/**
+ * World-space bounding-sphere radius. An s>1 squash axis grows the world shape
+ * (the SDF divides by s), so scale the bound by max(1, s) to stay conservative
+ * for any squash — a no-op for current bodies where every s ∈ (0,1] (audit M18).
+ */
 export function primBoundRadius(p: SdfPrim): number {
   const half =
     Math.hypot(p.b[0] - p.a[0], p.b[1] - p.a[1], p.b[2] - p.a[2]) / 2;
-  return half + Math.max(p.ra, p.rb);
+  const s = p.s ?? [1, 1, 1];
+  const sMax = Math.max(1, s[0]!, s[1]!, s[2]!);
+  return (half + Math.max(p.ra, p.rb)) * sMax;
 }
 
 /** Polynomial smooth minimum (iq). k = 0 degenerates to a hard min. */

@@ -16,10 +16,12 @@ export function pickParticle(
   origin: readonly [number, number, number],
   dir: readonly [number, number, number],
   maxPickDist = 0.12,
+  movable?: (i: number) => boolean,
 ): Pick | null {
   let best: Pick | null = null;
   let bestPerp2 = maxPickDist * maxPickDist;
   for (let i = 0; i < count; i++) {
+    if (movable && !movable(i)) continue; // skip pinned/cut particles (M37)
     const vx = positions[i * 4 + 0]! - origin[0];
     const vy = positions[i * 4 + 1]! - origin[1];
     const vz = positions[i * 4 + 2]! - origin[2];

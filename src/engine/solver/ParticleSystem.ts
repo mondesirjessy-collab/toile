@@ -292,7 +292,12 @@ export class ParticleSystem {
       const r2 = c.radius2 ?? c.radius;
       const s = c.scale ?? [1, 1, 1];
       const half = Math.hypot(b[0] - c.a[0], b[1] - c.a[1], b[2] - c.a[2]) / 2;
-      const bound = half + Math.max(c.radius, r2); // world sphere about the midpoint
+      // Reject sphere / AABB stay conservative for ANY squash (audit M18): the
+      // world shape is scaled by 1/s inside the SDF, so an s>1 axis GROWS it.
+      // sMax = max(1, s) over-covers (the safe direction); a no-op for current
+      // bodies (every s ∈ (0,1] → sMax = 1) but removes a silent-tunnel trap.
+      const sMax = Math.max(1, s[0]!, s[1]!, s[2]!);
+      const bound = (half + Math.max(c.radius, r2)) * sMax; // world sphere about the midpoint
       colliderData.set([...c.a, c.radius, ...b, r2, ...s, bound], k * 12);
     });
     this.colliderBuffer = this.createBuffer(colliderData, storage);
@@ -302,9 +307,11 @@ export class ParticleSystem {
     for (const c of colliders) {
       const b = c.b ?? c.a;
       const r = Math.max(c.radius, c.radius2 ?? c.radius);
+      const sc = c.scale ?? [1, 1, 1];
       for (let i = 0; i < 3; i++) {
-        this.bodyMin[i] = Math.min(this.bodyMin[i]!, Math.min(c.a[i]!, b[i]!) - r - pad);
-        this.bodyMax[i] = Math.max(this.bodyMax[i]!, Math.max(c.a[i]!, b[i]!) + r + pad);
+        const ri = r * Math.max(1, sc[i]!); // per-axis: squash is axis-aligned
+        this.bodyMin[i] = Math.min(this.bodyMin[i]!, Math.min(c.a[i]!, b[i]!) - ri - pad);
+        this.bodyMax[i] = Math.max(this.bodyMax[i]!, Math.max(c.a[i]!, b[i]!) + ri + pad);
       }
     }
     // Baked SDF grid (scanned avatar): its exact bbox IS the sampling domain.
@@ -483,6 +490,19 @@ export class ParticleSystem {
   get pinsHeld(): boolean {
     return this.pinned;
   }
+  /**
+   * Can this particle be grabbed and dragged? False for the three immovable
+   * kinds: pattern-cut particles (baseInvMass 0, parked off-scene), double-click
+   * tacks (extraPins) and the held corner pins. Used so a press on an immovable
+   * particle falls through to camera orbit instead of a dead click (audit M37).
+   */
+  isMovable(index: number): boolean {
+    if (index < 0 || index >= this.count) return false;
+    if (this.baseInvMasses[index] === 0) return false; // pattern-cut particle
+    if (this.extraPins.has(index)) return false; // double-click tack
+    if (this.pinned && (index === this.cornerIndices[0] || index === this.cornerIndices[1])) return false;
+    return true;
+  }
   get isDragging(): boolean {
     return this.dragIndex !== DRAG_NONE;
   }
@@ -522,10 +542,12 @@ export class ParticleSystem {
       const s = c.scale ?? [1, 1, 1];
       const half = Math.hypot(b[0] - c.a[0], b[1] - c.a[1], b[2] - c.a[2]) / 2;
       const r = Math.max(c.radius, r2);
-      data.set([...c.a, c.radius, ...b, r2, ...s, half + r], k * 12);
+      const sMax = Math.max(1, s[0]!, s[1]!, s[2]!); // conservative for any squash (M18)
+      data.set([...c.a, c.radius, ...b, r2, ...s, (half + r) * sMax], k * 12);
       for (let i = 0; i < 3; i++) {
-        this.bodyMin[i] = Math.min(this.bodyMin[i]!, Math.min(c.a[i]!, b[i]!) - r - pad);
-        this.bodyMax[i] = Math.max(this.bodyMax[i]!, Math.max(c.a[i]!, b[i]!) + r + pad);
+        const ri = r * Math.max(1, s[i]!);
+        this.bodyMin[i] = Math.min(this.bodyMin[i]!, Math.min(c.a[i]!, b[i]!) - ri - pad);
+        this.bodyMax[i] = Math.max(this.bodyMax[i]!, Math.max(c.a[i]!, b[i]!) + ri + pad);
       }
     });
     this.device.queue.writeBuffer(this.colliderBuffer, 0, data);

@@ -97,6 +97,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // (and resolution-independent): low = leather-stiff, high = chiffon-floppy.
   let sp2 = params.cloth_spacing * params.cloth_spacing;
   let alpha = max(q.softness, 1.0) * params.compliance_bend / (params.dt * params.dt * max(sp2, 1e-8));
+  // KNOWN, INTENTIONALLY UNCHANGED (audit M2): q1..q4 are gradients of
+  // d = n1·n2, so the exact XPBD projection for C = acos(d) − φ0 is
+  //   s = -c·√(1−d²) / (denom + alpha·(1−d²)).
+  // We divide by (denom + alpha) instead — omitting the (1−d²) on alpha — which
+  // makes bending slightly SOFTER than nominal, most near flat/fully-folded
+  // (d→±1). This is NOT a bug to blind-fix: the mathematically-correct form
+  // stiffens every fabric non-uniformly and would break all 7 hand-tuned
+  // presets (Jersey…Soie) + the pressing hinges, which are calibrated against
+  // THIS response. Changing it is a coupled shader + preset re-tune under
+  // visual review, not a one-liner. Left as-is deliberately.
   let s = -c * sqrt(max(1.0 - d * d, 0.0)) / (denom + alpha);
 
   positions[q.e0] = vec4f(x1 + s * w1 * q1, 0.0);
