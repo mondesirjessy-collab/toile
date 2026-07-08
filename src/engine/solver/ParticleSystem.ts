@@ -252,7 +252,7 @@ export class ParticleSystem {
     this.complianceBend = opts.complianceBend ?? 2.0e-6;
     this.mouseStrength = opts.mouseStrength ?? 45.0;
     this.mouseRadius = opts.mouseRadius ?? 1.5;
-    this.damping = opts.damping ?? 0.8;
+    this.damping = opts.damping ?? 0.5; // less velocity bleed → more flutter/liveliness (audit)
     this.maxSpeed = opts.maxSpeed ?? 12.0;
     this.dragStiffness = opts.dragStiffness ?? 0.4;
     this.selfEnabled = opts.selfCollision ?? true;

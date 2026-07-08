@@ -121,7 +121,7 @@ async function main(): Promise<void> {
   const profiler = new GpuProfiler(device);
 
   // Fabric params kept across rebuilds (a resolution change recreates the sim).
-  let compliance = { stretch: 1e-7, stretchWarp: 1e-7, shear: 1e-6, bend: 2e-5 };
+  let compliance = { stretch: 1e-7, stretchWarp: 1e-7, shear: 1e-5, bend: 2e-4 };
   let friction = 0.5;
   let fabricStyle = DEFAULT_FABRIC;
   let fitMap = false; // tension view: survives rebuilds so it isn't lost on a slider (M29)

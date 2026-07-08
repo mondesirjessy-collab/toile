@@ -104,7 +104,15 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // (softer than the dialed compliance, worst near flat). Guard the factor with
   // the same max(…,0) as the numerator so float error can't flip alpha's sign.
   let fold = max(1.0 - d * d, 0.0);
-  let s = -c * sqrt(fold) / (denom + alpha * fold);
+  // Floor the compliance factor near flat (audit — rigidity fix): as d→±1 the
+  // exact factor alpha·fold→0, so the projection loses ALL compliance authority
+  // and the cloth resists its FIRST small fold at near-full stiffness whatever
+  // the slider says — that reads as rigid. Clamp the alpha factor to ≥0.04
+  // (caps the near-flat stiffening at ~25× instead of ∞) while the numerator's
+  // √fold still vanishes smoothly, so flat stays the rest state and gentle
+  // drape keeps the compliance the fabric was dialed to.
+  let foldc = max(fold, 0.04);
+  let s = -c * sqrt(fold) / (denom + alpha * foldc);
 
   positions[q.e0] = vec4f(x1 + s * w1 * q1, 0.0);
   positions[q.e1] = vec4f(x1 + p2 + s * w2 * q2, 0.0);
