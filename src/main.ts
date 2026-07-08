@@ -70,44 +70,96 @@ function showFatal(title: string, detail: string): void {
 }
 
 /**
- * A schematic front-view silhouette (croquis) of the measured mannequin, in the
- * SAME world (x, y) plane the flat pattern lives in — so a piece drawn over it
- * in the 2D atelier is sized against the real body. Built from the tailor's
- * measured bands (shoulders, bust, waist, hips at their true heights and
- * half-widths) plus an estimated head and legs. Returns a closed polygon:
- * the right side crown→crotch, then mirrored back up the left side.
+ * The EXACT front-view silhouette of the 3D avatar, projected from its rendered
+ * mesh into the SAME world (x, y) plane the flat pattern lives in — so a piece
+ * drawn over it in the 2D atelier is sized against the real body shown in 3D.
+ * Rasterizes the mesh vertices into a fine (x, y) occupancy grid, then emits,
+ * per row, the filled horizontal runs — bridging small vertex gaps but leaving
+ * true gaps (between the legs, arm-to-torso) open. Returns world-space filled
+ * rectangles plus the overall bounds (for fitting the panel to the body).
  */
-function bodyCroquis(m: BodyMeasure): Array<[number, number]> {
-  const H = m.neckY / 0.83; // stature estimate: the neck sits ~83% of height up
-  const kneeY = 0.28 * H;
-  const ankleY = 0.05 * H;
-  const crotchY = Math.max(ankleY + 0.12, m.hip.y - 0.13);
-  const half = (v: number, floor: number): number => Math.max(floor, v);
-  // Right-side profile, crown → right crotch (x = half-width at height y).
-  const right: Array<[number, number]> = [
-    [0, H], // crown
-    [0.058, H - 0.02],
-    [0.082, (H + m.neckY) / 2 + 0.015], // temple
-    [0.05, m.neckY + 0.03], // jaw
-    [0.044, m.neckY], // neck base
-    [half(m.shoulderHalfW, 0.12), m.shoulderY], // shoulder point
-    [half(m.chest.halfW, 0.1), m.chest.y], // bust
-    [half(m.waist.halfW, 0.085), m.waist.y], // waist
-    [half(m.hip.halfW, 0.11), m.hip.y], // hip
-    [half(m.hip.halfW * 0.72, 0.085), crotchY + 0.05], // outer upper thigh
-    [0.1, kneeY], // outer knee
-    [0.072, ankleY], // outer ankle
-    [0.11, 0.004], // toe (outer)
-    [0.02, 0.004], // foot inner
-    [0.035, ankleY + 0.02], // inner ankle
-    [0.05, kneeY], // inner knee
-    [0.03, crotchY], // right inner top (crotch)
-  ];
-  const left = right
-    .slice()
-    .reverse()
-    .map(([x, y]) => [-x, y] as [number, number]);
-  return right.concat(left);
+export interface AvatarSilhouette {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  rects: Array<[number, number, number, number]>; // [x0, y0, x1, y1] world
+}
+function avatarSilhouette(positions: Float32Array, indices: Uint32Array): AvatarSilhouette {
+  const N = positions.length / 3;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < N; i++) {
+    const x = positions[i * 3]!;
+    const y = positions[i * 3 + 1]!;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  const rows = 176;
+  const cellH = (maxY - minY) / rows || 1;
+  const cols = Math.max(8, Math.round((maxX - minX) / cellH));
+  const cellW = (maxX - minX) / cols || 1;
+  const bits = new Uint8Array(cols * rows);
+  // Rasterize the mesh TRIANGLES projected to the (x, y) plane: mark every cell
+  // whose centre falls inside a triangle. The union is the solid front
+  // silhouette — no interior speckle — while true gaps (between the legs,
+  // arm-to-torso) stay empty because no triangle spans them.
+  const T = (indices.length / 3) | 0;
+  for (let t = 0; t < T; t++) {
+    const ia = indices[t * 3]!;
+    const ib = indices[t * 3 + 1]!;
+    const ic = indices[t * 3 + 2]!;
+    const ax = positions[ia * 3]!;
+    const ay = positions[ia * 3 + 1]!;
+    const bx = positions[ib * 3]!;
+    const by = positions[ib * 3 + 1]!;
+    const cx = positions[ic * 3]!;
+    const cy = positions[ic * 3 + 1]!;
+    let c0 = Math.floor((Math.min(ax, bx, cx) - minX) / cellW);
+    let c1 = Math.floor((Math.max(ax, bx, cx) - minX) / cellW);
+    let r0 = Math.floor((Math.min(ay, by, cy) - minY) / cellH);
+    let r1 = Math.floor((Math.max(ay, by, cy) - minY) / cellH);
+    if (c0 < 0) c0 = 0;
+    if (r0 < 0) r0 = 0;
+    if (c1 >= cols) c1 = cols - 1;
+    if (r1 >= rows) r1 = rows - 1;
+    const d = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay);
+    if (d === 0) continue;
+    for (let r = r0; r <= r1; r++) {
+      const py = minY + (r + 0.5) * cellH;
+      for (let c = c0; c <= c1; c++) {
+        const px = minX + (c + 0.5) * cellW;
+        // Barycentric sign test (centre inside the triangle).
+        const w0 = ((bx - px) * (cy - py) - (cx - px) * (by - py)) / d;
+        const w1 = ((cx - px) * (ay - py) - (ax - px) * (cy - py)) / d;
+        const w2 = 1 - w0 - w1;
+        if (w0 >= 0 && w1 >= 0 && w2 >= 0) bits[r * cols + c] = 1;
+      }
+    }
+  }
+  // Emit each row's contiguous filled runs as world-space rectangles.
+  const rects: Array<[number, number, number, number]> = [];
+  for (let r = 0; r < rows; r++) {
+    const base = r * cols;
+    let runStart = -1;
+    const flush = (a: number, b: number): void => {
+      rects.push([minX + a * cellW, minY + r * cellH, minX + (b + 1) * cellW, minY + (r + 1) * cellH]);
+    };
+    for (let c = 0; c < cols; c++) {
+      if (bits[base + c]) {
+        if (runStart < 0) runStart = c;
+      } else if (runStart >= 0) {
+        flush(runStart, c - 1);
+        runStart = -1;
+      }
+    }
+    if (runStart >= 0) flush(runStart, cols - 1);
+  }
+  return { minX, maxX, minY, maxY, rects };
 }
 
 async function main(): Promise<void> {
@@ -667,9 +719,11 @@ async function main(): Promise<void> {
     // Freeform editing: hand the atelier piece to the 2D view so its outline
     // vertices become draggable; other scenes leave draft mode.
     if (!(sceneMode === 'atelier' && patternView.drawing)) patternView.setDraft(sceneMode === 'atelier' && draft ? draft.piece : null);
-    // Show the mannequin's silhouette behind the 2D plan so pieces are drawn to
-    // the body's real dimensions (like tracing over an avatar in CLO).
-    patternView.setBodySilhouette(sceneMode === 'atelier' ? bodyCroquis(m) : null);
+    // Show the EXACT avatar silhouette (projected from the rendered scan mesh)
+    // behind the 2D plan, so pieces are drawn over the real body shown in 3D.
+    patternView.setBodySilhouette(
+      sceneMode === 'atelier' && effScan ? avatarSilhouette(effScan.mesh.positions, effScan.mesh.indices) : null,
+    );
     updateAtelierBar();
     // Scene-aware hint: the atelier needs its drawing gestures spelled out.
     const hintEl = document.getElementById('hint');
