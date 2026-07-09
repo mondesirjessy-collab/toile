@@ -1,7 +1,7 @@
 import { initGpu, WebGPUNotSupportedError } from './engine/gpu/Device';
 import { ParticleSystem } from './engine/solver/ParticleSystem';
 import { generateClothGrid, generateSeamedPanels, combineClothMeshes, type CrossSeam, type ClothMeshData } from './engine/cloth/ClothMesh';
-import { defaultDraft, compileDraft, compileAssembly, sanitizeDraft, type DraftDoc, type AssemblySeam } from './engine/pattern/Draft';
+import { defaultDraft, compileDraft, compileAssembly, compileCrossSeams, sanitizeDraft, type DraftDoc, type AssemblySeam } from './engine/pattern/Draft';
 import type { SceneMode } from './app/ControlPanel';
 import { ClothRenderer, DEFAULT_FABRIC } from './app/ClothRenderer';
 import { OrbitCamera } from './app/OrbitCamera';
@@ -314,15 +314,16 @@ async function main(): Promise<void> {
   const patternView = new PatternView(
     document.getElementById('pattern') as HTMLCanvasElement,
     (id, value) => applyHandle(id, value),
-    (piece, isBack, seams) => {
-      // A face changed (vertex moved / added / deleted / drawn). Commit it into
-      // the current draft — front, or the côte-à-côte BACK — and re-cut. Editing
-      // returns to the flat design view (physics paused) so the change shows
-      // without the piece draping away.
+    (piece, pieceId, seams) => {
+      // A piece changed (vertex moved / added / deleted / drawn). Commit it into
+      // the current draft — front (0), the côte-à-côte back (1), or a FREE piece
+      // (≥ 2) — and re-cut. Editing returns to the flat design view (physics
+      // paused) so the change shows without the piece draping away.
       const gridN = resolution as 32 | 64 | 128;
       if (!draft) draft = { format: 'toile-draft', version: 1, gridN, piece: defaultDraft(gridN).piece };
       draft.gridN = gridN;
-      if (isBack) draft.back = piece;
+      if (pieceId >= 2) (draft.pieces ??= [])[pieceId - 2] = piece;
+      else if (pieceId === 1) draft.back = piece;
       else draft.piece = piece;
       // Adding/removing an outline point shifts the edge indices; the editor
       // re-indexes the assembly seams so they keep pointing at the same edges.
@@ -414,7 +415,19 @@ async function main(): Promise<void> {
     atelierDesign = true;
     simBtn().classList.remove('running');
     const dims = (draft ?? defaultDraft(resolution as 32 | 64 | 128)).piece;
-    patternView.startPen(dims.width, dims.height, dims.topY, dims.gap, true);
+    patternView.startPen(dims.width, dims.height, dims.topY, dims.gap, 1);
+  });
+  // Multi-piece FREE editor: draw a NEW piece (collar, yoke, panel…) in its own
+  // column, to be sewn to the body. A thin doubled panel (small gap), spawned in
+  // front of the mannequin (build translates it out of the collider), pulled onto
+  // the body by whatever edge the user sews it to.
+  (document.getElementById('at-piece') as HTMLElement).addEventListener('click', () => {
+    if (!bigPanel) setBig(true);
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    const dims = (draft ?? defaultDraft(resolution as 32 | 64 | 128)).piece;
+    const pid = 2 + (draft?.pieces?.length ?? 0);
+    patternView.startPen(dims.width, dims.height, dims.topY, 0.12, pid);
   });
   (document.getElementById('at-pen') as HTMLElement).addEventListener('click', () => patternView.finishPen());
   (document.getElementById('at-sim') as HTMLElement).addEventListener('click', () => simulate());
@@ -715,10 +728,47 @@ async function main(): Promise<void> {
                 : {}),
               ...(manual ? { manualAssembly: true, assemblySeams: compileAssembly(doc, resolution) } : {}),
             });
+            let garment = body;
+            // FREE pieces (multi-piece editor): each user-drawn extra piece
+            // (pieceId ≥ 2) becomes its OWN 2-panel mesh, combined onto the
+            // garment and sewn where the user's assembly seams say
+            // (compileCrossSeams). Empty ⇒ this loop is skipped and `garment`
+            // stays exactly `body` — byte-identical to v97.
+            const freePieces = doc.pieces ?? [];
+            const offsets: number[] = [0, resolution * resolution]; // global base index per pieceId
+            for (let k = 0; k < freePieces.length; k++) {
+              const pid = 2 + k;
+              const fp = freePieces[k];
+              offsets[pid] = garment.count; // where this piece's cells will land in the combined mesh
+              if (!fp || fp.outline.length < 3) continue;
+              const fpc = compileDraft(fp, resolution);
+              const pieceMesh = generateSeamedPanels({
+                resolution,
+                width: fp.width,
+                height: fp.height,
+                gap: fp.gap,
+                topY: fp.topY,
+                shape: 'freeform',
+                mask: { outline: fp.outline, darts: fp.darts },
+                extraSeams: fpc.extraSeams,
+                extraOpenings: cellOpen(fpc.openCells),
+                maskBack: { outline: fp.outline, darts: fp.darts },
+                extraSeamsBack: fpc.extraSeams,
+                extraOpeningsBack: cellOpen(fpc.openCells),
+              });
+              // Spawn it in FRONT of the body (at the body's front-panel plane),
+              // clear of the avatar SDF collider — spawning inside would eject it
+              // violently (as with the sleeves). Its assembly seam then pulls it
+              // onto the body and it drapes.
+              const spawnZ = d.gap / 2;
+              for (let q = 0; q < pieceMesh.count; q++) {
+                pieceMesh.positions[q * 4 + 2] = pieceMesh.positions[q * 4 + 2]! + spawnZ;
+              }
+              garment = combineClothMeshes(garment, pieceMesh, compileCrossSeams(doc, resolution, offsets, pid));
+            }
             // Multi-piece (stage 1): sew a rectangular sleeve to each armhole,
             // via the SAME combineClothMeshes cross-seaming the gathered dress
             // uses. Gated on the button — without it the mesh is exactly the body.
-            let garment = body;
             if (atelierSleeves) {
               const sL = sleeveMesh(resolution, 'L', m.shoulderHalfW, m.shoulderY);
               garment = combineClothMeshes(garment, sL, armholeCrossSeams(garment, 'L', resolution));
@@ -914,6 +964,7 @@ async function main(): Promise<void> {
       patternView.setDraft(
         sceneMode === 'atelier' && draft ? draft.piece : null,
         sceneMode === 'atelier' && draft?.back ? draft.back : null,
+        sceneMode === 'atelier' && draft?.pieces ? draft.pieces : [],
       );
     // Show the EXACT avatar silhouette (projected from the rendered scan mesh)
     // behind the 2D plan, so pieces are drawn over the real body shown in 3D.

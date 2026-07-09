@@ -9,8 +9,12 @@ import {
   deleteOutlineVertex,
   compileDraft,
   compileAssembly,
+  compileCrossSeams,
   reindexAssemblySeams,
+  pieceIdOf,
+  docPieces,
   type UV,
+  type DraftPiece,
 } from '../src/engine/pattern/Draft';
 import { generateSeamedPanels, countMaskIslands, type ClothMeshData } from '../src/engine/cloth/ClothMesh';
 
@@ -265,5 +269,120 @@ describe('compileAssembly (manual seams)', () => {
     const out = reindexAssemblySeams(seams, 'front', 'insert', 1, 8);
     expect(out[0]!.a).toEqual({ face: 'front', from: 4, to: 5 }); // front run followed its edge
     expect(out[0]!.b).toEqual({ face: 'back', from: 0, to: 1 }); // back face untouched
+  });
+});
+
+describe('multi-piece free editor (pieceId / cross-seams)', () => {
+  const square = (): DraftPiece => ({
+    outline: [
+      [0.2, 0.2],
+      [0.8, 0.2],
+      [0.8, 0.8],
+      [0.2, 0.8],
+    ],
+    darts: [],
+    seams: [],
+    openEdges: [],
+    width: 0.5,
+    height: 0.5,
+    topY: 1.2,
+    gap: 0.12,
+  });
+
+  it('pieceIdOf normalises face and pieceId (pieceId wins)', () => {
+    expect(pieceIdOf({ from: 0, to: 1, face: 'front' })).toBe(0);
+    expect(pieceIdOf({ from: 0, to: 1, face: 'back' })).toBe(1);
+    expect(pieceIdOf({ from: 0, to: 1, pieceId: 3 })).toBe(3);
+    expect(pieceIdOf({ from: 0, to: 1, pieceId: 0, face: 'back' })).toBe(0);
+  });
+
+  it('docPieces lists front, back, then free pieces', () => {
+    const doc = defaultDraft(32);
+    expect(docPieces(doc).length).toBe(2); // front + back
+    doc.pieces = [square()];
+    const list = docPieces(doc);
+    expect(list.length).toBe(3);
+    expect(list[2]).toBe(doc.pieces![0]);
+  });
+
+  it('compileAssembly IGNORES seams that touch a free piece (≥2)', () => {
+    const doc = defaultDraft(32);
+    doc.pieces = [square()];
+    doc.seams = [{ a: { face: 'front', from: 5, to: 6 }, b: { pieceId: 2, from: 0, to: 1 } }];
+    expect(compileAssembly(doc, 32).length).toBe(0); // handled by compileCrossSeams instead
+  });
+
+  it('compileCrossSeams sews a base edge to a free piece, offset into the combined mesh', () => {
+    const n = 32;
+    const panelSize = n * n;
+    const doc = defaultDraft(n);
+    doc.pieces = [square()];
+    doc.seams = [{ a: { face: 'front', from: 5, to: 6 }, b: { pieceId: 2, from: 0, to: 1 } }];
+    const baseCount = 2 * panelSize; // front + back panels
+    const offsets = [0, panelSize, baseCount]; // pieceId 0,1 in base; free piece appended
+    const cross = compileCrossSeams(doc, n, offsets, 2);
+    expect(cross.length).toBeGreaterThan(0);
+    for (const c of cross) {
+      expect(c.i).toBeLessThan(baseCount); // the base (front) side stays in the base range
+      expect(c.j).toBeGreaterThanOrEqual(baseCount); // the free piece is appended after the base
+    }
+  });
+
+  it('compileCrossSeams returns nothing for a non-entering / absent piece', () => {
+    const n = 32;
+    const doc = defaultDraft(n);
+    doc.pieces = [square()];
+    doc.seams = [{ a: { face: 'front', from: 5, to: 6 }, b: { pieceId: 2, from: 0, to: 1 } }];
+    const offsets = [0, n * n, 2 * n * n];
+    expect(compileCrossSeams(doc, n, offsets, 3).length).toBe(0); // piece 3 isn't the entering piece
+    expect(compileCrossSeams(defaultDraft(n), n, offsets, 2).length).toBe(0); // no free-piece seams at all
+  });
+
+  it('reindexAssemblySeams shifts a numeric pieceId run and preserves its identity', () => {
+    const seams = [{ a: { pieceId: 2, from: 3, to: 4 }, b: { face: 'front' as const, from: 0, to: 1 } }];
+    const out = reindexAssemblySeams(seams, 2, 'insert', 1, 8);
+    expect(out[0]!.a).toEqual({ pieceId: 2, from: 4, to: 5 }); // free-piece run followed its edge
+    expect(out[0]!.b).toEqual({ face: 'front', from: 0, to: 1 }); // the base endpoint is untouched
+  });
+
+  it('sanitizeDraft parses free pieces and drops seams to missing pieces', () => {
+    const s = sanitizeDraft({
+      format: 'toile-draft',
+      version: 1,
+      gridN: 32,
+      piece: { outline: [[0.2, 0.1], [0.8, 0.1], [0.5, 0.9]], darts: [], seams: [], openEdges: [], width: 0.9, height: 1, topY: 1.5, gap: 1 },
+      pieces: [square()],
+      seams: [
+        { a: { pieceId: 2, from: 0, to: 1 }, b: { face: 'front', from: 0, to: 1 } }, // valid
+        { a: { pieceId: 5, from: 0, to: 1 }, b: { face: 'front', from: 0, to: 1 } }, // ghost: no piece 5
+      ],
+    });
+    expect(s.pieces?.length).toBe(1);
+    expect(s.seams?.length).toBe(1); // ghost seam dropped
+    expect(pieceIdOf(s.seams![0]!.a)).toBe(2);
+    expect(s.pieces![0]!.gap).toBe(0.12); // a thin free piece round-trips (not clamped to 0.3)
+  });
+
+  it('sanitizeDraft remaps free-piece pieceIds when a middle piece is dropped', () => {
+    const degenerate = { outline: [[0.2, 0.2], [0.8, 0.2]], darts: [], seams: [], openEdges: [], width: 0.5, height: 0.5, topY: 1.2, gap: 0.12 };
+    const s = sanitizeDraft({
+      format: 'toile-draft',
+      version: 1,
+      gridN: 32,
+      piece: { outline: [[0.2, 0.1], [0.8, 0.1], [0.5, 0.9]], darts: [], seams: [], openEdges: [], width: 0.9, height: 1, topY: 1.5, gap: 1 },
+      pieces: [degenerate, square()], // slot 0 (<3 pts) dropped; slot 1 (old pieceId 3) survives → new pieceId 2
+      seams: [
+        { a: { pieceId: 3, from: 0, to: 1 }, b: { face: 'front', from: 0, to: 1 } }, // targets the survivor
+        { a: { pieceId: 2, from: 0, to: 1 }, b: { face: 'front', from: 0, to: 1 } }, // targets the dropped piece
+      ],
+    });
+    expect(s.pieces?.length).toBe(1); // only the valid square survived
+    expect(s.seams?.length).toBe(1); // the seam to the dropped piece is removed
+    expect(pieceIdOf(s.seams![0]!.a)).toBe(2); // the survivor's seam re-pointed 3 → 2
+  });
+
+  it('sanitizeDraft omits `pieces` when there are none (back-compat invariant)', () => {
+    const s = sanitizeDraft(defaultDraft(32));
+    expect('pieces' in s).toBe(false);
   });
 });

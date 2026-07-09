@@ -15,7 +15,7 @@
  * actually lands on a handle; everything else falls through untouched.
  */
 import type { ClothMeshData } from '../engine/cloth/ClothMesh';
-import { insertOutlineVertex, deleteOutlineVertex, reindexAssemblySeams, type UV, type DraftPiece, type AssemblySeam } from '../engine/pattern/Draft';
+import { insertOutlineVertex, deleteOutlineVertex, reindexAssemblySeams, pieceIdOf, type UV, type DraftPiece, type AssemblySeam, type FaceRun } from '../engine/pattern/Draft';
 
 /** One draggable measurement, defined against its garment's cutting grid. */
 export interface PatternHandleSpec {
@@ -84,26 +84,45 @@ export class PatternView {
 
   // Freeform "atelier" editing: when a draft piece is set, the outline vertices
   // become draggable handles (a separate path from the parametric handles).
-  private readonly onDraftChange: (piece: DraftPiece, isBack: boolean, seams?: AssemblySeam[]) => void;
+  private readonly onDraftChange: (piece: DraftPiece, pieceId: number, seams?: AssemblySeam[]) => void;
   // Manual-assembly callbacks: add a seam (edge A ↔ edge B), or delete seam #i.
   private readonly onAssemblySeam: (seam: AssemblySeam) => void;
   private readonly onAssemblyDelete: (index: number) => void;
-  // Côte-à-côte faces: the FRONT column (left) and an optional BACK column
-  // (right, drawn from scratch). Gestures edit whichever column the pointer went
-  // down in (`activeBack`); `draftPiece` is that active face.
-  private draftFront: DraftPiece | null = null;
-  private draftBack: DraftPiece | null = null;
-  private activeBack = false;
-  private colGap = 0; // world-x offset of the back column from the front
+  // Multi-piece columns (CLO-style): pieces[0]=FRONT, [1]=BACK (may be null,
+  // drawn from scratch), [≥2]=FREE pieces (collar, yoke…). Gestures edit
+  // whichever column the pointer went down in (`activePiece`); `draftPiece` is
+  // that active piece.
+  private pieces: (DraftPiece | null)[] = [];
+  private activePiece = 0;
+  // World-x offset of each column (offsets[0]=0), from the column pitch; columns
+  // lay out left→right, one per piece. colBaseMin/MaxX = the front column's
+  // extent, so pickColumn can route a gesture to the right column by interval.
+  private offsets: number[] = [];
+  private colPitch = 0;
+  private get nCols(): number {
+    return Math.max(2, this.pieces.length); // front + back always shown, then extras
+  }
+  private get inDraft(): boolean {
+    return this.pieces.some((p) => !!p);
+  }
+  private pieceAt(pid: number): DraftPiece | null {
+    return this.pieces[pid] ?? null;
+  }
   private get draftPiece(): DraftPiece | null {
-    return this.activeBack ? this.draftBack : this.draftFront;
+    return this.pieceAt(this.activePiece);
   }
   private setActive(piece: DraftPiece | null): void {
-    if (this.activeBack) this.draftBack = piece;
-    else this.draftFront = piece;
+    this.pieces[this.activePiece] = piece;
+  }
+  private pieceOffset(pid: number): number {
+    return this.offsets[pid] ?? 0;
   }
   private activeOffset(): number {
-    return this.activeBack ? this.colGap : 0;
+    return this.pieceOffset(this.activePiece);
+  }
+  /** Human label for a column: DEVANT / DOS / PIÈCE n. */
+  private pieceLabel(pid: number): string {
+    return pid === 0 ? 'devant' : pid === 1 ? 'dos' : `pièce ${pid + 1}`;
   }
   private draftPreview: UV[] | null = null; // live copy while dragging a vertex
   private draftDrag: { vertex: number; pointerId: number; grabDX: number; grabDY: number } | null = null;
@@ -113,7 +132,7 @@ export class PatternView {
   // Manual assembly: user-defined seams (front/back edge ↔ edge), plus the first
   // edge picked while awaiting the second (Shift+click), which may be on either face.
   private assembly: AssemblySeam[] = [];
-  private seamPickA: { face: 'front' | 'back'; edge: number } | null = null;
+  private seamPickA: { pieceId: number; edge: number } | null = null;
   private seamAllowanceM = 0.01; // shown as a dashed cut line outside each piece
   // Pen tool: drawing a new piece from scratch (click to place points, close it).
   private penMode = false;
@@ -126,7 +145,7 @@ export class PatternView {
   constructor(
     canvas: HTMLCanvasElement,
     onChange: (id: string, value: number) => void = () => {},
-    onDraftChange: (piece: DraftPiece, isBack: boolean, seams?: AssemblySeam[]) => void = () => {},
+    onDraftChange: (piece: DraftPiece, pieceId: number, seams?: AssemblySeam[]) => void = () => {},
     onAssemblySeam: (seam: AssemblySeam) => void = () => {},
     onAssemblyDelete: (index: number) => void = () => {},
   ) {
@@ -149,7 +168,7 @@ export class PatternView {
 
   /** Double-click an outline vertex to remove it (freeform drawing). */
   private readonly onDblClick = (e: MouseEvent): void => {
-    if (!this.draftFront && !this.draftBack) return;
+    if (!this.inDraft) return;
     const p = this.canvasPoint(e);
     if (!p) return;
     this.pickColumn(p[0]);
@@ -160,12 +179,12 @@ export class PatternView {
     if (next.outline.length === this.draftPiece.outline.length) return; // ≤3 guard
     e.preventDefault();
     e.stopPropagation();
-    // Removing a point shifts edge indices → re-index the assembly seams so they
-    // keep pointing at the same physical edges.
-    this.assembly = reindexAssemblySeams(this.assembly, this.activeBack ? 'back' : 'front', 'delete', v, next.outline.length);
+    // Removing a point shifts edge indices → re-index the assembly seams (on this
+    // column's pieceId) so they keep pointing at the same physical edges.
+    this.assembly = reindexAssemblySeams(this.assembly, this.activePiece, 'delete', v, next.outline.length);
     this.applyActive(next);
     this.render();
-    this.onDraftChange(next, this.activeBack, this.assembly);
+    this.onDraftChange(next, this.activePiece, this.assembly);
   };
 
   /** DEV: current outline vertices in canvas-local pixels (for input tests). */
@@ -223,10 +242,10 @@ export class PatternView {
    * Enter freeform draft editing (atelier) with the FRONT `piece` and an optional
    * independent BACK face, or leave draft mode (both null).
    */
-  setDraft(piece: DraftPiece | null, back: DraftPiece | null = null): void {
-    this.draftFront = this.clonePiece(piece);
-    this.draftBack = this.clonePiece(back);
-    if (!this.draftBack) this.activeBack = false; // no back to edit
+  setDraft(piece: DraftPiece | null, back: DraftPiece | null = null, extra: DraftPiece[] = []): void {
+    this.pieces = [this.clonePiece(piece), this.clonePiece(back), ...extra.map((e) => this.clonePiece(e))];
+    // Keep the active column if it still holds a piece; else fall back to front.
+    if (!this.pieceAt(this.activePiece)) this.activePiece = 0;
     this.penMode = false;
     this.penPoints = [];
     this.resetDraftTransient();
@@ -260,8 +279,11 @@ export class PatternView {
 
   /** Start drawing a NEW piece from a blank canvas (pen tool), on the front or
    * back column. Only the target face is reset — the other column is kept. */
-  startPen(width: number, height: number, topY: number, gap: number, isBack = false): void {
-    this.activeBack = isBack;
+  startPen(width: number, height: number, topY: number, gap: number, pieceId = 0): void {
+    this.activePiece = pieceId;
+    // Ensure the column slot exists (a new free piece extends the array; back is
+    // slot 1). Fill any gap with nulls so indices stay aligned with pieceId.
+    while (this.pieces.length <= pieceId) this.pieces.push(null);
     this.setActive({ outline: [], darts: [], seams: [], openEdges: [], width, height, topY, gap });
     this.resetDraftTransient();
     this.penMode = true;
@@ -293,7 +315,7 @@ export class PatternView {
     this.penPoints = [];
     this.applyActive(next);
     this.render();
-    this.onDraftChange(next, this.activeBack);
+    this.onDraftChange(next, this.activePiece);
   }
 
   /** Screen position of an outline vertex: UV → world layout (+ the face's column
@@ -319,20 +341,25 @@ export class PatternView {
   /** Route a gesture to the column it fell in: past the midpoint between the two
    * columns (and only if a back face exists) → the back, else the front. */
   private pickColumn(px: number): void {
-    if (!this.tf || !this.draftBack || this.colGap <= 0) {
-      this.activeBack = false;
+    if (!this.tf || this.colPitch <= 0) {
+      this.activePiece = 0;
       return;
     }
+    // Pieces are drawn centred at layout-x = pid·pitch (offset 0), so the column
+    // boundary sits at (k+½)·pitch. Reference the piece centres, NOT the
+    // silhouette-union centre (which shifts for an asymmetric avatar) — this
+    // matches v97's `lx > colGap/2` split exactly for two columns.
     const [lx] = this.screenToLayout(px, 0);
-    this.activeBack = lx > this.colGap / 2;
+    const c = Math.round(lx / this.colPitch);
+    this.activePiece = Math.min(this.nCols - 1, Math.max(0, c));
   }
 
-  /** Screen midpoint of an outline edge on a face (with its column offset). */
-  private faceEdgeMidScreen(face: 'front' | 'back', edge: number): [number, number] | null {
-    const piece = face === 'back' ? this.draftBack : this.draftFront;
+  /** Screen midpoint of an outline edge on a piece (with its column offset). */
+  private edgeMidScreen(pid: number, edge: number): [number, number] | null {
+    const piece = this.pieceAt(pid);
     if (!piece) return null;
     const o = piece.outline;
-    const off = face === 'back' ? this.colGap : 0;
+    const off = this.pieceOffset(pid);
     const a = this.vertexScreen(o[edge % o.length]!, piece, off);
     const b = this.vertexScreen(o[(edge + 1) % o.length]!, piece, off);
     return a && b ? [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] : null;
@@ -343,8 +370,8 @@ export class PatternView {
   private pickSeam(px: number, py: number): number | null {
     for (let i = 0; i < this.assembly.length; i++) {
       const s = this.assembly[i]!;
-      const ma = this.faceEdgeMidScreen(s.a.face, s.a.from);
-      const mb = this.faceEdgeMidScreen(s.b.face, s.b.from);
+      const ma = this.edgeMidScreen(pieceIdOf(s.a), s.a.from);
+      const mb = this.edgeMidScreen(pieceIdOf(s.b), s.b.from);
       if (!ma || !mb) continue;
       const mx = (ma[0] + mb[0]) / 2;
       const my = (ma[1] + mb[1]) / 2;
@@ -353,10 +380,10 @@ export class PatternView {
     return null;
   }
 
-  /** Real length (cm) of an outline edge on a face — for the walk/true-up
+  /** Real length (cm) of an outline edge on a piece — for the walk/true-up
    * feedback (matching two edges' lengths, showing a seam's gather ratio). */
-  private edgeLenCm(face: 'front' | 'back', edge: number): number {
-    const piece = face === 'back' ? this.draftBack : this.draftFront;
+  private edgeLenCm(pid: number, edge: number): number {
+    const piece = this.pieceAt(pid);
     if (!piece) return 0;
     const o = piece.outline;
     const a = o[edge % o.length]!;
@@ -449,7 +476,7 @@ export class PatternView {
 
   private readonly onDown = (e: PointerEvent): void => {
     // Freeform draft: grab an outline vertex; empty inset space falls through.
-    if (this.draftFront || this.draftBack) {
+    if (this.inDraft) {
       if (this.draftDrag || e.button !== 0) return;
       const p = this.canvasPoint(e);
       if (!p) return;
@@ -474,25 +501,29 @@ export class PatternView {
         return;
       }
       // Shift+click two edges → sew them together (MANUAL assembly). The two
-      // edges can be on different faces (front shoulder ↔ back shoulder) — the
-      // column the pointer went down in (pickColumn, above) sets the face.
+      // edges can be on different columns (front shoulder ↔ back shoulder, or a
+      // free piece ↔ the body) — the column the pointer went down in (pickColumn,
+      // above) sets the piece.
       if (e.shiftKey) {
         const ne = this.nearestEdge(p[0], p[1]);
         if (ne && ne.dist <= EDGE_HIT) {
-          const face: 'front' | 'back' = this.activeBack ? 'back' : 'front';
-          const lenOf = (f: 'front' | 'back'): number => (f === 'back' ? this.draftBack : this.draftFront)?.outline.length ?? 1;
+          const pid = this.activePiece;
+          const lenOf = (q: number): number => this.pieceAt(q)?.outline.length ?? 1;
+          // Base pieces (0/1) carry the legacy `face` so pre-N-piece drafts/tests
+          // stay byte-identical; free pieces (≥2) carry `pieceId`.
+          const run = (q: number, edge: number): FaceRun =>
+            q <= 1
+              ? { face: q === 1 ? 'back' : 'front', from: edge, to: (edge + 1) % lenOf(q) }
+              : { pieceId: q, from: edge, to: (edge + 1) % lenOf(q) };
           if (this.seamPickA === null) {
-            this.seamPickA = { face, edge: ne.edge }; // first edge picked
+            this.seamPickA = { pieceId: pid, edge: ne.edge }; // first edge picked
             this.render();
-          } else if (this.seamPickA.face === face && this.seamPickA.edge === ne.edge) {
+          } else if (this.seamPickA.pieceId === pid && this.seamPickA.edge === ne.edge) {
             this.seamPickA = null; // clicked the same edge → cancel the pick
             this.render();
           } else {
             const a = this.seamPickA;
-            const seam: AssemblySeam = {
-              a: { face: a.face, from: a.edge, to: (a.edge + 1) % lenOf(a.face) },
-              b: { face, from: ne.edge, to: (ne.edge + 1) % lenOf(face) },
-            };
+            const seam: AssemblySeam = { a: run(a.pieceId, a.edge), b: run(pid, ne.edge) };
             this.seamPickA = null;
             this.render();
             this.onAssemblySeam(seam);
@@ -632,13 +663,14 @@ export class PatternView {
           next = { ...this.draftPiece, darts: [...this.draftPiece.darts, { apex: g.apex, legA, legB }] };
         } else {
           next = insertOutlineVertex(this.draftPiece, g.edge, g.downUV);
-          // A new vertex shifts edge indices → re-index the assembly seams.
-          this.assembly = reindexAssemblySeams(this.assembly, this.activeBack ? 'back' : 'front', 'insert', g.edge + 1, next.outline.length);
+          // A new vertex shifts edge indices → re-index the assembly seams (on
+          // this column's pieceId).
+          this.assembly = reindexAssemblySeams(this.assembly, this.activePiece, 'insert', g.edge + 1, next.outline.length);
           reidx = this.assembly;
         }
         this.applyActive(next);
         this.render();
-        this.onDraftChange(next, this.activeBack, reidx);
+        this.onDraftChange(next, this.activePiece, reidx);
         return;
       }
       if (!this.draftDrag || e.pointerId !== this.draftDrag.pointerId) return;
@@ -654,7 +686,7 @@ export class PatternView {
         const moved = Math.abs(preview[v]![0] - old[0]) > 1e-4 || Math.abs(preview[v]![1] - old[1]) > 1e-4;
         piece.outline = preview.map((q) => [q[0], q[1]] as UV);
         this.render();
-        if (moved) this.onDraftChange(piece, this.activeBack); // re-cut only on a real move
+        if (moved) this.onDraftChange(piece, this.activePiece); // re-cut only on a real move
       } else {
         this.render();
       }
@@ -701,7 +733,7 @@ export class PatternView {
     const ctx = this.ctx;
     // Draw when there's a mesh OR a freeform draft (drawing from scratch has no
     // mesh until the outline closes).
-    if (!ctx || (!this.mesh && !this.draftFront && !this.draftBack)) return;
+    if (!ctx || (!this.mesh && !this.inDraft)) return;
     if (this.staticDirty) {
       this.renderStatic();
       this.staticDirty = false;
@@ -709,7 +741,7 @@ export class PatternView {
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     ctx.drawImage(this.staticLayer, 0, 0);
     this.renderHandles();
-    if (this.draftFront || this.draftBack) this.renderDraft();
+    if (this.inDraft) this.renderDraft();
   }
 
   /** Draw a face's outline + vertices with no live/transient decoration — used
@@ -741,9 +773,12 @@ export class PatternView {
   private renderDraft(): void {
     const ctx = this.ctx;
     if (!ctx || !this.tf) return;
-    // The OTHER column first (dimmed, underneath the active one).
-    const other = this.activeBack ? this.draftFront : this.draftBack;
-    if (other) this.drawFaceStatic(ctx, other, this.activeBack ? 0 : this.colGap);
+    // Every INACTIVE column first (dimmed, underneath the active one).
+    for (let pid = 0; pid < this.nCols; pid++) {
+      if (pid === this.activePiece) continue;
+      const p = this.pieceAt(pid);
+      if (p) this.drawFaceStatic(ctx, p, this.pieceOffset(pid));
+    }
     if (!this.draftPiece) return;
 
     // Pen: draw the growing polyline + points; the first point glows once the
@@ -836,13 +871,11 @@ export class PatternView {
     // MANUAL ASSEMBLY overlay: free edges (still to sew) in red, the sewn seams
     // as blue links across the two columns, and the first-picked edge in orange.
     ctx.setLineDash([]);
-    const faceOf = (f: 'front' | 'back'): DraftPiece | null => (f === 'back' ? this.draftBack : this.draftFront);
-    const faceOffset = (f: 'front' | 'back'): number => (f === 'back' ? this.colGap : 0);
-    const edgePts = (f: 'front' | 'back', edge: number): [[number, number], [number, number]] | null => {
-      const piece = faceOf(f);
+    const edgePts = (pid: number, edge: number): [[number, number], [number, number]] | null => {
+      const piece = this.pieceAt(pid);
       if (!piece) return null;
       const o = piece.outline;
-      const off = faceOffset(f);
+      const off = this.pieceOffset(pid);
       const a = this.vertexScreen(o[edge % o.length]!, piece, off);
       const b = this.vertexScreen(o[(edge + 1) % o.length]!, piece, off);
       return a && b ? [a, b] : null;
@@ -857,27 +890,34 @@ export class PatternView {
       }
       return set;
     };
-    // Which edges are already sewn (touched by an assembly seam run), per face.
-    const sewnF = new Set<number>();
-    const sewnB = new Set<number>();
+    // Which edges are already sewn (touched by an assembly seam run), per piece.
+    const sewn = new Map<number, Set<number>>();
+    const sewnOf = (pid: number): Set<number> => {
+      let s = sewn.get(pid);
+      if (!s) sewn.set(pid, (s = new Set<number>()));
+      return s;
+    };
     for (const s of this.assembly) {
       for (const fr of [s.a, s.b]) {
-        const piece = faceOf(fr.face);
+        const pid = pieceIdOf(fr);
+        const piece = this.pieceAt(pid);
         if (!piece) continue;
-        const set = fr.face === 'back' ? sewnB : sewnF;
-        runSet(piece, [{ from: fr.from, to: fr.to }]).forEach((e) => set.add(e));
+        runSet(piece, [{ from: fr.from, to: fr.to }]).forEach((e) => sewnOf(pid).add(e));
       }
     }
-    // Free edges = neither sewn nor an intentional opening → the seams to still make.
-    const drawFree = (f: 'front' | 'back', sewn: Set<number>): void => {
-      const piece = faceOf(f);
+    // Free edges (still to sew) = neither sewn nor an intentional opening. Only the
+    // BASE shell (front=0 / back=1) reports them — a free piece auto-closes its own
+    // perimeter and just attaches at one seam, so its edges aren't "to sew".
+    const drawFree = (pid: number): void => {
+      const piece = this.pieceAt(pid);
       if (!piece) return;
+      const s = sewn.get(pid) ?? new Set<number>();
       const open = runSet(piece, piece.openEdges);
       ctx.strokeStyle = 'rgba(233, 96, 70, 0.9)';
       ctx.lineWidth = 2.5;
       for (let k = 0; k < piece.outline.length; k++) {
-        if (sewn.has(k) || open.has(k)) continue;
-        const pts = edgePts(f, k);
+        if (s.has(k) || open.has(k)) continue;
+        const pts = edgePts(pid, k);
         if (pts) {
           ctx.beginPath();
           ctx.moveTo(pts[0][0], pts[0][1]);
@@ -886,16 +926,16 @@ export class PatternView {
         }
       }
     };
-    drawFree('front', sewnF);
-    if (this.draftBack) drawFree('back', sewnB);
+    drawFree(0);
+    drawFree(1);
     // Seam-allowance cut line: a dashed line offset OUTWARD from each edge by the
     // margin (meters → pixels via the transform scale) — what you actually cut on.
-    const drawCutLine = (f: 'front' | 'back'): void => {
-      const piece = faceOf(f);
+    const drawCutLine = (pid: number): void => {
+      const piece = this.pieceAt(pid);
       if (!piece || !this.tf) return;
       const marginPx = this.seamAllowanceM * this.tf.scale;
       if (marginPx < 0.6) return; // 0 margin → no cut line
-      const off = faceOffset(f);
+      const off = this.pieceOffset(pid);
       const scr = piece.outline
         .map((uv) => this.vertexScreen(uv, piece, off))
         .filter((s): s is [number, number] => s !== null);
@@ -931,18 +971,19 @@ export class PatternView {
       }
       ctx.setLineDash([]);
     };
-    drawCutLine('front');
-    if (this.draftBack) drawCutLine('back');
+    for (let pid = 0; pid < this.nCols; pid++) drawCutLine(pid);
     // Sewn seams: a blue link between the two edges' midpoints (across columns),
     // labelled with the gather ratio (1:1 = flat, >1 = the longer edge fronces).
     for (const s of this.assembly) {
-      const pa = edgePts(s.a.face, s.a.from);
-      const pb = edgePts(s.b.face, s.b.from);
+      const pidA = pieceIdOf(s.a);
+      const pidB = pieceIdOf(s.b);
+      const pa = edgePts(pidA, s.a.from);
+      const pb = edgePts(pidB, s.b.from);
       if (!pa || !pb) continue;
       const ma: [number, number] = [(pa[0][0] + pa[1][0]) / 2, (pa[0][1] + pa[1][1]) / 2];
       const mb: [number, number] = [(pb[0][0] + pb[1][0]) / 2, (pb[0][1] + pb[1][1]) / 2];
-      const lo = Math.min(this.edgeLenCm(s.a.face, s.a.from), this.edgeLenCm(s.b.face, s.b.from)) || 1;
-      const hi = Math.max(this.edgeLenCm(s.a.face, s.a.from), this.edgeLenCm(s.b.face, s.b.from));
+      const lo = Math.min(this.edgeLenCm(pidA, s.a.from), this.edgeLenCm(pidB, s.b.from)) || 1;
+      const hi = Math.max(this.edgeLenCm(pidA, s.a.from), this.edgeLenCm(pidB, s.b.from));
       const ratio = hi / lo;
       const gathered = ratio >= 1.12;
       ctx.strokeStyle = gathered ? 'rgba(255, 190, 120, 0.95)' : 'rgba(127, 178, 255, 0.95)';
@@ -959,7 +1000,7 @@ export class PatternView {
     }
     // First-picked edge, awaiting the second click.
     if (this.seamPickA) {
-      const pts = edgePts(this.seamPickA.face, this.seamPickA.edge);
+      const pts = edgePts(this.seamPickA.pieceId, this.seamPickA.edge);
       if (pts) {
         ctx.lineWidth = 3.5;
         ctx.strokeStyle = 'rgba(255, 159, 107, 0.98)';
@@ -971,22 +1012,23 @@ export class PatternView {
     }
     // Status line (bottom-left): the picked edge's length while sewing, else how
     // many edges are still free to sew (0 = fully assembled).
-    const freeOf = (f: 'front' | 'back', sewn: Set<number>): number => {
-      const piece = faceOf(f);
+    const freeOf = (pid: number): number => {
+      const piece = this.pieceAt(pid);
       if (!piece) return 0;
+      const s = sewn.get(pid) ?? new Set<number>();
       const open = runSet(piece, piece.openEdges);
       let c = 0;
-      for (let k = 0; k < piece.outline.length; k++) if (!sewn.has(k) && !open.has(k)) c++;
+      for (let k = 0; k < piece.outline.length; k++) if (!s.has(k) && !open.has(k)) c++;
       return c;
     };
-    const freeCount = freeOf('front', sewnF) + (this.draftBack ? freeOf('back', sewnB) : 0);
+    const freeCount = freeOf(0) + freeOf(1); // base shell only (free pieces auto-close)
     ctx.font = '10px ui-monospace, monospace';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'bottom';
     if (this.seamPickA) {
       ctx.fillStyle = 'rgba(255, 159, 107, 0.98)';
       ctx.fillText(
-        `bord : ${Math.round(this.edgeLenCm(this.seamPickA.face, this.seamPickA.edge))} cm — cliquez le bord à assembler`,
+        `bord : ${Math.round(this.edgeLenCm(this.seamPickA.pieceId, this.seamPickA.edge))} cm — cliquez le bord à assembler`,
         8,
         this.canvas.height - 20,
       );
@@ -1023,7 +1065,7 @@ export class PatternView {
       ctx.fillStyle = 'rgba(237, 233, 223, 0.6)';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'bottom';
-      ctx.fillText(`${this.activeBack ? 'dos' : 'devant'} ≈ ${wCm} × ${hCm} cm`, 8, this.canvas.height - 6);
+      ctx.fillText(`${this.pieceLabel(this.activePiece)} ≈ ${wCm} × ${hCm} cm`, 8, this.canvas.height - 6);
     }
   }
 
@@ -1041,8 +1083,8 @@ export class PatternView {
     // outline changes and drawing works even before there's a mesh. A grid
     // backdrop makes it read like a 2D CAD surface. The draft overlay
     // (renderDraft) draws the outline, points, darts and seams on top.
-    if (this.draftFront || this.draftBack) {
-      const p = this.draftFront ?? this.draftBack!;
+    if (this.inDraft) {
+      const p = this.pieces.find((x): x is DraftPiece => !!x)!;
       // FRONT-column bounds: the piece's extent unioned with the silhouette.
       let fMinX = -p.width / 2;
       let fMaxX = p.width / 2;
@@ -1054,10 +1096,14 @@ export class PatternView {
         minY = Math.min(minY, this.bodySil.minY);
         maxY = Math.max(maxY, this.bodySil.maxY);
       }
-      // Two columns side by side (CLO-style): DEVANT at offset 0, DOS at colGap.
-      this.colGap = fMaxX - fMinX + 0.12;
+      // N columns side by side (CLO-style): DEVANT at 0, DOS at pitch, then one
+      // column per free piece. Column pitch = front span + a 12 cm gutter.
+      const pitch = fMaxX - fMinX + 0.12;
+      const nCols = this.nCols;
+      this.colPitch = pitch;
+      this.offsets = Array.from({ length: nCols }, (_, k) => k * pitch);
       const minX = fMinX;
-      const maxX = fMaxX + this.colGap;
+      const maxX = fMaxX + (nCols - 1) * pitch;
       const margin = 22;
       const spanA = maxX - minX || p.width;
       const spanB = maxY - minY || p.height;
@@ -1078,8 +1124,7 @@ export class PatternView {
         ctx.fillStyle = 'rgba(214, 205, 190, 0.16)';
         ctx.fill();
       };
-      drawSil(0);
-      drawSil(this.colGap);
+      for (let k = 0; k < nCols; k++) drawSil(k * pitch);
       // Grid every ~10 cm across the whole field.
       ctx.strokeStyle = 'rgba(237, 233, 223, 0.06)';
       ctx.lineWidth = 1;
@@ -1115,8 +1160,10 @@ export class PatternView {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'bottom';
       const labY = this.layoutToScreen(0, maxY)[1] - 3;
-      ctx.fillText('DEVANT', this.layoutToScreen(cx, maxY)[0], labY);
-      ctx.fillText('DOS', this.layoutToScreen(cx + this.colGap, maxY)[0], labY);
+      for (let k = 0; k < nCols; k++) {
+        const label = k === 0 ? 'DEVANT' : k === 1 ? 'DOS' : `PIÈCE ${k + 1}`;
+        ctx.fillText(label, this.layoutToScreen(cx + k * pitch, maxY)[0], labY);
+      }
       ctx.textAlign = 'left';
       ctx.textBaseline = 'alphabetic';
       return;

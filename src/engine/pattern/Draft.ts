@@ -36,11 +36,20 @@ export interface HandSeam {
   b: EdgeRun;
 }
 
-/** An outline edge on a named FACE (front or back column). */
+/** An outline edge on a named piece. A run identifies its piece either by the
+ * legacy `face` ('front'=piece 0, 'back'=piece 1) OR by an explicit `pieceId`
+ * (0=front, 1=back, ≥2=free pieces). `pieceIdOf` normalises the two; `face` is
+ * kept so pre-N-piece drafts/tests keep round-tripping byte-identically. */
 export interface FaceRun {
-  face: 'front' | 'back';
+  face?: 'front' | 'back';
+  pieceId?: number;
   from: number;
   to: number;
+}
+
+/** Normalised piece index of a run (pieceId wins; else face → 0/1). */
+export function pieceIdOf(r: FaceRun): number {
+  return r.pieceId ?? (r.face === 'back' ? 1 : 0);
 }
 
 /** A user-defined ASSEMBLY seam: sew a run of one face to a run of another
@@ -74,6 +83,17 @@ export interface DraftDoc {
   // perimeter sew (back-compat with pre-manual saved drafts).
   manual?: boolean;
   seams?: AssemblySeam[]; // user-defined assembly seams (edge A ↔ edge B, cross-face)
+  // FREE pieces (multi-piece editor): extra hand-drawn pieces beyond front/back.
+  // Index 0 here is pieceId 2, index 1 is pieceId 3, … Each becomes its own mesh
+  // combined onto the base via combineClothMeshes (see compileCrossSeams). Absent
+  // ⇒ the garment is exactly the front/back base (byte-identical to pre-N-piece).
+  pieces?: DraftPiece[];
+}
+
+/** All pieces of a doc indexed by pieceId: [front, back, ...free]. Slots may be
+ * null (no back drawn yet). Free pieces start at index 2. */
+export function docPieces(doc: DraftDoc): (DraftPiece | null)[] {
+  return [doc.piece, doc.back ?? null, ...(doc.pieces ?? [])];
 }
 
 /** Ray-cast point-in-polygon (odd crossings = inside). Winding-agnostic. */
@@ -388,41 +408,111 @@ function boundaryRunCells(
   return res.sort((x, y) => x.t - y.t);
 }
 
+/** Pair two boundary runs cell-by-cell by arc-length, choosing the zip direction
+ * (forward vs reversed B) that minimises total offset — anti-twist. Returns the
+ * two aligned LOCAL cell lists (equal length), or null if either run is empty.
+ * Shared by compileAssembly (base panels) and compileCrossSeams (extra meshes). */
+function pairRunCells(
+  pa: DraftPiece,
+  pb: DraftPiece,
+  runA: { from: number; to: number },
+  runB: { from: number; to: number },
+  n: number,
+): { a: number[]; b: number[] } | null {
+  const A = boundaryRunCells(pa.outline, pa.darts, runA, n);
+  const B = boundaryRunCells(pb.outline, pb.darts, runB, n);
+  if (!A.length || !B.length) return null;
+  const cellUV = (cell: number): UV => [(cell % n) / (n - 1), Math.floor(cell / n) / (n - 1)];
+  const m = Math.min(A.length, B.length);
+  const bAt = (k: number, reversed: boolean): { cell: number } => B[Math.floor(((reversed ? m - 1 - k : k) * B.length) / m)]!;
+  const cost = (reversed: boolean): number => {
+    let sum = 0;
+    for (let k = 0; k < m; k++) {
+      const paUV = cellUV(A[Math.floor((k * A.length) / m)]!.cell);
+      const pbUV = cellUV(bAt(k, reversed).cell);
+      sum += (paUV[0] - pbUV[0]) ** 2 + (paUV[1] - pbUV[1]) ** 2;
+    }
+    return sum;
+  };
+  const reversed = cost(true) < cost(false);
+  const a: number[] = [];
+  const b: number[] = [];
+  for (let k = 0; k < m; k++) {
+    a.push(A[Math.floor((k * A.length) / m)]!.cell);
+    b.push(bAt(k, reversed).cell);
+  }
+  return { a, b };
+}
+
 /**
- * Resolve a draft's user-defined ASSEMBLY seams into GLOBAL cell-index pairs to
- * sew (panel 0 = front, panel 1 = back). Each seam pairs its two edge-runs by
- * arc-length, choosing the direction that zips (anti-twist), like a hand-seam —
- * but the runs can live on DIFFERENT faces (front shoulder ↔ back shoulder).
+ * Resolve a draft's BASE assembly seams (front↔back, pieceId 0/1) into GLOBAL
+ * cell-index pairs to sew (panel 0 = front, panel 1 = back). Cross-mesh seams
+ * that touch a FREE piece (pieceId ≥ 2) are skipped here — they're compiled by
+ * compileCrossSeams into the combined-mesh index space instead.
  */
 export function compileAssembly(doc: DraftDoc, n: number): { i: number; j: number }[] {
   const panelSize = n * n;
-  const faces: Record<'front' | 'back', DraftPiece | undefined> = { front: doc.piece, back: doc.back };
-  const cellUV = (cell: number): UV => [(cell % n) / (n - 1), Math.floor(cell / n) / (n - 1)];
+  const pieces = docPieces(doc);
   const out: { i: number; j: number }[] = [];
   for (const s of doc.seams ?? []) {
-    const pa = faces[s.a.face];
-    const pb = faces[s.b.face];
+    const pidA = pieceIdOf(s.a);
+    const pidB = pieceIdOf(s.b);
+    if (pidA > 1 || pidB > 1) continue; // a free piece is involved → compileCrossSeams
+    const pa = pieces[pidA];
+    const pb = pieces[pidB];
     if (!pa || !pb || pa.outline.length < 3 || pb.outline.length < 3) continue;
-    const A = boundaryRunCells(pa.outline, pa.darts, { from: s.a.from, to: s.a.to }, n);
-    const B = boundaryRunCells(pb.outline, pb.darts, { from: s.b.from, to: s.b.to }, n);
-    if (!A.length || !B.length) continue;
-    const m = Math.min(A.length, B.length);
-    const bAt = (k: number, reversed: boolean): { cell: number } => B[Math.floor(((reversed ? m - 1 - k : k) * B.length) / m)]!;
-    const cost = (reversed: boolean): number => {
-      let sum = 0;
-      for (let k = 0; k < m; k++) {
-        const paUV = cellUV(A[Math.floor((k * A.length) / m)]!.cell);
-        const pbUV = cellUV(bAt(k, reversed).cell);
-        sum += (paUV[0] - pbUV[0]) ** 2 + (paUV[1] - pbUV[1]) ** 2;
-      }
-      return sum;
-    };
-    const reversed = cost(true) < cost(false);
-    const offA = (s.a.face === 'front' ? 0 : 1) * panelSize;
-    const offB = (s.b.face === 'front' ? 0 : 1) * panelSize;
-    for (let k = 0; k < m; k++) {
-      const gi = offA + A[Math.floor((k * A.length) / m)]!.cell;
-      const gj = offB + bAt(k, reversed).cell;
+    const paired = pairRunCells(pa, pb, { from: s.a.from, to: s.a.to }, { from: s.b.from, to: s.b.to }, n);
+    if (!paired) continue;
+    const offA = pidA * panelSize;
+    const offB = pidB * panelSize;
+    for (let k = 0; k < paired.a.length; k++) {
+      const gi = offA + paired.a[k]!;
+      const gj = offB + paired.b[k]!;
+      if (gi !== gj) out.push({ i: gi, j: gj });
+    }
+  }
+  return out;
+}
+
+/**
+ * Resolve the CROSS-MESH assembly seams — those touching a FREE piece (pieceId
+ * ≥ 2) — for the piece being combined into the garment (`enteringPid`, the
+ * higher-indexed endpoint). Returns {i,j} in the COMBINED-mesh index space:
+ * `i` is the endpoint already in the garment, `j` the entering piece (offset by
+ * garment.count, as combineClothMeshes requires). `offsets[pid]` is the global
+ * base index of piece `pid` (0 and 1 = the base panels at 0 and n²; ≥2 = the
+ * garment.count captured just before that piece was combined).
+ */
+export function compileCrossSeams(
+  doc: DraftDoc,
+  n: number,
+  offsets: number[],
+  enteringPid: number,
+): { i: number; j: number }[] {
+  const panelSize = n * n;
+  const pieces = docPieces(doc);
+  const globalOf = (pid: number, local: number): number => (offsets[pid] ?? pid * panelSize) + local;
+  const out: { i: number; j: number }[] = [];
+  for (const s of doc.seams ?? []) {
+    const pidA = pieceIdOf(s.a);
+    const pidB = pieceIdOf(s.b);
+    const hi = Math.max(pidA, pidB);
+    if (hi < 2 || hi !== enteringPid) continue; // only cross-mesh seams entering with THIS piece
+    // The entering piece endpoint (pid === hi) is the j side (in b's space); the
+    // other endpoint is the i side (already in the garment).
+    const aEnters = pidA === hi;
+    const pidJ = hi;
+    const pidI = aEnters ? pidB : pidA;
+    const runJ = aEnters ? s.a : s.b;
+    const runI = aEnters ? s.b : s.a;
+    const pJ = pieces[pidJ];
+    const pI = pieces[pidI];
+    if (!pJ || !pI || pJ.outline.length < 3 || pI.outline.length < 3) continue;
+    const paired = pairRunCells(pI, pJ, { from: runI.from, to: runI.to }, { from: runJ.from, to: runJ.to }, n);
+    if (!paired) continue;
+    for (let k = 0; k < paired.a.length; k++) {
+      const gi = globalOf(pidI, paired.a[k]!);
+      const gj = globalOf(pidJ, paired.b[k]!);
       if (gi !== gj) out.push({ i: gi, j: gj });
     }
   }
@@ -436,15 +526,16 @@ export function compileAssembly(doc: DraftDoc, n: number): { i: number; j: numbe
  */
 export function reindexAssemblySeams(
   seams: readonly AssemblySeam[],
-  face: 'front' | 'back',
+  target: 'front' | 'back' | number,
   kind: 'insert' | 'delete',
   at: number,
   nV: number,
 ): AssemblySeam[] {
+  const targetPid = typeof target === 'number' ? target : target === 'back' ? 1 : 0;
   const shift = (r: FaceRun): FaceRun => {
-    if (r.face !== face) return { ...r };
+    if (pieceIdOf(r) !== targetPid) return { ...r };
     const s = kind === 'insert' ? shiftRunInsert(r, at) : shiftRunDelete(r, at, nV);
-    return { face: r.face, from: s.from, to: s.to };
+    return { ...r, from: s.from, to: s.to }; // preserve face/pieceId identity
   };
   return seams.map((s) => ({ a: shift(s.a), b: shift(s.b) }));
 }
@@ -499,8 +590,10 @@ export function sanitizeDraft(raw: unknown): DraftDoc {
   const num = (v: unknown, min: number, max: number, fb: number): number =>
     typeof v === 'number' && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fb;
   // Parse one face; null (→ dropped) if its outline is missing/degenerate/self-
-  // intersecting, so a bad file can't produce a GPU blowup.
-  const parsePiece = (pp: Partial<DraftPiece> | undefined): DraftPiece | null => {
+  // intersecting, so a bad file can't produce a GPU blowup. `minGap` lets a thin
+  // FREE piece (spawned with gap 0.12) survive the round-trip — the base clamp
+  // floor (0.3) is tuned for the body and would inflate a small piece's panels.
+  const parsePiece = (pp: Partial<DraftPiece> | undefined, minGap = 0.3): DraftPiece | null => {
     if (!pp || !Array.isArray(pp.outline) || pp.outline.length < 3) return null;
     const outline = pp.outline.slice(0, 128).map(uv);
     if (isSelfIntersecting(outline)) return null;
@@ -525,35 +618,64 @@ export function sanitizeDraft(raw: unknown): DraftDoc {
       width: num(pp.width, 0.3, 2.0, DEFAULT_PIECE_DIMS.width),
       height: num(pp.height, 0.3, 2.0, DEFAULT_PIECE_DIMS.height),
       topY: num(pp.topY, 0.5, 2.2, DEFAULT_PIECE_DIMS.topY),
-      gap: num(pp.gap, 0.3, 1.6, DEFAULT_PIECE_DIMS.gap),
+      gap: num(pp.gap, minGap, 1.6, DEFAULT_PIECE_DIMS.gap),
     };
   };
   const front = parsePiece(d.piece);
   if (!front) return fallback;
   const back = parsePiece(d.back);
-  // Assembly seams (manual mode): validate the face + edge indices. Runs are
+  // FREE pieces (pieceId ≥ 2, multi-piece editor): parse each slot; drop any that
+  // is degenerate/self-intersecting (parsePiece → null). Dropping a middle piece
+  // COMPACTS the survivors, shifting their pieceIds, so build an old→new remap
+  // and re-point (or drop) each seam through it — otherwise a hand-edited/corrupt
+  // file could bind a seam to the WRONG surviving piece. Capped so a bad file
+  // can't spawn an unbounded number of meshes. Thin free pieces keep a lower gap
+  // floor (0.1) so they round-trip byte-identically.
+  const freePieces: DraftPiece[] = [];
+  const remap = new Map<number, number>(); // old pieceId (2+k) → new pieceId
+  (Array.isArray(d.pieces) ? d.pieces : []).slice(0, 6).forEach((x, k) => {
+    const p = parsePiece(x as Partial<DraftPiece>, 0.1);
+    if (p) {
+      remap.set(2 + k, 2 + freePieces.length);
+      freePieces.push(p);
+    }
+  });
+  const hasBack = !!back;
+  // Assembly seams (manual mode): validate face/pieceId + edge indices. Runs are
   // taken modulo the outline length at compile time, so a loose cap is enough.
   const faceRun = (r: unknown): FaceRun => {
     const e = r as FaceRun;
     const idx = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? Math.min(256, Math.max(0, Math.round(v))) : 0);
-    return { face: e?.face === 'back' ? 'back' : 'front', from: idx(e?.from), to: idx(e?.to) };
+    const run: FaceRun = { from: idx(e?.from), to: idx(e?.to) };
+    if (typeof e?.pieceId === 'number' && Number.isFinite(e.pieceId)) {
+      const old = Math.max(0, Math.round(e.pieceId));
+      // Re-point free-piece references through the compaction remap; an unmapped
+      // one (its piece was dropped) becomes -1 → filtered out by pieceExists.
+      run.pieceId = old < 2 ? old : remap.get(old) ?? -1;
+    } else run.face = e?.face === 'back' ? 'back' : 'front';
+    return run;
   };
-  // Drop "ghost" seams that reference the back face when there is no back piece
-  // (a hand-edited/older file) — they'd persist and re-export but never sew.
-  const hasBack = !!back;
+  // Drop "ghost" seams whose endpoint references a piece that doesn't exist: the
+  // back when no back was drawn, or a free piece that was dropped/out of range.
+  const pieceExists = (r: FaceRun): boolean => {
+    const pid = pieceIdOf(r);
+    if (pid < 0) return false; // a dropped free piece (remap miss)
+    return pid === 0 || (pid === 1 ? hasBack : pid < 2 + freePieces.length);
+  };
   const seams = (Array.isArray(d.seams) ? d.seams : [])
     .slice(0, 128)
     .map((x) => {
       const s = x as AssemblySeam;
       return { a: faceRun(s?.a), b: faceRun(s?.b) };
     })
-    .filter((s) => hasBack || (s.a.face !== 'back' && s.b.face !== 'back'));
+    .filter((s) => pieceExists(s.a) && pieceExists(s.b));
   return {
     format: 'toile-draft',
     version: 1,
     gridN,
     piece: front,
     ...(back ? { back } : {}),
+    ...(freePieces.length ? { pieces: freePieces } : {}),
     manual: d.manual === true,
     seams,
   };
