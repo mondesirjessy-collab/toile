@@ -540,6 +540,27 @@ export function reindexAssemblySeams(
   return seams.map((s) => ({ a: shift(s.a), b: shift(s.b) }));
 }
 
+/**
+ * Remove a FREE piece (pieceId ≥ 2) from a draft's `pieces` list and fix up its
+ * assembly seams: DROP any seam touching the removed piece, and DECREMENT the
+ * pieceId of every run pointing at a piece ABOVE it (the survivors compact down
+ * by one, exactly like sanitizeDraft's remap). Base runs (face front/back,
+ * pieceId ≤ 1) are untouched. Pure — the caller commits the result and rebuilds.
+ */
+export function removeFreePiece(
+  pieces: readonly DraftPiece[],
+  seams: readonly AssemblySeam[],
+  pieceId: number,
+): { pieces: DraftPiece[]; seams: AssemblySeam[] } {
+  const k = pieceId - 2;
+  const outPieces = pieces.filter((_, i) => i !== k);
+  const shift = (r: FaceRun): FaceRun => (pieceIdOf(r) > pieceId ? { ...r, pieceId: pieceIdOf(r) - 1 } : { ...r });
+  const outSeams = seams
+    .filter((s) => pieceIdOf(s.a) !== pieceId && pieceIdOf(s.b) !== pieceId)
+    .map((s) => ({ a: shift(s.a), b: shift(s.b) }));
+  return { pieces: outPieces, seams: outSeams };
+}
+
 
 /** Physical placement of the blank canvas (meters). Single source of truth so
  * defaultDraft and the sanitizeDraft fallbacks can't drift apart. */

@@ -10,6 +10,7 @@ import {
   compileDraft,
   compileAssembly,
   compileCrossSeams,
+  removeFreePiece,
   reindexAssemblySeams,
   pieceIdOf,
   docPieces,
@@ -384,5 +385,29 @@ describe('multi-piece free editor (pieceId / cross-seams)', () => {
   it('sanitizeDraft omits `pieces` when there are none (back-compat invariant)', () => {
     const s = sanitizeDraft(defaultDraft(32));
     expect('pieces' in s).toBe(false);
+  });
+
+  it('removeFreePiece drops the piece, drops its seams, and shifts pieces above it', () => {
+    const pieces = [square(), square()]; // pieceId 2 and 3
+    const seams = [
+      { a: { pieceId: 2, from: 0, to: 1 }, b: { face: 'front' as const, from: 0, to: 1 } }, // touches removed → dropped
+      { a: { pieceId: 3, from: 0, to: 1 }, b: { face: 'front' as const, from: 0, to: 1 } }, // survives → shifts 3→2
+      { a: { face: 'front' as const, from: 0, to: 1 }, b: { face: 'back' as const, from: 0, to: 1 } }, // base → untouched
+    ];
+    const out = removeFreePiece(pieces, seams, 2);
+    expect(out.pieces.length).toBe(1);
+    expect(out.seams.length).toBe(2); // the seam touching piece 2 is dropped
+    expect(pieceIdOf(out.seams[0]!.a)).toBe(2); // former piece 3 re-pointed to 2
+    expect(out.seams[1]!.a).toEqual({ face: 'front', from: 0, to: 1 }); // base run untouched
+    expect(out.seams[1]!.b).toEqual({ face: 'back', from: 0, to: 1 });
+  });
+
+  it('removeFreePiece leaves pieces below the removed one unchanged', () => {
+    const pieces = [square(), square()]; // 2, 3
+    const seams = [{ a: { pieceId: 2, from: 0, to: 1 }, b: { face: 'front' as const, from: 0, to: 1 } }];
+    const out = removeFreePiece(pieces, seams, 3); // remove the higher piece
+    expect(out.pieces.length).toBe(1);
+    expect(out.seams.length).toBe(1); // seam to piece 2 doesn't touch 3 → survives
+    expect(pieceIdOf(out.seams[0]!.a)).toBe(2); // 2 < 3 → unchanged
   });
 });

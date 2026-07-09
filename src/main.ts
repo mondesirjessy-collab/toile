@@ -1,7 +1,7 @@
 import { initGpu, WebGPUNotSupportedError } from './engine/gpu/Device';
 import { ParticleSystem } from './engine/solver/ParticleSystem';
 import { generateClothGrid, generateSeamedPanels, combineClothMeshes, type CrossSeam, type ClothMeshData } from './engine/cloth/ClothMesh';
-import { defaultDraft, compileDraft, compileAssembly, compileCrossSeams, sanitizeDraft, type DraftDoc, type AssemblySeam } from './engine/pattern/Draft';
+import { defaultDraft, compileDraft, compileAssembly, compileCrossSeams, removeFreePiece, sanitizeDraft, type DraftDoc, type AssemblySeam } from './engine/pattern/Draft';
 import type { SceneMode } from './app/ControlPanel';
 import { ClothRenderer, DEFAULT_FABRIC } from './app/ClothRenderer';
 import { OrbitCamera } from './app/OrbitCamera';
@@ -357,6 +357,18 @@ async function main(): Promise<void> {
       document.getElementById('at-sim')?.classList.remove('running');
       build();
     },
+    // Remove a FREE piece (pieceId ≥ 2): drop it from the list and fix up the
+    // assembly seams (drop the ones touching it, decrement the pieces above it).
+    (pieceId: number) => {
+      if (!draft?.pieces) return;
+      const { pieces, seams } = removeFreePiece(draft.pieces, draft.seams ?? [], pieceId);
+      draft.pieces = pieces.length ? pieces : undefined;
+      draft.seams = seams;
+      draftTouched = true;
+      atelierDesign = true;
+      document.getElementById('at-sim')?.classList.remove('running');
+      build();
+    },
   );
 
   // --- Atelier CAD toolbar (freeform 2D drawing) ---
@@ -428,6 +440,12 @@ async function main(): Promise<void> {
     const dims = (draft ?? defaultDraft(resolution as 32 | 64 | 128)).piece;
     const pid = 2 + (draft?.pieces?.length ?? 0);
     patternView.startPen(dims.width, dims.height, dims.topY, 0.12, pid);
+  });
+  // Remove the ACTIVE free piece (click its column first). No-op on front/back.
+  (document.getElementById('at-del') as HTMLElement).addEventListener('click', () => {
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    patternView.deleteActiveFreePiece();
   });
   (document.getElementById('at-pen') as HTMLElement).addEventListener('click', () => patternView.finishPen());
   (document.getElementById('at-sim') as HTMLElement).addEventListener('click', () => simulate());

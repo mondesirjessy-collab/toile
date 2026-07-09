@@ -88,6 +88,8 @@ export class PatternView {
   // Manual-assembly callbacks: add a seam (edge A ↔ edge B), or delete seam #i.
   private readonly onAssemblySeam: (seam: AssemblySeam) => void;
   private readonly onAssemblyDelete: (index: number) => void;
+  // Remove a FREE piece (its column + its seams) by pieceId (≥ 2).
+  private readonly onDeletePiece: (pieceId: number) => void;
   // Multi-piece columns (CLO-style): pieces[0]=FRONT, [1]=BACK (may be null,
   // drawn from scratch), [≥2]=FREE pieces (collar, yoke…). Gestures edit
   // whichever column the pointer went down in (`activePiece`); `draftPiece` is
@@ -148,6 +150,7 @@ export class PatternView {
     onDraftChange: (piece: DraftPiece, pieceId: number, seams?: AssemblySeam[]) => void = () => {},
     onAssemblySeam: (seam: AssemblySeam) => void = () => {},
     onAssemblyDelete: (index: number) => void = () => {},
+    onDeletePiece: (pieceId: number) => void = () => {},
   ) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
@@ -155,6 +158,7 @@ export class PatternView {
     this.onDraftChange = onDraftChange;
     this.onAssemblySeam = onAssemblySeam;
     this.onAssemblyDelete = onAssemblyDelete;
+    this.onDeletePiece = onDeletePiece;
     this.staticLayer = document.createElement('canvas');
     this.staticLayer.width = canvas.width;
     this.staticLayer.height = canvas.height;
@@ -316,6 +320,24 @@ export class PatternView {
     this.applyActive(next);
     this.render();
     this.onDraftChange(next, this.activePiece);
+  }
+
+  /** True when a FREE piece (a drawn column, pieceId ≥ 2) is the active one —
+   * i.e. deleting is meaningful. The base front/back can't be removed. */
+  get canDeleteActive(): boolean {
+    return this.activePiece >= 2 && !!this.pieceAt(this.activePiece);
+  }
+
+  /** Remove the active FREE piece (its column + the seams touching it). No-op on
+   * the base front/back. The rebuild re-lays the remaining columns. */
+  deleteActiveFreePiece(): void {
+    if (!this.canDeleteActive) return;
+    const pid = this.activePiece;
+    this.activePiece = 0; // fall back to the front before the columns re-index
+    this.penMode = false;
+    this.penPoints = [];
+    this.resetDraftTransient();
+    this.onDeletePiece(pid);
   }
 
   /** Screen position of an outline vertex: UV → world layout (+ the face's column
