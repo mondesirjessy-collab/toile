@@ -13,7 +13,7 @@ const escapeXml = (s: string): string =>
   s.replace(/[<>&'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' })[c]!);
 
 export function exportPatternSvg(mesh: ClothMeshData, garmentName: string, hasIndependentBack = false, margin = 0.01): void {
-  const { segs, seam, notches, w, h, pieces } = frontOutline(mesh, margin);
+  const { segs, seam, notches, labels, w, h, pieces } = frontOutline(mesh, margin);
   if (!segs.length || !Number.isFinite(w + h)) return; // no front piece → export nothing (parity with the PDF)
   const cm = margin * 100;
   const marginCm = (Number.isInteger(cm) ? String(cm) : cm.toFixed(1)).replace('.', ',');
@@ -54,6 +54,8 @@ export function exportPatternSvg(mesh: ClothMeshData, garmentName: string, hasIn
     segs.map((s) => line(s, 'cut')).join('') +
     notches.map((s) => line(s, 'cut')).join('') +
     grain +
+    // Piece numbers (only on a multi-piece sheet): each at its piece's centroid.
+    (pieces > 1 ? labels.map((l) => `<text x="${l.x.toFixed(1)}" y="${l.y.toFixed(1)}" class="pieceno">${l.n}</text>`).join('') : '') +
     `<rect x="0" y="${cy.toFixed(1)}" width="${sq}" height="${sq}" class="ctrl"/>` +
     `<text x="3" y="${(cy + sq / 2).toFixed(1)}" class="lbl">carré 100 mm — vérifier l'échelle</text>` +
     `<text x="0" y="${(cy + sq + 8).toFixed(1)}" class="lbl">trait plein = coupe · pointillé = couture (marge ${marginCm} cm) · petits traits = repères de montage (aligner devant/dos)</text>`;
@@ -66,6 +68,7 @@ export function exportPatternSvg(mesh: ClothMeshData, garmentName: string, hasIn
     `.grain{stroke:#111;stroke-width:0.6;fill:none}` +
     `.ctrl{stroke:#111;stroke-width:0.5;fill:none}` +
     `text{font-family:sans-serif;fill:#111}.lbl{font-size:5px}.head{font-size:6px}` +
+    `.pieceno{font-size:11px;font-weight:bold;text-anchor:middle}` +
     `</style>` +
     `<text x="0" y="${(-M / 2).toFixed(1)}" class="head">${label}</text>` +
     `<g transform="translate(0 ${PAD})">${body}</g>` +

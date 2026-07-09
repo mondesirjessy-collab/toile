@@ -70,4 +70,23 @@ describe('frontOutline (cutting layout)', () => {
     expect(minRight).toBeGreaterThanOrEqual(teeW + gutter - 1);
     expect(w).toBeCloseTo(teeW + gutter + 950, 0); // tee + gutter + dress width
   });
+
+  it('numbers each piece at its centroid on a multi-piece sheet', () => {
+    const outfit = combineClothMeshes(tee, dress, [], 1);
+    const { labels, pieces } = frontOutline(outfit);
+    expect(labels.length).toBe(pieces); // one number per piece
+    expect(labels.map((l) => l.n)).toEqual([1, 2]); // numbered left→right in sheet order
+    // Each number sits inside its piece's x-band (piece 1 left of the gutter, piece 2 right).
+    const teeW = 1150;
+    expect(labels[0]!.x).toBeGreaterThan(0);
+    expect(labels[0]!.x).toBeLessThan(teeW);
+    expect(labels[1]!.x).toBeGreaterThan(teeW);
+  });
+
+  it('a single piece gets a label too (export gates it, geometry always provides it)', () => {
+    const { labels, pieces } = frontOutline(dress);
+    expect(pieces).toBe(1);
+    expect(labels.length).toBe(1);
+    expect(labels[0]!.n).toBe(1);
+  });
 });

@@ -34,7 +34,7 @@ const SEAM = 0.01;
 export function frontOutline(
   mesh: ClothMeshData,
   margin: number = SEAM,
-): { segs: Segment[]; seam: Segment[]; notches: Segment[]; w: number; h: number; pieces: number } {
+): { segs: Segment[]; seam: Segment[]; notches: Segment[]; labels: { x: number; y: number; n: number }[]; w: number; h: number; pieces: number } {
   const panelSize = mesh.resolution * mesh.resolution;
 
   // Boundary = triangle edges owned by a single front triangle, per garment.
@@ -68,6 +68,7 @@ export function frontOutline(
   const segs: Segment[] = [];
   const seam: Segment[] = [];
   const notches: Segment[] = []; // short assembly ticks, kept apart from the boundary cut lines
+  const labels: { x: number; y: number; n: number }[] = []; // piece number at each piece's centroid (mm)
   let cursorX = 0;
   let h = 0;
   let pieces = 0;
@@ -130,11 +131,14 @@ export function frontOutline(
       notches.push({ x1: lo, y1: yy, x2: lo + TICK, y2: yy });
       notches.push({ x1: hi, y1: yy, x2: hi - TICK, y2: yy });
     }
+    // Piece number, at the piece's centroid (so a multi-piece sheet — body,
+    // collar, sleeves, your drawn pieces — tells you which shape is which).
+    labels.push({ x: ((maxX - minX) / 2 + cursorX) * 1000, y: ((maxY - minY) / 2) * 1000, n: pieces + 1 });
     cursorX += maxX - minX + GUTTER;
     h = Math.max(h, maxY - minY);
     pieces++;
   }
-  return { segs, seam, notches, w: Math.max(0, cursorX - GUTTER) * 1000, h: h * 1000, pieces };
+  return { segs, seam, notches, labels, w: Math.max(0, cursorX - GUTTER) * 1000, h: h * 1000, pieces };
 }
 
 /**
@@ -170,7 +174,7 @@ function clipToRect(
 }
 
 export function exportPatternPdf(mesh: ClothMeshData, garmentName: string, hasIndependentBack = false, margin: number = SEAM): void {
-  const { segs, seam, notches, w, h, pieces } = frontOutline(mesh, margin);
+  const { segs, seam, notches, labels, w, h, pieces } = frontOutline(mesh, margin);
   if (!segs.length || !Number.isFinite(w + h)) return;
   const cm = margin * 100;
   const marginCm = (Number.isInteger(cm) ? String(cm) : cm.toFixed(1)).replace('.', ',');
@@ -282,6 +286,20 @@ export function exportPatternPdf(mesh: ClothMeshData, garmentName: string, hasIn
       // Balance notches (assembly marks), same clip so they never spill a tile.
       pdf.setLineWidth(0.7);
       draw(notches);
+
+      // Piece numbers (only on a multi-piece sheet): drawn on the page whose
+      // printable frame contains the piece's centroid, so each number shows once.
+      if (pieces > 1) {
+        pdf.setFontSize(18);
+        pdf.setTextColor(0);
+        for (const l of labels) {
+          const lx = l.x - ox + MARGIN;
+          const ly = l.y - oy + MARGIN;
+          if (lx >= MARGIN && lx <= PAGE_W - MARGIN && ly >= MARGIN && ly <= PAGE_H - MARGIN) {
+            pdf.text(String(l.n), lx, ly, { align: 'center' });
+          }
+        }
+      }
     }
   }
   pdf.save(`patron-${garmentName.replace(/[^a-z0-9]/gi, '-')}.pdf`);
