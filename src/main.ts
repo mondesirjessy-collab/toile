@@ -1,7 +1,7 @@
 import { initGpu, WebGPUNotSupportedError } from './engine/gpu/Device';
 import { ParticleSystem } from './engine/solver/ParticleSystem';
 import { generateClothGrid, generateSeamedPanels, combineClothMeshes, type CrossSeam, type ClothMeshData } from './engine/cloth/ClothMesh';
-import { defaultDraft, tshirtDraft, compileDraft, compileAssembly, compileCrossSeams, removeFreePiece, sanitizeDraft, type DraftDoc, type AssemblySeam } from './engine/pattern/Draft';
+import { defaultDraft, compileDraft, compileAssembly, compileCrossSeams, removeFreePiece, sanitizeDraft, type DraftDoc, type AssemblySeam } from './engine/pattern/Draft';
 import type { SceneMode } from './app/ControlPanel';
 import { ClothRenderer, DEFAULT_FABRIC } from './app/ClothRenderer';
 import { OrbitCamera } from './app/OrbitCamera';
@@ -386,6 +386,7 @@ async function main(): Promise<void> {
   let atelierSleeves = false; // multi-piece stage 1: add system sleeves to the atelier garment
   let atelierSleeveLen = 0.5; // sleeve length (shoulder→cuff, m): 0.5 long, ~0.22 short (t-shirt)
   let atelierCollar = false; // multi-piece: add a system collar band at the neckline
+  let teePreset = false; // T-shirt preset: build a real set-in-sleeve tee instead of the draft
   const simBtn = (): HTMLElement => document.getElementById('at-sim') as HTMLElement;
   const setBig = (on: boolean): void => {
     bigPanel = on;
@@ -421,6 +422,7 @@ async function main(): Promise<void> {
   (document.getElementById('at-new') as HTMLElement).addEventListener('click', () => {
     if (!bigPanel) setBig(true);
     atelierDesign = true;
+    teePreset = false; // back to freeform editing
     simBtn().classList.remove('running');
     const dims = (draft ?? defaultDraft(resolution as 32 | 64 | 128)).piece;
     patternView.startPen(dims.width, dims.height, dims.topY, dims.gap);
@@ -432,21 +434,22 @@ async function main(): Promise<void> {
     if (!bigPanel) setBig(true);
     atelierDesign = true;
     simBtn().classList.remove('running');
-    const gridN = resolution as 32 | 64 | 128;
-    // Torso body sized to the avatar (narrower than the sleeve-span tee, since
-    // the sleeves are separate); hip length (0.62). Auto-enable SHORT PLACED
-    // sleeves so the arms are truly INSIDE the sleeves (a flat kimono just hangs).
-    draft = tshirtDraft(0.7 * lastGrade.topScale, 0.62, 0.9, 1.52 + lastGrade.dyShoulder, gridN);
-    atelierSleeves = true;
-    atelierSleeveLen = 0.42; // sleeve reaching past the elbow (more arm contact ⇒ cleaner drape)
-    document.getElementById('at-sleeves')?.classList.add('active');
-    draftTouched = true;
+    // Load the REAL set-in-sleeve tee (built in the atelier mesh block, `setin`).
+    // Clear the freeform draft + the additive sleeves/collar so nothing double-adds.
+    teePreset = true;
+    draft = null;
+    draftTouched = false;
+    atelierSleeves = false;
+    atelierCollar = false;
+    document.getElementById('at-sleeves')?.classList.remove('active');
+    document.getElementById('at-collar')?.classList.remove('active');
     build();
   });
   // Draw the BACK face from scratch (côte-à-côte): pen on the right column.
   (document.getElementById('at-back') as HTMLElement).addEventListener('click', () => {
     if (!bigPanel) setBig(true);
     atelierDesign = true;
+    teePreset = false; // back to freeform editing
     simBtn().classList.remove('running');
     const dims = (draft ?? defaultDraft(resolution as 32 | 64 | 128)).piece;
     patternView.startPen(dims.width, dims.height, dims.topY, dims.gap, 1);
@@ -458,6 +461,7 @@ async function main(): Promise<void> {
   (document.getElementById('at-piece') as HTMLElement).addEventListener('click', () => {
     if (!bigPanel) setBig(true);
     atelierDesign = true;
+    teePreset = false; // back to freeform editing
     simBtn().classList.remove('running');
     const dims = (draft ?? defaultDraft(resolution as 32 | 64 | 128)).piece;
     const pid = 2 + (draft?.pieces?.length ?? 0);
@@ -734,6 +738,21 @@ async function main(): Promise<void> {
     const mesh =
       sceneMode === 'atelier'
         ? (() => {
+            // T-SHIRT preset: a REAL set-in-sleeve tee (front + back with curved
+            // armholes and neck scoop, plus two sleeve pieces whose CAP curve is
+            // stitched into the armhole — the proven `setin` construction, sized to
+            // the avatar) instead of the freeform draft. This is an actual sewing
+            // pattern (body + 2 sleeves with caps), not a rectangle + tubes.
+            if (teePreset)
+              return generateSeamedPanels({
+                resolution,
+                width: 1.3 * topScale, // sleeve-tip to sleeve-tip
+                height: 0.62, // hip length (t-shirt, vs the chemise's 0.75)
+                gap: 0.9,
+                topY: 1.52 + dyShoulder,
+                shape: 'setin',
+                shapeParams: { sleeve: 0.46, profile: [0.22, 0.23, 0.25] }, // short set-in sleeve + gentle tee side
+              });
             // Freeform piece: the user's drawn outline + darts + hand-seams
             // compiled straight to the mask / seam machinery (the atelier editor).
             const doc = (draft ??= defaultDraft(resolution as 32 | 64 | 128));
