@@ -438,7 +438,7 @@ async function main(): Promise<void> {
     // sleeves so the arms are truly INSIDE the sleeves (a flat kimono just hangs).
     draft = tshirtDraft(0.7 * lastGrade.topScale, 0.62, 0.9, 1.52 + lastGrade.dyShoulder, gridN);
     atelierSleeves = true;
-    atelierSleeveLen = 0.28; // short sleeve (shoulder → upper arm)
+    atelierSleeveLen = 0.42; // sleeve reaching past the elbow (more arm contact ⇒ cleaner drape)
     document.getElementById('at-sleeves')?.classList.add('active');
     draftTouched = true;
     build();
