@@ -2,6 +2,7 @@ import { initGpu, WebGPUNotSupportedError } from './engine/gpu/Device';
 import { ParticleSystem } from './engine/solver/ParticleSystem';
 import { generateClothGrid, generateSeamedPanels, combineClothMeshes, type CrossSeam, type ClothMeshData } from './engine/cloth/ClothMesh';
 import { defaultDraft, compileDraft, compileAssembly, compileCrossSeams, removeFreePiece, sanitizeDraft, type DraftDoc, type AssemblySeam } from './engine/pattern/Draft';
+import { draftTee } from './engine/pattern/draftTee';
 import type { SceneMode } from './app/ControlPanel';
 import { ClothRenderer, DEFAULT_FABRIC } from './app/ClothRenderer';
 import { OrbitCamera } from './app/OrbitCamera';
@@ -322,6 +323,7 @@ async function main(): Promise<void> {
       // the current draft — front (0), the côte-à-côte back (1), or a FREE piece
       // (≥ 2) — and re-cut. Editing returns to the flat design view (physics
       // paused) so the change shows without the piece draping away.
+      teePreset = false; // a manual edit ⇒ freeform mode; keep the edit (stop re-drafting)
       const gridN = resolution as 32 | 64 | 128;
       if (!draft) draft = { format: 'toile-draft', version: 1, gridN, piece: defaultDraft(gridN).piece };
       draft.gridN = gridN;
@@ -434,11 +436,13 @@ async function main(): Promise<void> {
     if (!bigPanel) setBig(true);
     atelierDesign = true;
     simBtn().classList.remove('running');
-    // Load the REAL set-in-sleeve tee (built in the atelier mesh block, `setin`).
-    // Clear the freeform draft + the additive sleeves/collar so nothing double-adds.
+    // Draft the REAL measured tee (built in the atelier block via draftTee from
+    // the avatar's measurements). It's an editable DraftDoc → mark it touched
+    // (shows in the editor, exports); clear the additive sleeves/collar. draft=null
+    // ⇒ build() (re)drafts it, so a later measurement change updates the pattern.
     teePreset = true;
     draft = null;
-    draftTouched = false;
+    draftTouched = true;
     atelierSleeves = false;
     atelierCollar = false;
     document.getElementById('at-sleeves')?.classList.remove('active');
@@ -738,21 +742,13 @@ async function main(): Promise<void> {
     const mesh =
       sceneMode === 'atelier'
         ? (() => {
-            // T-SHIRT preset: a REAL set-in-sleeve tee (front + back with curved
-            // armholes and neck scoop, plus two sleeve pieces whose CAP curve is
-            // stitched into the armhole — the proven `setin` construction, sized to
-            // the avatar) instead of the freeform draft. This is an actual sewing
-            // pattern (body + 2 sleeves with caps), not a rectangle + tubes.
-            if (teePreset)
-              return generateSeamedPanels({
-                resolution,
-                width: 1.3 * topScale, // sleeve-tip to sleeve-tip
-                height: 0.62, // hip length (t-shirt, vs the chemise's 0.75)
-                gap: 0.9,
-                topY: 1.52 + dyShoulder,
-                shape: 'setin',
-                shapeParams: { sleeve: 0.46, profile: [0.22, 0.23, 0.25] }, // short set-in sleeve + gentle tee side
-              });
+            // T-SHIRT preset: DRAFT a real set-in-sleeve tee from the avatar's
+            // MEASUREMENTS (draftTee → front/back sized to chest/4, armhole depth,
+            // shoulder, neck…, front ≠ back), then let the freeform pipeline below
+            // compile + sew it — so it's an editable DraftDoc, not a fixed mesh.
+            // Re-drafts each build so a measurement change reflects; a manual edit
+            // switches teePreset off (see onDraftChange) and keeps the edit.
+            if (teePreset) draft = draftTee(m, REF);
             // Freeform piece: the user's drawn outline + darts + hand-seams
             // compiled straight to the mask / seam machinery (the atelier editor).
             const doc = (draft ??= defaultDraft(resolution as 32 | 64 | 128));
