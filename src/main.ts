@@ -173,10 +173,11 @@ function avatarSilhouette(positions: Float32Array, indices: Uint32Array): Avatar
 function sleeveMesh(n: number, side: 'L' | 'R', shoulderX: number, shoulderY: number, armLen = 0.5): ClothMeshData {
   const outX = 0.11 * (armLen / 0.5); // A-pose outward angle scales with length (short sleeve ⇒ small drift)
   const SPAWN_TOP = 1.0; // the tube's top-centre y before we reposition it
-  // Snug tube (was 0.26 wide / 0.24 gap = far too loose on a ~10 cm arm) so the
-  // sleeve actually hugs the arm instead of flapping; gap 0.16 still spawns the
-  // two panels OUTSIDE the arm collider (panels at ±0.08, arm radius ~0.05).
-  const mesh = generateSeamedPanels({ resolution: n, width: 0.14, height: armLen, gap: 0.14, topY: SPAWN_TOP, shape: 'rect' });
+  // Tube hugs the arm WITHOUT spawning inside its collider: gap 0.18 keeps both
+  // panels clear (±0.09 > deltoid radius ~0.06) so the sleeve isn't ejected and
+  // tangled; width 0.13 keeps the circumference modest. (0.14/0.14 tangled —
+  // panels ±0.07 grazed the arm; 0.26/0.24 was far too loose and flapped.)
+  const mesh = generateSeamedPanels({ resolution: n, width: 0.13, height: armLen, gap: 0.18, topY: SPAWN_TOP, shape: 'rect' });
   // Rotate the vertical tube to follow the shoulder→wrist axis, then drop its top
   // onto the shoulder so the tube WRAPS the arm (front/back straddle it in z) and
   // the armhole seam attaches it. A small gap keeps it OUTSIDE the arm (spawning
