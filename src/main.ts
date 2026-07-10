@@ -170,11 +170,13 @@ function avatarSilhouette(positions: Float32Array, indices: Uint32Array): Avatar
  * cross-garment sewing proven on the gathered dress). It hangs from the armhole
  * at this stage; wrapping the arm is a later step.
  */
-function sleeveMesh(n: number, side: 'L' | 'R', shoulderX: number, shoulderY: number): ClothMeshData {
-  const armLen = 0.5; // shoulder → wrist
-  const outX = 0.11; // A-pose: the arm angles slightly outward
+function sleeveMesh(n: number, side: 'L' | 'R', shoulderX: number, shoulderY: number, armLen = 0.5): ClothMeshData {
+  const outX = 0.11 * (armLen / 0.5); // A-pose outward angle scales with length (short sleeve ⇒ small drift)
   const SPAWN_TOP = 1.0; // the tube's top-centre y before we reposition it
-  const mesh = generateSeamedPanels({ resolution: n, width: 0.26, height: armLen, gap: 0.24, topY: SPAWN_TOP, shape: 'rect' });
+  // Snug tube (was 0.26 wide / 0.24 gap = far too loose on a ~10 cm arm) so the
+  // sleeve actually hugs the arm instead of flapping; gap 0.16 still spawns the
+  // two panels OUTSIDE the arm collider (panels at ±0.08, arm radius ~0.05).
+  const mesh = generateSeamedPanels({ resolution: n, width: 0.14, height: armLen, gap: 0.14, topY: SPAWN_TOP, shape: 'rect' });
   // Rotate the vertical tube to follow the shoulder→wrist axis, then drop its top
   // onto the shoulder so the tube WRAPS the arm (front/back straddle it in z) and
   // the armhole seam attaches it. A small gap keeps it OUTSIDE the arm (spawning
@@ -381,6 +383,7 @@ async function main(): Promise<void> {
   // returns to design. Only meaningful in the 'atelier' scene.
   let atelierDesign = true;
   let atelierSleeves = false; // multi-piece stage 1: add system sleeves to the atelier garment
+  let atelierSleeveLen = 0.5; // sleeve length (shoulder→cuff, m): 0.5 long, ~0.22 short (t-shirt)
   let atelierCollar = false; // multi-piece: add a system collar band at the neckline
   const simBtn = (): HTMLElement => document.getElementById('at-sim') as HTMLElement;
   const setBig = (on: boolean): void => {
@@ -429,9 +432,13 @@ async function main(): Promise<void> {
     atelierDesign = true;
     simBtn().classList.remove('running');
     const gridN = resolution as 32 | 64 | 128;
-    // Hip length (0.62) reads as a t-shirt rather than the parametric tee's
-    // thigh-length tunic (0.75); width/gap/topY match the proven tee so it drapes.
-    draft = tshirtDraft(1.15 * lastGrade.topScale, 0.62, 0.9, 1.52 + lastGrade.dyShoulder, gridN);
+    // Torso body sized to the avatar (narrower than the sleeve-span tee, since
+    // the sleeves are separate); hip length (0.62). Auto-enable SHORT PLACED
+    // sleeves so the arms are truly INSIDE the sleeves (a flat kimono just hangs).
+    draft = tshirtDraft(0.7 * lastGrade.topScale, 0.62, 0.9, 1.52 + lastGrade.dyShoulder, gridN);
+    atelierSleeves = true;
+    atelierSleeveLen = 0.28; // short sleeve (shoulder → upper arm)
+    document.getElementById('at-sleeves')?.classList.add('active');
     draftTouched = true;
     build();
   });
@@ -802,9 +809,9 @@ async function main(): Promise<void> {
             // via the SAME combineClothMeshes cross-seaming the gathered dress
             // uses. Gated on the button — without it the mesh is exactly the body.
             if (atelierSleeves) {
-              const sL = sleeveMesh(resolution, 'L', m.shoulderHalfW, m.shoulderY);
+              const sL = sleeveMesh(resolution, 'L', m.shoulderHalfW, m.shoulderY, atelierSleeveLen);
               garment = combineClothMeshes(garment, sL, armholeCrossSeams(garment, 'L', resolution));
-              const sR = sleeveMesh(resolution, 'R', m.shoulderHalfW, m.shoulderY);
+              const sR = sleeveMesh(resolution, 'R', m.shoulderHalfW, m.shoulderY, atelierSleeveLen);
               garment = combineClothMeshes(garment, sR, armholeCrossSeams(garment, 'R', resolution));
             }
             if (atelierCollar) {

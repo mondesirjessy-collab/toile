@@ -593,55 +593,47 @@ export function defaultDraft(gridN: 32 | 64 | 128 = 64): DraftDoc {
 }
 
 /**
- * A basic KIMONO T-SHIRT preset: front + back IDENTICAL kimono-tee outlines (a
- * central body column with short down-sloped sleeves and a neck scoop), with the
- * perimeter seams (shoulders, sleeve tops/bottoms, sides) PRE-SEWN front↔back and
- * the neckline, cuffs and hem left open. Because the two faces are identical, the
- * hand seams pair cell-for-cell exactly like the parametric tee's automatic
- * mirror seam — so it drapes as the same closed shell, but as an EDITABLE atelier
- * draft. Dimensions are sized to the current avatar by the caller (like tee():
- * width ≈ 1.15·topScale, height 0.75, gap 0.9, topY 1.52 + dyShoulder). The outline
- * mirrors ClothMesh's tshirtShape (bodyHalf 0.24, sleeve drop-slope 0.75). */
+ * A basic T-SHIRT BODY preset: front + back IDENTICAL torso outlines (shoulders,
+ * a neck scoop, near-straight sides to the hem), with the shoulder + side seams
+ * PRE-SEWN front↔back and the neckline + hem left open — a closed torso tube.
+ * The ARMS go into SEPARATE placed sleeves (the atelier "+ Manches" tubes that
+ * straddle each arm) added by the caller, so the arms are truly IN the sleeves —
+ * a flat kimono sleeve just hangs. Front=back ⇒ the hand seams pair cell-for-cell
+ * like an automatic mirror seam, so it drapes as a clean closed shell but stays
+ * editable. Sized to the avatar by the caller (width ≈ 0.7·topScale, height 0.62,
+ * gap 0.9, topY 1.52 + dyShoulder). The sleeves attach to the top of the sides. */
 export function tshirtDraft(width: number, height: number, gap: number, topY: number, gridN: 32 | 64 | 128 = 64): DraftDoc {
-  const tee = (): DraftPiece => ({
+  const body = (): DraftPiece => ({
     outline: [
-      [0.39, 0.0], // 0  neck top left
-      [0.26, 0.0], // 1  left shoulder outer (body half-width 0.24)
-      [0.0, 0.195], // 2  left sleeve top → cuff top (slope 0.75)
-      [0.0, 0.535], // 3  left cuff bottom
-      [0.26, 0.34], // 4  left underarm (sleeve band height 0.34)
-      [0.26, 0.98], // 5  left hem
-      [0.74, 0.98], // 6  right hem
-      [0.74, 0.34], // 7  right underarm
-      [1.0, 0.535], // 8  right cuff bottom
-      [1.0, 0.195], // 9  right cuff top
-      [0.74, 0.0], // 10 right shoulder outer
-      [0.61, 0.0], // 11 neck top right
-      [0.5, 0.12], // 12 neck bottom (scoop dip)
+      [0.42, 0.0], // 0 neck top left
+      [0.14, 0.02], // 1 left shoulder outer (the armhole/sleeve attaches at the top of the side)
+      [0.16, 0.98], // 2 left hem (a hair of waist taper)
+      [0.84, 0.98], // 3 right hem
+      [0.86, 0.02], // 4 right shoulder outer
+      [0.58, 0.0], // 5 neck top right
+      [0.5, 0.12], // 6 neck bottom (scoop dip)
     ],
     darts: [],
     seams: [],
     openEdges: [
-      { from: 2, to: 3 }, // left cuff (the arm comes out)
-      { from: 5, to: 6 }, // hem
-      { from: 8, to: 9 }, // right cuff
-      { from: 11, to: 0 }, // neckline (edges 11 + 12, the head hole)
+      { from: 2, to: 3 }, // hem
+      { from: 5, to: 0 }, // neckline (edges 5 + 6, the head hole)
     ],
     width,
     height,
     topY,
     gap,
   });
-  // Contiguous run per side: shoulder+sleeve-top, then sleeve-bottom+side.
+  // One contiguous seam per side: shoulder + side, sewn front↔back.
   const seam = (from: number, to: number): AssemblySeam => ({ a: { face: 'front', from, to }, b: { face: 'back', from, to } });
   return {
     format: 'toile-draft',
     version: 1,
     gridN,
-    piece: tee(),
-    back: tee(),
+    piece: body(),
+    back: body(),
     manual: true,
-    seams: [seam(0, 2), seam(3, 5), seam(6, 8), seam(9, 11)],
+    seams: [seam(0, 2), seam(3, 5)],
   };
 }
 

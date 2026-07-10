@@ -388,11 +388,11 @@ describe('multi-piece free editor (pieceId / cross-seams)', () => {
     expect('pieces' in s).toBe(false);
   });
 
-  it('tshirtDraft: valid kimono tee, pre-sewn perimeter, single connected island', () => {
-    const doc = tshirtDraft(1.15, 0.75, 0.9, 1.52, 32);
+  it('tshirtDraft: valid torso body, pre-sewn shoulders+sides, single connected island', () => {
+    const doc = tshirtDraft(0.7, 0.62, 0.9, 1.52, 32);
     expect(isSelfIntersecting(doc.piece.outline)).toBe(false);
     expect(doc.manual).toBe(true);
-    expect(doc.seams!.length).toBe(4); // shoulders+sleeve-tops + sides+sleeve-bottoms, both sides
+    expect(doc.seams!.length).toBe(2); // left shoulder+side, right shoulder+side
     // Pre-sewn seams pair front↔back → cross-panel cell pairs (front panel 0, back panel 1).
     const cross = compileAssembly(doc, 32);
     expect(cross.length).toBeGreaterThan(0);
@@ -401,8 +401,7 @@ describe('multi-piece free editor (pieceId / cross-seams)', () => {
       expect(s.i).toBeLessThan(ps);
       expect(s.j).toBeGreaterThanOrEqual(ps);
     }
-    // The tee outline rasterises to ONE connected piece (body + sleeves soldered),
-    // like the parametric tshirt — never a fragment that falls off.
+    // The torso outline rasterises to ONE connected piece — never a fragment.
     const n = 32;
     const kept: boolean[] = [];
     for (let v = 0; v < n; v++)
