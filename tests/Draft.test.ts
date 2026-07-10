@@ -11,6 +11,7 @@ import {
   compileAssembly,
   compileCrossSeams,
   removeFreePiece,
+  tshirtDraft,
   reindexAssemblySeams,
   pieceIdOf,
   docPieces,
@@ -385,6 +386,28 @@ describe('multi-piece free editor (pieceId / cross-seams)', () => {
   it('sanitizeDraft omits `pieces` when there are none (back-compat invariant)', () => {
     const s = sanitizeDraft(defaultDraft(32));
     expect('pieces' in s).toBe(false);
+  });
+
+  it('tshirtDraft: valid kimono tee, pre-sewn perimeter, single connected island', () => {
+    const doc = tshirtDraft(1.15, 0.75, 0.9, 1.52, 32);
+    expect(isSelfIntersecting(doc.piece.outline)).toBe(false);
+    expect(doc.manual).toBe(true);
+    expect(doc.seams!.length).toBe(4); // shoulders+sleeve-tops + sides+sleeve-bottoms, both sides
+    // Pre-sewn seams pair front↔back → cross-panel cell pairs (front panel 0, back panel 1).
+    const cross = compileAssembly(doc, 32);
+    expect(cross.length).toBeGreaterThan(0);
+    const ps = 32 * 32;
+    for (const s of cross) {
+      expect(s.i).toBeLessThan(ps);
+      expect(s.j).toBeGreaterThanOrEqual(ps);
+    }
+    // The tee outline rasterises to ONE connected piece (body + sleeves soldered),
+    // like the parametric tshirt — never a fragment that falls off.
+    const n = 32;
+    const kept: boolean[] = [];
+    for (let v = 0; v < n; v++)
+      for (let u = 0; u < n; u++) kept.push(pointInPolygon([u / (n - 1), v / (n - 1)], doc.piece.outline));
+    expect(countMaskIslands(kept, n)).toBe(1);
   });
 
   it('removeFreePiece drops the piece, drops its seams, and shifts pieces above it', () => {

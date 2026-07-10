@@ -593,6 +593,59 @@ export function defaultDraft(gridN: 32 | 64 | 128 = 64): DraftDoc {
 }
 
 /**
+ * A basic KIMONO T-SHIRT preset: front + back IDENTICAL kimono-tee outlines (a
+ * central body column with short down-sloped sleeves and a neck scoop), with the
+ * perimeter seams (shoulders, sleeve tops/bottoms, sides) PRE-SEWN front↔back and
+ * the neckline, cuffs and hem left open. Because the two faces are identical, the
+ * hand seams pair cell-for-cell exactly like the parametric tee's automatic
+ * mirror seam — so it drapes as the same closed shell, but as an EDITABLE atelier
+ * draft. Dimensions are sized to the current avatar by the caller (like tee():
+ * width ≈ 1.15·topScale, height 0.75, gap 0.9, topY 1.52 + dyShoulder). The outline
+ * mirrors ClothMesh's tshirtShape (bodyHalf 0.24, sleeve drop-slope 0.75). */
+export function tshirtDraft(width: number, height: number, gap: number, topY: number, gridN: 32 | 64 | 128 = 64): DraftDoc {
+  const tee = (): DraftPiece => ({
+    outline: [
+      [0.39, 0.0], // 0  neck top left
+      [0.26, 0.0], // 1  left shoulder outer (body half-width 0.24)
+      [0.0, 0.195], // 2  left sleeve top → cuff top (slope 0.75)
+      [0.0, 0.535], // 3  left cuff bottom
+      [0.26, 0.34], // 4  left underarm (sleeve band height 0.34)
+      [0.26, 0.98], // 5  left hem
+      [0.74, 0.98], // 6  right hem
+      [0.74, 0.34], // 7  right underarm
+      [1.0, 0.535], // 8  right cuff bottom
+      [1.0, 0.195], // 9  right cuff top
+      [0.74, 0.0], // 10 right shoulder outer
+      [0.61, 0.0], // 11 neck top right
+      [0.5, 0.12], // 12 neck bottom (scoop dip)
+    ],
+    darts: [],
+    seams: [],
+    openEdges: [
+      { from: 2, to: 3 }, // left cuff (the arm comes out)
+      { from: 5, to: 6 }, // hem
+      { from: 8, to: 9 }, // right cuff
+      { from: 11, to: 0 }, // neckline (edges 11 + 12, the head hole)
+    ],
+    width,
+    height,
+    topY,
+    gap,
+  });
+  // Contiguous run per side: shoulder+sleeve-top, then sleeve-bottom+side.
+  const seam = (from: number, to: number): AssemblySeam => ({ a: { face: 'front', from, to }, b: { face: 'back', from, to } });
+  return {
+    format: 'toile-draft',
+    version: 1,
+    gridN,
+    piece: tee(),
+    back: tee(),
+    manual: true,
+    seams: [seam(0, 2), seam(3, 5), seam(6, 8), seam(9, 11)],
+  };
+}
+
+/**
  * Validate an untrusted draft (import path): clamp every coord to [0,1], cap
  * element counts, and reject a self-intersecting outline (→ fall back to the
  * default) so a bad file can't produce a degenerate mesh or a GPU blowup.

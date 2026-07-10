@@ -1,7 +1,7 @@
 import { initGpu, WebGPUNotSupportedError } from './engine/gpu/Device';
 import { ParticleSystem } from './engine/solver/ParticleSystem';
 import { generateClothGrid, generateSeamedPanels, combineClothMeshes, type CrossSeam, type ClothMeshData } from './engine/cloth/ClothMesh';
-import { defaultDraft, compileDraft, compileAssembly, compileCrossSeams, removeFreePiece, sanitizeDraft, type DraftDoc, type AssemblySeam } from './engine/pattern/Draft';
+import { defaultDraft, tshirtDraft, compileDraft, compileAssembly, compileCrossSeams, removeFreePiece, sanitizeDraft, type DraftDoc, type AssemblySeam } from './engine/pattern/Draft';
 import type { SceneMode } from './app/ControlPanel';
 import { ClothRenderer, DEFAULT_FABRIC } from './app/ClothRenderer';
 import { OrbitCamera } from './app/OrbitCamera';
@@ -420,6 +420,20 @@ async function main(): Promise<void> {
     simBtn().classList.remove('running');
     const dims = (draft ?? defaultDraft(resolution as 32 | 64 | 128)).piece;
     patternView.startPen(dims.width, dims.height, dims.topY, dims.gap);
+  });
+  // Preset: load a basic t-shirt already assembled and SIZED to the current
+  // avatar (like the parametric tee: width 1.15·topScale, gap 0.9, topY 1.52 +
+  // dyShoulder), so ▶ Simuler drapes it perfectly — then it stays editable.
+  (document.getElementById('at-tshirt') as HTMLElement).addEventListener('click', () => {
+    if (!bigPanel) setBig(true);
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    const gridN = resolution as 32 | 64 | 128;
+    // Hip length (0.62) reads as a t-shirt rather than the parametric tee's
+    // thigh-length tunic (0.75); width/gap/topY match the proven tee so it drapes.
+    draft = tshirtDraft(1.15 * lastGrade.topScale, 0.62, 0.9, 1.52 + lastGrade.dyShoulder, gridN);
+    draftTouched = true;
+    build();
   });
   // Draw the BACK face from scratch (côte-à-côte): pen on the right column.
   (document.getElementById('at-back') as HTMLElement).addEventListener('click', () => {
