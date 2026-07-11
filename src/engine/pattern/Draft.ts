@@ -576,6 +576,39 @@ export function compileCrossSeams(
     })();
     return baseBoundary[other]!.has(local);
   };
+  // Is a BASE run already sewn front↔back by an assembly seam? Tailoring rule
+  // (the git-archaeology verdict on why v104's sleeves held): sewing a piece
+  // onto a WELDED line must pin BOTH its panels to that SAME line — the four
+  // rims converge into one quasi-rigid line that cinches the tube mouth around
+  // the arm root (a mechanical lock). Sewing onto an OPEN edge (hem, neckline)
+  // keeps the v110 behaviour instead: the twin goes to the opposite panel so
+  // the piece continues the tube (the hem band that rings the body).
+  const runEdges = (r: { from: number; to: number }, nV: number): number[] => {
+    const out2: number[] = [];
+    for (let e = r.from % nV; e !== r.to % nV; e = (e + 1) % nV) {
+      out2.push(e);
+      if (out2.length > nV) break; // degenerate wrap guard
+    }
+    return out2;
+  };
+  const baseRunWelded = (pid: number, run: { from: number; to: number }): boolean => {
+    if (pid > 1) return false;
+    const piece = pieces[pid];
+    if (!piece) return false;
+    const nV = piece.outline.length;
+    const edges = runEdges(run, nV);
+    if (!edges.length) return false;
+    for (const s of doc.seams ?? []) {
+      const pa = pieceIdOf(s.a);
+      const pb = pieceIdOf(s.b);
+      if (pa > 1 || pb > 1 || pa === pb) continue; // not a base front↔back seam
+      const r = pa === pid ? s.a : pb === pid ? s.b : null;
+      if (!r) continue;
+      const covered = new Set(runEdges({ from: r.from, to: r.to }, nV));
+      if (edges.every((e) => covered.has(e))) return true;
+    }
+    return false;
+  };
   const out: { i: number; j: number }[] = [];
   for (const s of doc.seams ?? []) {
     const pidA = pieceIdOf(s.a);
@@ -594,25 +627,27 @@ export function compileCrossSeams(
     if (!pJ || !pI || pJ.outline.length < 3 || pI.outline.length < 3) continue;
     const paired = pairRunCells(pI, pJ, { from: runI.from, to: runI.to }, { from: runJ.from, to: runJ.to }, n);
     if (!paired) continue;
+    // Welded base run → CONVERGE: pin the piece's back panel onto the SAME
+    // body cells as its front panel (v104's armholeCrossSeams topology — the
+    // cinch lock). Open base run → the twin goes to the opposite panels (v110).
+    const converge = baseRunWelded(pidI, { from: runI.from, to: runI.to });
     for (let k = 0; k < paired.a.length; k++) {
       const li = paired.a[k]!;
       const lj = paired.b[k]!;
       const gi = globalOf(pidI, li);
       const gj = globalOf(pidJ, lj);
       if (gi !== gj) out.push({ i: gi, j: gj });
-      // Sew BOTH faces: the same seam repeated on the back panels, so the
-      // piece HUGS the body instead of flapping (before, only the front rim
-      // was sewn and the piece's back panel hung loose — the root cause of
-      // « pièces ouvertes »). Two guards keep the twin honest: it must land
-      // on a BOUNDARY cell of its own panel's mask (twinOnEdge — a divergent
-      // back outline may leave the cell interior), and combineClothMeshes
-      // still drops any endpoint that is CUT (parked, invMass 0). The caller
-      // must also un-stitch the piece's own rim along the sewn run
-      // (crossSewnOpenCells) so the twin can't weld the body's open edge
-      // shut through the body.
-      const mi = mirrorOf(pidI, li);
+      // Sew BOTH faces: the same seam repeated on the piece's back panel, so
+      // the piece HUGS the body instead of flapping (before, only the front
+      // rim was sewn — the root cause of « pièces ouvertes »). Guards: the
+      // twin must land on a BOUNDARY cell of its own panel's mask
+      // (twinOnEdge), and combineClothMeshes drops endpoints that are CUT.
+      // The caller also un-stitches the piece's rim along the sewn run
+      // (crossSewnOpenCells) so a twin can't weld the body's open edge shut
+      // through the body.
+      const mi = converge ? gi : mirrorOf(pidI, li);
       const mj = mirrorOf(pidJ, lj);
-      if (mi !== mj && twinOnEdge(pidI, li) && twinOnEdge(pidJ, lj)) out.push({ i: mi, j: mj });
+      if (mi !== mj && (converge || (twinOnEdge(pidI, li) && twinOnEdge(pidJ, lj)))) out.push({ i: mi, j: mj });
     }
   }
   return out;

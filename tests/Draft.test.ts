@@ -369,6 +369,29 @@ describe('multi-piece free editor (pieceId / cross-seams)', () => {
     }
   });
 
+  it('a piece sewn onto a WELDED base run pins both its panels to the SAME body cells (cinch)', () => {
+    const n = 32;
+    const panelSize = n * n;
+    const doc = defaultDraft(n);
+    doc.pieces = [square()];
+    doc.seams = [
+      // The body edge 5→6 is itself sewn front↔back (a welded side-like line)…
+      { a: { face: 'front', from: 5, to: 6 }, b: { face: 'back', from: 5, to: 6 } },
+      // …and the piece is sewn onto that same run.
+      { a: { face: 'front', from: 5, to: 6 }, b: { pieceId: 2, from: 0, to: 1 } },
+    ];
+    const cross = compileCrossSeams(doc, n, [0, panelSize, 2 * panelSize], 2);
+    expect(cross.length).toBeGreaterThan(0);
+    expect(cross.length % 2).toBe(0);
+    for (let k = 0; k < cross.length; k += 2) {
+      const front = cross[k]!;
+      const twin = cross[k + 1]!;
+      expect(twin.i).toBe(front.i); // SAME body cell (four rims converge — v104's lock)
+      expect(twin.j).toBe(front.j + panelSize); // piece back panel
+      expect(front.i).toBeLessThan(panelSize); // anchored via the front-panel cells
+    }
+  });
+
   it('the twin is dropped when the back mask leaves the mirrored cell INTERIOR', () => {
     // Front has a deep neckline scoop; the back is a plain quad whose top edge
     // sits at v=0 — every front scoop-rim cell is alive but INTERIOR in the

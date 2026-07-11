@@ -817,25 +817,26 @@ async function main(): Promise<void> {
                 // tilted to the A-pose (the proven v96 tube placement) — but on
                 // an EDITABLE draft piece. Its rim stitching closes it into a
                 // tube; its cap run cross-sewn to the armhole (both faces,
-                // v110) makes a real sleeve. The panels spawn SPREAD at the
-                // body's own gap (±d.gap/2, the arm between them): body and
-                // sleeve then close onto the mannequin TOGETHER, and the
-                // armhole↔cap pins are short at spawn. (Empirical matrix over
-                // 11 runs: snug ±fp.gap/2 spawn — v96's — collapses HERE
-                // because the assembly seams yank the still-wide body onto the
-                // already-snug tube; the spread spawn was the only worn result.)
+                // v110) makes a real sleeve. The tube spawns SNUG (±fp.gap/2,
+                // the arm between the panels) — v96's proven spawn; the long
+                // armhole↔cap pins to the still-wide body panels are survivable
+                // (v102-104 lived with the exact same distances). THE holding
+                // condition (git-archaeology verdict): the body's armhole run
+                // must itself be SEWN front↔back, so the pins converge the four
+                // rims (body front/back + sleeve front/back) into ONE quasi-
+                // rigid line that cinches the tube mouth around the arm root —
+                // a mechanical lock the arm cannot slide out of. An armhole
+                // run left open leaves the mouth agape and the tube slides.
                 const sign = fp.wrap === 'armR' ? 1 : -1;
                 const theta = Math.atan2(0.11 * (fp.height / 0.5) * sign, fp.height);
                 const cosT = Math.cos(theta);
                 const sinT = Math.sin(theta);
                 const armX = m.shoulderHalfW * sign;
-                const spawnHalfGap = d.gap / 2; // match the body's spawn spread
                 for (let q = 0; q < pieceMesh.count; q++) {
                   const px = pieceMesh.positions[q * 4]!;
                   const py = pieceMesh.positions[q * 4 + 1]! - fp.topY;
                   pieceMesh.positions[q * 4] = px * cosT - py * sinT + armX;
                   pieceMesh.positions[q * 4 + 1] = px * sinT + py * cosT + fp.topY;
-                  pieceMesh.positions[q * 4 + 2] = Math.sign(pieceMesh.positions[q * 4 + 2]!) * spawnHalfGap;
                 }
               } else {
                 // Spawn it in FRONT of the body (at the body's front-panel plane),
