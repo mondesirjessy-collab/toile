@@ -408,6 +408,54 @@ function boundaryRunCells(
   return res.sort((x, y) => x.t - y.t);
 }
 
+/** Boundary-cell set of a piece's raster mask at resolution n: kept cells on the
+ * grid edge or with a cut 4-neighbour (same rule as boundaryRunCells). Used to
+ * guard both-faces seams: the mirrored endpoint must land on an EDGE of its own
+ * panel's mask — an independent back outline can leave the same (u,v) alive but
+ * interior, and a seam into mid-fabric pinches a permanent tuft there. */
+function boundaryCellSet(outline: readonly UV[], darts: readonly Dart[], n: number): Set<number> {
+  const kept = new Array<boolean>(n * n);
+  for (let v = 0; v < n; v++)
+    for (let u = 0; u < n; u++) {
+      const p: UV = [u / (n - 1), v / (n - 1)];
+      let inside = pointInPolygon(p, outline);
+      if (inside) for (const d of darts) if (pointInTriangle(p, d.apex, d.legA, d.legB)) { inside = false; break; }
+      kept[v * n + u] = inside;
+    }
+  const out = new Set<number>();
+  for (let v = 0; v < n; v++)
+    for (let u = 0; u < n; u++) {
+      if (!kept[v * n + u]) continue;
+      if (
+        u === 0 || u === n - 1 || v === 0 || v === n - 1 ||
+        !kept[v * n + (u - 1)] || !kept[v * n + (u + 1)] || !kept[(v - 1) * n + u] || !kept[(v + 1) * n + u]
+      )
+        out.add(v * n + u);
+    }
+  return out;
+}
+
+/**
+ * Boundary cells of piece `pid`'s CROSS-SEWN runs (its edges sewn to another
+ * piece via assembly seams). A sewn edge is no longer a free rim: the caller
+ * must exclude these cells from the piece's own front↔back rim stitching
+ * (extraOpenings), otherwise a both-faces assembly seam would transitively
+ * weld the body's open edge shut THROUGH the body (front rim → piece front →
+ * piece back → back rim: a few mm of quasi-rigid seam across the anatomy).
+ */
+export function crossSewnOpenCells(doc: DraftDoc, pid: number, n: number): number[] {
+  const pieces = docPieces(doc);
+  const piece = pieces[pid];
+  if (!piece || piece.outline.length < 3) return [];
+  const cells = new Set<number>();
+  for (const s of doc.seams ?? []) {
+    const run = pieceIdOf(s.a) === pid ? s.a : pieceIdOf(s.b) === pid ? s.b : null;
+    if (!run) continue;
+    for (const c of boundaryRunCells(piece.outline, piece.darts, { from: run.from, to: run.to }, n)) cells.add(c.cell);
+  }
+  return [...cells];
+}
+
 /** Pair two boundary runs cell-by-cell by arc-length, choosing the zip direction
  * (forward vs reversed B) that minimises total offset — anti-twist. Returns the
  * two aligned LOCAL cell lists (equal length), or null if either run is empty.
@@ -482,6 +530,9 @@ export function compileAssembly(doc: DraftDoc, n: number): { i: number; j: numbe
  * garment.count, as combineClothMeshes requires). `offsets[pid]` is the global
  * base index of piece `pid` (0 and 1 = the base panels at 0 and n²; ≥2 = the
  * garment.count captured just before that piece was combined).
+ *
+ * Each seam is sewn on BOTH FACES: the drawn pair (front panels) plus its
+ * back-panel twin, so a piece hugs the body all around instead of flapping.
  */
 export function compileCrossSeams(
   doc: DraftDoc,
@@ -492,6 +543,28 @@ export function compileCrossSeams(
   const panelSize = n * n;
   const pieces = docPieces(doc);
   const globalOf = (pid: number, local: number): number => (offsets[pid] ?? pid * panelSize) + local;
+  // The BACK-FACE twin of a cell: every mesh is a doubled panel (front at
+  // +gap/2, back at −gap/2). For the base, the twin lives on the OTHER panel
+  // (front 0 ↔ back 1); a free piece's twin is its own panel 1 (same outline
+  // on both panels, panelSize cells further).
+  const mirrorOf = (pid: number, local: number): number =>
+    pid <= 1 ? (offsets[1 - pid] ?? (1 - pid) * panelSize) + local : globalOf(pid, local) + panelSize;
+  // Mirror guard (base side): the twin must be a BOUNDARY cell of the OTHER
+  // base panel's own mask. With an independent back outline the same (u,v)
+  // can be alive but INTERIOR there — a quasi-rigid seam into mid-fabric
+  // pinches a permanent tuft instead of joining an edge. Free pieces use one
+  // outline for both panels, so their twins are boundary by construction.
+  // Lazy: only drafts that reach the emission pay the n² rasterisation.
+  const baseBoundary: (Set<number> | null)[] = [null, null];
+  const twinOnEdge = (pid: number, local: number): boolean => {
+    if (pid > 1) return true;
+    const other = 1 - pid;
+    baseBoundary[other] ??= (() => {
+      const p = pieces[other] && pieces[other]!.outline.length >= 3 ? pieces[other]! : pieces[pid]!;
+      return boundaryCellSet(p.outline, p.darts, n);
+    })();
+    return baseBoundary[other]!.has(local);
+  };
   const out: { i: number; j: number }[] = [];
   for (const s of doc.seams ?? []) {
     const pidA = pieceIdOf(s.a);
@@ -511,9 +584,24 @@ export function compileCrossSeams(
     const paired = pairRunCells(pI, pJ, { from: runI.from, to: runI.to }, { from: runJ.from, to: runJ.to }, n);
     if (!paired) continue;
     for (let k = 0; k < paired.a.length; k++) {
-      const gi = globalOf(pidI, paired.a[k]!);
-      const gj = globalOf(pidJ, paired.b[k]!);
+      const li = paired.a[k]!;
+      const lj = paired.b[k]!;
+      const gi = globalOf(pidI, li);
+      const gj = globalOf(pidJ, lj);
       if (gi !== gj) out.push({ i: gi, j: gj });
+      // Sew BOTH faces: the same seam repeated on the back panels, so the
+      // piece HUGS the body instead of flapping (before, only the front rim
+      // was sewn and the piece's back panel hung loose — the root cause of
+      // « pièces ouvertes »). Two guards keep the twin honest: it must land
+      // on a BOUNDARY cell of its own panel's mask (twinOnEdge — a divergent
+      // back outline may leave the cell interior), and combineClothMeshes
+      // still drops any endpoint that is CUT (parked, invMass 0). The caller
+      // must also un-stitch the piece's own rim along the sewn run
+      // (crossSewnOpenCells) so the twin can't weld the body's open edge
+      // shut through the body.
+      const mi = mirrorOf(pidI, li);
+      const mj = mirrorOf(pidJ, lj);
+      if (mi !== mj && twinOnEdge(pidI, li) && twinOnEdge(pidJ, lj)) out.push({ i: mi, j: mj });
     }
   }
   return out;

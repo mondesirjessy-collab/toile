@@ -10,6 +10,7 @@ import {
   compileDraft,
   compileAssembly,
   compileCrossSeams,
+  crossSewnOpenCells,
   removeFreePiece,
   tshirtDraft,
   reindexAssemblySeams,
@@ -328,6 +329,87 @@ describe('multi-piece free editor (pieceId / cross-seams)', () => {
       expect(c.i).toBeLessThan(baseCount); // the base (front) side stays in the base range
       expect(c.j).toBeGreaterThanOrEqual(baseCount); // the free piece is appended after the base
     }
+  });
+
+  it('compileCrossSeams sews BOTH faces: each drawn pair has a back-panel twin', () => {
+    const n = 32;
+    const panelSize = n * n;
+    const doc = defaultDraft(n);
+    doc.pieces = [square()];
+    doc.seams = [{ a: { face: 'front', from: 5, to: 6 }, b: { pieceId: 2, from: 0, to: 1 } }];
+    const baseCount = 2 * panelSize;
+    const offsets = [0, panelSize, baseCount];
+    const cross = compileCrossSeams(doc, n, offsets, 2);
+    expect(cross.length).toBeGreaterThan(0);
+    expect(cross.length % 2).toBe(0); // pairs come in front/back twins
+    for (let k = 0; k < cross.length; k += 2) {
+      const front = cross[k]!;
+      const back = cross[k + 1]!;
+      expect(front.i).toBeLessThan(panelSize); // drawn on the body's FRONT panel
+      expect(back.i).toBe(front.i + panelSize); // twin lands on the body's BACK panel
+      expect(back.j).toBe(front.j + panelSize); // …and on the piece's own back panel
+    }
+  });
+
+  it('a seam drawn on the BACK face mirrors onto the FRONT panel', () => {
+    const n = 32;
+    const panelSize = n * n;
+    const doc = defaultDraft(n);
+    doc.pieces = [square()];
+    doc.seams = [{ a: { face: 'back', from: 5, to: 6 }, b: { pieceId: 2, from: 0, to: 1 } }];
+    const offsets = [0, panelSize, 2 * panelSize];
+    const cross = compileCrossSeams(doc, n, offsets, 2);
+    expect(cross.length).toBeGreaterThan(0);
+    for (let k = 0; k < cross.length; k += 2) {
+      const drawn = cross[k]!;
+      const twin = cross[k + 1]!;
+      expect(drawn.i).toBeGreaterThanOrEqual(panelSize); // drawn on the BACK panel
+      expect(twin.i).toBe(drawn.i - panelSize); // twin on the FRONT panel
+      expect(twin.j).toBe(drawn.j + panelSize); // piece side still mirrors up
+    }
+  });
+
+  it('the twin is dropped when the back mask leaves the mirrored cell INTERIOR', () => {
+    // Front has a deep neckline scoop; the back is a plain quad whose top edge
+    // sits at v=0 — every front scoop-rim cell is alive but INTERIOR in the
+    // back mask, so sewing a piece to the front neckline must emit NO back
+    // twin (a seam into mid-fabric would pinch a permanent tuft).
+    const n = 32;
+    const panelSize = n * n;
+    const doc = defaultDraft(n);
+    doc.back = {
+      outline: [
+        [0.2, 0.0],
+        [0.8, 0.0],
+        [0.9, 0.97],
+        [0.1, 0.97],
+      ],
+      darts: [],
+      seams: [],
+      openEdges: [],
+      width: 0.95,
+      height: 1.1,
+      topY: 1.6,
+      gap: 1.0,
+    };
+    doc.pieces = [square()];
+    // Front neckline run (vertices 1→3, the scoop) sewn to the piece's top edge.
+    doc.seams = [{ a: { face: 'front', from: 1, to: 3 }, b: { pieceId: 2, from: 0, to: 1 } }];
+    const cross = compileCrossSeams(doc, n, [0, panelSize, 2 * panelSize], 2);
+    expect(cross.length).toBeGreaterThan(0); // the drawn (front) pairs are all there
+    expect(cross.every((c) => c.i < panelSize)).toBe(true); // …but no twin landed mid-fabric on the back panel
+  });
+
+  it('crossSewnOpenCells lists the piece cells of a cross-sewn run (a sewn edge is no rim)', () => {
+    const n = 32;
+    const doc = defaultDraft(n);
+    doc.pieces = [square()];
+    doc.seams = [{ a: { face: 'front', from: 5, to: 6 }, b: { pieceId: 2, from: 0, to: 1 } }];
+    const cells = crossSewnOpenCells(doc, 2, n);
+    expect(cells.length).toBeGreaterThan(0);
+    // The sewn run is the square's TOP edge (v≈0.2): every cell sits in that band.
+    for (const c of cells) expect(Math.floor(c / n) / (n - 1)).toBeLessThan(0.3);
+    expect(crossSewnOpenCells(doc, 3, n)).toEqual([]); // absent piece → nothing
   });
 
   it('compileCrossSeams returns nothing for a non-entering / absent piece', () => {

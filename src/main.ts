@@ -1,7 +1,7 @@
 import { initGpu, WebGPUNotSupportedError } from './engine/gpu/Device';
 import { ParticleSystem } from './engine/solver/ParticleSystem';
 import { generateClothGrid, generateSeamedPanels, combineClothMeshes, type CrossSeam, type ClothMeshData } from './engine/cloth/ClothMesh';
-import { defaultDraft, compileDraft, compileAssembly, compileCrossSeams, removeFreePiece, sanitizeDraft, type DraftDoc, type AssemblySeam } from './engine/pattern/Draft';
+import { defaultDraft, compileDraft, compileAssembly, compileCrossSeams, crossSewnOpenCells, removeFreePiece, sanitizeDraft, type DraftDoc, type AssemblySeam } from './engine/pattern/Draft';
 import type { SceneMode } from './app/ControlPanel';
 import { ClothRenderer, DEFAULT_FABRIC } from './app/ClothRenderer';
 import { OrbitCamera } from './app/OrbitCamera';
@@ -788,6 +788,11 @@ async function main(): Promise<void> {
               offsets[pid] = garment.count; // where this piece's cells will land in the combined mesh
               if (!fp || fp.outline.length < 3) continue;
               const fpc = compileDraft(fp, resolution);
+              // A cross-sewn edge is no longer a free rim: exclude its cells
+              // from this piece's own front↔back rim stitching, so a both-faces
+              // assembly seam can't transitively weld the body's open edge shut
+              // THROUGH the body (see crossSewnOpenCells).
+              const openAll = new Set([...fpc.openCells, ...crossSewnOpenCells(doc, pid, resolution)]);
               const pieceMesh = generateSeamedPanels({
                 resolution,
                 width: fp.width,
@@ -797,10 +802,10 @@ async function main(): Promise<void> {
                 shape: 'freeform',
                 mask: { outline: fp.outline, darts: fp.darts },
                 extraSeams: fpc.extraSeams,
-                extraOpenings: cellOpen(fpc.openCells),
+                extraOpenings: cellOpen(openAll),
                 maskBack: { outline: fp.outline, darts: fp.darts },
                 extraSeamsBack: fpc.extraSeams,
-                extraOpeningsBack: cellOpen(fpc.openCells),
+                extraOpeningsBack: cellOpen(openAll),
               });
               // Spawn it in FRONT of the body (at the body's front-panel plane),
               // clear of the avatar SDF collider — spawning inside would eject it

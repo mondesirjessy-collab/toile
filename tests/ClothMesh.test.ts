@@ -552,15 +552,23 @@ describe('combineClothMeshes (outfits)', () => {
   });
 
   it('flags cross-seamed rows as self-collision-exempt', () => {
-    // Sew the tee's bottom row to the skirt's top row (front panels).
+    // Sew the tee's bottom row to the skirt's top row (front panels) — only
+    // where BOTH rows carry live fabric: the shapes cut the row ends, and a
+    // seam touching a cut (parked, invMass-0) particle is dropped at combine
+    // time instead of yanking the garment toward the parking spot.
     const cross = Array.from({ length: n }, (_, u) => ({
       i: (n - 1) * n + u,
       j: tee.count + u,
-    }));
+    })).filter((cs) => tee.invMasses[cs.i]! > 0 && skirt.invMasses[cs.j - tee.count]! > 0);
+    expect(cross.length).toBeGreaterThan(0); // the live span really exists
     const sewn = combineClothMeshes(tee, skirt, cross);
     expect(sewn.seamFree).toHaveLength(sewn.count);
     // Cross-seams are real Seam edges, so seamCount must include them (M12).
     expect(sewn.seamCount).toBe(tee.seamCount + skirt.seamCount + cross.length);
+    // A seam aimed at a CUT particle (the row's corner, outside both shapes)
+    // is dropped — no constraint may reference parked fabric.
+    const toCut = combineClothMeshes(tee, skirt, [{ i: (n - 1) * n, j: tee.count }]);
+    expect(toCut.seamCount).toBe(tee.seamCount + skirt.seamCount);
     // The per-kind counts sum to constraintCount for a sewn combination.
     expect(sewn.structuralCount + sewn.shearCount + sewn.bendingCount + sewn.seamCount).toBe(sewn.constraintCount);
     for (const cs of cross) {

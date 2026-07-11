@@ -1272,6 +1272,12 @@ export function combineClothMeshes(
     throw new Error('combineClothMeshes: garments must share the same resolution');
   }
   const count = a.count + b.count;
+  // Drop seams touching a CUT particle (inverse mass 0, parked far below):
+  // with an independent back mask, a both-faces seam pair can target a cell
+  // the back outline cut away — sewing live fabric to a parked particle
+  // would yank the garment toward it. Out-of-range indices are dropped too.
+  const alive = (g: number): boolean => (g < a.count ? a.invMasses[g]! > 0 : b.invMasses[g - a.count]! > 0);
+  const seams = crossSeams.filter((cs) => cs.i >= 0 && cs.i < count && cs.j >= 0 && cs.j < count && alive(cs.i) && alive(cs.j));
 
   const positions = new Float32Array(count * 4);
   positions.set(a.positions, 0);
@@ -1304,7 +1310,7 @@ export function combineClothMeshes(
     if (b.anchorY) anchorY.set(b.anchorY, a.count);
   }
   const na = a.resolution;
-  for (const cs of crossSeams) {
+  for (const cs of seams) {
     for (const k of [cs.i, cs.i - na, cs.j, cs.j + na]) {
       if (k >= 0 && k < count) seamFree[k] = 1;
     }
@@ -1329,7 +1335,7 @@ export function combineClothMeshes(
   // a's, so a waist seam between a narrow bodice and a 1.6× skirt isn't slack
   // toward the wider piece (audit M13).
   const seamRest = Math.min(a.spacing, b.spacing) * 0.15;
-  for (const cs of crossSeams) {
+  for (const cs of seams) {
     all.push({ i: cs.i, j: cs.j, rest: seamRest, kind: ConstraintKind.Seam });
   }
   const { ordered, colorOffsets, colorCounts } = colorConstraints(all, count);
@@ -1408,7 +1414,7 @@ export function combineClothMeshes(
     // Cross-garment seams (embu / robe froncée waist) are real Seam edges in
     // `ordered`, so count them too — otherwise the per-kind totals no longer
     // sum to constraintCount for any sewn combination (audit M12).
-    seamCount: a.seamCount + b.seamCount + crossSeams.length,
+    seamCount: a.seamCount + b.seamCount + seams.length,
     cornerIndices: a.cornerIndices,
     triangleIndices,
     layers,
