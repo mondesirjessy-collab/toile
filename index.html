@@ -86,7 +86,7 @@
   <canvas id="view"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 3 — atelier CAO : T-shirt oversize sur mesures · v108</small></span>
+    <span class="title">TOILE<small>phase 3 — atelier recentré : tracé devant/dos + T-shirt sur mesures · v109</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
       <span id="hint">glisser sur le tissu : le tirer · glisser à côté : tourner · clic droit + glisser : se déplacer · molette : zoom · R : reset</span>
@@ -98,10 +98,11 @@
       <button id="at-tshirt" title="Charger un t-shirt de base déjà assemblé, dimensionné à l'avatar">👕 T-shirt</button>
       <button id="at-new" title="Repartir d'une toile vierge et tracer le DEVANT à la plume">✎ Devant</button>
       <button id="at-back" title="Tracer le DOS à la plume (indépendant du devant)">✎ Dos</button>
-      <button id="at-piece" title="Dessiner une nouvelle pièce libre (col, empiècement…) à coudre au corps">+ Pièce</button>
-      <button id="at-del" title="Supprimer la pièce libre active (cliquer d'abord sa colonne)">− Pièce</button>
-      <button id="at-sleeves" title="Ajouter/retirer des manches cousues aux emmanchures">+ Manches</button>
-      <button id="at-collar" title="Ajouter/retirer un col cousu à l'encolure">+ Col</button>
+      <!-- « + Pièce / − Pièce / + Manches / + Col » retirés (v109) : le moteur ne
+           sait coudre une pièce rapportée que sur la face avant → pièces ouvertes,
+           manches non fermées. Ils reviendront avec le chantier « pièces qui
+           s'enroulent » (couture des deux faces + fermeture en tube). Le code
+           moteur (compileCrossSeams, pieces[], sleeveMesh…) reste en place. -->
       <button id="at-pen" title="Fermer la forme dessinée (ou cliquer le premier point)">Terminer</button>
       <button id="at-big" title="Basculer le grand panneau de dessin 2D">⤢ Grand plan</button>
       <button id="at-sim" title="Draper la pièce sur le mannequin (lancer la simulation)">▶ Simuler</button>

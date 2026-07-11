@@ -444,8 +444,6 @@ async function main(): Promise<void> {
     draftTouched = false;
     atelierSleeves = false;
     atelierCollar = false;
-    document.getElementById('at-sleeves')?.classList.remove('active');
-    document.getElementById('at-collar')?.classList.remove('active');
     build();
   });
   // Draw the BACK face from scratch (côte-à-côte): pen on the right column.
@@ -457,43 +455,13 @@ async function main(): Promise<void> {
     const dims = (draft ?? defaultDraft(resolution as 32 | 64 | 128)).piece;
     patternView.startPen(dims.width, dims.height, dims.topY, dims.gap, 1);
   });
-  // Multi-piece FREE editor: draw a NEW piece (collar, yoke, panel…) in its own
-  // column, to be sewn to the body. A thin doubled panel (small gap), spawned in
-  // front of the mannequin (build translates it out of the collider), pulled onto
-  // the body by whatever edge the user sews it to.
-  (document.getElementById('at-piece') as HTMLElement).addEventListener('click', () => {
-    if (!bigPanel) setBig(true);
-    atelierDesign = true;
-    teePreset = false; // back to freeform editing
-    simBtn().classList.remove('running');
-    const dims = (draft ?? defaultDraft(resolution as 32 | 64 | 128)).piece;
-    const pid = 2 + (draft?.pieces?.length ?? 0);
-    patternView.startPen(dims.width, dims.height, dims.topY, 0.12, pid);
-  });
-  // Remove the ACTIVE free piece (click its column first). No-op on front/back.
-  (document.getElementById('at-del') as HTMLElement).addEventListener('click', () => {
-    atelierDesign = true;
-    simBtn().classList.remove('running');
-    patternView.deleteActiveFreePiece();
-  });
+  // « + Pièce / − Pièce / + Manches / + Col » : boutons retirés (v109) — le moteur
+  // ne coud une pièce rapportée que sur la face avant (pièces ouvertes, manches non
+  // fermées). Le machinery (startPen(pid), deleteActiveFreePiece, atelierSleeves/
+  // atelierCollar dans build()) reste en place : c'est la base du chantier
+  // « pièces qui s'enroulent », et l'import .toile.json avec pièces libres marche.
   (document.getElementById('at-pen') as HTMLElement).addEventListener('click', () => patternView.finishPen());
   (document.getElementById('at-sim') as HTMLElement).addEventListener('click', () => simulate());
-  // Multi-piece stage 1: toggle system sleeves on the atelier garment.
-  (document.getElementById('at-sleeves') as HTMLElement).addEventListener('click', (e) => {
-    atelierSleeves = !atelierSleeves;
-    (e.currentTarget as HTMLElement).classList.toggle('active', atelierSleeves);
-    atelierDesign = true; // re-freeze flat so the new pieces are visible before draping
-    simBtn().classList.remove('running');
-    build();
-  });
-  // Multi-piece: toggle a system collar at the neckline.
-  (document.getElementById('at-collar') as HTMLElement).addEventListener('click', (e) => {
-    atelierCollar = !atelierCollar;
-    (e.currentTarget as HTMLElement).classList.toggle('active', atelierCollar);
-    atelierDesign = true;
-    simBtn().classList.remove('running');
-    build();
-  });
   const profiler = new GpuProfiler(device);
 
   // Fabric params kept across rebuilds (a resolution change recreates the sim).
