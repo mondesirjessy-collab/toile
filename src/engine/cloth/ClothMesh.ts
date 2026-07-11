@@ -346,7 +346,7 @@ export interface SeamedPanelsOptions {
    */
   shape?: 'rect' | 'aline' | 'tshirt' | 'skirt' | 'setin' | 'pants' | 'freeform';
   /** Pattern measurements (grading): shape-specific, all in normalized [0,1] pattern units. */
-  shapeParams?: { hem?: number; scoop?: number; sleeve?: number; profile?: number[] };
+  shapeParams?: { hem?: number; scoop?: number; sleeve?: number; profile?: number[]; neck?: number };
   /**
    * FREEFORM piece (shape==='freeform', the "atelier" editor): an arbitrary
    * outline polygon in [0,1]² UV, minus dart wedges cut from it. Rasterized to
@@ -407,18 +407,26 @@ type ShapeParams = NonNullable<SeamedPanelsOptions['shapeParams']>;
 /** True when (u,v) ∈ [0,1]² lies inside the kimono-tee pattern piece: body
  * column plus sleeve bands angled downward to follow the mannequin's A-pose
  * arms, with a neck scoop at the top. */
-function tshirtShape(u: number, v: number): boolean {
+function tshirtShape(u: number, v: number, p: ShapeParams = {}): boolean {
   const x = Math.abs(u - 0.5);
   const bodyHalf = 0.24;
   if (x <= bodyHalf) {
-    // Neck scoop.
+    // Neck scoop. `neck` = the neckline half-width (fraction of piece width),
+    // measurement-driven — an oversized body keeps a narrow crew neck that stays
+    // on the shoulders instead of sliding off.
+    const neckHalf = p.neck ?? 0.11;
     if (v < 0.09) {
-      const scoop = 0.11 * Math.sqrt(1 - (v / 0.09) ** 2);
+      const scoop = neckHalf * Math.sqrt(1 - (v / 0.09) ** 2);
       if (x < scoop) return false;
     }
     return true;
   }
   // Sleeve: a band sloping down as it leaves the body, matching the arm pose.
+  // Integral to the body (a kimono / drop-shoulder cut) — front+back sew into a
+  // tube around the arm, so it drapes down instead of flapping like a set-in cap.
+  // `sleeve` = outer x bound (cuff) — a shorter bound = a shorter sleeve.
+  const sleeveEnd = p.sleeve ?? 0.5;
+  if (x > sleeveEnd) return false;
   const drop = 0.75 * (x - bodyHalf);
   return v >= drop && v <= drop + 0.34;
 }
@@ -471,9 +479,12 @@ function setinShape(u: number, v: number, p: ShapeParams = {}): boolean {
       ? sideHalfWidth((v - 0.36) / 0.64, { profile: p.profile })
       : 0.22;
   if (x <= bodyEdge) {
-    // Body, with a neck scoop.
+    // Body, with a neck scoop. `neck` = the neckline half-width (fraction of the
+    // piece width) — measurement-driven, so an OVERSIZED body can keep a NARROW
+    // crew neck that stays on the shoulders instead of sliding off.
+    const neckHalf = p.neck ?? 0.1;
     if (v < 0.09) {
-      const scoop = 0.1 * Math.sqrt(1 - (v / 0.09) ** 2);
+      const scoop = neckHalf * Math.sqrt(1 - (v / 0.09) ** 2);
       if (x < scoop) return false;
     }
     return true;
@@ -512,13 +523,13 @@ function isOpening(shape: PatternShape, uu: number, vv: number, p: ShapeParams =
   if (vv > 0.97) return true; // hem
   if (shape === 'aline') return vv < 0.13 + step && x < (p.scoop ?? 0.1) + 0.02 + step; // neckline
   if (shape === 'tshirt') {
-    if (vv < 0.1 + step && x < 0.12 + step) return true; // neckline
-    if (x > 0.48) return true; // sleeve ends (the arm comes out here)
+    if (vv < 0.1 + step && x < (p.neck ?? 0.11) + 0.02 + step) return true; // neckline
+    if (x > (p.sleeve ?? 0.5) - 0.02) return true; // sleeve cuff (the arm comes out here)
   }
   if (shape === 'skirt') return vv < 0.04; // waist
   if (shape === 'pants') return vv < 0.04; // waist (leg hems via the vv > 0.97 rule)
   if (shape === 'setin') {
-    if (vv < 0.1 + step && x < 0.11 + step) return true; // neckline
+    if (vv < 0.1 + step && x < (p.neck ?? 0.1) + 0.025 + step) return true; // neckline
     if (x > (p.sleeve ?? 0.47) - 0.02) return true; // sleeve cuffs
     // Armhole edges (body side + the whole sleeve-cap curve) are sewn
     // island-to-island, not front-to-back — keep them out of the mirror
@@ -639,7 +650,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
   // triangle. Keeping the grid regular keeps the GPU normals pass trivial.
   const insideUV = (uu: number, vv: number): boolean => {
     if (shape === 'aline') return alineShape(uu, vv, shapeParams);
-    if (shape === 'tshirt') return tshirtShape(uu, vv);
+    if (shape === 'tshirt') return tshirtShape(uu, vv, shapeParams);
     if (shape === 'skirt') return skirtShape(uu, vv, shapeParams);
     if (shape === 'setin') return setinShape(uu, vv, shapeParams);
     if (shape === 'pants') return pantsShape(uu, vv);

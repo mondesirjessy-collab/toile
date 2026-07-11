@@ -741,26 +741,35 @@ async function main(): Promise<void> {
     const mesh =
       sceneMode === 'atelier'
         ? (() => {
-            // T-SHIRT preset: the proven set-in construction (body + 2 sleeves on
-            // one sheet, armholes stitched island-to-island on BOTH panels → a
-            // clean set-in drape), SIZED to the avatar's MEASUREMENTS: the body
-            // half-width (bodyEdge 0.22·width) = quarter-chest + ease, and the side
-            // profile below the armhole follows waist → hip. (Point-editable sleeves
-            // are the next step — they need the multi-piece island seam.)
+            // T-SHIRT preset: an OVERSIZED, drop-shoulder tee (matching the real
+            // K.Kose oversized pattern — boxy body, straight sides, deep armhole,
+            // wide short sleeves), built with the proven set-in construction (body
+            // + 2 sleeves on one sheet, armholes stitched island-to-island on both
+            // panels → a clean drape), and SIZED from the avatar's chest so it
+            // scales with the mannequin. Ref proportions (size chart): chest flat
+            // ≈ length·0.79, boxy (bottom = chest), armhole ≈ 0.45·chest.
             if (teePreset) {
-              const q = 0.0125; // quarter of the girth ease
-              const halfChest = m.chest.circ / 4 + q;
-              const halfWaist = m.waist.circ / 4 + q;
-              const halfHip = Math.max(m.hip.circ / 4, m.chest.circ / 4) + q; // never dip under the hip
-              const w = halfChest / 0.22; // setinShape's body edge is 0.22·width → make it the quarter-chest
+              const OVERSIZE = 1.35; // garment chest ≈ 1.35× the body chest (oversized boxy)
+              const chestFlat = (m.chest.circ * OVERSIZE) / 2; // pit-to-pit (front width); the kimono body spans 0.48·width
+              const w = chestFlat / 0.48;
+              // Neckline: a NARROW crew neck (~18 cm across, snug like the reference size
+              // chart), sized in metres then converted to the piece-width fraction — so the
+              // oversized-wide body keeps a neck that grips the shoulders instead of sliding
+              // off (the body scales up, the neck does not).
+              const neckHalf = 0.088 / w;
+              const sleeveEnd = 0.24 + 0.2 / w; // ~20 cm short sleeve (ref chart), from the body edge (0.24)
+              // Kimono / drop-shoulder cut: the sleeve is INTEGRAL to the body (not a
+              // separate island), so front+back sew into a tube around the arm and the
+              // sleeve drapes DOWN instead of flapping — the real construction of an
+              // oversized drop-shoulder tee (matching the K.Kose reference pattern).
               return generateSeamedPanels({
                 resolution,
                 width: w,
-                height: 0.62,
+                height: 0.66, // shoulder → hem (a long, oversized body)
                 gap: 0.9,
                 topY: 1.52 + dyShoulder,
-                shape: 'setin',
-                shapeParams: { sleeve: 0.4, profile: [halfChest / w, halfWaist / w, halfHip / w] },
+                shape: 'tshirt',
+                shapeParams: { neck: neckHalf, sleeve: sleeveEnd },
               });
             }
             // Freeform piece: the user's drawn outline + darts + hand-seams
