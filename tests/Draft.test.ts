@@ -465,6 +465,22 @@ describe('multi-piece free editor (pieceId / cross-seams)', () => {
     expect(pieceIdOf(s.seams![0]!.a)).toBe(2); // the survivor's seam re-pointed 3 → 2
   });
 
+  it('sanitizeDraft keeps a free piece\'s sleeve mode (wrap) and its true small size', () => {
+    const doc = defaultDraft(32);
+    doc.pieces = [{ ...square(), width: 0.16, height: 0.42, gap: 0.18, wrap: 'armL' }];
+    const round = sanitizeDraft(JSON.parse(JSON.stringify(doc)));
+    expect(round.pieces![0]!.wrap).toBe('armL');
+    expect(round.pieces![0]!.width).toBeCloseTo(0.16); // free pieces keep sizes below the body floor (0.3)
+    expect(round.pieces![0]!.gap).toBeCloseTo(0.18);
+    // A bogus wrap value is dropped, not passed through.
+    doc.pieces = [{ ...square(), wrap: 'tête' as 'armL' }];
+    expect(sanitizeDraft(JSON.parse(JSON.stringify(doc))).pieces![0]!.wrap).toBeUndefined();
+    // The BODY keeps its 0.3 floor (a garment can't shrink to doll size by typo).
+    const tiny = defaultDraft(32);
+    tiny.piece.width = 0.05;
+    expect(sanitizeDraft(JSON.parse(JSON.stringify(tiny))).piece.width).toBeCloseTo(0.3);
+  });
+
   it('sanitizeDraft omits `pieces` when there are none (back-compat invariant)', () => {
     const s = sanitizeDraft(defaultDraft(32));
     expect('pieces' in s).toBe(false);

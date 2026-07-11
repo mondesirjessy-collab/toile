@@ -791,7 +791,11 @@ async function main(): Promise<void> {
               // A cross-sewn edge is no longer a free rim: exclude its cells
               // from this piece's own front↔back rim stitching, so a both-faces
               // assembly seam can't transitively weld the body's open edge shut
-              // THROUGH the body (see crossSewnOpenCells).
+              // THROUGH the body (see crossSewnOpenCells). This applies to wrap
+              // pieces too: with the spread spawn, a welded cap rim would slam
+              // its two panels together across the full body gap (empirically
+              // collapsed the assembly); the open rim closes gently with the
+              // drape and the cap pins carry the tube.
               const openAll = new Set([...fpc.openCells, ...crossSewnOpenCells(doc, pid, resolution)]);
               const pieceMesh = generateSeamedPanels({
                 resolution,
@@ -807,13 +811,41 @@ async function main(): Promise<void> {
                 extraSeamsBack: fpc.extraSeams,
                 extraOpeningsBack: cellOpen(openAll),
               });
-              // Spawn it in FRONT of the body (at the body's front-panel plane),
-              // clear of the avatar SDF collider — spawning inside would eject it
-              // violently (as with the sleeves). Its assembly seam then pulls it
-              // onto the body and it drapes.
-              const spawnZ = d.gap / 2;
-              for (let q = 0; q < pieceMesh.count; q++) {
-                pieceMesh.positions[q * 4 + 2] = pieceMesh.positions[q * 4 + 2]! + spawnZ;
+              if (fp.wrap === 'armL' || fp.wrap === 'armR') {
+                // SLEEVE MODE: wrap the piece around the arm — both panels
+                // straddle it in z, pivoted at the piece's own top edge and
+                // tilted to the A-pose (the proven v96 tube placement) — but on
+                // an EDITABLE draft piece. Its rim stitching closes it into a
+                // tube; its cap run cross-sewn to the armhole (both faces,
+                // v110) makes a real sleeve. The panels spawn SPREAD at the
+                // body's own gap (±d.gap/2, the arm between them): body and
+                // sleeve then close onto the mannequin TOGETHER, and the
+                // armhole↔cap pins are short at spawn. (Empirical matrix over
+                // 11 runs: snug ±fp.gap/2 spawn — v96's — collapses HERE
+                // because the assembly seams yank the still-wide body onto the
+                // already-snug tube; the spread spawn was the only worn result.)
+                const sign = fp.wrap === 'armR' ? 1 : -1;
+                const theta = Math.atan2(0.11 * (fp.height / 0.5) * sign, fp.height);
+                const cosT = Math.cos(theta);
+                const sinT = Math.sin(theta);
+                const armX = m.shoulderHalfW * sign;
+                const spawnHalfGap = d.gap / 2; // match the body's spawn spread
+                for (let q = 0; q < pieceMesh.count; q++) {
+                  const px = pieceMesh.positions[q * 4]!;
+                  const py = pieceMesh.positions[q * 4 + 1]! - fp.topY;
+                  pieceMesh.positions[q * 4] = px * cosT - py * sinT + armX;
+                  pieceMesh.positions[q * 4 + 1] = px * sinT + py * cosT + fp.topY;
+                  pieceMesh.positions[q * 4 + 2] = Math.sign(pieceMesh.positions[q * 4 + 2]!) * spawnHalfGap;
+                }
+              } else {
+                // Spawn it in FRONT of the body (at the body's front-panel plane),
+                // clear of the avatar SDF collider — spawning inside would eject it
+                // violently (as with the sleeves). Its assembly seam then pulls it
+                // onto the body and it drapes.
+                const spawnZ = d.gap / 2;
+                for (let q = 0; q < pieceMesh.count; q++) {
+                  pieceMesh.positions[q * 4 + 2] = pieceMesh.positions[q * 4 + 2]! + spawnZ;
+                }
               }
               garment = combineClothMeshes(garment, pieceMesh, compileCrossSeams(doc, resolution, offsets, pid));
             }

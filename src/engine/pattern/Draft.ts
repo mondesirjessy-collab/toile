@@ -70,6 +70,13 @@ export interface DraftPiece {
   height: number;
   topY: number;
   gap: number;
+  // SLEEVE MODE (free pieces only): spawn the piece wrapped around an arm — its
+  // two panels straddle the arm in z, pivoted at the piece's own top edge and
+  // tilted to the arm's A-pose — instead of flat in front of the body. With its
+  // rim mirror-stitched along both long edges (the default), the piece closes
+  // into a TUBE around the arm; its cap run cross-sewn to the armhole makes a
+  // real sleeve. Absent → flat spawn (unchanged).
+  wrap?: 'armL' | 'armR';
 }
 
 export interface DraftDoc {
@@ -471,7 +478,11 @@ function pairRunCells(
   const B = boundaryRunCells(pb.outline, pb.darts, runB, n);
   if (!A.length || !B.length) return null;
   const cellUV = (cell: number): UV => [(cell % n) / (n - 1), Math.floor(cell / n) / (n - 1)];
-  const m = Math.min(A.length, B.length);
+  // Zip over the LONGER run: every cell of both edges gets sewn (the shorter
+  // run's cells repeat). Equal-length edges pair 1:1 as before; a long edge on
+  // a short one GATHERS onto it — the tailor's embu — instead of leaving the
+  // extra cells hanging (a sleeve cap held by a handful of pins slides off).
+  const m = Math.max(A.length, B.length);
   const bAt = (k: number, reversed: boolean): { cell: number } => B[Math.floor(((reversed ? m - 1 - k : k) * B.length) / m)]!;
   const cost = (reversed: boolean): number => {
     let sum = 0;
@@ -747,7 +758,7 @@ export function sanitizeDraft(raw: unknown): DraftDoc {
   // intersecting, so a bad file can't produce a GPU blowup. `minGap` lets a thin
   // FREE piece (spawned with gap 0.12) survive the round-trip — the base clamp
   // floor (0.3) is tuned for the body and would inflate a small piece's panels.
-  const parsePiece = (pp: Partial<DraftPiece> | undefined, minGap = 0.3): DraftPiece | null => {
+  const parsePiece = (pp: Partial<DraftPiece> | undefined, minGap = 0.3, minDim = 0.3): DraftPiece | null => {
     if (!pp || !Array.isArray(pp.outline) || pp.outline.length < 3) return null;
     const outline = pp.outline.slice(0, 128).map(uv);
     if (isSelfIntersecting(outline)) return null;
@@ -769,10 +780,12 @@ export function sanitizeDraft(raw: unknown): DraftDoc {
         return { a: run(hs?.a), b: run(hs?.b) };
       }),
       openEdges: (Array.isArray(pp.openEdges) ? pp.openEdges : []).slice(0, 16).map(run),
-      width: num(pp.width, 0.3, 2.0, DEFAULT_PIECE_DIMS.width),
-      height: num(pp.height, 0.3, 2.0, DEFAULT_PIECE_DIMS.height),
+      width: num(pp.width, minDim, 2.0, DEFAULT_PIECE_DIMS.width),
+      height: num(pp.height, minDim, 2.0, DEFAULT_PIECE_DIMS.height),
       topY: num(pp.topY, 0.5, 2.2, DEFAULT_PIECE_DIMS.topY),
       gap: num(pp.gap, minGap, 1.6, DEFAULT_PIECE_DIMS.gap),
+      // Sleeve mode survives the round-trip; anything but the two arms is dropped.
+      ...(pp.wrap === 'armL' || pp.wrap === 'armR' ? { wrap: pp.wrap } : {}),
     };
   };
   const front = parsePiece(d.piece);
@@ -788,7 +801,7 @@ export function sanitizeDraft(raw: unknown): DraftDoc {
   const freePieces: DraftPiece[] = [];
   const remap = new Map<number, number>(); // old pieceId (2+k) → new pieceId
   (Array.isArray(d.pieces) ? d.pieces : []).slice(0, 6).forEach((x, k) => {
-    const p = parsePiece(x as Partial<DraftPiece>, 0.1);
+    const p = parsePiece(x as Partial<DraftPiece>, 0.1, 0.1); // thin/narrow free pieces (sleeves) keep their true size
     if (p) {
       remap.set(2 + k, 2 + freePieces.length);
       freePieces.push(p);
