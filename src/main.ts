@@ -384,7 +384,7 @@ async function main(): Promise<void> {
   // pressing Simuler drops it onto the mannequin. Opening the 2D plan / editing
   // returns to design. Only meaningful in the 'atelier' scene.
   let atelierDesign = true;
-  let atelierSleeves = false; // multi-piece stage 1: add system sleeves to the atelier garment
+  let atelierSleeves = location.hash === '#v96'; // multi-piece stage 1: add system sleeves to the atelier garment (debug hash: force the proven v96 path)
   let atelierSleeveLen = 0.5; // sleeve length (shoulder→cuff, m): 0.5 long, ~0.22 short (t-shirt)
   let atelierCollar = false; // multi-piece: add a system collar band at the neckline
   let teePreset = false; // T-shirt preset: build a real set-in-sleeve tee instead of the draft
