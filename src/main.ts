@@ -1,7 +1,7 @@
 import { initGpu, WebGPUNotSupportedError } from './engine/gpu/Device';
 import { ParticleSystem } from './engine/solver/ParticleSystem';
 import { generateClothGrid, generateSeamedPanels, combineClothMeshes, type CrossSeam, type ClothMeshData } from './engine/cloth/ClothMesh';
-import { defaultDraft, compileDraft, compileAssembly, compileCrossSeams, crossSewnOpenCells, removeFreePiece, sanitizeDraft, type DraftDoc, type AssemblySeam } from './engine/pattern/Draft';
+import { defaultDraft, tshirtDraft, compileDraft, compileAssembly, compileCrossSeams, crossSewnOpenCells, removeFreePiece, sanitizeDraft, type DraftDoc, type AssemblySeam } from './engine/pattern/Draft';
 import type { SceneMode } from './app/ControlPanel';
 import { ClothRenderer, DEFAULT_FABRIC } from './app/ClothRenderer';
 import { OrbitCamera } from './app/OrbitCamera';
@@ -442,8 +442,9 @@ async function main(): Promise<void> {
     teePreset = true;
     draft = null;
     draftTouched = false;
-    atelierSleeves = false;
+    atelierSleeves = false; // the kimono preset has its own integral sleeves
     atelierCollar = false;
+    document.getElementById('at-sleeves')?.classList.remove('active');
     build();
   });
   // Draw the BACK face from scratch (côte-à-côte): pen on the right column.
@@ -455,11 +456,28 @@ async function main(): Promise<void> {
     const dims = (draft ?? defaultDraft(resolution as 32 | 64 | 128)).piece;
     patternView.startPen(dims.width, dims.height, dims.topY, dims.gap, 1);
   });
-  // « + Pièce / − Pièce / + Manches / + Col » : boutons retirés (v109) — le moteur
-  // ne coud une pièce rapportée que sur la face avant (pièces ouvertes, manches non
-  // fermées). Le machinery (startPen(pid), deleteActiveFreePiece, atelierSleeves/
-  // atelierCollar dans build()) reste en place : c'est la base du chantier
-  // « pièces qui s'enroulent », et l'import .toile.json avec pièces libres marche.
+  // « + Pièce / − Pièce / + Col » : boutons retirés (v109) — le moteur ne cousait
+  // une pièce rapportée que sur la face avant (pièces ouvertes). Le machinery
+  // (startPen(pid), deleteActiveFreePiece, atelierCollar dans build()) reste en
+  // place pour la fin du chantier « pièces qui s'enroulent ».
+  // « + Manches » (v111) : REVENU sur le chemin éprouvé v96-104 — des tubes
+  // sleeveMesh autour des bras, épinglés au corps par armholeCrossSeams (les
+  // deux panneaux du tube sur la même ligne du corps : la pince qui verrouille).
+  // Si rien n'est encore dessiné, le clic charge d'abord le corps t-shirt
+  // éprouvé (tshirtDraft, dimensionné à l'avatar) : un clic = bras dans les
+  // manches. Sur un corps dessiné/importé, les tubes s'épinglent tel quel.
+  (document.getElementById('at-sleeves') as HTMLElement).addEventListener('click', (e) => {
+    atelierSleeves = !atelierSleeves;
+    (e.currentTarget as HTMLElement).classList.toggle('active', atelierSleeves);
+    if (atelierSleeves && !draftTouched) {
+      draft = tshirtDraft(0.7 * lastGrade.topScale, 0.62, 0.9, 1.52 + lastGrade.dyShoulder, resolution as 32 | 64 | 128);
+      draftTouched = true; // the loaded body is a real editable draft (exports carry it)
+      teePreset = false;
+    }
+    atelierDesign = true; // re-freeze flat so the new tubes are visible before draping
+    simBtn().classList.remove('running');
+    build();
+  });
   (document.getElementById('at-pen') as HTMLElement).addEventListener('click', () => patternView.finishPen());
   (document.getElementById('at-sim') as HTMLElement).addEventListener('click', () => simulate());
   const profiler = new GpuProfiler(device);

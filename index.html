@@ -86,7 +86,7 @@
   <canvas id="view"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 3 — chantier manches 1/3 : les pièces se cousent des deux faces · v110</small></span>
+    <span class="title">TOILE<small>phase 3 — les manches reviennent : bras dans les manches · v111</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
       <span id="hint">glisser sur le tissu : le tirer · glisser à côté : tourner · clic droit + glisser : se déplacer · molette : zoom · R : reset</span>
@@ -98,11 +98,12 @@
       <button id="at-tshirt" title="Charger un t-shirt de base déjà assemblé, dimensionné à l'avatar">👕 T-shirt</button>
       <button id="at-new" title="Repartir d'une toile vierge et tracer le DEVANT à la plume">✎ Devant</button>
       <button id="at-back" title="Tracer le DOS à la plume (indépendant du devant)">✎ Dos</button>
-      <!-- « + Pièce / − Pièce / + Manches / + Col » retirés (v109) : le moteur ne
-           sait coudre une pièce rapportée que sur la face avant → pièces ouvertes,
-           manches non fermées. Ils reviendront avec le chantier « pièces qui
-           s'enroulent » (couture des deux faces + fermeture en tube). Le code
-           moteur (compileCrossSeams, pieces[], sleeveMesh…) reste en place. -->
+      <!-- « + Pièce / − Pièce / + Col » retirés (v109) : le moteur ne cousait une
+           pièce rapportée que sur la face avant → pièces ouvertes. Ils reviendront
+           avec la fin du chantier « pièces qui s'enroulent ». « + Manches » est
+           REVENU (v111) sur le chemin éprouvé v96-104 : tubes autour des bras,
+           épinglés au corps par armholeCrossSeams — bras dans les manches. -->
+      <button id="at-sleeves" title="Ajouter/retirer des manches (tubes cousus au corps, bras dedans)">+ Manches</button>
       <button id="at-pen" title="Fermer la forme dessinée (ou cliquer le premier point)">Terminer</button>
       <button id="at-big" title="Basculer le grand panneau de dessin 2D">⤢ Grand plan</button>
       <button id="at-sim" title="Draper la pièce sur le mannequin (lancer la simulation)">▶ Simuler</button>
