@@ -1,7 +1,7 @@
 import { initGpu, WebGPUNotSupportedError } from './engine/gpu/Device';
 import { ParticleSystem } from './engine/solver/ParticleSystem';
 import { generateClothGrid, generateSeamedPanels, combineClothMeshes, type CrossSeam, type ClothMeshData } from './engine/cloth/ClothMesh';
-import { defaultDraft, tshirtDraft, compileDraft, compileAssembly, compileCrossSeams, crossSewnOpenCells, removeFreePiece, sanitizeDraft, type DraftDoc, type AssemblySeam } from './engine/pattern/Draft';
+import { defaultDraft, tshirtDraft, compileDraft, compileAssembly, compileCrossSeams, crossSewnOpenCells, removeFreePiece, sanitizeDraft, pointInPolygon, pointInTriangle, type DraftDoc, type AssemblySeam } from './engine/pattern/Draft';
 import type { SceneMode } from './app/ControlPanel';
 import { ClothRenderer, DEFAULT_FABRIC } from './app/ClothRenderer';
 import { OrbitCamera } from './app/OrbitCamera';
@@ -222,6 +222,58 @@ function armholeCrossSeams(base: ClothMeshData, side: 'L' | 'R', n: number): Cro
     for (let k = 0; k < n; k++) {
       const bodyLocal = arm[Math.min(arm.length - 1, Math.floor((k * arm.length) / n))]!;
       cross.push({ i: p * ps + bodyLocal, j: base.count + p * ps + k /* sleeve top row */ });
+    }
+  }
+  return cross;
+}
+
+/**
+ * Cross-seams sewing a WRAP piece (an editable sleeve tube around an arm) to
+ * the body — the armholeCrossSeams mechanism (proven v96-104: panel-to-panel,
+ * every sleeve column pinned, gathering onto the body's upper-side cells),
+ * adapted to a freeform piece whose outline may CUT the top rows: each column
+ * pins its FIRST KEPT cell instead of row 0.
+ *
+ * ÉTAT (chantier 3/3, expérimental) : avec le MÊME corps, les MÊMES épingles
+ * et le MÊME placement, le tube sleeveMesh (shape 'rect') tient le bras
+ * dedans, mais une pièce FREEFORM équivalente pend à côté du bras — une
+ * différence structurelle rect↔freeform reste à isoler (premier geste : diff
+ * numérique des deux buffers de mesh hors GPU, voir mémoire du projet). Le
+ * chemin wrap n'est atteignable que par import ; l'UI « + Manches » (v111)
+ * passe par sleeveMesh, le chemin éprouvé.
+ */
+function wrapCrossSeams(base: ClothMeshData, piece: ClothMeshData, side: 'L' | 'R', n: number): CrossSeam[] {
+  const ps = n * n;
+  const keptBase = (local: number): boolean => base.invMasses[local]! > 0;
+  const armBot = Math.max(2, Math.round(0.22 * n)); // shoulder band, top ~22% of rows
+  const arm: number[] = []; // body front-panel local cells: one per row of the upper side
+  for (let v = 1; v <= armBot; v++) {
+    let best = -1;
+    for (let u = 0; u < n; u++) {
+      if (!keptBase(v * n + u)) continue;
+      if (side === 'R') best = u; // rightmost kept
+      else if (best < 0) best = u; // leftmost kept
+    }
+    if (best >= 0) arm.push(v * n + best);
+  }
+  const cross: CrossSeam[] = [];
+  if (!arm.length) return cross;
+  // The piece's cap cells: per column, the FIRST kept cell from the top (the
+  // outline may cut the top rows away). Kept mask is identical on both panels.
+  const cap: number[] = [];
+  for (let u = 0; u < n; u++) {
+    for (let v = 0; v < n; v++) {
+      if (piece.invMasses[v * n + u]! > 0) {
+        cap.push(v * n + u);
+        break;
+      }
+    }
+  }
+  if (!cap.length) return cross;
+  for (let p = 0; p < 2; p++) {
+    for (let k = 0; k < cap.length; k++) {
+      const bodyLocal = arm[Math.min(arm.length - 1, Math.floor((k * arm.length) / cap.length))]!;
+      cross.push({ i: p * ps + bodyLocal, j: base.count + p * ps + cap[k]! });
     }
   }
   return cross;
@@ -809,12 +861,29 @@ async function main(): Promise<void> {
               // A cross-sewn edge is no longer a free rim: exclude its cells
               // from this piece's own front↔back rim stitching, so a both-faces
               // assembly seam can't transitively weld the body's open edge shut
-              // THROUGH the body (see crossSewnOpenCells). This applies to wrap
-              // pieces too: with the spread spawn, a welded cap rim would slam
-              // its two panels together across the full body gap (empirically
-              // collapsed the assembly); the open rim closes gently with the
-              // drape and the cap pins carry the tube.
+              // THROUGH the body (see crossSewnOpenCells).
               const openAll = new Set([...fpc.openCells, ...crossSewnOpenCells(doc, pid, resolution)]);
+              if (fp.wrap === 'armL' || fp.wrap === 'armR') {
+                // WRAP piece: the CAP (first kept cell of each column) is the
+                // tube's mouth, pinned to the armhole by wrapCrossSeams — it
+                // must stay OPEN like the proven v96 tube (« top open »). A
+                // welded cap rim fights the pins and flattens the tube against
+                // the flank (the arm can't stay inside).
+                const rN = resolution;
+                const insidePiece = (uu: number, vv: number): boolean => {
+                  if (!pointInPolygon([uu, vv], fp.outline)) return false;
+                  for (const dart of fp.darts) if (pointInTriangle([uu, vv], dart.apex, dart.legA, dart.legB)) return false;
+                  return true;
+                };
+                for (let u = 0; u < rN; u++) {
+                  for (let v = 0; v < rN; v++) {
+                    if (insidePiece(u / (rN - 1), v / (rN - 1))) {
+                      openAll.add(v * rN + u);
+                      break;
+                    }
+                  }
+                }
+              }
               const pieceMesh = generateSeamedPanels({
                 resolution,
                 width: fp.width,
@@ -866,7 +935,13 @@ async function main(): Promise<void> {
                   pieceMesh.positions[q * 4 + 2] = pieceMesh.positions[q * 4 + 2]! + spawnZ;
                 }
               }
-              garment = combineClothMeshes(garment, pieceMesh, compileCrossSeams(doc, resolution, offsets, pid));
+              // Wrap pieces (sleeves) pin through the PROVEN mesh scan (see
+              // wrapCrossSeams); flat pieces keep the drawn run-based seams.
+              const pins =
+                fp.wrap === 'armL' || fp.wrap === 'armR'
+                  ? wrapCrossSeams(garment, pieceMesh, fp.wrap === 'armR' ? 'R' : 'L', resolution)
+                  : compileCrossSeams(doc, resolution, offsets, pid);
+              garment = combineClothMeshes(garment, pieceMesh, pins);
             }
             // Multi-piece (stage 1): sew a rectangular sleeve to each armhole,
             // via the SAME combineClothMeshes cross-seaming the gathered dress

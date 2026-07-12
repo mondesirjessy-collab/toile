@@ -369,7 +369,13 @@ describe('multi-piece free editor (pieceId / cross-seams)', () => {
     }
   });
 
-  it('a piece sewn onto a WELDED base run pins both its panels to the SAME body cells (cinch)', () => {
+  it('a piece sewn onto a WELDED base run still pins panel-to-panel (the v104 lesson)', () => {
+    // The proven armholeCrossSeams pins sleeve.front↔body.front AND
+    // sleeve.back↔body.BACK (i = p·n² + local): the four rims converge
+    // TRANSITIVELY through the body's own front↔back seam. Pinning the
+    // piece's back panel to the body's FRONT cell instead (a "direct cinch"
+    // variant) yanks the tube over the shoulder and ejects the arm — so a
+    // welded run must behave exactly like any other run: opposite panels.
     const n = 32;
     const panelSize = n * n;
     const doc = defaultDraft(n);
@@ -386,9 +392,9 @@ describe('multi-piece free editor (pieceId / cross-seams)', () => {
     for (let k = 0; k < cross.length; k += 2) {
       const front = cross[k]!;
       const twin = cross[k + 1]!;
-      expect(twin.i).toBe(front.i); // SAME body cell (four rims converge — v104's lock)
-      expect(twin.j).toBe(front.j + panelSize); // piece back panel
-      expect(front.i).toBeLessThan(panelSize); // anchored via the front-panel cells
+      expect(front.i).toBeLessThan(panelSize); // drawn pair on the front panels
+      expect(twin.i).toBe(front.i + panelSize); // twin on the body's BACK panel…
+      expect(twin.j).toBe(front.j + panelSize); // …and the piece's back panel
     }
   });
 
