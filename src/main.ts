@@ -402,8 +402,15 @@ async function main(): Promise<void> {
       const gridN = resolution as 32 | 64 | 128;
       if (!draft) draft = { format: 'toile-draft', version: 1, gridN, piece: defaultDraft(gridN).piece };
       draft.gridN = gridN;
-      if (pieceId >= 2) (draft.pieces ??= [])[pieceId - 2] = piece;
-      else if (pieceId === 1) draft.back = piece;
+      if (pieceId >= 2) {
+        // Une pièce dessinée pendant que « ✎ Manche » est armé devient une
+        // pièce WRAP : elle s'enroulera autour du bras choisi au clic du
+        // bouton. Consommé une seule fois (les retouches suivantes du contour
+        // gardent le wrap déjà posé sur la pièce).
+        if (penWrap && !piece.wrap) piece.wrap = penWrap;
+        penWrap = null;
+        (draft.pieces ??= [])[pieceId - 2] = piece;
+      } else if (pieceId === 1) draft.back = piece;
       else draft.piece = piece;
       // Adding/removing an outline point shifts the edge indices; the editor
       // re-indexes the assembly seams so they keep pointing at the same edges.
@@ -464,6 +471,9 @@ async function main(): Promise<void> {
   let atelierSleeveLen = 0.5; // sleeve length (shoulder→cuff, m): 0.5 long, ~0.22 short (t-shirt)
   let atelierCollar = false; // multi-piece: add a system collar band at the neckline
   let teePreset = false; // T-shirt preset: build a real set-in-sleeve tee instead of the draft
+  // ✎ Manche : la plume dessine une pièce WRAP — le bras visé est choisi au
+  // clic du bouton (le bras libre) et consommé quand la pièce se ferme.
+  let penWrap: 'armL' | 'armR' | null = null;
   const simBtn = (): HTMLElement => document.getElementById('at-sim') as HTMLElement;
   const setBig = (on: boolean): void => {
     bigPanel = on;
@@ -529,6 +539,24 @@ async function main(): Promise<void> {
     simBtn().classList.remove('running');
     const dims = (draft ?? defaultDraft(resolution as 32 | 64 | 128)).piece;
     patternView.startPen(dims.width, dims.height, dims.topY, dims.gap, 1);
+  });
+  // ✎ MANCHE : dessiner une manche à la plume. La plume s'ouvre dans une
+  // nouvelle colonne aux dimensions d'une manche (boîte biceps × longueur,
+  // panneaux à ±0.09 autour du bras) ; à la fermeture du tracé, la pièce
+  // devient WRAP sur le bras encore libre (droit d'abord, puis gauche) :
+  // tube autour du bras, tête épinglée à l'emmanchure — dessinée main, la
+  // tête courbe et le fuselage suivent le trait de l'utilisateur.
+  (document.getElementById('at-sleeve-pen') as HTMLElement).addEventListener('click', () => {
+    if (!bigPanel) setBig(true);
+    atelierDesign = true;
+    teePreset = false;
+    simBtn().classList.remove('running');
+    const wraps = (draft?.pieces ?? []).map((p) => p.wrap).filter(Boolean);
+    penWrap = wraps.includes('armR') && !wraps.includes('armL') ? 'armL' : 'armR';
+    const pid = 2 + (draft?.pieces?.length ?? 0);
+    // Boîte de tracé d'une manche : biceps ≈ 26 cm (demi-tour 0.13) avec un
+    // peu de marge, longueur jusqu'au coude, tête à l'épaule, tube ±0.09.
+    patternView.startPen(0.16, 0.5, 1.42, 0.18, pid);
   });
   // « + Pièce / − Pièce / + Col » : boutons retirés (v109) — le moteur ne cousait
   // une pièce rapportée que sur la face avant (pièces ouvertes). Le machinery
