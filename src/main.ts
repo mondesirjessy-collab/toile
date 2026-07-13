@@ -703,12 +703,20 @@ async function main(): Promise<void> {
   let lastSnapReqT = 0;
   let stillCount = 0;
   let asleep = false;
+  // Le TRANSITOIRE d'assemblage (les premières secondes après un réveil : le
+  // drop-close des panneaux + le zip des coutures) exige la pleine précision :
+  // si le gouverneur de perf a bradé les substeps (onglet lent), les coutures
+  // claquent trop fort par pas et l'assemblage rate son départ — vérifié :
+  // tous les drapés à ~55 fps/8 substeps tombaient, tous ceux à pleine
+  // précision tenaient. Pendant cette fenêtre, plancher = les substeps demandés.
+  let wakeUntil = 0;
   const wake = (): void => {
     asleep = false;
     stillCount = 0;
     sleepSnapshot = null;
     driftBase = null;
     snapshotCount = 0;
+    wakeUntil = performance.now() + 12000; // fenêtre de précision pleine (ms) — couvre le drop + le zip complet, même sur un onglet lent
   };
   let dragIndex: number | null = null;
   let dragDepth = 0;
@@ -1779,7 +1787,9 @@ async function main(): Promise<void> {
       }
     }
 
-    const substeps = Math.min(panel.substeps, govSubsteps);
+    // Fenêtre post-réveil : pleine précision (le transitoire d'assemblage ne
+    // doit pas dépendre du framerate de l'onglet) ; ensuite, le gouverneur.
+    const substeps = performance.now() < wakeUntil ? panel.substeps : Math.min(panel.substeps, govSubsteps);
     // Podium: advance the turn, hand the solver the per-second rate (it
     // derives the per-substep surface motion for friction), spin the visual.
     const omega = (podium * 2 * Math.PI) / 60;

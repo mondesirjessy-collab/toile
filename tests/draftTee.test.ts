@@ -64,6 +64,16 @@ describe('oversizeTee (le patron K.Kose 4 pièces, gradé)', () => {
     expect(doc.pieces![0]!.outline.length).toBe(9); // manche à tête arrondie
   });
 
+  it('la manche est FUSELÉE : poignet ≈ 80 % du biceps (la table de tailles)', () => {
+    const doc = oversizeTee(mkMeasure(0.78), ref);
+    const sl = doc.pieces![0]!.outline;
+    const bicepSpan = sl[6]![0] - sl[0]![0]; // coins hauts (dessous de bras)
+    const cuffSpan = sl[7]![0] - sl[8]![0]; // coins bas (poignet)
+    expect(Math.abs(cuffSpan) / bicepSpan).toBeCloseTo(0.8, 1);
+    expect(Math.min(sl[7]![0], sl[8]![0])).toBeGreaterThan(sl[0]![0]);
+    expect(Math.max(sl[7]![0], sl[8]![0])).toBeLessThan(sl[6]![0]);
+  });
+
   it('gradé sur la poitrine : plus large ET manche au biceps plus grande sur un plus grand tour', () => {
     const s = oversizeTee(mkMeasure(0.62), ref);
     const l = oversizeTee(mkMeasure(1.0), ref);

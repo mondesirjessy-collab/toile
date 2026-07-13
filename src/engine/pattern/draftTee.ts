@@ -88,25 +88,28 @@ export function oversizeTee(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
       gap: 0.9,
     };
   };
-  // Manche (×2) : pièce WRAP à TÊTE COURBE — le sommet arrondi monte au milieu
-  // (arc sinus, ~14 % de la longueur), les dessous de bras aux coins, comme la
-  // pièce du patron papier. Les côtés restent pleine largeur (le tube fiable) ;
-  // la bouche suit la courbe : wrapCrossSeams épingle la première cellule
-  // vivante de chaque colonne, donc la tête courbe s'embouti naturellement
-  // sur l'emmanchure.
+  // Manche (×2) : pièce WRAP à TÊTE COURBE et FUSELÉE — le sommet arrondi
+  // monte au milieu (arc sinus, ~14 % de la longueur), les dessous de bras aux
+  // coins, et le poignet se resserre à 80 % du biceps (table : ouverture 20 /
+  // biceps 25) : les côtés descendent en oblique, comme la pièce du patron
+  // papier. La bouche du tube suit la courbe (wrapCrossSeams épingle la
+  // première cellule vivante de chaque colonne) et le poignet suit le fuselage
+  // (dernière cellule vivante — le contrat tube ouvre les deux).
   const CAP = 0.14; // hauteur de tête (fraction de la longueur de manche)
+  const CUFF = 0.8; // ouverture du poignet / biceps (20 cm / 25 cm, la table)
   const sleeve = (wrap: 'armL' | 'armR'): DraftPiece => {
     const capArc: UV[] = [];
     for (const u of [0.1, 0.28, 0.5, 0.72, 0.9]) {
       capArc.push([u, CAP * (1 - Math.sin(Math.PI * u))]);
     }
+    const cuffIn = (1.02 * (1 - CUFF)) / 2; // rentré de chaque côté au poignet
     return {
       outline: [
-        [-0.01, CAP], // coin haut G (dessous de bras)
+        [-0.01, CAP], // coin haut G (dessous de bras, pleine largeur biceps)
         ...capArc, // tête arrondie (monte à v=0 au milieu)
         [1.01, CAP], // coin haut D
-        [1.01, 1.01], // bas D
-        [-0.01, 1.01], // bas G
+        [1.01 - cuffIn, 1.01], // poignet D (fuselé)
+        [-0.01 + cuffIn, 1.01], // poignet G
       ],
       darts: [],
       seams: [],
