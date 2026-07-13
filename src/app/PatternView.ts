@@ -46,6 +46,37 @@ export function handleValueFromLayout(h: PatternHandleSpec, x: number, y: number
   return Math.min(h.max, Math.max(h.min, raw));
 }
 
+/**
+ * Glisser-COURBE : les voisins d'arc du sommet saisi. On suit la chaîne des
+ * ±2 voisins de v tant que CHAQUE pas est court (≤ step en UV) — vrai le long
+ * d'un arc échantillonné (encolure, tête de manche), faux entre deux coins
+ * éloignés (épaule↔col, coins d'ourlet). Chaque voisin reçoit un poids
+ * d'amorti : tirer un point d'une courbe la déforme en douceur, un coin isolé
+ * bouge seul. Pure — testable sans DOM.
+ */
+export function curveNeighbors(
+  outline: readonly UV[],
+  v: number,
+  step = 0.2,
+  weights: readonly number[] = [0.55, 0.22],
+): { idx: number; w: number }[] {
+  const N = outline.length;
+  const out: { idx: number; w: number }[] = [];
+  for (const dir of [-1, 1]) {
+    let prev = v;
+    for (let k = 0; k < weights.length; k++) {
+      const idx = (v + dir * (k + 1) + N * 4) % N;
+      if (idx === v || out.some((c) => c.idx === idx)) break; // petit polygone : ne pas repasser
+      const a = outline[prev]!;
+      const b = outline[idx]!;
+      if (Math.hypot(b[0] - a[0], b[1] - a[1]) > step) break; // un coin : la chaîne s'arrête
+      out.push({ idx, w: weights[k]! });
+      prev = idx;
+    }
+  }
+  return out;
+}
+
 const HIT_RADIUS = 12;
 const EDGE_HIT = 8; // click within this many px of an outline edge → add point / dart
 const DART_DRAG = 7; // drag farther than this from an edge → it's a dart, not an add
@@ -127,7 +158,18 @@ export class PatternView {
     return pid === 0 ? 'devant' : pid === 1 ? 'dos' : `pièce ${pid + 1}`;
   }
   private draftPreview: UV[] | null = null; // live copy while dragging a vertex
-  private draftDrag: { vertex: number; pointerId: number; grabDX: number; grabDY: number } | null = null;
+  // Glisser-COURBE : les voisins d'arc (reliés au point saisi par des arêtes
+  // COURTES = l'échantillonnage d'une courbe) suivent le déplacement avec un
+  // amorti — tirer un point d'encolure déforme l'arc en douceur au lieu de
+  // faire un pic. Un coin isolé (arêtes longues) bouge seul, comme avant.
+  private draftDrag: {
+    vertex: number;
+    pointerId: number;
+    grabDX: number;
+    grabDY: number;
+    orig: UV[]; // contour figé au début du geste
+    curve: { idx: number; w: number }[]; // voisins d'arc + poids d'amorti
+  } | null = null;
   private draftHover: number | null = null;
   // A press on an outline edge: a click adds a point; dragging inward pulls a dart.
   private draftEdge: { edge: number; downUV: UV; downSX: number; downSY: number; pointerId: number; apex: UV | null } | null = null;
@@ -579,7 +621,8 @@ export class PatternView {
       }
       const s = this.vertexScreen(this.draftPiece.outline[v]!)!;
       this.draftPreview = this.draftPiece.outline.map((q) => [q[0], q[1]] as UV);
-      this.draftDrag = { vertex: v, pointerId: e.pointerId, grabDX: p[0] - s[0], grabDY: p[1] - s[1] };
+      const orig = this.draftPiece.outline.map((q) => [q[0], q[1]] as UV);
+      this.draftDrag = { vertex: v, pointerId: e.pointerId, grabDX: p[0] - s[0], grabDY: p[1] - s[1], orig, curve: curveNeighbors(orig, v) };
       document.body.style.cursor = 'grabbing';
       e.preventDefault();
       e.stopPropagation();
@@ -620,7 +663,17 @@ export class PatternView {
         const r = this.canvas.getBoundingClientRect();
         const px = e.clientX - r.left - this.draftDrag.grabDX;
         const py = e.clientY - r.top - this.draftDrag.grabDY;
-        this.draftPreview![this.draftDrag.vertex] = this.screenToUV(px, py);
+        const d = this.draftDrag;
+        const target = this.screenToUV(px, py);
+        const o = d.orig[d.vertex]!;
+        const dx = target[0] - o[0];
+        const dy = target[1] - o[1];
+        this.draftPreview![d.vertex] = target;
+        // Les voisins d'arc suivent avec leur amorti (glisser-courbe).
+        for (const { idx, w } of d.curve) {
+          const q = d.orig[idx]!;
+          this.draftPreview![idx] = [q[0] + dx * w, q[1] + dy * w];
+        }
         e.preventDefault();
         e.stopPropagation();
         this.render();
