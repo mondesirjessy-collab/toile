@@ -153,9 +153,15 @@ export class PatternView {
   private activeOffset(): number {
     return this.pieceOffset(this.activePiece);
   }
-  /** Human label for a column: DEVANT / DOS / PIÈCE n. */
+  /** Human label for a column: DEVANT / DOS / MANCHE D/G / COL / PIÈCE n. */
   private pieceLabel(pid: number): string {
-    return pid === 0 ? 'devant' : pid === 1 ? 'dos' : `pièce ${pid + 1}`;
+    if (pid === 0) return 'devant';
+    if (pid === 1) return 'dos';
+    const wrap = this.pieceAt(pid)?.wrap;
+    if (wrap === 'armR') return 'manche D';
+    if (wrap === 'armL') return 'manche G';
+    if (wrap === 'neck') return 'col';
+    return `pièce ${pid + 1}`;
   }
   private draftPreview: UV[] | null = null; // live copy while dragging a vertex
   // Glisser-COURBE : les voisins d'arc (reliés au point saisi par des arêtes
@@ -181,6 +187,10 @@ export class PatternView {
   // Pen tool: drawing a new piece from scratch (click to place points, close it).
   private penMode = false;
   private penPoints: UV[] = [];
+  // Filet de sécurité de la plume : la pièce remplacée pendant le tracé, pour
+  // la restaurer si le tracé est abandonné (✎ ne détruit jamais un patron).
+  private penBackup: DraftPiece | null = null;
+  private penBackupPid: number | null = null;
   // Exact avatar silhouette (world-space filled rects + bounds), drawn behind
   // the atelier grid as a size reference, or null to hide it.
   private bodySil: { minX: number; maxX: number; minY: number; maxY: number; rects: Array<[number, number, number, number]> } | null =
@@ -326,10 +336,17 @@ export class PatternView {
   /** Start drawing a NEW piece from a blank canvas (pen tool), on the front or
    * back column. Only the target face is reset — the other column is kept. */
   startPen(width: number, height: number, topY: number, gap: number, pieceId = 0): void {
+    if (this.penMode) this.abortPen(); // un tracé en cours ? on le range d'abord (sans rien perdre)
     this.activePiece = pieceId;
     // Ensure the column slot exists (a new free piece extends the array; back is
     // slot 1). Fill any gap with nulls so indices stay aligned with pieceId.
     while (this.pieces.length <= pieceId) this.pieces.push(null);
+    // FILET DE SÉCURITÉ : la pièce existante est mise de côté pendant le tracé.
+    // Un tracé abandonné (Terminer sans 3 points, changement d'outil) la
+    // RESTAURE — un clic sur ✎ ne peut plus effacer un patron par accident.
+    const existing = this.pieceAt(pieceId);
+    this.penBackup = existing ? structuredClone(existing) : null;
+    this.penBackupPid = pieceId;
     this.setActive({ outline: [], darts: [], seams: [], openEdges: [], width, height, topY, gap });
     this.resetDraftTransient();
     this.penMode = true;
@@ -337,13 +354,37 @@ export class PatternView {
     this.render();
   }
 
+  /** Abandonner le tracé en cours : restaure la pièce mise de côté (ou retire
+   * la colonne vide d'une pièce toute neuve). Rien n'est perdu. */
+  private abortPen(): void {
+    if (!this.penMode) return;
+    this.penMode = false;
+    this.penPoints = [];
+    if (this.penBackup) {
+      this.applyActive(this.penBackup);
+    } else if (this.penBackupPid !== null && this.penBackupPid >= 2 && this.penBackupPid === this.pieces.length - 1 && !this.pieceAt(this.penBackupPid)) {
+      this.pieces.pop(); // la colonne vide d'une pièce jamais dessinée disparaît
+      if (this.activePiece === this.penBackupPid) this.activePiece = 0;
+    }
+    this.penBackup = null;
+    this.penBackupPid = null;
+    this.render();
+  }
+
   get drawing(): boolean {
     return this.penMode;
   }
 
-  /** Close the drawn outline into a piece (≥3 points), seeding a top opening. */
+  /** Close the drawn outline into a piece (≥3 points), seeding a top opening.
+   * Sans 3 points, le tracé est ABANDONNÉ et la pièce d'origine restaurée. */
   finishPen(): void {
-    if (!this.penMode || this.penPoints.length < 3 || !this.draftPiece) return;
+    if (!this.penMode) return;
+    if (this.penPoints.length < 3 || !this.draftPiece) {
+      this.abortPen();
+      return;
+    }
+    this.penBackup = null; // tracé réussi : l'ancienne pièce est volontairement remplacée
+    this.penBackupPid = null;
     const outline = this.penPoints.map((p) => [p[0], p[1]] as UV);
     // Seed the topmost edge as an opening so a body can enter (a fully-sewn
     // piece would inflate like a sealed pillow).
@@ -1236,7 +1277,7 @@ export class PatternView {
       ctx.textBaseline = 'bottom';
       const labY = this.layoutToScreen(0, maxY)[1] - 3;
       for (let k = 0; k < nCols; k++) {
-        const label = k === 0 ? 'DEVANT' : k === 1 ? 'DOS' : `PIÈCE ${k + 1}`;
+        const label = this.pieceLabel(k).toUpperCase();
         ctx.fillText(label, this.layoutToScreen(cx + k * pitch, maxY)[0], labY);
       }
       ctx.textAlign = 'left';

@@ -262,8 +262,11 @@ describe('compileAssembly (manual seams)', () => {
     }
   });
 
-  it('no seams → no pairs', () => {
-    expect(compileAssembly(defaultDraft(32), 32).length).toBe(0);
+  it('no seams → no pairs (et la pièce par défaut arrive PRÉ-COUSUE, v119)', () => {
+    const bare = defaultDraft(32);
+    expect(compileAssembly(bare, 32).length).toBeGreaterThan(0); // épaules + côtés déjà cousus : le premier Simuler drape
+    bare.seams = [];
+    expect(compileAssembly(bare, 32).length).toBe(0); // sans coutures, rien n'est apparié
   });
 
   it('reindexAssemblySeams shifts only the edited face after inserting a point', () => {

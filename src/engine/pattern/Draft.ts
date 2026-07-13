@@ -673,9 +673,11 @@ export function removeFreePiece(
 const DEFAULT_PIECE_DIMS = { width: 0.95, height: 1.1, topY: 1.6, gap: 1.0 };
 
 /** The atelier's starting pieces: a sleeveless A-line dress FRONT and an
- * identical BACK, laid out côte-à-côte and UNSEWN (manual assembly). The user
- * sews shoulders (edges 0→1, 3→4) and sides (4→5, 6→0) front↔back, and leaves
- * the neckline (1→2→3) and hem (5→6) open. Nothing is auto-sewn. */
+ * identical BACK, laid out côte-à-côte, PRE-SEWN at the shoulders (edges 0→1,
+ * 3→4) and sides (4→5, 6→0) — the neckline (1→2→3) and hem (5→6) stay open.
+ * Ergonomie (audit v119) : le premier « ▶ Simuler » d'un débutant doit draper
+ * un débardeur, pas faire tomber deux panneaux par terre — les coutures se
+ * DÉFONT d'un clic pour qui veut apprendre l'assemblage manuel. */
 export function defaultDraft(gridN: 32 | 64 | 128 = 64): DraftDoc {
   const face = (): DraftPiece => ({
     outline: [
@@ -695,7 +697,16 @@ export function defaultDraft(gridN: 32 | 64 | 128 = 64): DraftDoc {
     ],
     ...DEFAULT_PIECE_DIMS,
   });
-  return { format: 'toile-draft', version: 1, gridN, piece: face(), back: face(), manual: true, seams: [] };
+  const seam = (from: number, to: number): AssemblySeam => ({ a: { face: 'front', from, to }, b: { face: 'back', from, to } });
+  return {
+    format: 'toile-draft',
+    version: 1,
+    gridN,
+    piece: face(),
+    back: face(),
+    manual: true,
+    seams: [seam(0, 1), seam(3, 4), seam(4, 5), seam(6, 7)],
+  };
 }
 
 /**

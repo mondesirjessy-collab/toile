@@ -1232,7 +1232,7 @@ async function main(): Promise<void> {
     if (hintEl)
       hintEl.textContent =
         sceneMode === 'atelier'
-          ? 'atelier : bords ROUGES = à coudre · Maj+clic un bord puis un autre = coudre (devant↔dos) · clic sur une couture = défaire · glisser = déformer · ▶ Simuler'
+          ? 'atelier : glisser un point = déformer · Maj+clic 2 bords = coudre (rouges = à coudre) · clic sur une couture = défaire · ▶ Simuler = draper'
           : 'glisser sur le tissu : le tirer · glisser à côté : tourner · clic droit + glisser : se déplacer · molette : zoom · R : reset';
   };
 
