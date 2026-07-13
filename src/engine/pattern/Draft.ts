@@ -70,13 +70,14 @@ export interface DraftPiece {
   height: number;
   topY: number;
   gap: number;
-  // SLEEVE MODE (free pieces only): spawn the piece wrapped around an arm — its
-  // two panels straddle the arm in z, pivoted at the piece's own top edge and
-  // tilted to the arm's A-pose — instead of flat in front of the body. With its
-  // rim mirror-stitched along both long edges (the default), the piece closes
-  // into a TUBE around the arm; its cap run cross-sewn to the armhole makes a
-  // real sleeve. Absent → flat spawn (unchanged).
-  wrap?: 'armL' | 'armR';
+  // WRAP MODE (free pieces only): spawn the piece wrapped around a body part —
+  // its two panels straddle it in z — instead of flat in front of the body.
+  // With its rim mirror-stitched along both long edges (the default), the
+  // piece closes into a TUBE ; its top run cross-sewn makes a real sleeve
+  // ('armL'/'armR', tilted to the arm's A-pose) or a NECKBAND ('neck', the
+  // ring that cinches the neckline — cut shorter than the neck hole, it pulls
+  // the collar in and lets a deep front drop hold). Absent → flat spawn.
+  wrap?: 'armL' | 'armR' | 'neck';
 }
 
 export interface DraftDoc {
@@ -791,7 +792,7 @@ export function sanitizeDraft(raw: unknown): DraftDoc {
       topY: num(pp.topY, 0.5, 2.2, DEFAULT_PIECE_DIMS.topY),
       gap: num(pp.gap, minGap, 1.6, DEFAULT_PIECE_DIMS.gap),
       // Sleeve mode survives the round-trip; anything but the two arms is dropped.
-      ...(pp.wrap === 'armL' || pp.wrap === 'armR' ? { wrap: pp.wrap } : {}),
+      ...(pp.wrap === 'armL' || pp.wrap === 'armR' || pp.wrap === 'neck' ? { wrap: pp.wrap } : {}),
     };
   };
   const front = parsePiece(d.piece);

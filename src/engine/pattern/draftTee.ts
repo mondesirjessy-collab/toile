@@ -44,7 +44,7 @@ export function oversizeTee(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
   const H = Math.min(0.7, 1.24 * chestFlat); // longueur totale (ratio 76/61 de la table)
   const topY = 1.52 + (m.shoulderY - ref.shoulderY);
   const neckHalfU = (chestFlat / 3 / 2) / W; // col ≈ ⅓ de la poitrine à plat (~18 cm)
-  const dropF = 0.07 * (chestFlat / 0.61); // creux col devant — 10.5 cm sur le patron papier ; 7 cm ici, le compromis qui tient au drapé (le col très creusé glisse des épaules du scan)
+  const dropF = 0.105 * (chestFlat / 0.61); // creux col devant (10.5 cm, LA cote du patron papier) — tenable depuis que la BANDE D'ENCOLURE (pièce 5) resserre le col
   const dropB = 0.02;
   const slope = 0.02; // pente d'épaule adoucie (2 cm) — l'aplomb avant tout
   const armDepth = 0.135 * (chestFlat / 0.61); // demi-tour d'emmanchure (27 cm/2, gradé)
@@ -121,6 +121,28 @@ export function oversizeTee(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
       wrap,
     };
   };
+  // BANDE D'ENCOLURE (pièce 5 du patron) : un anneau étroit autour du cou,
+  // coupé PLUS COURT que le tour d'encolure (~85 %) — cousu au col, il le
+  // RESSERRE (l'aisance négative du jersey) : c'est lui qui retient un col
+  // creusé à la cote du papier. Tube wrap 'neck' : deux panneaux de part et
+  // d'autre du cou, bord bas épinglé au ras de l'encolure (collarCrossSeams).
+  const neckArcLen = 2.6 * neckHalfU * W + 1.4 * dropF; // approx. du tour (devant creusé + dos)
+  const band = (): DraftPiece => ({
+    outline: [
+      [-0.01, -0.01],
+      [1.01, -0.01],
+      [1.01, 1.01],
+      [-0.01, 1.01],
+    ],
+    darts: [],
+    seams: [],
+    openEdges: [],
+    width: 0.85 * neckArcLen * 0.5, // demi-tour de bande = 85 % du demi-tour d'encolure (la pince du col)
+    height: 0.035, // bande de 3,5 cm
+    topY: m.neckY - 0.005, // le bord bas de la bande rejoint l'encolure
+    gap: 0.15, // les panneaux enjambent le cou sans naître dedans
+    wrap: 'neck',
+  });
   const seam = (from: number, to: number): AssemblySeam => ({ a: { face: 'front', from, to }, b: { face: 'back', from, to } });
   return {
     format: 'toile-draft',
@@ -129,7 +151,7 @@ export function oversizeTee(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
     piece: face(dropF),
     back: face(dropB),
     manual: true,
-    pieces: [sleeve('armR'), sleeve('armL')],
+    pieces: [sleeve('armR'), sleeve('armL'), band()],
     // Épaules + côtés PLEINE hauteur (emmanchure comprise) : la ligne soudée
     // devant↔dos sur laquelle les épingles de manche verrouillent le tube.
     seams: [seam(0, 1), seam(8, 9), seam(1, 4), seam(5, 8)],

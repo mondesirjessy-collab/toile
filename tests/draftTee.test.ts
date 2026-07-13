@@ -48,12 +48,18 @@ describe('draftTee (measurement-drafted t-shirt)', () => {
 describe('oversizeTee (le patron K.Kose 4 pièces, gradé)', () => {
   const ref = mkMeasure(0.78);
 
-  it('4 pièces : devant + dos + 2 manches wrap (G et D)', () => {
+  it('5 pièces : devant + dos + 2 manches wrap + bande d encolure', () => {
     const doc = oversizeTee(mkMeasure(0.78), ref);
     expect(doc.back).toBeTruthy();
-    expect(doc.pieces!.length).toBe(2);
-    expect(doc.pieces!.map((p) => p.wrap).sort()).toEqual(['armL', 'armR']);
+    expect(doc.pieces!.length).toBe(3);
+    expect(doc.pieces!.map((p) => p.wrap).sort()).toEqual(['armL', 'armR', 'neck']);
     expect(doc.seams!.length).toBe(4); // épaules ×2 + côtés pleine hauteur ×2
+    // La bande resserre : plus courte que l'encolure (aisance négative).
+    const bandPiece = doc.pieces!.find((p) => p.wrap === 'neck')!;
+    expect(bandPiece.width).toBeLessThan(0.2);
+    expect(bandPiece.height).toBeLessThan(0.06);
+    // Le col retrouve la cote du papier (creux ≈ 10.5 cm gradé).
+    expect(doc.piece.outline[12]![1] * doc.piece.height).toBeGreaterThan(0.08);
   });
 
   it('col devant creusé, dos haut (comme le patron de référence)', () => {
@@ -94,8 +100,9 @@ describe('oversizeTee (le patron K.Kose 4 pièces, gradé)', () => {
   it('survit au round-trip sanitizeDraft (export → import) avec ses manches wrap', () => {
     const doc = oversizeTee(mkMeasure(0.78), ref);
     const round = sanitizeDraft(JSON.parse(JSON.stringify(doc)));
-    expect(round.pieces!.length).toBe(2);
+    expect(round.pieces!.length).toBe(3);
     expect(round.pieces![0]!.wrap).toBe('armR');
+    expect(round.pieces![2]!.wrap).toBe('neck');
     expect(round.pieces![0]!.width).toBeCloseTo(doc.pieces![0]!.width, 4);
     expect(round.seams!.length).toBe(4);
   });

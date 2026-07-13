@@ -895,13 +895,12 @@ async function main(): Promise<void> {
               // assembly seam can't transitively weld the body's open edge shut
               // THROUGH the body (see crossSewnOpenCells).
               const openAll = new Set([...fpc.openCells, ...crossSewnOpenCells(doc, pid, resolution)]);
-              if (fp.wrap === 'armL' || fp.wrap === 'armR') {
-                // WRAP piece = a TUBE by construction: its mouth (the CAP,
-                // first kept cell of each column — pinned to the armhole by
-                // wrapCrossSeams) AND its cuff (last kept cell) stay OPEN like
-                // the proven v96 tube (« side seams only, top open, bottom
-                // open ») — a welded rim fights the pins and flattens the tube
-                // against the flank (the arm can't stay inside).
+              if (fp.wrap) {
+                // WRAP piece = a TUBE by construction: its mouth (first kept
+                // cell of each column — pinned to the armhole/neckline) AND
+                // its far edge (last kept cell) stay OPEN like the proven v96
+                // tube (« side seams only, top open, bottom open ») — a welded
+                // rim fights the pins and flattens the tube shut.
                 const rN = resolution;
                 const insidePiece = (uu: number, vv: number): boolean => {
                   if (!pointInPolygon([uu, vv], fp.outline)) return false;
@@ -967,6 +966,10 @@ async function main(): Promise<void> {
                   pieceMesh.positions[q * 4] = px * cosT - py * sinT + armX;
                   pieceMesh.positions[q * 4 + 1] = px * sinT + py * cosT + fp.topY;
                 }
+              } else if (fp.wrap === 'neck') {
+                // NECKBAND: the tube spawns already centred on the neck axis
+                // (x = 0, panels at ±fp.gap/2 straddling the neck) — no
+                // transform needed; its bottom row is pinned to the neckline.
               } else {
                 // Spawn it in FRONT of the body (at the body's front-panel plane),
                 // clear of the avatar SDF collider — spawning inside would eject it
@@ -977,12 +980,15 @@ async function main(): Promise<void> {
                   pieceMesh.positions[q * 4 + 2] = pieceMesh.positions[q * 4 + 2]! + spawnZ;
                 }
               }
-              // Wrap pieces (sleeves) pin through the PROVEN mesh scan (see
-              // wrapCrossSeams); flat pieces keep the drawn run-based seams.
+              // Wrap pieces pin through the PROVEN mesh scans (wrapCrossSeams
+              // for sleeves, collarCrossSeams for the neckband — its bottom row
+              // rings the neckline scoop); flat pieces keep the drawn seams.
               const pins =
                 fp.wrap === 'armL' || fp.wrap === 'armR'
                   ? wrapCrossSeams(garment, pieceMesh, fp.wrap === 'armR' ? 'R' : 'L', resolution)
-                  : compileCrossSeams(doc, resolution, offsets, pid);
+                  : fp.wrap === 'neck'
+                    ? collarCrossSeams(garment, resolution)
+                    : compileCrossSeams(doc, resolution, offsets, pid);
               garment = combineClothMeshes(garment, pieceMesh, pins);
             }
             // Multi-piece (stage 1): sew a rectangular sleeve to each armhole,
