@@ -48,48 +48,76 @@ export function oversizeTee(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
   const dropB = 0.02;
   const slope = 0.02; // pente d'épaule adoucie (2 cm) — l'aplomb avant tout
   const armDepth = 0.135 * (chestFlat / 0.61); // demi-tour d'emmanchure (27 cm/2, gradé)
-  const face = (dropM: number): DraftPiece => ({
-    outline: [
+  // Une face = un tracé COURBE, comme le patron papier : encolure arrondie
+  // (5 points d'arc en cosinus), emmanchures légèrement galbées, épaules
+  // tombantes. Sens horaire : col G → épaule G → emmanchure G → ourlet →
+  // emmanchure D → épaule D → col D → arc d'encolure → retour au col G.
+  const face = (dropM: number): DraftPiece => {
+    const vSlope = slope / H;
+    const vUnder = (slope + armDepth) / H;
+    const vDrop = dropM / H;
+    // Arc d'encolure (droite → gauche), demi-cosinus passant par le creux.
+    const neckArc: UV[] = [];
+    for (const t of [0.78, 0.45, 0, -0.45, -0.78]) {
+      neckArc.push([0.5 + t * neckHalfU, vDrop * Math.cos((t * Math.PI) / 2) + (1 - Math.cos((t * Math.PI) / 2)) * 0]);
+    }
+    const outline: UV[] = [
       [0.5 - neckHalfU, 0], // 0 col G
-      [0.06, slope / H], // 1 épaule G extérieure (tombante)
-      [0.05, (slope + armDepth) / H], // 2 bas d'emmanchure G
-      [0.06, 0.98], // 3 ourlet G
-      [0.94, 0.98], // 4 ourlet D
-      [0.95, (slope + armDepth) / H], // 5 bas d'emmanchure D
-      [0.94, slope / H], // 6 épaule D extérieure
-      [0.5 + neckHalfU, 0], // 7 col D
-      [0.5, dropM / H], // 8 creux du col
-    ],
-    darts: [],
-    seams: [],
-    openEdges: [
-      { from: 3, to: 4 }, // ourlet
-      { from: 7, to: 9 }, // encolure (arêtes 7 + 8)
-    ],
-    width: W,
-    height: H,
-    topY,
-    gap: 0.9,
-  });
-  // Manche (×2) : pièce WRAP — rectangle plein aux cotes de la table (biceps ×
-  // longueur). Le contour plein est le tube fiable ; la tête très douce d'une
-  // épaule tombante s'en approche bien (le cap courbe = raffinement à venir).
-  const sleeve = (wrap: 'armL' | 'armR'): DraftPiece => ({
-    outline: [
-      [-0.01, -0.01],
-      [1.01, -0.01],
-      [1.01, 1.01],
-      [-0.01, 1.01],
-    ],
-    darts: [],
-    seams: [],
-    openEdges: [],
-    width: 0.5 * (m.chest.circ * 0.32), // biceps ≈ 0.32·poitrine (25 cm / 78) → demi-tour
-    height: 0.245 * (chestFlat / 0.61), // longueur de manche (24.5 cm taille M, gradée)
-    topY: m.shoulderY + 0.005, // la bouche du tube naît à l'épaule
-    gap: 0.18,
-    wrap,
-  });
+      [0.06, vSlope], // 1 épaule G extérieure (tombante)
+      [0.048, vSlope + 0.45 * (vUnder - vSlope)], // 2 emmanchure G (léger galbe)
+      [0.05, vUnder], // 3 bas d'emmanchure G
+      [0.06, 0.98], // 4 ourlet G
+      [0.94, 0.98], // 5 ourlet D
+      [0.95, vUnder], // 6 bas d'emmanchure D
+      [0.952, vSlope + 0.45 * (vUnder - vSlope)], // 7 emmanchure D (galbe)
+      [0.94, vSlope], // 8 épaule D extérieure
+      [0.5 + neckHalfU, 0], // 9 col D
+      ...neckArc, // 10-14 encolure arrondie (droite → creux → gauche)
+    ];
+    return {
+      outline,
+      darts: [],
+      seams: [],
+      openEdges: [
+        { from: 4, to: 5 }, // ourlet
+        { from: 9, to: 15 }, // encolure (l'arc complet, col D → col G)
+      ],
+      width: W,
+      height: H,
+      topY,
+      gap: 0.9,
+    };
+  };
+  // Manche (×2) : pièce WRAP à TÊTE COURBE — le sommet arrondi monte au milieu
+  // (arc sinus, ~14 % de la longueur), les dessous de bras aux coins, comme la
+  // pièce du patron papier. Les côtés restent pleine largeur (le tube fiable) ;
+  // la bouche suit la courbe : wrapCrossSeams épingle la première cellule
+  // vivante de chaque colonne, donc la tête courbe s'embouti naturellement
+  // sur l'emmanchure.
+  const CAP = 0.14; // hauteur de tête (fraction de la longueur de manche)
+  const sleeve = (wrap: 'armL' | 'armR'): DraftPiece => {
+    const capArc: UV[] = [];
+    for (const u of [0.1, 0.28, 0.5, 0.72, 0.9]) {
+      capArc.push([u, CAP * (1 - Math.sin(Math.PI * u))]);
+    }
+    return {
+      outline: [
+        [-0.01, CAP], // coin haut G (dessous de bras)
+        ...capArc, // tête arrondie (monte à v=0 au milieu)
+        [1.01, CAP], // coin haut D
+        [1.01, 1.01], // bas D
+        [-0.01, 1.01], // bas G
+      ],
+      darts: [],
+      seams: [],
+      openEdges: [],
+      width: 0.5 * (m.chest.circ * 0.32), // biceps ≈ 0.32·poitrine (25 cm / 78) → demi-tour
+      height: 0.245 * (chestFlat / 0.61), // longueur de manche (24.5 cm taille M, gradée)
+      topY: m.shoulderY + 0.01, // la tête du tube naît à l'épaule
+      gap: 0.18,
+      wrap,
+    };
+  };
   const seam = (from: number, to: number): AssemblySeam => ({ a: { face: 'front', from, to }, b: { face: 'back', from, to } });
   return {
     format: 'toile-draft',
@@ -101,7 +129,7 @@ export function oversizeTee(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
     pieces: [sleeve('armR'), sleeve('armL')],
     // Épaules + côtés PLEINE hauteur (emmanchure comprise) : la ligne soudée
     // devant↔dos sur laquelle les épingles de manche verrouillent le tube.
-    seams: [seam(0, 1), seam(6, 7), seam(1, 3), seam(4, 6)],
+    seams: [seam(0, 1), seam(8, 9), seam(1, 4), seam(5, 8)],
   };
 }
 

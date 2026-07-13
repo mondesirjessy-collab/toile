@@ -58,7 +58,10 @@ describe('oversizeTee (le patron K.Kose 4 pièces, gradé)', () => {
 
   it('col devant creusé, dos haut (comme le patron de référence)', () => {
     const doc = oversizeTee(mkMeasure(0.78), ref);
-    expect(doc.piece.outline[8]![1]).toBeGreaterThan(doc.back!.outline[8]![1]);
+    // Le creux = le milieu de l'arc d'encolure (index 12 sur 15 points).
+    expect(doc.piece.outline[12]![1]).toBeGreaterThan(doc.back!.outline[12]![1]);
+    expect(doc.piece.outline.length).toBe(15); // un tracé COURBE, pas un carré
+    expect(doc.pieces![0]!.outline.length).toBe(9); // manche à tête arrondie
   });
 
   it('gradé sur la poitrine : plus large ET manche au biceps plus grande sur un plus grand tour', () => {
