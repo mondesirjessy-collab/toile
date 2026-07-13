@@ -2,6 +2,7 @@ import { initGpu, WebGPUNotSupportedError } from './engine/gpu/Device';
 import { ParticleSystem } from './engine/solver/ParticleSystem';
 import { generateClothGrid, generateSeamedPanels, combineClothMeshes, type CrossSeam, type ClothMeshData } from './engine/cloth/ClothMesh';
 import { defaultDraft, tshirtDraft, compileDraft, compileAssembly, compileCrossSeams, crossSewnOpenCells, removeFreePiece, sanitizeDraft, pointInPolygon, pointInTriangle, type DraftDoc, type AssemblySeam } from './engine/pattern/Draft';
+import { oversizeTee } from './engine/pattern/draftTee';
 import type { SceneMode } from './app/ControlPanel';
 import { ClothRenderer, DEFAULT_FABRIC } from './app/ClothRenderer';
 import { OrbitCamera } from './app/OrbitCamera';
@@ -503,21 +504,19 @@ async function main(): Promise<void> {
     const dims = (draft ?? defaultDraft(resolution as 32 | 64 | 128)).piece;
     patternView.startPen(dims.width, dims.height, dims.topY, dims.gap);
   });
-  // Preset: load a basic t-shirt already assembled and SIZED to the current
-  // avatar (like the parametric tee: width 1.15·topScale, gap 0.9, topY 1.52 +
-  // dyShoulder), so ▶ Simuler drapes it perfectly — then it stays editable.
+  // Préréglage 👕 : le VRAI patron 4 pièces (le patron oversize drop-shoulder
+  // de référence fourni par l'utilisateur — DEVANT, DOS, 2 MANCHES), gradé sur
+  // les mensurations de l'avatar. ÉDITABLE (c'est un draft) et imprimable en
+  // pièces numérotées. Remplace le préréglage kimono d'un seul tenant (v108),
+  // qui n'était ni un vrai patron ni éditable.
   (document.getElementById('at-tshirt') as HTMLElement).addEventListener('click', () => {
     if (!bigPanel) setBig(true);
     atelierDesign = true;
     simBtn().classList.remove('running');
-    // Load the measured set-in tee (built in the atelier block): the proven
-    // single-sheet `setin` construction (body + 2 sleeves, armholes stitched
-    // island-to-island on both panels → clean drape) SIZED to the avatar's
-    // measurements (width = chest/4, side profile = waist/hip).
-    teePreset = true;
-    draft = null;
-    draftTouched = false;
-    atelierSleeves = false; // the kimono preset has its own integral sleeves
+    teePreset = false;
+    draft = oversizeTee(lastMeasure, REF);
+    draftTouched = true; // un vrai draft : éditable, exportable
+    atelierSleeves = false; // les manches sont DES PIÈCES du patron
     atelierCollar = false;
     document.getElementById('at-sleeves')?.classList.remove('active');
     build();
@@ -676,6 +675,7 @@ async function main(): Promise<void> {
 
   // Stashed by build() so the pattern-view handles use the graded dimensions.
   let lastGrade = { topScale: 1, dressScale: 1, skirtScale: 1, dyShoulder: 0, dyWaist: 0 };
+  let lastMeasure: BodyMeasure = REF; // dernière mensuration mesurée par build()
 
   let currentMesh: ReturnType<typeof generateClothGrid> | null = null;
   let currentScene: SceneMesh | null = null;
@@ -780,6 +780,7 @@ async function main(): Promise<void> {
     const skirtScale = clampR(m.hip.circ / REF.hip.circ);
     const dyShoulder = m.shoulderY - REF.shoulderY;
     lastGrade = { topScale, dressScale, skirtScale, dyShoulder, dyWaist: m.waist.y - REF.waist.y };
+    lastMeasure = m; // les préréglages hors-build (bouton 👕) gradent sur la dernière mesure
     const tee = () =>
       generateSeamedPanels({
         resolution,

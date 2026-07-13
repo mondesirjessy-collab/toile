@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { draftTee } from '../src/engine/pattern/draftTee';
-import { pointInPolygon } from '../src/engine/pattern/Draft';
+import { draftTee, oversizeTee } from '../src/engine/pattern/draftTee';
+import { pointInPolygon, sanitizeDraft } from '../src/engine/pattern/Draft';
 import { countMaskIslands } from '../src/engine/cloth/ClothMesh';
 import type { BodyMeasure } from '../src/engine/body/measure';
 
@@ -42,5 +42,48 @@ describe('draftTee (measurement-drafted t-shirt)', () => {
       for (let v = 0; v < n; v++) for (let u = 0; u < n; u++) kept.push(pointInPolygon([u / (n - 1), v / (n - 1)], piece.outline));
       expect(countMaskIslands(kept, n)).toBe(1);
     }
+  });
+});
+
+describe('oversizeTee (le patron K.Kose 4 pièces, gradé)', () => {
+  const ref = mkMeasure(0.78);
+
+  it('4 pièces : devant + dos + 2 manches wrap (G et D)', () => {
+    const doc = oversizeTee(mkMeasure(0.78), ref);
+    expect(doc.back).toBeTruthy();
+    expect(doc.pieces!.length).toBe(2);
+    expect(doc.pieces!.map((p) => p.wrap).sort()).toEqual(['armL', 'armR']);
+    expect(doc.seams!.length).toBe(4); // épaules ×2 + côtés pleine hauteur ×2
+  });
+
+  it('col devant creusé, dos haut (comme le patron de référence)', () => {
+    const doc = oversizeTee(mkMeasure(0.78), ref);
+    expect(doc.piece.outline[8]![1]).toBeGreaterThan(doc.back!.outline[8]![1]);
+  });
+
+  it('gradé sur la poitrine : plus large ET manche au biceps plus grande sur un plus grand tour', () => {
+    const s = oversizeTee(mkMeasure(0.62), ref);
+    const l = oversizeTee(mkMeasure(1.0), ref);
+    expect(l.piece.width).toBeGreaterThan(s.piece.width);
+    expect(l.pieces![0]!.width).toBeGreaterThan(s.pieces![0]!.width);
+  });
+
+  it('chaque face rasterise en une seule pièce connexe', () => {
+    const doc = oversizeTee(mkMeasure(0.78), ref);
+    const n = 48;
+    for (const piece of [doc.piece, doc.back!]) {
+      const kept: boolean[] = [];
+      for (let v = 0; v < n; v++) for (let u = 0; u < n; u++) kept.push(pointInPolygon([u / (n - 1), v / (n - 1)], piece.outline));
+      expect(countMaskIslands(kept, n)).toBe(1);
+    }
+  });
+
+  it('survit au round-trip sanitizeDraft (export → import) avec ses manches wrap', () => {
+    const doc = oversizeTee(mkMeasure(0.78), ref);
+    const round = sanitizeDraft(JSON.parse(JSON.stringify(doc)));
+    expect(round.pieces!.length).toBe(2);
+    expect(round.pieces![0]!.wrap).toBe('armR');
+    expect(round.pieces![0]!.width).toBeCloseTo(doc.pieces![0]!.width, 4);
+    expect(round.seams!.length).toBe(4);
   });
 });

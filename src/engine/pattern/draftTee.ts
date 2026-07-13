@@ -24,6 +24,87 @@ const RATIO_NECK = 0.35; // neck girth ≈ 0.35·chest girth (not measured → d
 const DELTOID_TRIM = 0.82; // shoulderHalfW includes the deltoid; trim to the seam point
 const HEM_LEN = 0.62; // shoulder → hem (hip length, a t-shirt not a tunic)
 
+/**
+ * oversizeTee — le patron OVERSIZE drop-shoulder de référence (K.Kose, fourni
+ * par l'utilisateur : DEVANT au pli, DOS au pli, 2 MANCHES), redessiné en
+ * pièces TOILE et gradé sur les mensurations de l'avatar. Proportions de la
+ * table de tailles (cm, taille M ramenée au tour de poitrine mesuré) :
+ * poitrine à plat ≈ chest·1.35/2, longueur ≈ 1.24·poitrine à plat, col ≈ ⅓ de
+ * la poitrine à plat, creux de col devant ≈ 10.5 cm (dos ≈ 2 cm), emmanchure
+ * (épaule tombante, quasi droite) ≈ 27 cm de tour, manche ≈ biceps 25 ×
+ * longueur 24. Le corps = DEVANT + DOS cousus épaules + côtés pleine hauteur
+ * (la ligne soudée qui porte l'épinglage des manches — recette v104/v112) ;
+ * les manches = pièces WRAP éditables (tube autour du bras, bouche/poignet
+ * ouverts par construction, épinglées par wrapCrossSeams). Tout est éditable
+ * et s'imprime en 4 pièces numérotées.
+ */
+export function oversizeTee(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
+  const chestFlat = (m.chest.circ * 1.35) / 2; // poitrine du vêtement à plat (oversize ×1.35)
+  const W = chestFlat / 0.9; // la pièce garde 5 % de marge de chaque côté (corps u ∈ [0.05, 0.95])
+  const H = Math.min(0.7, 1.24 * chestFlat); // longueur totale (ratio 76/61 de la table)
+  const topY = 1.52 + (m.shoulderY - ref.shoulderY);
+  const neckHalfU = (chestFlat / 3 / 2) / W; // col ≈ ⅓ de la poitrine à plat (~18 cm)
+  const dropF = 0.07 * (chestFlat / 0.61); // creux col devant — 10.5 cm sur le patron papier ; 7 cm ici, le compromis qui tient au drapé (le col très creusé glisse des épaules du scan)
+  const dropB = 0.02;
+  const slope = 0.02; // pente d'épaule adoucie (2 cm) — l'aplomb avant tout
+  const armDepth = 0.135 * (chestFlat / 0.61); // demi-tour d'emmanchure (27 cm/2, gradé)
+  const face = (dropM: number): DraftPiece => ({
+    outline: [
+      [0.5 - neckHalfU, 0], // 0 col G
+      [0.06, slope / H], // 1 épaule G extérieure (tombante)
+      [0.05, (slope + armDepth) / H], // 2 bas d'emmanchure G
+      [0.06, 0.98], // 3 ourlet G
+      [0.94, 0.98], // 4 ourlet D
+      [0.95, (slope + armDepth) / H], // 5 bas d'emmanchure D
+      [0.94, slope / H], // 6 épaule D extérieure
+      [0.5 + neckHalfU, 0], // 7 col D
+      [0.5, dropM / H], // 8 creux du col
+    ],
+    darts: [],
+    seams: [],
+    openEdges: [
+      { from: 3, to: 4 }, // ourlet
+      { from: 7, to: 9 }, // encolure (arêtes 7 + 8)
+    ],
+    width: W,
+    height: H,
+    topY,
+    gap: 0.9,
+  });
+  // Manche (×2) : pièce WRAP — rectangle plein aux cotes de la table (biceps ×
+  // longueur). Le contour plein est le tube fiable ; la tête très douce d'une
+  // épaule tombante s'en approche bien (le cap courbe = raffinement à venir).
+  const sleeve = (wrap: 'armL' | 'armR'): DraftPiece => ({
+    outline: [
+      [-0.01, -0.01],
+      [1.01, -0.01],
+      [1.01, 1.01],
+      [-0.01, 1.01],
+    ],
+    darts: [],
+    seams: [],
+    openEdges: [],
+    width: 0.5 * (m.chest.circ * 0.32), // biceps ≈ 0.32·poitrine (25 cm / 78) → demi-tour
+    height: 0.245 * (chestFlat / 0.61), // longueur de manche (24.5 cm taille M, gradée)
+    topY: m.shoulderY + 0.005, // la bouche du tube naît à l'épaule
+    gap: 0.18,
+    wrap,
+  });
+  const seam = (from: number, to: number): AssemblySeam => ({ a: { face: 'front', from, to }, b: { face: 'back', from, to } });
+  return {
+    format: 'toile-draft',
+    version: 1,
+    gridN: 64,
+    piece: face(dropF),
+    back: face(dropB),
+    manual: true,
+    pieces: [sleeve('armR'), sleeve('armL')],
+    // Épaules + côtés PLEINE hauteur (emmanchure comprise) : la ligne soudée
+    // devant↔dos sur laquelle les épingles de manche verrouillent le tube.
+    seams: [seam(0, 1), seam(6, 7), seam(1, 3), seam(4, 6)],
+  };
+}
+
 /** A real set-in-sleeve tee pattern (front + back, drafted to `m`). `ref` is the
  * reference mannequin (for the vertical placement, like the archetypes). */
 export function draftTee(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
