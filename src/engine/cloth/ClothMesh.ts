@@ -348,6 +348,16 @@ export interface SeamedPanelsOptions {
   /** Pattern measurements (grading): shape-specific, all in normalized [0,1] pattern units. */
   shapeParams?: { hem?: number; scoop?: number; sleeve?: number; profile?: number[]; neck?: number };
   /**
+   * Flatten ring around mirror seams (default true): a Bending spring per
+   * seamed cell holding the two panels ~2·spacing apart just INSIDE the seam,
+   * so a sewn hem/side lies flat like a pressed edge. Pass false for a piece
+   * meant to WRAP (a sleeve tube): the rings pin the tube's side seams flat
+   * and the mouth can never open around the arm — the tube slides off instead
+   * of swallowing it (isolated by a numeric mesh diff: rect vs freeform tubes
+   * differed ONLY by these springs, and only the rect tube held the arm).
+   */
+  flattenSeams?: boolean;
+  /**
    * FREEFORM piece (shape==='freeform', the "atelier" editor): an arbitrary
    * outline polygon in [0,1]² UV, minus dart wedges cut from it. Rasterized to
    * the same kept-mask every archetype produces, so all downstream machinery
@@ -985,6 +995,8 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
           // itself seamed (front↔back at 0.15·spacing); adding the flat
           // continuation (2·spacing) to that same pair pits two contradictory
           // distance constraints against each other every solve.
+          // Skippable (flattenSeams:false) for WRAP pieces — see the option.
+          if (opts.flattenSeams === false) continue;
           if (!kept[local] || !keptB[local] || flattened.has(local) || onB(kept, u2, v2) || onB(keptB, u2, v2)) continue;
           flattened.add(local);
           bending.push({

@@ -177,7 +177,30 @@ function sleeveMesh(n: number, side: 'L' | 'R', shoulderX: number, shoulderY: nu
   // panels clear (±0.09 > deltoid radius ~0.06) so the sleeve isn't ejected and
   // tangled; width 0.13 keeps the circumference modest. (0.14/0.14 tangled —
   // panels ±0.07 grazed the arm; 0.26/0.24 was far too loose and flapped.)
-  const mesh = generateSeamedPanels({ resolution: n, width: 0.13, height: armLen, gap: 0.18, topY: SPAWN_TOP, shape: 'rect' });
+  // Debug hash #v96b (bisection chantier 3/3) : le MÊME tube via le générateur
+  // FREEFORM (outline débordant ⇒ masque plein, cap+ourlet ouverts) — isole le
+  // codepath mesh : si #v96b tient comme #v96, le freeform est innocent.
+  const mesh =
+    location.hash === '#v96b'
+      ? (() => {
+          const openTopBottom = (_uu: number, vv: number): boolean => vv < 0.5 / (n - 1) || vv > 1 - 0.5 / (n - 1);
+          return generateSeamedPanels({
+            resolution: n,
+            width: 0.13,
+            height: armLen,
+            gap: 0.18,
+            topY: SPAWN_TOP,
+            shape: 'freeform',
+            mask: { outline: [[-0.01, -0.01], [1.01, -0.01], [1.01, 1.01], [-0.01, 1.01]], darts: [] },
+            extraSeams: [],
+            extraOpenings: openTopBottom,
+            maskBack: { outline: [[-0.01, -0.01], [1.01, -0.01], [1.01, 1.01], [-0.01, 1.01]], darts: [] },
+            extraSeamsBack: [],
+            extraOpeningsBack: openTopBottom,
+            flattenSeams: false, // un tube s'enroule : pas d'anneaux plats
+          });
+        })()
+      : generateSeamedPanels({ resolution: n, width: 0.13, height: armLen, gap: 0.18, topY: SPAWN_TOP, shape: 'rect' });
   // Rotate the vertical tube to follow the shoulder→wrist axis, then drop its top
   // onto the shoulder so the tube WRAPS the arm (front/back straddle it in z) and
   // the armhole seam attaches it. A small gap keeps it OUTSIDE the arm (spawning
@@ -436,7 +459,7 @@ async function main(): Promise<void> {
   // pressing Simuler drops it onto the mannequin. Opening the 2D plan / editing
   // returns to design. Only meaningful in the 'atelier' scene.
   let atelierDesign = true;
-  let atelierSleeves = location.hash === '#v96'; // multi-piece stage 1: add system sleeves to the atelier garment (debug hash: force the proven v96 path)
+  let atelierSleeves = location.hash.startsWith('#v96'); // multi-piece stage 1: add system sleeves to the atelier garment (debug hash: #v96 = proven rect tubes, #v96b = same via the freeform generator)
   let atelierSleeveLen = 0.5; // sleeve length (shoulder→cuff, m): 0.5 long, ~0.22 short (t-shirt)
   let atelierCollar = false; // multi-piece: add a system collar band at the neckline
   let teePreset = false; // T-shirt preset: build a real set-in-sleeve tee instead of the draft
@@ -864,11 +887,12 @@ async function main(): Promise<void> {
               // THROUGH the body (see crossSewnOpenCells).
               const openAll = new Set([...fpc.openCells, ...crossSewnOpenCells(doc, pid, resolution)]);
               if (fp.wrap === 'armL' || fp.wrap === 'armR') {
-                // WRAP piece: the CAP (first kept cell of each column) is the
-                // tube's mouth, pinned to the armhole by wrapCrossSeams — it
-                // must stay OPEN like the proven v96 tube (« top open »). A
-                // welded cap rim fights the pins and flattens the tube against
-                // the flank (the arm can't stay inside).
+                // WRAP piece = a TUBE by construction: its mouth (the CAP,
+                // first kept cell of each column — pinned to the armhole by
+                // wrapCrossSeams) AND its cuff (last kept cell) stay OPEN like
+                // the proven v96 tube (« side seams only, top open, bottom
+                // open ») — a welded rim fights the pins and flattens the tube
+                // against the flank (the arm can't stay inside).
                 const rN = resolution;
                 const insidePiece = (uu: number, vv: number): boolean => {
                   if (!pointInPolygon([uu, vv], fp.outline)) return false;
@@ -876,11 +900,17 @@ async function main(): Promise<void> {
                   return true;
                 };
                 for (let u = 0; u < rN; u++) {
+                  let first = -1;
+                  let last = -1;
                   for (let v = 0; v < rN; v++) {
                     if (insidePiece(u / (rN - 1), v / (rN - 1))) {
-                      openAll.add(v * rN + u);
-                      break;
+                      if (first < 0) first = v;
+                      last = v;
                     }
+                  }
+                  if (first >= 0) {
+                    openAll.add(first * rN + u);
+                    openAll.add(last * rN + u);
                   }
                 }
               }
@@ -897,6 +927,9 @@ async function main(): Promise<void> {
                 maskBack: { outline: fp.outline, darts: fp.darts },
                 extraSeamsBack: fpc.extraSeams,
                 extraOpeningsBack: cellOpen(openAll),
+                // A wrap piece is a TUBE: its side seams must fold freely
+                // around the arm — the flatten rings would pin it shut.
+                flattenSeams: fp.wrap ? false : undefined,
               });
               if (fp.wrap === 'armL' || fp.wrap === 'armR') {
                 // SLEEVE MODE: wrap the piece around the arm — both panels

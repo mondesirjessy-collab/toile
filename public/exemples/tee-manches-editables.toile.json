@@ -1,0 +1,59 @@
+{
+  "format": "toile-garment",
+  "scene": "atelier",
+  "body": "scan femme",
+  "draft": {
+    "format": "toile-draft",
+    "version": 1,
+    "gridN": 64,
+    "manual": true,
+    "piece": {
+      "outline": [[0.42, 0], [0.14, 0.02], [0.1446, 0.24], [0.16, 0.98], [0.84, 0.98], [0.8554, 0.24], [0.86, 0.02], [0.58, 0], [0.5, 0.12]],
+      "darts": [],
+      "seams": [],
+      "openEdges": [{ "from": 3, "to": 4 }, { "from": 7, "to": 9 }],
+      "width": 0.7,
+      "height": 0.62,
+      "topY": 1.52,
+      "gap": 0.9
+    },
+    "back": {
+      "outline": [[0.42, 0], [0.14, 0.02], [0.1446, 0.24], [0.16, 0.98], [0.84, 0.98], [0.8554, 0.24], [0.86, 0.02], [0.58, 0], [0.5, 0.12]],
+      "darts": [],
+      "seams": [],
+      "openEdges": [{ "from": 3, "to": 4 }, { "from": 7, "to": 9 }],
+      "width": 0.7,
+      "height": 0.62,
+      "topY": 1.52,
+      "gap": 0.9
+    },
+    "pieces": [
+      {
+        "outline": [[-0.01, -0.01], [1.01, -0.01], [1.01, 1.01], [-0.01, 1.01]],
+        "darts": [],
+        "seams": [],
+        "openEdges": [],
+        "width": 0.13,
+        "height": 0.5,
+        "topY": 1.4,
+        "gap": 0.18,
+        "wrap": "armR"
+      },
+      {
+        "outline": [[-0.01, -0.01], [1.01, -0.01], [1.01, 1.01], [-0.01, 1.01]],
+        "darts": [],
+        "seams": [],
+        "openEdges": [],
+        "width": 0.13,
+        "height": 0.5,
+        "topY": 1.4,
+        "gap": 0.18,
+        "wrap": "armL"
+      }
+    ],
+    "seams": [
+      { "a": { "face": "front", "from": 0, "to": 3 }, "b": { "face": "back", "from": 0, "to": 3 } },
+      { "a": { "face": "front", "from": 4, "to": 7 }, "b": { "face": "back", "from": 4, "to": 7 } }
+    ]
+  }
+}

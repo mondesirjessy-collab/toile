@@ -551,6 +551,35 @@ describe('combineClothMeshes (outfits)', () => {
     expect(third.layers![tee.count]).toBe(1);
   });
 
+  it('flattenSeams:false drops the flatten rings (a WRAP tube must fold freely)', () => {
+    // The flatten rings (one Bending spring per seamed cell, holding the two
+    // panels ~2·spacing apart beside the seam) pin a sleeve tube's side seams
+    // flat — the mouth can never open around the arm. Isolated by a numeric
+    // mesh diff: the rect tube (no rings) held the arm, the freeform tube
+    // (rings) slid off; without the rings the freeform tube held too.
+    const full = { outline: [[-0.01, -0.01], [1.01, -0.01], [1.01, 1.01], [-0.01, 1.01]] as [number, number][], darts: [] };
+    const openTB = (_uu: number, vv: number): boolean => vv < 0.5 / (n - 1) || vv > 1 - 0.5 / (n - 1);
+    const opts = {
+      resolution: n,
+      width: 0.13,
+      height: 0.5,
+      gap: 0.18,
+      topY: 1.0,
+      shape: 'freeform' as const,
+      mask: full,
+      extraSeams: [],
+      extraOpenings: openTB,
+      maskBack: full,
+      extraSeamsBack: [],
+      extraOpeningsBack: openTB,
+    };
+    const rings = generateSeamedPanels(opts);
+    const tube = generateSeamedPanels({ ...opts, flattenSeams: false });
+    expect(rings.bendingCount).toBeGreaterThan(0); // default keeps the pressed-flat edges
+    expect(tube.bendingCount).toBe(0); // the wrap tube folds freely
+    expect(tube.seamCount).toBe(rings.seamCount); // the seams themselves are untouched
+  });
+
   it('flags cross-seamed rows as self-collision-exempt', () => {
     // Sew the tee's bottom row to the skirt's top row (front panels) — only
     // where BOTH rows carry live fabric: the shapes cut the row ends, and a
