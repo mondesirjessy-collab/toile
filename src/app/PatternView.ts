@@ -162,11 +162,13 @@ export class PatternView {
   // that active piece.
   private pieces: (DraftPiece | null)[] = [];
   private activePiece = 0;
-  // World-x offset of each column (offsets[0]=0), from the column pitch; columns
-  // lay out left→right, one per piece. colBaseMin/MaxX = the front column's
-  // extent, so pickColumn can route a gesture to the right column by interval.
+  // World-x offset of each column (offsets[0]=0); columns lay out left→right,
+  // one per piece, each AS WIDE AS ITS PIECE (body columns span the avatar
+  // silhouette; free pieces take just their own width — plan de coupe épuré).
+  // colEdges = the boundary x between adjacent columns (mid-gutter), so
+  // pickColumn can route a gesture by interval even with unequal widths.
   private offsets: number[] = [];
-  private colPitch = 0;
+  private colEdges: number[] = [];
   private get nCols(): number {
     return Math.max(2, this.pieces.length); // front + back always shown, then extras
   }
@@ -503,20 +505,18 @@ export class PatternView {
     ];
   }
 
-  /** Route a gesture to the column it fell in: past the midpoint between the two
-   * columns (and only if a back face exists) → the back, else the front. */
+  /** Route a gesture to the column it fell in. Columns have UNEQUAL widths
+   * (each spans its own piece), so the split points are the mid-gutter
+   * boundaries captured at layout time (colEdges). */
   private pickColumn(px: number): void {
-    if (!this.tf || this.colPitch <= 0) {
+    if (!this.tf || !this.offsets.length) {
       this.activePiece = 0;
       return;
     }
-    // Pieces are drawn centred at layout-x = pid·pitch (offset 0), so the column
-    // boundary sits at (k+½)·pitch. Reference the piece centres, NOT the
-    // silhouette-union centre (which shifts for an asymmetric avatar) — this
-    // matches v97's `lx > colGap/2` split exactly for two columns.
     const [lx] = this.screenToLayout(px, 0);
-    const c = Math.round(lx / this.colPitch);
-    this.activePiece = Math.min(this.nCols - 1, Math.max(0, c));
+    let c = 0;
+    while (c < this.colEdges.length && lx > this.colEdges[c]!) c++;
+    this.activePiece = Math.min(this.nCols - 1, c);
   }
 
   /** Screen midpoint of an outline edge on a piece (with its column offset). */
@@ -1027,11 +1027,29 @@ export class PatternView {
       ctx.stroke();
     }
 
-    // Vertex handles.
+    // Vertex handles. Corner points get the full ringed handle; the sample
+    // points of an ARC (both neighbour edges short — same test as the
+    // glisser-courbe chain) draw as small plain dots, so a curve reads as a
+    // line instead of a bead chain. Hover/drag always brings the full handle
+    // back (they stay grabbable, hit radius unchanged).
+    const isArcPt = (i: number): boolean => {
+      const a = out[(i + out.length - 1) % out.length]!;
+      const b = out[i]!;
+      const c = out[(i + 1) % out.length]!;
+      return Math.hypot(b[0] - a[0], b[1] - a[1]) <= 0.2 && Math.hypot(c[0] - b[0], c[1] - b[1]) <= 0.2;
+    };
     for (let i = 0; i < pts.length; i++) {
       const s = pts[i]!;
       const active = this.draftDrag?.vertex === i;
-      const r = active || this.draftHover === i ? 6.5 : 4.5;
+      const hovered = this.draftHover === i;
+      if (!active && !hovered && isArcPt(i)) {
+        ctx.beginPath();
+        ctx.arc(s[0], s[1], 2, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+        ctx.fill();
+        continue;
+      }
+      const r = active || hovered ? 6.5 : 4.5;
       ctx.beginPath();
       ctx.arc(s[0], s[1], r, 0, Math.PI * 2);
       ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
@@ -1172,7 +1190,7 @@ export class PatternView {
       }
       cx /= scr.length;
       cy /= scr.length;
-      ctx.strokeStyle = 'rgba(210, 200, 185, 0.5)';
+      ctx.strokeStyle = 'rgba(210, 200, 185, 0.32)';
       ctx.lineWidth = 1;
       ctx.setLineDash([4, 3]);
       for (let k = 0; k < scr.length; k++) {
@@ -1196,8 +1214,29 @@ export class PatternView {
       ctx.setLineDash([]);
     };
     for (let pid = 0; pid < this.nCols; pid++) drawCutLine(pid);
-    // Sewn seams: a blue link between the two edges' midpoints (across columns),
-    // labelled with the gather ratio (1:1 = flat, >1 = the longer edge fronces).
+    // Sewn seams, épuré : the sewn EDGES themselves colour in on the pieces
+    // (blue = flat, orange = gathered), a THIN link joins the two runs (still
+    // the unsew click target), and the ratio label only appears when the seam
+    // actually gathers (a plan full of « 1:1 » said nothing).
+    const runLenCm = (pid: number, r: { from: number; to: number }): number => {
+      const piece = this.pieceAt(pid);
+      if (!piece) return 0;
+      let cm = 0;
+      runSet(piece, [r]).forEach((e) => (cm += this.edgeLenCm(pid, e)));
+      return cm;
+    };
+    const strokeRun = (pid: number, r: { from: number; to: number }): void => {
+      const piece = this.pieceAt(pid);
+      if (!piece) return;
+      runSet(piece, [r]).forEach((e) => {
+        const pts = edgePts(pid, e);
+        if (!pts) return;
+        ctx.beginPath();
+        ctx.moveTo(pts[0][0], pts[0][1]);
+        ctx.lineTo(pts[1][0], pts[1][1]);
+        ctx.stroke();
+      });
+    };
     for (const s of this.assembly) {
       const pidA = pieceIdOf(s.a);
       const pidB = pieceIdOf(s.b);
@@ -1206,21 +1245,27 @@ export class PatternView {
       if (!pa || !pb) continue;
       const ma: [number, number] = [(pa[0][0] + pa[1][0]) / 2, (pa[0][1] + pa[1][1]) / 2];
       const mb: [number, number] = [(pb[0][0] + pb[1][0]) / 2, (pb[0][1] + pb[1][1]) / 2];
-      const lo = Math.min(this.edgeLenCm(pidA, s.a.from), this.edgeLenCm(pidB, s.b.from)) || 1;
-      const hi = Math.max(this.edgeLenCm(pidA, s.a.from), this.edgeLenCm(pidB, s.b.from));
-      const ratio = hi / lo;
+      const la = runLenCm(pidA, { from: s.a.from, to: s.a.to });
+      const lb = runLenCm(pidB, { from: s.b.from, to: s.b.to });
+      const ratio = Math.max(la, lb) / (Math.min(la, lb) || 1);
       const gathered = ratio >= 1.12;
-      ctx.strokeStyle = gathered ? 'rgba(255, 190, 120, 0.95)' : 'rgba(127, 178, 255, 0.95)';
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = gathered ? 'rgba(255, 190, 120, 0.85)' : 'rgba(127, 178, 255, 0.8)';
+      ctx.lineWidth = 2.5;
+      strokeRun(pidA, { from: s.a.from, to: s.a.to });
+      strokeRun(pidB, { from: s.b.from, to: s.b.to });
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = gathered ? 'rgba(255, 190, 120, 0.45)' : 'rgba(127, 178, 255, 0.3)';
       ctx.beginPath();
       ctx.moveTo(ma[0], ma[1]);
       ctx.lineTo(mb[0], mb[1]);
       ctx.stroke();
-      ctx.font = '9px ui-monospace, monospace';
-      ctx.fillStyle = gathered ? 'rgba(255, 190, 120, 1)' : 'rgba(150, 195, 255, 0.9)';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(gathered ? `${ratio.toFixed(1).replace('.', ',')}:1` : '1:1', (ma[0] + mb[0]) / 2, (ma[1] + mb[1]) / 2 - 6);
+      if (gathered) {
+        ctx.font = '9px ui-monospace, monospace';
+        ctx.fillStyle = 'rgba(255, 190, 120, 1)';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`${ratio.toFixed(1).replace('.', ',')}:1 fronce`, (ma[0] + mb[0]) / 2, (ma[1] + mb[1]) / 2 - 6);
+      }
     }
     // First-picked edge, awaiting the second click.
     if (this.seamPickA) {
@@ -1312,25 +1357,48 @@ export class PatternView {
     // (renderDraft) draws the outline, points, darts and seams on top.
     if (this.inDraft) {
       const p = this.pieces.find((x): x is DraftPiece => !!x)!;
-      // FRONT-column bounds: the piece's extent unioned with the silhouette.
-      let fMinX = -p.width / 2;
-      let fMaxX = p.width / 2;
+      // Vertical extent: every piece (a collar band above the hem line must not
+      // clip) unioned with the silhouette.
       let minY = p.topY - p.height;
       let maxY = p.topY;
+      for (const q of this.pieces) {
+        if (!q) continue;
+        minY = Math.min(minY, q.topY - q.height);
+        maxY = Math.max(maxY, q.topY);
+      }
       if (this.bodySil) {
-        fMinX = Math.min(fMinX, this.bodySil.minX);
-        fMaxX = Math.max(fMaxX, this.bodySil.maxX);
         minY = Math.min(minY, this.bodySil.minY);
         maxY = Math.max(maxY, this.bodySil.maxY);
       }
-      // N columns side by side (CLO-style): DEVANT at 0, DOS at pitch, then one
-      // column per free piece. Column pitch = front span + a 12 cm gutter.
-      const pitch = fMaxX - fMinX + 0.12;
+      // N columns side by side (CLO-style): DEVANT, DOS, then one column per
+      // free piece — each column AS WIDE AS ITS CONTENT (plan de coupe épuré).
+      // Body columns (0/1) span piece ∪ silhouette (pieces are drawn against
+      // the avatar); a free piece takes just its own width, so a narrow collar
+      // band no longer claims a body-wide column and the whole plan zooms in.
+      // An EMPTY free column (pen about to trace) keeps a generous front-width
+      // slot to draw in.
       const nCols = this.nCols;
-      this.colPitch = pitch;
-      this.offsets = Array.from({ length: nCols }, (_, k) => k * pitch);
-      const minX = fMinX;
-      const maxX = fMaxX + (nCols - 1) * pitch;
+      const colRange = (k: number): [number, number] => {
+        const q = this.pieceAt(k);
+        const w = (q ? q.width : p.width) / 2;
+        if (k <= 1 && this.bodySil) return [Math.min(-w, this.bodySil.minX), Math.max(w, this.bodySil.maxX)];
+        const pad = k <= 1 ? 0 : 0.03;
+        return [-w - pad, w + pad];
+      };
+      const GUTTER = 0.08;
+      this.offsets = new Array<number>(nCols).fill(0);
+      this.colEdges = [];
+      const ranges: [number, number][] = [];
+      let cursor = 0; // running right edge of the laid-out columns (layout x)
+      for (let k = 0; k < nCols; k++) {
+        const r = colRange(k);
+        this.offsets[k] = k === 0 ? 0 : cursor + GUTTER - r[0];
+        if (k > 0) this.colEdges.push(cursor + GUTTER / 2);
+        cursor = this.offsets[k]! + r[1];
+        ranges.push(r);
+      }
+      const minX = ranges[0]![0];
+      const maxX = cursor;
       const margin = 22;
       const spanA = maxX - minX || p.width;
       const spanB = maxY - minY || p.height;
@@ -1338,8 +1406,10 @@ export class PatternView {
       const ox = (W - spanA * scale) / 2;
       const oy = (H - spanB * scale) / 2;
       this.tf = { minA: minX, minB: minY, scale, ox, oy, H };
-      // Avatar silhouette behind EACH column: the exact body shape, filled as one
-      // padded path (closes hairlines; a single fill keeps the alpha uniform).
+      // Avatar silhouette behind the BODY columns only (DEVANT/DOS are drawn
+      // against the body; a sleeve or collar column stays clean) — the exact
+      // body shape, filled as one padded path (closes hairlines; a single fill
+      // keeps the alpha uniform).
       const drawSil = (offset: number): void => {
         if (!this.bodySil) return;
         ctx.beginPath();
@@ -1351,7 +1421,7 @@ export class PatternView {
         ctx.fillStyle = 'rgba(214, 205, 190, 0.16)';
         ctx.fill();
       };
-      for (let k = 0; k < nCols; k++) drawSil(k * pitch);
+      for (let k = 0; k < Math.min(nCols, 2); k++) drawSil(this.offsets[k]!);
       // Grid every ~10 cm across the whole field.
       ctx.strokeStyle = 'rgba(237, 233, 223, 0.06)';
       ctx.lineWidth = 1;
@@ -1380,8 +1450,9 @@ export class PatternView {
         const [sx, sy] = this.layoutToScreen(minX, gy);
         ctx.fillText(`${cm}`, sx + 2, sy);
       }
-      // Column labels above each silhouette.
-      const cx = (fMinX + fMaxX) / 2;
+      // Column labels, centred over each column's own extent. A label wider
+      // than its (narrow) column wraps onto two lines at the first space, so
+      // MANCHE D · MANCHE G · COL never overlap each other.
       ctx.font = '600 11px ui-monospace, monospace';
       ctx.fillStyle = 'rgba(237, 233, 223, 0.5)';
       ctx.textAlign = 'center';
@@ -1389,7 +1460,15 @@ export class PatternView {
       const labY = this.layoutToScreen(0, maxY)[1] - 3;
       for (let k = 0; k < nCols; k++) {
         const label = this.pieceLabel(k).toUpperCase();
-        ctx.fillText(label, this.layoutToScreen(cx + k * pitch, maxY)[0], labY);
+        const sx = this.layoutToScreen(this.offsets[k]! + (ranges[k]![0] + ranges[k]![1]) / 2, maxY)[0];
+        const colPx = (ranges[k]![1] - ranges[k]![0]) * scale;
+        const sp = label.indexOf(' ');
+        if (ctx.measureText(label).width > colPx && sp > 0) {
+          ctx.fillText(label.slice(0, sp), sx, labY - 11);
+          ctx.fillText(label.slice(sp + 1), sx, labY);
+        } else {
+          ctx.fillText(label, sx, labY);
+        }
       }
       ctx.textAlign = 'left';
       ctx.textBaseline = 'alphabetic';
