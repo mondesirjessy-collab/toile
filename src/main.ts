@@ -398,6 +398,7 @@ async function main(): Promise<void> {
       // the current draft — front (0), the côte-à-côte back (1), or a FREE piece
       // (≥ 2) — and re-cut. Editing returns to the flat design view (physics
       // paused) so the change shows without the piece draping away.
+      pushHistory(); // un cran d'annulation par geste
       teePreset = false; // a manual edit ⇒ freeform mode; keep the edit (stop re-drafting)
       const gridN = resolution as 32 | 64 | 128;
       if (!draft) draft = { format: 'toile-draft', version: 1, gridN, piece: defaultDraft(gridN).piece };
@@ -422,6 +423,8 @@ async function main(): Promise<void> {
     },
     // Manual assembly: the user sewed edge A ↔ edge B (Shift+click).
     (seam: AssemblySeam) => {
+      document.getElementById('at-sew')?.classList.remove('active'); // le mode guidé se referme après la couture
+      pushHistory();
       const gridN = resolution as 32 | 64 | 128;
       if (!draft) draft = { format: 'toile-draft', version: 1, gridN, piece: defaultDraft(gridN).piece, manual: true, seams: [] };
       // Going manual disables the automatic front↔back perimeter sew; without an
@@ -438,6 +441,7 @@ async function main(): Promise<void> {
     // Delete assembly seam #i (clicked its link).
     (index: number) => {
       if (!draft?.seams) return;
+      pushHistory();
       draft.seams = draft.seams.filter((_, k) => k !== index);
       draftTouched = true;
       atelierDesign = true;
@@ -448,6 +452,7 @@ async function main(): Promise<void> {
     // assembly seams (drop the ones touching it, decrement the pieces above it).
     (pieceId: number) => {
       if (!draft?.pieces) return;
+      pushHistory();
       const { pieces, seams } = removeFreePiece(draft.pieces, draft.seams ?? [], pieceId);
       draft.pieces = pieces.length ? pieces : undefined;
       draft.seams = seams;
@@ -474,6 +479,30 @@ async function main(): Promise<void> {
   // ✎ Manche : la plume dessine une pièce WRAP — le bras visé est choisi au
   // clic du bouton (le bras libre) et consommé quand la pièce se ferme.
   let penWrap: 'armL' | 'armR' | null = null;
+  // ANNULER (Ctrl/Cmd+Z) : historique par instantanés du patron — un cran par
+  // geste (déplacement de point, couture, suppression de pièce, chargement).
+  const draftHistory: { draft: DraftDoc | null; touched: boolean }[] = [];
+  const pushHistory = (): void => {
+    draftHistory.push({ draft: draft ? structuredClone(draft) : null, touched: draftTouched });
+    if (draftHistory.length > 40) draftHistory.shift();
+  };
+  const undoDraft = (): void => {
+    const h = draftHistory.pop();
+    if (!h) return;
+    draft = h.draft;
+    draftTouched = h.touched;
+    teePreset = false;
+    atelierDesign = true;
+    document.getElementById('at-sim')?.classList.remove('running');
+    build();
+  };
+  window.addEventListener('keydown', (e) => {
+    if (sceneMode !== 'atelier') return;
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
+      e.preventDefault();
+      undoDraft();
+    }
+  });
   const simBtn = (): HTMLElement => document.getElementById('at-sim') as HTMLElement;
   const setBig = (on: boolean): void => {
     bigPanel = on;
@@ -523,6 +552,7 @@ async function main(): Promise<void> {
     if (!bigPanel) setBig(true);
     atelierDesign = true;
     simBtn().classList.remove('running');
+    pushHistory();
     teePreset = false;
     draft = oversizeTee(lastMeasure, REF);
     draftTouched = true; // un vrai draft : éditable, exportable
@@ -572,6 +602,7 @@ async function main(): Promise<void> {
     atelierSleeves = !atelierSleeves;
     (e.currentTarget as HTMLElement).classList.toggle('active', atelierSleeves);
     if (atelierSleeves && !draftTouched) {
+      pushHistory();
       draft = tshirtDraft(0.7 * lastGrade.topScale, 0.62, 0.9, 1.52 + lastGrade.dyShoulder, resolution as 32 | 64 | 128);
       draftTouched = true; // the loaded body is a real editable draft (exports carry it)
       teePreset = false;
@@ -579,6 +610,21 @@ async function main(): Promise<void> {
     atelierDesign = true; // re-freeze flat so the new tubes are visible before draping
     simBtn().classList.remove('running');
     build();
+  });
+  // 🪡 COUDRE guidé : bascule le mode « deux clics = une couture » (le pied du
+  // plan guide chaque étape). Maj+clic reste le raccourci expert équivalent.
+  (document.getElementById('at-sew') as HTMLElement).addEventListener('click', (e) => {
+    if (!bigPanel) setBig(true);
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    const on = patternView.toggleSew();
+    (e.currentTarget as HTMLElement).classList.toggle('active', on);
+  });
+  // − PIÈCE : supprime la pièce active (cliquer d'abord sa colonne) — Ctrl+Z annule.
+  (document.getElementById('at-del') as HTMLElement).addEventListener('click', () => {
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    patternView.deleteActiveFreePiece();
   });
   (document.getElementById('at-pen') as HTMLElement).addEventListener('click', () => patternView.finishPen());
   (document.getElementById('at-sim') as HTMLElement).addEventListener('click', () => simulate());
@@ -1232,7 +1278,7 @@ async function main(): Promise<void> {
     if (hintEl)
       hintEl.textContent =
         sceneMode === 'atelier'
-          ? 'atelier : glisser un point = déformer · Maj+clic 2 bords = coudre (rouges = à coudre) · clic sur une couture = défaire · ▶ Simuler = draper'
+          ? 'atelier : glisser un point = déformer · 🪡 Coudre puis 2 bords · clic sur une couture = défaire · Ctrl+Z = annuler · ▶ Simuler = draper'
           : 'glisser sur le tissu : le tirer · glisser à côté : tourner · clic droit + glisser : se déplacer · molette : zoom · R : reset';
   };
 
@@ -1520,6 +1566,7 @@ async function main(): Promise<void> {
       // it so a draftless file wipes the previous session instead of leaking it.
       onGetDraft: () => (draftTouched ? draft ?? undefined : undefined),
       onDraft: (raw) => {
+        pushHistory(); // l'import remplace le patron : un cran d'annulation
         if (raw == null) {
           draft = null;
           draftTouched = false;

@@ -183,6 +183,10 @@ export class PatternView {
   // edge picked while awaiting the second (Shift+click), which may be on either face.
   private assembly: AssemblySeam[] = [];
   private seamPickA: { pieceId: number; edge: number } | null = null;
+  // Mode COUDRE guidé (bouton 🪡) : les clics SIMPLES près d'un bord font les
+  // deux choix de couture (plus besoin de connaître Maj+clic) ; le mode se
+  // referme après la couture. Maj+clic reste disponible en raccourci expert.
+  private sewMode = false;
   private seamAllowanceM = 0.01; // shown as a dashed cut line outside each piece
   // Pen tool: drawing a new piece from scratch (click to place points, close it).
   private penMode = false;
@@ -373,6 +377,18 @@ export class PatternView {
 
   get drawing(): boolean {
     return this.penMode;
+  }
+
+  /** Basculer le mode COUDRE guidé (bouton 🪡). Rend l'état courant. */
+  toggleSew(): boolean {
+    this.sewMode = !this.sewMode;
+    this.seamPickA = null;
+    this.render();
+    return this.sewMode;
+  }
+
+  get sewing(): boolean {
+    return this.sewMode;
   }
 
   /** Close the drawn outline into a piece (≥3 points), seeding a top opening.
@@ -609,7 +625,7 @@ export class PatternView {
       // edges can be on different columns (front shoulder ↔ back shoulder, or a
       // free piece ↔ the body) — the column the pointer went down in (pickColumn,
       // above) sets the piece.
-      if (e.shiftKey) {
+      if (e.shiftKey || this.sewMode) {
         const ne = this.nearestEdge(p[0], p[1]);
         if (ne && ne.dist <= EDGE_HIT) {
           const pid = this.activePiece;
@@ -630,6 +646,7 @@ export class PatternView {
             const a = this.seamPickA;
             const seam: AssemblySeam = { a: run(a.pieceId, a.edge), b: run(pid, ne.edge) };
             this.seamPickA = null;
+            this.sewMode = false; // couture faite : le mode guidé se referme
             this.render();
             this.onAssemblySeam(seam);
           }
@@ -1144,10 +1161,13 @@ export class PatternView {
     if (this.seamPickA) {
       ctx.fillStyle = 'rgba(255, 159, 107, 0.98)';
       ctx.fillText(
-        `bord : ${Math.round(this.edgeLenCm(this.seamPickA.pieceId, this.seamPickA.edge))} cm — cliquez le bord à assembler`,
+        `bord : ${Math.round(this.edgeLenCm(this.seamPickA.pieceId, this.seamPickA.edge))} cm — cliquez maintenant le 2e bord, celui à assembler`,
         8,
         this.canvas.height - 20,
       );
+    } else if (this.sewMode) {
+      ctx.fillStyle = 'rgba(255, 159, 107, 0.98)';
+      ctx.fillText('🪡 couture : cliquez le 1er bord (les bords rouges attendent)', 8, this.canvas.height - 20);
     } else {
       ctx.fillStyle = freeCount === 0 ? 'rgba(120, 220, 150, 0.95)' : 'rgba(233, 96, 70, 0.9)';
       ctx.fillText(
