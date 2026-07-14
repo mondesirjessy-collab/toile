@@ -77,9 +77,44 @@ export function curveNeighbors(
   return out;
 }
 
+/**
+ * Glisser-BOMBER : l'arc qu'un segment devient quand on le tire par un point.
+ * Bézier quadratique de a à b dont le contrôle est résolu pour que la courbe
+ * PASSE par la souris `m` au paramètre du point saisi (`grab`, projeté sur ab
+ * et borné loin des bouts pour rester stable). Renvoie les points INTÉRIEURS
+ * de l'arc (sans a ni b), prêts à insérer dans le contour — ou [] si la souris
+ * reste trop près de la ligne (l'arc serait plat : rien à courber).
+ * Pure — testable sans DOM.
+ */
+export function bendSamples(a: UV, b: UV, grab: UV, m: UV, minDepth = 0.006): UV[] {
+  const abx = b[0] - a[0];
+  const aby = b[1] - a[1];
+  const len2 = abx * abx + aby * aby;
+  if (len2 < 1e-12) return [];
+  const len = Math.sqrt(len2);
+  const depth = Math.abs((m[0] - a[0]) * (-aby / len) + (m[1] - a[1]) * (abx / len));
+  if (depth < minDepth) return [];
+  const t0 = Math.min(0.85, Math.max(0.15, ((grab[0] - a[0]) * abx + (grab[1] - a[1]) * aby) / len2));
+  const w = 2 * t0 * (1 - t0);
+  const cx = (m[0] - (1 - t0) * (1 - t0) * a[0] - t0 * t0 * b[0]) / w;
+  const cy = (m[1] - (1 - t0) * (1 - t0) * a[1] - t0 * t0 * b[1]) / w;
+  // Assez de points pour un arc lisse, proportionné à la longueur du segment
+  // (les arcs du patron sont déjà échantillonnés à cette densité-là).
+  const k = Math.max(3, Math.min(9, Math.round(len * 24)));
+  const pts: UV[] = [];
+  for (let j = 1; j <= k; j++) {
+    const t = j / (k + 1);
+    const q0 = (1 - t) * (1 - t);
+    const q1 = 2 * t * (1 - t);
+    const q2 = t * t;
+    pts.push([q0 * a[0] + q1 * cx + q2 * b[0], q0 * a[1] + q1 * cy + q2 * b[1]]);
+  }
+  return pts;
+}
+
 const HIT_RADIUS = 12;
-const EDGE_HIT = 8; // click within this many px of an outline edge → add point / dart
-const DART_DRAG = 7; // drag farther than this from an edge → it's a dart, not an add
+const EDGE_HIT = 8; // click within this many px of an outline edge → add point / bend
+const DART_DRAG = 7; // drag farther than this from an edge → it's a bend (Alt: dart), not an add
 
 interface DragState {
   index: number;
@@ -178,7 +213,16 @@ export class PatternView {
   } | null = null;
   private draftHover: number | null = null;
   // A press on an outline edge: a click adds a point; dragging inward pulls a dart.
-  private draftEdge: { edge: number; downUV: UV; downSX: number; downSY: number; pointerId: number; apex: UV | null } | null = null;
+  private draftEdge: {
+    edge: number;
+    downUV: UV;
+    downSX: number;
+    downSY: number;
+    pointerId: number;
+    apex: UV | null; // pince (Alt+glisser) : pointe de la pince en aperçu
+    dart: boolean; // Alt enfoncé à la prise → le glisser tire une pince, pas un arc
+    bend: UV[] | null; // bomber (glisser simple) : points intérieurs de l'arc en aperçu
+  } | null = null;
   // Manual assembly: user-defined seams (front/back edge ↔ edge), plus the first
   // edge picked while awaiting the second (Shift+click), which may be on either face.
   private assembly: AssemblySeam[] = [];
@@ -671,7 +715,16 @@ export class PatternView {
         }
         const ne = this.nearestEdge(p[0], p[1]);
         if (ne && ne.dist <= EDGE_HIT) {
-          this.draftEdge = { edge: ne.edge, downUV: this.screenToUV(ne.sx, ne.sy), downSX: ne.sx, downSY: ne.sy, pointerId: e.pointerId, apex: null };
+          this.draftEdge = {
+            edge: ne.edge,
+            downUV: this.screenToUV(ne.sx, ne.sy),
+            downSX: ne.sx,
+            downSY: ne.sy,
+            pointerId: e.pointerId,
+            apex: null,
+            dart: e.altKey,
+            bend: null,
+          };
           e.preventDefault();
           e.stopPropagation();
         }
@@ -709,8 +762,18 @@ export class PatternView {
         const px = e.clientX - r.left;
         const py = e.clientY - r.top;
         const dist = Math.hypot(px - this.draftEdge.downSX, py - this.draftEdge.downSY);
-        // Dragged far enough inward → the drag point is the dart apex (preview).
-        this.draftEdge.apex = dist > DART_DRAG ? this.screenToUV(px, py) : null;
+        const dragged = dist > DART_DRAG;
+        if (this.draftEdge.dart) {
+          // Alt+glisser : le point de la souris est la pointe de la pince (aperçu).
+          this.draftEdge.apex = dragged ? this.screenToUV(px, py) : null;
+        } else {
+          // Glisser simple : le segment se BOMBE — l'arc suit la souris (aperçu).
+          const out = this.draftPiece!.outline;
+          const a = out[this.draftEdge.edge]!;
+          const b = out[(this.draftEdge.edge + 1) % out.length]!;
+          const arc = dragged ? bendSamples(a, b, this.draftEdge.downUV, this.screenToUV(px, py)) : [];
+          this.draftEdge.bend = arc.length ? arc : null;
+        }
         e.preventDefault();
         e.stopPropagation();
         this.render();
@@ -794,6 +857,17 @@ export class PatternView {
           const legA: UV = [g.downUV[0] - dx * d, g.downUV[1] - dy * d];
           const legB: UV = [g.downUV[0] + dx * d, g.downUV[1] + dy * d];
           next = { ...this.draftPiece, darts: [...this.draftPiece.darts, { apex: g.apex, legA, legB }] };
+        } else if (g.bend && g.bend.length) {
+          // Bomber : l'arc remplace le segment — ses points s'insèrent un à un
+          // dans le contour (chaque insertion ré-indexe openEdges/coutures de la
+          // pièce, et les coutures d'assemblage suivent pareil). Un bord cousu
+          // ou ouvert qui se courbe reste donc cousu/ouvert sur tout l'arc.
+          next = this.draftPiece;
+          for (let j = 0; j < g.bend.length; j++) {
+            next = insertOutlineVertex(next, g.edge + j, g.bend[j]!);
+            this.assembly = reindexAssemblySeams(this.assembly, this.activePiece, 'insert', g.edge + j + 1, next.outline.length);
+          }
+          reidx = this.assembly;
         } else {
           next = insertOutlineVertex(this.draftPiece, g.edge, g.downUV);
           // A new vertex shifts edge indices → re-index the assembly seams (on
@@ -997,6 +1071,23 @@ export class PatternView {
       drawDart(this.draftEdge.apex, [m[0] - dx * 0.045, m[1] - dy * 0.045], [m[0] + dx * 0.045, m[1] + dy * 0.045]);
     }
     ctx.setLineDash([]);
+    // Aperçu du BOMBER : l'arc que le segment deviendra au relâchement (bleu,
+    // par-dessus le contour encore droit).
+    if (this.draftEdge?.bend) {
+      const o = this.draftPiece.outline;
+      const a = this.vertexScreen(o[this.draftEdge.edge]!);
+      const b = this.vertexScreen(o[(this.draftEdge.edge + 1) % o.length]!);
+      const arc = this.draftEdge.bend.map((uv) => this.vertexScreen(uv));
+      if (a && b && arc.every((s) => s !== null)) {
+        ctx.strokeStyle = 'rgba(127, 178, 255, 0.95)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(a[0], a[1]);
+        for (const s of arc) ctx.lineTo(s![0], s![1]);
+        ctx.lineTo(b[0], b[1]);
+        ctx.stroke();
+      }
+    }
 
     // Skip the assembly overlay while a vertex is being dragged: it reads the
     // committed outline, so it would lag the live preview until the drag commits.

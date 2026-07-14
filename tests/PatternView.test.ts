@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { handleLayoutPos, handleValueFromLayout, curveNeighbors, type PatternHandleSpec } from '../src/app/PatternView';
+import { handleLayoutPos, handleValueFromLayout, curveNeighbors, bendSamples, type PatternHandleSpec } from '../src/app/PatternView';
 import { oversizeTee } from '../src/engine/pattern/draftTee';
+import { insertOutlineVertex, runCoversEdge, type DraftPiece, type UV } from '../src/engine/pattern/Draft';
 
 const grid = { width: 0.95, topY: 1.6, height: 1.3 };
 
@@ -93,5 +94,66 @@ describe('curveNeighbors (glisser-courbe)', () => {
     const seen = nb.map((c) => c.idx);
     expect(new Set(seen).size).toBe(seen.length);
     expect(seen).not.toContain(0);
+  });
+});
+
+describe('bendSamples (tirer un bord = le courber)', () => {
+  const A: UV = [0.2, 0.5];
+  const B: UV = [0.8, 0.5];
+
+  it('l arc passe par la souris quand on saisit le milieu du segment', () => {
+    const grab: UV = [0.5, 0.5];
+    const m: UV = [0.5, 0.62]; // tiré de 0.12 vers le haut
+    const arc = bendSamples(A, B, grab, m);
+    // Segment de 0.6 UV → 9 points (plafond), symétriques autour du milieu.
+    expect(arc.length).toBe(9);
+    const mid = arc[4]!; // t = 5/10 = 0.5
+    expect(mid[0]).toBeCloseTo(0.5, 6);
+    expect(mid[1]).toBeCloseTo(0.62, 6);
+    // Tous les points intérieurs bombent du même côté, sans dépasser la souris.
+    for (const p of arc) {
+      expect(p[1]).toBeGreaterThan(0.5);
+      expect(p[1]).toBeLessThanOrEqual(0.62 + 1e-9);
+    }
+  });
+
+  it('souris restée sur la ligne → arc plat → rien à insérer', () => {
+    expect(bendSamples(A, B, [0.5, 0.5], [0.65, 0.5004])).toEqual([]);
+  });
+
+  it('le nombre de points suit la longueur du segment (plancher 3, plafond 9)', () => {
+    const short = bendSamples([0.5, 0.5], [0.58, 0.5], [0.54, 0.5], [0.54, 0.55]);
+    expect(short.length).toBe(3);
+    const long = bendSamples([0.0, 0.5], [1.0, 0.5], [0.5, 0.5], [0.5, 0.6]);
+    expect(long.length).toBe(9);
+  });
+
+  it('inséré dans le contour, l arc laisse coutures et bords ouverts sur le même bord physique', () => {
+    // Rectangle : ourlet = bord {2,3} déclaré ouvert, côté {1,2} déclaré cousu.
+    const piece: DraftPiece = {
+      outline: [[0.2, 0.9], [0.8, 0.9], [0.8, 0.2], [0.2, 0.2]] as UV[],
+      width: 0.6,
+      height: 0.7,
+      gap: 0.9,
+      topY: 1.5,
+      darts: [],
+      openEdges: [{ from: 2, to: 3 }],
+      seams: [{ a: { from: 1, to: 2 }, b: { from: 0, to: 1 } }],
+    };
+    // Bomber l'ourlet (bord 2, entre les sommets 2 et 3) vers le bas.
+    const arc = bendSamples(piece.outline[2]!, piece.outline[3]!, [0.5, 0.2], [0.5, 0.12]);
+    expect(arc.length).toBeGreaterThan(0);
+    let next = piece;
+    for (let j = 0; j < arc.length; j++) next = insertOutlineVertex(next, 2 + j, arc[j]!);
+    const nV = next.outline.length;
+    expect(nV).toBe(4 + arc.length);
+    // L'ourlet ouvert couvre maintenant TOUT l'arc (chaque petit bord 2..2+k).
+    for (let e = 2; e <= 2 + arc.length; e++) {
+      expect(runCoversEdge(next.openEdges[0]!, e, nV)).toBe(true);
+    }
+    // La couture du côté {1,2} n'a pas bougé (insertion après elle).
+    expect(next.seams[0]!.a).toEqual({ from: 1, to: 2 });
+    // Et le contour passe bien par les points de l'arc, dans l'ordre.
+    for (let j = 0; j < arc.length; j++) expect(next.outline[3 + j]).toEqual(arc[j]);
   });
 });

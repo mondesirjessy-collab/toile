@@ -1278,7 +1278,7 @@ async function main(): Promise<void> {
     if (hintEl)
       hintEl.textContent =
         sceneMode === 'atelier'
-          ? 'atelier : glisser un point = déformer · 🪡 Coudre puis 2 bords · clic sur une couture = défaire · Ctrl+Z = annuler · ▶ Simuler = draper'
+          ? 'atelier : glisser un point = déformer · tirer un bord = le courber (Alt = pince) · 🪡 Coudre puis 2 bords · clic sur une couture = défaire · Ctrl+Z = annuler · ▶ Simuler = draper'
           : 'glisser sur le tissu : le tirer · glisser à côté : tourner · clic droit + glisser : se déplacer · molette : zoom · R : reset';
   };
 
