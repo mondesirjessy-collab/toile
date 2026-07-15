@@ -156,6 +156,9 @@ export class PatternView {
   private readonly onAssemblyDelete: (index: number) => void;
   // Remove a FREE piece (its column + its seams) by pieceId (≥ 2).
   private readonly onDeletePiece: (pieceId: number) => void;
+  // Le mode plume s'allume/s'éteint : la barre d'outils montre « Terminer »
+  // seulement pendant un tracé (outil contextuel, façon CLO).
+  private readonly onPenState: (drawing: boolean) => void;
   // Multi-piece columns (CLO-style): pieces[0]=FRONT, [1]=BACK (may be null,
   // drawn from scratch), [≥2]=FREE pieces (collar, yoke…). Gestures edit
   // whichever column the pointer went down in (`activePiece`); `draftPiece` is
@@ -233,9 +236,13 @@ export class PatternView {
   // deux choix de couture (plus besoin de connaître Maj+clic) ; le mode se
   // referme après la couture. Maj+clic reste disponible en raccourci expert.
   private sewMode = false;
-  private seamAllowanceM = 0.01; // shown as a dashed cut line outside each piece
   // Pen tool: drawing a new piece from scratch (click to place points, close it).
   private penMode = false;
+  /** Écrit penMode ET prévient la barre d'outils quand l'état change. */
+  private setPen(on: boolean): void {
+    if (this.penMode !== on) this.onPenState(on);
+    this.penMode = on;
+  }
   private penPoints: UV[] = [];
   // Filet de sécurité de la plume : la pièce remplacée pendant le tracé, pour
   // la restaurer si le tracé est abandonné (✎ ne détruit jamais un patron).
@@ -253,6 +260,7 @@ export class PatternView {
     onAssemblySeam: (seam: AssemblySeam) => void = () => {},
     onAssemblyDelete: (index: number) => void = () => {},
     onDeletePiece: (pieceId: number) => void = () => {},
+    onPenState: (drawing: boolean) => void = () => {},
   ) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
@@ -261,6 +269,7 @@ export class PatternView {
     this.onAssemblySeam = onAssemblySeam;
     this.onAssemblyDelete = onAssemblyDelete;
     this.onDeletePiece = onDeletePiece;
+    this.onPenState = onPenState;
     this.staticLayer = document.createElement('canvas');
     this.staticLayer.width = canvas.width;
     this.staticLayer.height = canvas.height;
@@ -338,12 +347,6 @@ export class PatternView {
     this.render();
   }
 
-  /** Seam allowance (meters) drawn as a dashed cut line outside each piece. */
-  setSeamAllowance(m: number): void {
-    this.seamAllowanceM = m;
-    this.render();
-  }
-
   /**
    * Enter freeform draft editing (atelier) with the FRONT `piece` and an optional
    * independent BACK face, or leave draft mode (both null).
@@ -352,7 +355,7 @@ export class PatternView {
     this.pieces = [this.clonePiece(piece), this.clonePiece(back), ...extra.map((e) => this.clonePiece(e))];
     // Keep the active column if it still holds a piece; else fall back to front.
     if (!this.pieceAt(this.activePiece)) this.activePiece = 0;
-    this.penMode = false;
+    this.setPen(false);
     this.penPoints = [];
     this.resetDraftTransient();
   }
@@ -399,7 +402,7 @@ export class PatternView {
     this.penBackupPid = pieceId;
     this.setActive({ outline: [], darts: [], seams: [], openEdges: [], width, height, topY, gap });
     this.resetDraftTransient();
-    this.penMode = true;
+    this.setPen(true);
     this.penPoints = [];
     this.render();
   }
@@ -408,7 +411,7 @@ export class PatternView {
    * la colonne vide d'une pièce toute neuve). Rien n'est perdu. */
   private abortPen(): void {
     if (!this.penMode) return;
-    this.penMode = false;
+    this.setPen(false);
     this.penPoints = [];
     if (this.penBackup) {
       this.applyActive(this.penBackup);
@@ -460,7 +463,7 @@ export class PatternView {
       }
     }
     const next = { ...this.draftPiece, outline, openEdges: [{ from: topEdge, to: (topEdge + 1) % outline.length }] };
-    this.penMode = false;
+    this.setPen(false);
     this.penPoints = [];
     this.applyActive(next);
     this.render();
@@ -479,7 +482,7 @@ export class PatternView {
     if (!this.canDeleteActive) return;
     const pid = this.activePiece;
     this.activePiece = 0; // fall back to the front before the columns re-index
-    this.penMode = false;
+    this.setPen(false);
     this.penPoints = [];
     this.resetDraftTransient();
     this.onDeletePiece(pid);
@@ -1150,6 +1153,9 @@ export class PatternView {
     // Free edges (still to sew) = neither sewn nor an intentional opening. Only the
     // BASE shell (front=0 / back=1) reports them — a free piece auto-closes its own
     // perimeter and just attaches at one seam, so its edges aren't "to sew".
+    // ÉPURE (façon CLO « Show 2D Sewing ») : le rouge ne s'affiche QUE pendant
+    // le mode 🪡 Coudre, là où il est actionnable (« les bords rouges
+    // attendent ») — le reste du temps le compteur du pied de plan suffit.
     const drawFree = (pid: number): void => {
       const piece = this.pieceAt(pid);
       if (!piece) return;
@@ -1168,52 +1174,12 @@ export class PatternView {
         }
       }
     };
-    drawFree(0);
-    drawFree(1);
-    // Seam-allowance cut line: a dashed line offset OUTWARD from each edge by the
-    // margin (meters → pixels via the transform scale) — what you actually cut on.
-    const drawCutLine = (pid: number): void => {
-      const piece = this.pieceAt(pid);
-      if (!piece || !this.tf) return;
-      const marginPx = this.seamAllowanceM * this.tf.scale;
-      if (marginPx < 0.6) return; // 0 margin → no cut line
-      const off = this.pieceOffset(pid);
-      const scr = piece.outline
-        .map((uv) => this.vertexScreen(uv, piece, off))
-        .filter((s): s is [number, number] => s !== null);
-      if (scr.length < 3) return;
-      let cx = 0;
-      let cy = 0;
-      for (const s of scr) {
-        cx += s[0];
-        cy += s[1];
-      }
-      cx /= scr.length;
-      cy /= scr.length;
-      ctx.strokeStyle = 'rgba(210, 200, 185, 0.32)';
-      ctx.lineWidth = 1;
-      ctx.setLineDash([4, 3]);
-      for (let k = 0; k < scr.length; k++) {
-        const a = scr[k]!;
-        const b = scr[(k + 1) % scr.length]!;
-        let nx = -(b[1] - a[1]);
-        let ny = b[0] - a[0];
-        const len = Math.hypot(nx, ny) || 1;
-        nx /= len;
-        ny /= len;
-        // Point the normal AWAY from the piece centroid (outward).
-        if (nx * ((a[0] + b[0]) / 2 - cx) + ny * ((a[1] + b[1]) / 2 - cy) < 0) {
-          nx = -nx;
-          ny = -ny;
-        }
-        ctx.beginPath();
-        ctx.moveTo(a[0] + nx * marginPx, a[1] + ny * marginPx);
-        ctx.lineTo(b[0] + nx * marginPx, b[1] + ny * marginPx);
-        ctx.stroke();
-      }
-      ctx.setLineDash([]);
-    };
-    for (let pid = 0; pid < this.nCols; pid++) drawCutLine(pid);
+    if (this.sewMode || this.seamPickA) {
+      drawFree(0);
+      drawFree(1);
+    }
+    // La marge de couture ne se dessine PLUS dans l'éditeur (un seul contour
+    // par pièce = plan calme) — elle reste sur le patron imprimé (PDF/SVG).
     // Sewn seams, épuré : the sewn EDGES themselves colour in on the pieces
     // (blue = flat, orange = gathered), a THIN link joins the two runs (still
     // the unsew click target), and the ratio label only appears when the seam
@@ -1422,30 +1388,36 @@ export class PatternView {
         ctx.fill();
       };
       for (let k = 0; k < Math.min(nCols, 2); k++) drawSil(this.offsets[k]!);
-      // Grid every ~10 cm across the whole field.
-      ctx.strokeStyle = 'rgba(237, 233, 223, 0.06)';
+      // Grid, hiérarchisée pour rester calme : lignes fines tous les 10 cm,
+      // à peine plus présentes tous les 50 cm.
       ctx.lineWidth = 1;
-      ctx.beginPath();
-      for (let gx = Math.ceil(minX / 0.1) * 0.1; gx <= maxX + 1e-6; gx += 0.1) {
-        const a = this.layoutToScreen(gx, minY);
-        const b = this.layoutToScreen(gx, maxY);
-        ctx.moveTo(a[0], a[1]);
-        ctx.lineTo(b[0], b[1]);
+      for (const [step, alpha] of [
+        [0.1, 0.035],
+        [0.5, 0.08],
+      ] as const) {
+        ctx.strokeStyle = `rgba(237, 233, 223, ${alpha})`;
+        ctx.beginPath();
+        for (let gx = Math.ceil(minX / step) * step; gx <= maxX + 1e-6; gx += step) {
+          const a = this.layoutToScreen(gx, minY);
+          const b = this.layoutToScreen(gx, maxY);
+          ctx.moveTo(a[0], a[1]);
+          ctx.lineTo(b[0], b[1]);
+        }
+        for (let gy = Math.ceil(minY / step) * step; gy <= maxY + 1e-6; gy += step) {
+          const a = this.layoutToScreen(minX, gy);
+          const b = this.layoutToScreen(maxX, gy);
+          ctx.moveTo(a[0], a[1]);
+          ctx.lineTo(b[0], b[1]);
+        }
+        ctx.stroke();
       }
-      for (let gy = Math.ceil(minY / 0.1) * 0.1; gy <= maxY + 1e-6; gy += 0.1) {
-        const a = this.layoutToScreen(minX, gy);
-        const b = this.layoutToScreen(maxX, gy);
-        ctx.moveTo(a[0], a[1]);
-        ctx.lineTo(b[0], b[1]);
-      }
-      ctx.stroke();
-      // Height ruler: label each 10 cm gridline with its height in cm (0 at the
-      // floor) down the left edge — so pieces read in real centimeters.
+      // Height ruler down the left edge, in real centimeters (0 = the floor) —
+      // un chiffre tous les 20 cm suffit pour se repérer.
       ctx.font = '9px ui-monospace, monospace';
-      ctx.fillStyle = 'rgba(237, 233, 223, 0.34)';
+      ctx.fillStyle = 'rgba(237, 233, 223, 0.28)';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      for (let gy = Math.ceil(minY / 0.1) * 0.1; gy <= maxY + 1e-6; gy += 0.1) {
+      for (let gy = Math.ceil(minY / 0.2) * 0.2; gy <= maxY + 1e-6; gy += 0.2) {
         const cm = Math.round(gy * 100);
         const [sx, sy] = this.layoutToScreen(minX, gy);
         ctx.fillText(`${cm}`, sx + 2, sy);

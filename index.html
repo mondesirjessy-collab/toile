@@ -37,17 +37,22 @@
       margin-bottom: 4px;
     }
     #pattern { display: block; background: rgba(20, 22, 27, 0.6); border-radius: 3px; }
-    /* Atelier toolbar (freeform CAD): buttons over the 2D plan. */
-    #atelier-bar { display: none; gap: 6px; margin-bottom: 6px; pointer-events: auto; }
+    /* Atelier toolbar (freeform CAD): buttons over the 2D plan, grouped by
+       function (créer · assembler · voir/agir) — the gaps ARE the grouping. */
+    #atelier-bar { display: none; gap: 18px; margin-bottom: 6px; pointer-events: auto; }
     #atelier-bar.on { display: flex; }
+    #atelier-bar .tgrp { display: flex; gap: 5px; }
     #atelier-bar button {
       font: inherit; font-size: 11px; letter-spacing: 0.04em;
-      color: rgba(237, 233, 223, 0.9); background: rgba(40, 44, 52, 0.9);
-      border: 1px solid rgba(237, 233, 223, 0.18); border-radius: 4px;
+      color: rgba(237, 233, 223, 0.82); background: rgba(40, 44, 52, 0.6);
+      border: 1px solid rgba(237, 233, 223, 0.13); border-radius: 4px;
       padding: 3px 9px; cursor: pointer;
     }
-    #atelier-bar button:hover { background: rgba(60, 66, 78, 0.95); }
+    #atelier-bar button:hover { background: rgba(60, 66, 78, 0.95); color: rgba(237, 233, 223, 1); }
     #atelier-bar button.active { border-color: rgba(255, 159, 107, 0.9); color: rgba(255, 190, 150, 1); }
+    /* « Terminer » : contextuel (visible pendant un tracé), en accent pour dire
+       « une action est en cours ». */
+    #at-pen { border-color: rgba(255, 159, 107, 0.8); color: rgba(255, 190, 150, 1); }
     /* The Simulate button stands out: it's the "drape it" action. */
     #at-sim { border-color: rgba(120, 220, 150, 0.7); color: rgba(170, 240, 195, 1); font-weight: 700; }
     #at-sim.running { background: rgba(120, 220, 150, 0.22); }
@@ -86,7 +91,7 @@
   <canvas id="view"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 3 — plan de coupe épuré : colonnes compactes, coutures lisibles · v122</small></span>
+    <span class="title">TOILE<small>phase 3 — espace de travail épuré, façon CLO · v123</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
       <span id="hint">glisser sur le tissu : le tirer · glisser à côté : tourner · clic droit + glisser : se déplacer · molette : zoom · R : reset</span>
@@ -94,22 +99,26 @@
   </header>
   <div id="patternBox">
     <span class="label">PLAN DE COUPE</span>
+    <!-- Barre atelier, groupée par fonction (façon CLO) : CRÉER · ASSEMBLER ·
+         VOIR/AGIR. « Terminer » est contextuel : il n'apparaît que pendant un
+         tracé à la plume. -->
     <div id="atelier-bar">
-      <button id="at-tshirt" title="Charger un t-shirt de base déjà assemblé, dimensionné à l'avatar">👕 T-shirt</button>
-      <button id="at-new" title="Repartir d'une toile vierge et tracer le DEVANT à la plume">✎ Devant</button>
-      <button id="at-back" title="Tracer le DOS à la plume (indépendant du devant)">✎ Dos</button>
-      <button id="at-sleeve-pen" title="Dessiner une MANCHE à la plume : la pièce fermée s'enroule autour du bras libre et se coud à l'emmanchure">✎ Manche</button>
-      <!-- « + Pièce / − Pièce / + Col » retirés (v109) : le moteur ne cousait une
-           pièce rapportée que sur la face avant → pièces ouvertes. Ils reviendront
-           avec la fin du chantier « pièces qui s'enroulent ». « + Manches » est
-           REVENU (v111) sur le chemin éprouvé v96-104 : tubes autour des bras,
-           épinglés au corps par armholeCrossSeams — bras dans les manches. -->
-      <button id="at-sleeves" title="Manches AUTOMATIQUES : deux tubes tout faits, posés et cousus en un clic (pour les dessiner toi-même : ✎ Manche)">Manches auto</button>
-      <button id="at-sew" title="Coudre deux bords : cliquez le bouton, puis le 1er bord, puis le 2e (les bords rouges attendent une couture)">🪡 Coudre</button>
-      <button id="at-del" title="Supprimer la pièce active — cliquer d'abord sa colonne (manche, col, pièce libre) · Ctrl+Z pour annuler">− Pièce</button>
-      <button id="at-pen" title="Fermer la forme dessinée (ou cliquer le premier point)">Terminer</button>
-      <button id="at-big" title="Basculer le grand panneau de dessin 2D">⤢ Grand plan</button>
-      <button id="at-sim" title="Draper la pièce sur le mannequin (lancer la simulation)">▶ Simuler</button>
+      <span class="tgrp">
+        <button id="at-tshirt" title="Charger un t-shirt de base déjà assemblé, dimensionné à l'avatar">👕 T-shirt</button>
+        <button id="at-new" title="Repartir d'une toile vierge et tracer le DEVANT à la plume">✎ Devant</button>
+        <button id="at-back" title="Tracer le DOS à la plume (indépendant du devant)">✎ Dos</button>
+        <button id="at-sleeve-pen" title="Dessiner une MANCHE à la plume : la pièce fermée s'enroule autour du bras libre et se coud à l'emmanchure">✎ Manche</button>
+        <button id="at-sleeves" title="Manches AUTOMATIQUES : deux tubes tout faits, posés et cousus en un clic (pour les dessiner toi-même : ✎ Manche)">Manches auto</button>
+        <button id="at-pen" hidden title="Fermer la forme dessinée (ou cliquer le premier point)">✓ Terminer</button>
+      </span>
+      <span class="tgrp">
+        <button id="at-sew" title="Coudre deux bords : cliquez le bouton, puis le 1er bord, puis le 2e (les bords rouges apparaissent et attendent)">🪡 Coudre</button>
+        <button id="at-del" title="Supprimer la pièce active — cliquer d'abord sa colonne (manche, col, pièce libre) · Ctrl+Z pour annuler">− Pièce</button>
+      </span>
+      <span class="tgrp">
+        <button id="at-big" title="Basculer le grand panneau de dessin 2D">⤢ Grand plan</button>
+        <button id="at-sim" title="Draper la pièce sur le mannequin (lancer la simulation)">▶ Simuler</button>
+      </span>
     </div>
     <canvas id="pattern" width="250" height="290"></canvas>
   </div>

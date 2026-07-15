@@ -461,6 +461,12 @@ async function main(): Promise<void> {
       document.getElementById('at-sim')?.classList.remove('running');
       build();
     },
+    // La plume s'allume/s'éteint : « Terminer » n'apparaît que pendant un
+    // tracé (outil contextuel — la barre reste courte le reste du temps).
+    (drawing: boolean) => {
+      const b = document.getElementById('at-pen');
+      if (b) (b as HTMLButtonElement).hidden = !drawing;
+    },
   );
 
   // --- Atelier CAD toolbar (freeform 2D drawing) ---
@@ -1487,8 +1493,7 @@ async function main(): Promise<void> {
         system.setWind(v);
       },
       onSeamAllowance: (cm) => {
-        seamAllowanceM = cm / 100;
-        patternView.setSeamAllowance(seamAllowanceM); // show the cut line in the 2D plan
+        seamAllowanceM = cm / 100; // utilisée par le patron imprimé (PDF/SVG) — l'éditeur reste épuré
       },
       onPodium: (v) => {
         podium = v;
