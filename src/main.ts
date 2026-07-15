@@ -1,7 +1,7 @@
 import { initGpu, WebGPUNotSupportedError } from './engine/gpu/Device';
 import { ParticleSystem } from './engine/solver/ParticleSystem';
 import { generateClothGrid, generateSeamedPanels, combineClothMeshes, type CrossSeam, type ClothMeshData } from './engine/cloth/ClothMesh';
-import { defaultDraft, tshirtDraft, compileDraft, compileAssembly, compileCrossSeams, crossSewnOpenCells, removeFreePiece, sanitizeDraft, pointInPolygon, pointInTriangle, type DraftDoc, type AssemblySeam } from './engine/pattern/Draft';
+import { defaultDraft, tshirtDraft, compileDraft, compileAssembly, compileCrossSeams, crossSewnOpenCells, removeFreePiece, reboxPiece, pieceIdOf, sanitizeDraft, pointInPolygon, pointInTriangle, type DraftDoc, type AssemblySeam } from './engine/pattern/Draft';
 import { oversizeTee } from './engine/pattern/draftTee';
 import type { SceneMode } from './app/ControlPanel';
 import { ClothRenderer, DEFAULT_FABRIC } from './app/ClothRenderer';
@@ -404,13 +404,16 @@ async function main(): Promise<void> {
       if (!draft) draft = { format: 'toile-draft', version: 1, gridN, piece: defaultDraft(gridN).piece };
       draft.gridN = gridN;
       if (pieceId >= 2) {
-        // Une pièce dessinée pendant que « ✎ Manche » est armé devient une
-        // pièce WRAP : elle s'enroulera autour du bras choisi au clic du
-        // bouton. Consommé une seule fois (les retouches suivantes du contour
-        // gardent le wrap déjà posé sur la pièce).
-        if (penWrap && !piece.wrap) piece.wrap = penWrap;
-        penWrap = null;
         (draft.pieces ??= [])[pieceId - 2] = piece;
+        // ZONE DE CONFECTION LIBRE : une pièce fraîchement fermée à la plume
+        // (armée par « ✎ Pièce ») demande son PLACEMENT — l'utilisateur dit
+        // quel endroit du corps elle couvrira (ou la laisse libre). Une seule
+        // fois : les retouches suivantes ne redemandent rien.
+        if (penPlacement) {
+          penPlacement = false;
+          placePending = pieceId;
+          showChooser(true);
+        }
       } else if (pieceId === 1) draft.back = piece;
       else draft.piece = piece;
       // Adding/removing an outline point shifts the edge indices; the editor
@@ -466,6 +469,10 @@ async function main(): Promise<void> {
     (drawing: boolean) => {
       const b = document.getElementById('at-pen');
       if (b) (b as HTMLButtonElement).hidden = !drawing;
+      // Tracé refermé SANS pièce (abandon) : ne pas redemander un placement
+      // plus tard. Le commit d'un tracé réussi est SYNCHRONE (onDraftChange
+      // juste après), donc il consomme penPlacement avant ce timeout.
+      if (!drawing) setTimeout(() => { penPlacement = false; }, 0);
     },
   );
 
@@ -482,9 +489,19 @@ async function main(): Promise<void> {
   let atelierSleeveLen = 0.5; // sleeve length (shoulder→cuff, m): 0.5 long, ~0.22 short (t-shirt)
   let atelierCollar = false; // multi-piece: add a system collar band at the neckline
   let teePreset = false; // T-shirt preset: build a real set-in-sleeve tee instead of the draft
-  // ✎ Manche : la plume dessine une pièce WRAP — le bras visé est choisi au
-  // clic du bouton (le bras libre) et consommé quand la pièce se ferme.
-  let penWrap: 'armL' | 'armR' | null = null;
+  // ZONE DE CONFECTION LIBRE : « ✎ Pièce » arme la plume ; à la fermeture du
+  // tracé, le choix de placement (#place-chooser) s'ouvre pour CETTE pièce.
+  let penPlacement = false; // la prochaine pièce fermée demandera son placement
+  let placePending: number | null = null; // pieceId en attente de placement
+  const placeChooser = document.getElementById('place-chooser') as HTMLElement;
+  const showChooser = (on: boolean): void => {
+    placeChooser.hidden = !on;
+  };
+  const resetPlacement = (): void => {
+    penPlacement = false;
+    placePending = null;
+    showChooser(false);
+  };
   // ANNULER (Ctrl/Cmd+Z) : historique par instantanés du patron — un cran par
   // geste (déplacement de point, couture, suppression de pièce, chargement).
   const draftHistory: { draft: DraftDoc | null; touched: boolean }[] = [];
@@ -499,6 +516,7 @@ async function main(): Promise<void> {
     draftTouched = h.touched;
     teePreset = false;
     atelierDesign = true;
+    resetPlacement(); // un placement en attente ne survit pas à l'annulation
     document.getElementById('at-sim')?.classList.remove('running');
     build();
   };
@@ -541,13 +559,62 @@ async function main(): Promise<void> {
     setBig(on);
     if (on) enterDesign(); // opening the 2D plan returns to the flat design view
   });
-  (document.getElementById('at-new') as HTMLElement).addEventListener('click', () => {
+  // ✎ PIÈCE — la zone de confection LIBRE : la plume s'ouvre dans une NOUVELLE
+  // colonne, avec la silhouette de l'avatar en fond (le gabarit grandeur
+  // nature). L'utilisateur trace sa pièce dessus, aux bonnes dimensions ; à la
+  // fermeture, le choix de placement s'ouvre : quel endroit du corps la pièce
+  // couvrira (devant, dos, bras, cou) — ou libre, posée là où elle est dessinée.
+  (document.getElementById('at-piece') as HTMLElement).addEventListener('click', () => {
     if (!bigPanel) setBig(true);
     atelierDesign = true;
     teePreset = false; // back to freeform editing
     simBtn().classList.remove('running');
+    resetPlacement();
+    penPlacement = true;
+    // Boîte de tracé = la boîte du corps (grandeur nature, posée sur la
+    // silhouette) : la position du dessin SUR la silhouette est sa position
+    // sur le corps. Les placements bras/cou re-boîtent ensuite sur l'emprise.
     const dims = (draft ?? defaultDraft(resolution as 32 | 64 | 128)).piece;
-    patternView.startPen(dims.width, dims.height, dims.topY, dims.gap);
+    const pid = 2 + (draft?.pieces?.length ?? 0);
+    patternView.startPen(dims.width, dims.height, dims.topY, dims.gap, pid);
+  });
+  // Application du PLACEMENT choisi pour la pièce en attente.
+  const placePiece = (place: string): void => {
+    const pid = placePending;
+    resetPlacement();
+    if (pid === null || !draft?.pieces) return;
+    const idx = pid - 2;
+    const piece = draft.pieces[idx];
+    if (!piece) return;
+    if (place === 'free') return; // déjà là où elle a été dessinée (devant le corps)
+    pushHistory();
+    if (place === 'front' || place === 'back') {
+      // La pièce devient la face du torse (l'ancienne est remplacée — Ctrl+Z la rend).
+      const { pieces, seams } = removeFreePiece(draft.pieces, draft.seams ?? [], pid);
+      draft.pieces = pieces.length ? pieces : undefined;
+      const fid = place === 'front' ? 0 : 1;
+      // Les coutures de la face REMPLACÉE pointaient sur les bords d'un contour
+      // qui n'existe plus : les garder produirait des fronces absurdes vers des
+      // bords arbitraires. On les laisse tomber — 🪡 Coudre refait l'assemblage
+      // proprement sur la nouvelle pièce.
+      draft.seams = seams.filter((s) => pieceIdOf(s.a) !== fid && pieceIdOf(s.b) !== fid);
+      if (place === 'front') draft.piece = piece;
+      else draft.back = piece;
+    } else if (place === 'armR' || place === 'armL' || place === 'neck') {
+      // Bras / cou : la pièce est re-boîtée sur l'emprise de son tracé (contour
+      // plein bord — la famille éprouvée pour les tubes), puis le placement
+      // wrap l'enroule et l'épingle (emmanchure / encolure).
+      const wrapped = reboxPiece(piece, place === 'neck' ? 0.15 : 0.18);
+      wrapped.wrap = place;
+      draft.pieces[idx] = wrapped;
+    }
+    draftTouched = true;
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    build();
+  };
+  placeChooser.querySelectorAll('button').forEach((b) => {
+    b.addEventListener('click', () => placePiece((b as HTMLElement).dataset.place ?? 'free'));
   });
   // Préréglage 👕 : le VRAI patron 4 pièces (le patron oversize drop-shoulder
   // de référence fourni par l'utilisateur — DEVANT, DOS, 2 MANCHES), gradé sur
@@ -558,6 +625,7 @@ async function main(): Promise<void> {
     if (!bigPanel) setBig(true);
     atelierDesign = true;
     simBtn().classList.remove('running');
+    resetPlacement(); // le patron chargé remplace tout : placement en attente caduc
     pushHistory();
     teePreset = false;
     draft = oversizeTee(lastMeasure, REF);
@@ -567,33 +635,8 @@ async function main(): Promise<void> {
     document.getElementById('at-sleeves')?.classList.remove('active');
     build();
   });
-  // Draw the BACK face from scratch (côte-à-côte): pen on the right column.
-  (document.getElementById('at-back') as HTMLElement).addEventListener('click', () => {
-    if (!bigPanel) setBig(true);
-    atelierDesign = true;
-    teePreset = false; // back to freeform editing
-    simBtn().classList.remove('running');
-    const dims = (draft ?? defaultDraft(resolution as 32 | 64 | 128)).piece;
-    patternView.startPen(dims.width, dims.height, dims.topY, dims.gap, 1);
-  });
-  // ✎ MANCHE : dessiner une manche à la plume. La plume s'ouvre dans une
-  // nouvelle colonne aux dimensions d'une manche (boîte biceps × longueur,
-  // panneaux à ±0.09 autour du bras) ; à la fermeture du tracé, la pièce
-  // devient WRAP sur le bras encore libre (droit d'abord, puis gauche) :
-  // tube autour du bras, tête épinglée à l'emmanchure — dessinée main, la
-  // tête courbe et le fuselage suivent le trait de l'utilisateur.
-  (document.getElementById('at-sleeve-pen') as HTMLElement).addEventListener('click', () => {
-    if (!bigPanel) setBig(true);
-    atelierDesign = true;
-    teePreset = false;
-    simBtn().classList.remove('running');
-    const wraps = (draft?.pieces ?? []).map((p) => p.wrap).filter(Boolean);
-    penWrap = wraps.includes('armR') && !wraps.includes('armL') ? 'armL' : 'armR';
-    const pid = 2 + (draft?.pieces?.length ?? 0);
-    // Boîte de tracé d'une manche : biceps ≈ 26 cm (demi-tour 0.13) avec un
-    // peu de marge, longueur jusqu'au coude, tête à l'épaule, tube ±0.09.
-    patternView.startPen(0.16, 0.5, 1.42, 0.18, pid);
-  });
+  // (✎ Devant / ✎ Dos / ✎ Manche retirés en v124 : la confection est LIBRE —
+  // une seule plume « ✎ Pièce », le placement se choisit à la fermeture.)
   // « + Pièce / − Pièce / + Col » : boutons retirés (v109) — le moteur ne cousait
   // une pièce rapportée que sur la face avant (pièces ouvertes). Le machinery
   // (startPen(pid), deleteActiveFreePiece, atelierCollar dans build()) reste en
@@ -630,6 +673,7 @@ async function main(): Promise<void> {
   (document.getElementById('at-del') as HTMLElement).addEventListener('click', () => {
     atelierDesign = true;
     simBtn().classList.remove('running');
+    resetPlacement(); // les indices bougent : le placement en attente saute
     patternView.deleteActiveFreePiece();
   });
   (document.getElementById('at-pen') as HTMLElement).addEventListener('click', () => patternView.finishPen());
@@ -1284,7 +1328,7 @@ async function main(): Promise<void> {
     if (hintEl)
       hintEl.textContent =
         sceneMode === 'atelier'
-          ? 'atelier : glisser un point = déformer · tirer un bord = le courber (Alt = pince) · 🪡 Coudre puis 2 bords · clic sur une couture = défaire · Ctrl+Z = annuler · ▶ Simuler = draper'
+          ? 'atelier : ✎ Pièce = tracer sur la silhouette puis dire où elle va · glisser un point/bord = déformer/courber (Alt = pince) · 🪡 Coudre · clic sur une couture = défaire · Ctrl+Z · ▶ Simuler'
           : 'glisser sur le tissu : le tirer · glisser à côté : tourner · clic droit + glisser : se déplacer · molette : zoom · R : reset';
   };
 
@@ -1571,6 +1615,7 @@ async function main(): Promise<void> {
       // it so a draftless file wipes the previous session instead of leaking it.
       onGetDraft: () => (draftTouched ? draft ?? undefined : undefined),
       onDraft: (raw) => {
+        resetPlacement(); // l'import remplace le patron : placement en attente caduc
         pushHistory(); // l'import remplace le patron : un cran d'annulation
         if (raw == null) {
           draft = null;

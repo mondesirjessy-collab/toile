@@ -53,6 +53,20 @@
     /* « Terminer » : contextuel (visible pendant un tracé), en accent pour dire
        « une action est en cours ». */
     #at-pen { border-color: rgba(255, 159, 107, 0.8); color: rgba(255, 190, 150, 1); }
+    /* Choix de placement d'une pièce tracée (contextuel, sous la barre). */
+    #place-chooser {
+      display: flex; align-items: center; gap: 5px; margin-bottom: 6px;
+      pointer-events: auto;
+    }
+    #place-chooser[hidden] { display: none; }
+    #place-chooser .q { font-size: 11px; color: rgba(255, 190, 150, 1); margin-right: 4px; }
+    #place-chooser button {
+      font: inherit; font-size: 11px; letter-spacing: 0.04em;
+      color: rgba(237, 233, 223, 0.9); background: rgba(40, 44, 52, 0.85);
+      border: 1px solid rgba(255, 159, 107, 0.45); border-radius: 4px;
+      padding: 3px 9px; cursor: pointer;
+    }
+    #place-chooser button:hover { background: rgba(70, 58, 48, 0.95); color: rgba(255, 210, 180, 1); }
     /* The Simulate button stands out: it's the "drape it" action. */
     #at-sim { border-color: rgba(120, 220, 150, 0.7); color: rgba(170, 240, 195, 1); font-weight: 700; }
     #at-sim.running { background: rgba(120, 220, 150, 0.22); }
@@ -91,7 +105,7 @@
   <canvas id="view"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 3 — espace de travail épuré, façon CLO · v123</small></span>
+    <span class="title">TOILE<small>phase 3 — confection libre : ✎ Pièce + choix du placement corporel · v124</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
       <span id="hint">glisser sur le tissu : le tirer · glisser à côté : tourner · clic droit + glisser : se déplacer · molette : zoom · R : reset</span>
@@ -105,10 +119,8 @@
     <div id="atelier-bar">
       <span class="tgrp">
         <button id="at-tshirt" title="Charger un t-shirt de base déjà assemblé, dimensionné à l'avatar">👕 T-shirt</button>
-        <button id="at-new" title="Repartir d'une toile vierge et tracer le DEVANT à la plume">✎ Devant</button>
-        <button id="at-back" title="Tracer le DOS à la plume (indépendant du devant)">✎ Dos</button>
-        <button id="at-sleeve-pen" title="Dessiner une MANCHE à la plume : la pièce fermée s'enroule autour du bras libre et se coud à l'emmanchure">✎ Manche</button>
-        <button id="at-sleeves" title="Manches AUTOMATIQUES : deux tubes tout faits, posés et cousus en un clic (pour les dessiner toi-même : ✎ Manche)">Manches auto</button>
+        <button id="at-piece" title="Tracer une pièce à la plume sur la silhouette (le gabarit grandeur nature) — à la fermeture, tu choisis où elle va : devant, dos, bras, cou… ou libre">✎ Pièce</button>
+        <button id="at-sleeves" title="Manches AUTOMATIQUES : deux tubes tout faits, posés et cousus en un clic (pour les dessiner toi-même : ✎ Pièce → Bras)">Manches auto</button>
         <button id="at-pen" hidden title="Fermer la forme dessinée (ou cliquer le premier point)">✓ Terminer</button>
       </span>
       <span class="tgrp">
@@ -119,6 +131,18 @@
         <button id="at-big" title="Basculer le grand panneau de dessin 2D">⤢ Grand plan</button>
         <button id="at-sim" title="Draper la pièce sur le mannequin (lancer la simulation)">▶ Simuler</button>
       </span>
+    </div>
+    <!-- Choix de PLACEMENT d'une pièce fraîchement tracée : l'utilisateur dit
+         quel endroit du corps la pièce couvrira (ou la laisse libre, posée là
+         où elle a été dessinée sur la silhouette). -->
+    <div id="place-chooser" hidden>
+      <span class="q">Où va cette pièce ?</span>
+      <button data-place="front" title="La pièce couvre le torse, côté devant (remplace le devant actuel)">Devant</button>
+      <button data-place="back" title="La pièce couvre le torse, côté dos (remplace le dos actuel)">Dos</button>
+      <button data-place="armR" title="La pièce s'enroule autour du bras droit et se coud à l'emmanchure">Bras droit</button>
+      <button data-place="armL" title="La pièce s'enroule autour du bras gauche et se coud à l'emmanchure">Bras gauche</button>
+      <button data-place="neck" title="La pièce s'enroule autour du cou (bande d'encolure)">Cou</button>
+      <button data-place="free" title="La pièce reste posée devant le corps, là où elle a été dessinée sur la silhouette">Libre</button>
     </div>
     <canvas id="pattern" width="250" height="290"></canvas>
   </div>

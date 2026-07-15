@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { handleLayoutPos, handleValueFromLayout, curveNeighbors, bendSamples, type PatternHandleSpec } from '../src/app/PatternView';
 import { oversizeTee } from '../src/engine/pattern/draftTee';
-import { insertOutlineVertex, runCoversEdge, type DraftPiece, type UV } from '../src/engine/pattern/Draft';
+import { insertOutlineVertex, reboxPiece, runCoversEdge, type DraftPiece, type UV } from '../src/engine/pattern/Draft';
 
 const grid = { width: 0.95, topY: 1.6, height: 1.3 };
 
@@ -155,5 +155,55 @@ describe('bendSamples (tirer un bord = le courber)', () => {
     expect(next.seams[0]!.a).toEqual({ from: 1, to: 2 });
     // Et le contour passe bien par les points de l'arc, dans l'ordre.
     for (let j = 0; j < arc.length; j++) expect(next.outline[3 + j]).toEqual(arc[j]);
+  });
+});
+
+describe('reboxPiece (placement zone libre → wrap)', () => {
+  // Une « manche » tracée sur la boîte du corps (grandeur nature) : un petit
+  // rectangle en haut à droite de la silhouette.
+  const drawn: DraftPiece = {
+    outline: [[0.7, 0.1], [0.9, 0.1], [0.9, 0.6], [0.7, 0.6]] as UV[],
+    width: 0.76, // boîte du corps
+    height: 1.03,
+    topY: 1.56,
+    gap: 0.9,
+    darts: [{ apex: [0.8, 0.3] as UV, legA: [0.75, 0.35] as UV, legB: [0.85, 0.35] as UV }],
+    openEdges: [{ from: 0, to: 1 }],
+    seams: [],
+  };
+
+  it('la boîte devient l emprise du tracé, la géométrie monde est intacte', () => {
+    const r = reboxPiece(drawn, 0.18);
+    expect(r.width).toBeCloseTo(0.2 * 0.76, 6);
+    expect(r.height).toBeCloseTo(0.5 * 1.03, 6);
+    expect(r.topY).toBeCloseTo(1.56 - 0.1 * 1.03, 6);
+    expect(r.gap).toBe(0.18);
+    // Contour plein bord : l'emprise touche [0,1] dans la nouvelle boîte.
+    const us = r.outline.map((p) => p[0]);
+    const vs = r.outline.map((p) => p[1]);
+    expect(Math.min(...us)).toBeCloseTo(0, 6);
+    expect(Math.max(...us)).toBeCloseTo(1, 6);
+    expect(Math.min(...vs)).toBeCloseTo(0, 6);
+    expect(Math.max(...vs)).toBeCloseTo(1, 6);
+    // Géométrie monde identique : re-projeter chaque point (y compris pince).
+    const world = (p: DraftPiece, [u, v]: UV): [number, number] => [(u - 0.5) * p.width, p.topY - v * p.height];
+    for (let i = 0; i < drawn.outline.length; i++) {
+      const [x0, y0] = world(drawn, drawn.outline[i]!);
+      const [x1, y1] = world(r, r.outline[i]!);
+      // x est recentré sur l'emprise (la colonne bouge, la FORME non) : comparer les écarts.
+      const [xr0, yr0] = world(drawn, drawn.outline[0]!);
+      const [xr1, yr1] = world(r, r.outline[0]!);
+      expect(x1 - xr1).toBeCloseTo(x0 - xr0, 6);
+      expect(y1 - yr1).toBeCloseTo(y0 - yr0, 6);
+      expect(y1).toBeCloseTo(y0, 6); // la hauteur monde est ABSOLUE (topY suit)
+    }
+    const [, ay0] = world(drawn, drawn.darts[0]!.apex);
+    const [, ay1] = world(r, r.darts[0]!.apex);
+    expect(ay1).toBeCloseTo(ay0, 6);
+  });
+
+  it('tracé dégénéré (ligne) → pièce inchangée', () => {
+    const flat: DraftPiece = { ...drawn, outline: [[0.2, 0.3], [0.8, 0.3], [0.5, 0.3]] as UV[] };
+    expect(reboxPiece(flat, 0.18)).toBe(flat);
   });
 });

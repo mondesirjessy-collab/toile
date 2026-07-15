@@ -225,6 +225,47 @@ export function insertOutlineVertex(piece: DraftPiece, edge: number, uv: UV): Dr
 }
 
 /**
+ * Re-boîter une pièce sur l'EMPRISE de son tracé : la boîte (width/height/topY)
+ * devient le rectangle englobant du contour dessiné, contour et pinces re-mappés
+ * en UV pour que la GÉOMÉTRIE MONDE reste identique. C'est le pont « zone de
+ * confection libre » → placement : une pièce dessinée sur la silhouette
+ * grandeur nature se re-boîte serrée (contour plein bord = la famille de
+ * contours éprouvée pour les tubes v112) avant de s'enrouler autour d'un bras
+ * ou du cou. `gap` est remplacé par celui du placement. Pure.
+ */
+export function reboxPiece(piece: DraftPiece, gap: number): DraftPiece {
+  let uMin = Infinity;
+  let uMax = -Infinity;
+  let vMin = Infinity;
+  let vMax = -Infinity;
+  for (const [u, v] of piece.outline) {
+    uMin = Math.min(uMin, u);
+    uMax = Math.max(uMax, u);
+    vMin = Math.min(vMin, v);
+    vMax = Math.max(vMax, v);
+  }
+  const w = (uMax - uMin) * piece.width;
+  const h = (vMax - vMin) * piece.height;
+  if (!(w > 1e-4) || !(h > 1e-4)) return piece; // tracé dégénéré : ne rien casser
+  // Monde : x = (u − 0.5)·W (centre colonne 0), y = topY − v·H.
+  const topY = piece.topY - vMin * piece.height;
+  const cxWorld = ((uMin + uMax) / 2 - 0.5) * piece.width;
+  const mapUV = ([u, v]: UV): UV => [
+    ((u - 0.5) * piece.width - cxWorld) / w + 0.5,
+    (topY - (piece.topY - v * piece.height)) / h,
+  ];
+  return {
+    ...piece,
+    width: w,
+    height: h,
+    topY,
+    gap,
+    outline: piece.outline.map(mapUV),
+    darts: piece.darts.map((d) => ({ apex: mapUV(d.apex), legA: mapUV(d.legA), legB: mapUV(d.legB) })),
+  };
+}
+
+/**
  * Remove the outline vertex at `index` (no-op if that would leave < 3 vertices).
  * Returns a NEW piece with openEdges/seam runs re-indexed. Pure.
  */

@@ -404,6 +404,7 @@ export class PatternView {
     this.resetDraftTransient();
     this.setPen(true);
     this.penPoints = [];
+    this.staticDirty = true; // nouvelle colonne + silhouette de référence à (re)poser
     this.render();
   }
 
@@ -421,6 +422,7 @@ export class PatternView {
     }
     this.penBackup = null;
     this.penBackupPid = null;
+    this.staticDirty = true; // la colonne abandonnée disparaît, la silhouette de tracé aussi
     this.render();
   }
 
@@ -466,6 +468,7 @@ export class PatternView {
     this.setPen(false);
     this.penPoints = [];
     this.applyActive(next);
+    this.staticDirty = true; // la silhouette de tracé s'éteint avec la plume
     this.render();
     this.onDraftChange(next, this.activePiece);
   }
@@ -1347,7 +1350,10 @@ export class PatternView {
       const colRange = (k: number): [number, number] => {
         const q = this.pieceAt(k);
         const w = (q ? q.width : p.width) / 2;
-        if (k <= 1 && this.bodySil) return [Math.min(-w, this.bodySil.minX), Math.max(w, this.bodySil.maxX)];
+        // Colonnes corps (0/1) ET colonne de tracé à la plume : la silhouette de
+        // référence fait partie de l'emprise (elle sert de gabarit de dessin).
+        const withSil = k <= 1 || (this.penMode && k === this.activePiece);
+        if (withSil && this.bodySil) return [Math.min(-w, this.bodySil.minX), Math.max(w, this.bodySil.maxX)];
         const pad = k <= 1 ? 0 : 0.03;
         return [-w - pad, w + pad];
       };
@@ -1388,6 +1394,10 @@ export class PatternView {
         ctx.fill();
       };
       for (let k = 0; k < Math.min(nCols, 2); k++) drawSil(this.offsets[k]!);
+      // Pendant un tracé à la plume dans une colonne libre, la silhouette
+      // s'affiche AUSSI derrière cette colonne : c'est le gabarit de référence
+      // pour dessiner la pièce aux bonnes dimensions (elle s'éteint au commit).
+      if (this.penMode && this.activePiece >= 2) drawSil(this.offsets[this.activePiece] ?? 0);
       // Grid, hiérarchisée pour rester calme : lignes fines tous les 10 cm,
       // à peine plus présentes tous les 50 cm.
       ctx.lineWidth = 1;
