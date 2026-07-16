@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { draftTee, oversizeTee, boxyTee, boxyChestCm, BOXY_SIZES, type BoxySize } from '../src/engine/pattern/draftTee';
+import { BOXY_IDX } from '../src/engine/pattern/boxyData';
 import { pointInPolygon, sanitizeDraft } from '../src/engine/pattern/Draft';
 import { countMaskIslands } from '../src/engine/cloth/ClothMesh';
 import type { BodyMeasure } from '../src/engine/body/measure';
@@ -139,38 +140,58 @@ describe('boxyTee (patron BOXY FIT reproduit — 6 tailles)', () => {
     expect(d.manual).toBe(true);
   });
 
-  it('encolure devant plus creuse que le dos', () => {
+  it('contours EXACTS du patron : 45 points, creux devant M = 7,7 cm, J d emmanchure = 5,1 cm', () => {
     const d = boxyTee('M', m, ref);
-    // point d'arc central (index 12) = le creux ; v plus grand = plus bas = plus creux
-    const fv = d.piece.outline[12]![1];
-    const bv = d.back!.outline[12]![1];
-    expect(fv).toBeGreaterThan(bv);
+    expect(d.piece.outline.length).toBe(BOXY_IDX.N);
+    expect(d.back!.outline.length).toBe(BOXY_IDX.N);
+    // creux d'encolure (le point de pliure, au centre de l'arc)
+    const fDepth = d.piece.outline[BOXY_IDX.center]![1] * d.piece.height;
+    const bDepth = d.back!.outline[BOXY_IDX.center]![1] * d.back!.height;
+    expect(fDepth).toBeCloseTo(0.077, 2);
+    expect(bDepth).toBeCloseTo(0.027, 2);
+    expect(fDepth).toBeGreaterThan(bDepth);
+    // l'emmanchure en J se creuse de ~5,1 cm vers l'intérieur (le vrai patron,
+    // pas une approximation) : demi-larg − x minimal de la courbe gauche
+    const W = d.piece.width;
+    const halfW = 0.28;
+    const armXs = d.piece.outline.slice(2, BOXY_IDX.uaL).map((p) => (0.5 - p[0]) * W);
+    const hollow = halfW - Math.min(...armXs);
+    expect(hollow).toBeGreaterThan(0.045);
+    expect(hollow).toBeLessThan(0.058);
   });
 
-  it('IMBRICATION : épaule devant = épaule dos, côté devant = côté dos', () => {
+  it('IMBRICATION : épaule devant = épaule dos (0 mm), côtés soudés quasi égaux', () => {
     const d = boxyTee('L', m, ref);
     const f = d.piece, b = d.back!;
-    // épaule = bord {0,1} ; côté = bord {1,4} (pleine hauteur)
-    expect(edgeLen(f, 0, 1)).toBeCloseTo(edgeLen(b, 0, 1), 5);
-    expect(edgeLen(f, 8, 9)).toBeCloseTo(edgeLen(b, 8, 9), 5);
-    expect(edgeLen(f, 1, 4)).toBeCloseTo(edgeLen(b, 1, 4), 5);
-    expect(edgeLen(f, 5, 8)).toBeCloseTo(edgeLen(b, 5, 8), 5);
+    expect(edgeLen(f, 0, BOXY_IDX.tipL)).toBeCloseTo(edgeLen(b, 0, BOXY_IDX.tipL), 3);
+    expect(edgeLen(f, BOXY_IDX.tipR, BOXY_IDX.neckR)).toBeCloseTo(edgeLen(b, BOXY_IDX.tipR, BOXY_IDX.neckR), 3);
+    // côté pleine hauteur (emmanchure comprise) : les emmanchures F/B du patron
+    // diffèrent de < 5 mm — le zip m=max absorbe.
+    expect(Math.abs(edgeLen(f, BOXY_IDX.tipL, BOXY_IDX.hemL) - edgeLen(b, BOXY_IDX.tipL, BOXY_IDX.hemL))).toBeLessThan(0.005);
+    expect(Math.abs(edgeLen(f, BOXY_IDX.hemR, BOXY_IDX.tipR) - edgeLen(b, BOXY_IDX.hemR, BOXY_IDX.tipR))).toBeLessThan(0.005);
   });
 
-  it('IMBRICATION : tour de tête de manche ≈ somme des 2 emmanchures (±15 %)', () => {
+  it('IMBRICATION : tête de manche ≈ 98 % des deux emmanchures (l aisance du jersey)', () => {
     for (const sz of ['XS', 'M', 'XXL'] as BoxySize[]) {
       const d = boxyTee(sz, m, ref);
-      const f = d.piece;
-      // emmanchure = bord {1,3} (bout d'épaule → dessous de bras) d'une face
-      const armhole = edgeLen(f, 1, 3);
-      const sleeve = d.pieces![0]!;
-      // tour de tête = largeur physique de la manche (ce qui s'épingle) — la
-      // manche couvre les DEUX emmanchures (devant + dos) autour du bras.
-      const capHalf = sleeve.width; // demi-tour épinglé (un panneau)
-      // un panneau de manche ↔ une emmanchure (devant OU dos) : proches
-      expect(capHalf).toBeGreaterThan(armhole * 0.7);
-      expect(capHalf).toBeLessThan(armhole * 1.6);
+      // arc de bouche du panneau ≈ demi-tour de tête ; l'emmanchure d'une face
+      const armhole = edgeLen(d.piece, BOXY_IDX.tipL, BOXY_IDX.uaL);
+      const capHalf = d.pieces![0]!.width;
+      const ratio = (2 * capHalf) / (2 * armhole);
+      expect(ratio).toBeGreaterThan(0.8);
+      expect(ratio).toBeLessThan(1.05);
     }
+  });
+
+  it('la tête de manche a le VRAI profil (hauteur 8,3 cm en M, pas une sinusoïde plate)', () => {
+    const d = boxyTee('M', m, ref);
+    const sl = d.pieces![0]!;
+    // bouche : v=0 à l'apex (milieu), v=capH/L aux coins
+    const vs = sl.outline.map((p) => p[1]);
+    const capH = Math.max(...sl.outline.filter((p) => p[1] < 0.9).map((p) => p[1])) * sl.height;
+    expect(Math.min(...vs)).toBeLessThan(0.01); // l'apex touche le haut
+    expect(capH).toBeGreaterThan(0.075); // 8,3 cm réels (±)
+    expect(capH).toBeLessThan(0.09);
   });
 
   it('taille absolue : XS ≠ XXL (les cotes changent avec la taille, pas avec l’avatar)', () => {
