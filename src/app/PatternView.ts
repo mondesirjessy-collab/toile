@@ -438,6 +438,41 @@ export class PatternView {
     return this.sewMode;
   }
 
+  /** Sélection venue de la 3D : la colonne active suit la pièce saisie sur
+   * l'avatar (le pied de plan affiche son nom et sa taille). */
+  selectPiece(pid: number): void {
+    if (pid === this.activePiece) return;
+    this.activePiece = Math.max(0, Math.min(this.nCols - 1, pid));
+    this.render();
+  }
+
+  /** Un choix de bord pour la couture — la MÊME machine à états que le clic 2D
+   * (1er bord retenu, re-clic = annuler, 2e bord = couture), utilisable depuis
+   * la 3D : cliquer deux bords sur les pièces autour de l'avatar les coud. */
+  pickEdgeForSeam(pid: number, edge: number): void {
+    const lenOf = (q: number): number => this.pieceAt(q)?.outline.length ?? 1;
+    // Base pieces (0/1) carry the legacy `face` so pre-N-piece drafts/tests
+    // stay byte-identical; free pieces (≥2) carry `pieceId`.
+    const run = (q: number, e: number): FaceRun =>
+      q <= 1
+        ? { face: q === 1 ? 'back' : 'front', from: e, to: (e + 1) % lenOf(q) }
+        : { pieceId: q, from: e, to: (e + 1) % lenOf(q) };
+    if (this.seamPickA === null) {
+      this.seamPickA = { pieceId: pid, edge }; // first edge picked
+      this.render();
+    } else if (this.seamPickA.pieceId === pid && this.seamPickA.edge === edge) {
+      this.seamPickA = null; // clicked the same edge → cancel the pick
+      this.render();
+    } else {
+      const a = this.seamPickA;
+      const seam: AssemblySeam = { a: run(a.pieceId, a.edge), b: run(pid, edge) };
+      this.seamPickA = null;
+      this.sewMode = false; // couture faite : le mode guidé se referme
+      this.render();
+      this.onAssemblySeam(seam);
+    }
+  }
+
   get sewing(): boolean {
     return this.sewMode;
   }
@@ -678,28 +713,7 @@ export class PatternView {
       if (e.shiftKey || this.sewMode) {
         const ne = this.nearestEdge(p[0], p[1]);
         if (ne && ne.dist <= EDGE_HIT) {
-          const pid = this.activePiece;
-          const lenOf = (q: number): number => this.pieceAt(q)?.outline.length ?? 1;
-          // Base pieces (0/1) carry the legacy `face` so pre-N-piece drafts/tests
-          // stay byte-identical; free pieces (≥2) carry `pieceId`.
-          const run = (q: number, edge: number): FaceRun =>
-            q <= 1
-              ? { face: q === 1 ? 'back' : 'front', from: edge, to: (edge + 1) % lenOf(q) }
-              : { pieceId: q, from: edge, to: (edge + 1) % lenOf(q) };
-          if (this.seamPickA === null) {
-            this.seamPickA = { pieceId: pid, edge: ne.edge }; // first edge picked
-            this.render();
-          } else if (this.seamPickA.pieceId === pid && this.seamPickA.edge === ne.edge) {
-            this.seamPickA = null; // clicked the same edge → cancel the pick
-            this.render();
-          } else {
-            const a = this.seamPickA;
-            const seam: AssemblySeam = { a: run(a.pieceId, a.edge), b: run(pid, ne.edge) };
-            this.seamPickA = null;
-            this.sewMode = false; // couture faite : le mode guidé se referme
-            this.render();
-            this.onAssemblySeam(seam);
-          }
+          this.pickEdgeForSeam(this.activePiece, ne.edge);
           e.preventDefault();
           e.stopPropagation();
         }

@@ -225,6 +225,52 @@ export function insertOutlineVertex(piece: DraftPiece, edge: number, uv: UV): Dr
 }
 
 /**
+ * Comme nearestOutlineEdge, mais rend AUSSI la distance — le pont « clic 3D →
+ * bord à coudre » : une particule (sa cellule → UV) choisit le bord de patron
+ * qu'elle longe, et un clic trop loin de tout bord est rejeté. Pure.
+ */
+export function nearestOutlineEdgeInfo(p: UV, outline: readonly UV[]): { edge: number; dist: number } {
+  const N = outline.length;
+  let edge = 0;
+  let d2 = Infinity;
+  for (let k = 0; k < N; k++) {
+    const d = segDist2(p, outline[k]!, outline[(k + 1) % N]!);
+    if (d < d2) {
+      d2 = d;
+      edge = k;
+    }
+  }
+  return { edge, dist: Math.sqrt(d2) };
+}
+
+/**
+ * Décaler le contour d'une pièce DANS sa boîte (déplacement 3D → glissement du
+ * masque), pinces comprises, borné pour que l'emprise reste dans [0,1]².
+ * Renvoie une NOUVELLE pièce ; les index de bords ne bougent pas (coutures et
+ * bords ouverts restent valides). Pure.
+ */
+export function shiftOutlineUV(piece: DraftPiece, du: number, dv: number): DraftPiece {
+  let uMin = Infinity;
+  let uMax = -Infinity;
+  let vMin = Infinity;
+  let vMax = -Infinity;
+  for (const [u, v] of piece.outline) {
+    uMin = Math.min(uMin, u);
+    uMax = Math.max(uMax, u);
+    vMin = Math.min(vMin, v);
+    vMax = Math.max(vMax, v);
+  }
+  const cu = Math.max(-uMin, Math.min(1 - uMax, du));
+  const cv = Math.max(-vMin, Math.min(1 - vMax, dv));
+  const sh = ([u, v]: UV): UV => [u + cu, v + cv];
+  return {
+    ...piece,
+    outline: piece.outline.map(sh),
+    darts: piece.darts.map((d) => ({ apex: sh(d.apex), legA: sh(d.legA), legB: sh(d.legB) })),
+  };
+}
+
+/**
  * Re-boîter une pièce sur l'EMPRISE de son tracé : la boîte (width/height/topY)
  * devient le rectangle englobant du contour dessiné, contour et pinces re-mappés
  * en UV pour que la GÉOMÉTRIE MONDE reste identique. C'est le pont « zone de

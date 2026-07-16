@@ -1,7 +1,7 @@
 import { initGpu, WebGPUNotSupportedError } from './engine/gpu/Device';
 import { ParticleSystem } from './engine/solver/ParticleSystem';
 import { generateClothGrid, generateSeamedPanels, combineClothMeshes, type CrossSeam, type ClothMeshData } from './engine/cloth/ClothMesh';
-import { defaultDraft, tshirtDraft, compileDraft, compileAssembly, compileCrossSeams, crossSewnOpenCells, removeFreePiece, reboxPiece, pieceIdOf, sanitizeDraft, pointInPolygon, pointInTriangle, type DraftDoc, type AssemblySeam } from './engine/pattern/Draft';
+import { defaultDraft, tshirtDraft, compileDraft, compileAssembly, compileCrossSeams, crossSewnOpenCells, removeFreePiece, reboxPiece, pieceIdOf, nearestOutlineEdgeInfo, shiftOutlineUV, sanitizeDraft, pointInPolygon, pointInTriangle, type DraftDoc, type AssemblySeam, type DraftPiece } from './engine/pattern/Draft';
 import { oversizeTee } from './engine/pattern/draftTee';
 import type { SceneMode } from './app/ControlPanel';
 import { ClothRenderer, DEFAULT_FABRIC } from './app/ClothRenderer';
@@ -660,12 +660,11 @@ async function main(): Promise<void> {
     simBtn().classList.remove('running');
     build();
   });
-  // 🪡 COUDRE guidé : bascule le mode « deux clics = une couture » (le pied du
-  // plan guide chaque étape). Maj+clic reste le raccourci expert équivalent.
+  // 🪡 COUDRE guidé : bascule le mode « deux clics = une couture ». Les deux
+  // clics marchent en 2D (le pied du plan guide) ET en 3D (près des bords,
+  // directement sur les pièces autour de l'avatar) — le grand plan ne s'ouvre
+  // plus d'office pour laisser la 3D visible. Maj+clic reste le raccourci 2D.
   (document.getElementById('at-sew') as HTMLElement).addEventListener('click', (e) => {
-    if (!bigPanel) setBig(true);
-    atelierDesign = true;
-    simBtn().classList.remove('running');
     const on = patternView.toggleSew();
     (e.currentTarget as HTMLElement).classList.toggle('active', on);
   });
@@ -844,6 +843,17 @@ async function main(): Promise<void> {
   };
   let dragIndex: number | null = null;
   let dragDepth = 0;
+  // PATRONNER DANS LA 3D (mode conception, pièces gelées à plat) : la pièce
+  // saisie sur l'avatar se déplace en direct (translation GPU de sa plage de
+  // particules) ; au relâchement, le déplacement se grave dans le patron.
+  let pieceDrag: {
+    pid: number;
+    first: number; // première particule de la pièce dans le mesh combiné
+    count: number;
+    depth: number; // profondeur de saisie le long du rayon (le drag reste dans ce plan)
+    start: [number, number, number]; // point monde saisi
+    delta: [number, number, number];
+  } | null = null;
 
   const build = (): void => {
     if (buildSuspended) return; // an import is batching; the final build wins (M26)
@@ -1328,7 +1338,7 @@ async function main(): Promise<void> {
     if (hintEl)
       hintEl.textContent =
         sceneMode === 'atelier'
-          ? 'atelier : ✎ Pièce = tracer sur la silhouette puis dire où elle va · glisser un point/bord = déformer/courber (Alt = pince) · 🪡 Coudre · clic sur une couture = défaire · Ctrl+Z · ▶ Simuler'
+          ? 'atelier : ✎ Pièce = tracer puis placer · 3D : glisser une pièce = la déplacer · 🪡 + 2 clics sur les bords (2D ou 3D) = coudre · 2D : points/bords = déformer/courber (Alt = pince) · Ctrl+Z · ▶ Simuler'
           : 'glisser sur le tissu : le tirer · glisser à côté : tourner · clic droit + glisser : se déplacer · molette : zoom · R : reset';
   };
 
@@ -1436,6 +1446,75 @@ async function main(): Promise<void> {
       };
   }
 
+  // PATRONNER EN 3D — correspondance particule → pièce du patron. Le mesh
+  // combiné empile des blocs UNIFORMES de 2·R² particules (les cellules
+  // coupées restent parquées) : bloc 0 = la base (panneau 0 = DEVANT, panneau
+  // 1 = DOS), puis un bloc par pièce libre. Au-delà : les tubes système
+  // (Manches auto / col), qui ne sont pas des pièces du patron.
+  const pieceRangeAt = (i: number): { pid: number; first: number; count: number } | null => {
+    if (!draft || teePreset) return null;
+    const r2 = resolution * resolution;
+    const span = 2 * r2;
+    const meshIdx = Math.floor(i / span);
+    if (meshIdx === 0) {
+      const panel = Math.floor(i / r2); // 0 = devant, 1 = dos — chaque face bouge seule
+      return { pid: panel, first: panel * r2, count: r2 };
+    }
+    const nFree = draft.pieces?.length ?? 0;
+    if (meshIdx <= nFree) return { pid: 1 + meshIdx, first: meshIdx * span, count: span };
+    return null;
+  };
+  const draftPieceOf = (pid: number): DraftPiece | null => {
+    if (!draft) return null;
+    if (pid === 0) return draft.piece;
+    if (pid === 1) return draft.back ?? draft.piece; // dos absent = miroir du devant
+    return draft.pieces?.[pid - 2] ?? null;
+  };
+  // Déplacement 3D (mètres) → glissement du contour DANS sa boîte, borné [0,1]².
+  // u suit +x ; v grandit vers le BAS (y = topY − v·height), d'où le signe.
+  const shiftPieceInBox = (piece: DraftPiece, dx: number, dy: number): void => {
+    const s = shiftOutlineUV(piece, dx / piece.width, -dy / piece.height);
+    piece.outline = s.outline;
+    piece.darts = s.darts;
+  };
+  // Saisie « ce qu'on voit » : parmi les particules proches du rayon, prendre
+  // la plus EN AVANT (profondeur minimale) — pickParticle prend la plus proche
+  // du rayon, ce qui peut attraper le DOS à travers le corps quand on vise une
+  // manche (les pièces à plat s'empilent en profondeur, contrairement au drapé).
+  const pickFrontmost = (
+    ray: { origin: readonly [number, number, number]; dir: readonly [number, number, number] },
+    maxPerp = 0.07,
+  ): { index: number; depth: number } | null => {
+    if (!posCache) return null;
+    const count = Math.min(system.count, posCache.length / 4);
+    let best: { index: number; depth: number } | null = null;
+    const maxPerp2 = maxPerp * maxPerp;
+    for (let i = 0; i < count; i++) {
+      if (!system.isMovable(i)) continue;
+      const vx = posCache[i * 4]! - ray.origin[0];
+      const vy = posCache[i * 4 + 1]! - ray.origin[1];
+      const vz = posCache[i * 4 + 2]! - ray.origin[2];
+      const t = vx * ray.dir[0] + vy * ray.dir[1] + vz * ray.dir[2];
+      if (t <= 0) continue;
+      const perp2 = vx * vx + vy * vy + vz * vz - t * t;
+      if (perp2 <= maxPerp2 && (!best || t < best.depth)) best = { index: i, depth: t };
+    }
+    return best;
+  };
+  // Clic 3D près d'un BORD de pièce → (pièce, bord de contour) pour la couture.
+  const pieceEdgeAt = (i: number): { pid: number; edge: number } | null => {
+    const pr = pieceRangeAt(i);
+    if (!pr) return null;
+    const piece = draftPieceOf(pr.pid);
+    if (!piece) return null;
+    const r2 = resolution * resolution;
+    const local = i % r2; // cellule dans son panneau (les 2 panneaux partagent la grille UV)
+    const u = ((local % resolution) + 0.5) / resolution;
+    const v = (Math.floor(local / resolution) + 0.5) / resolution;
+    const ne = nearestOutlineEdgeInfo([u, v], piece.outline);
+    if (ne.dist > 2.5 / resolution) return null; // trop loin du bord : pas un choix de couture
+    return { pid: pr.pid, edge: ne.edge };
+  };
   // CLO3D-style pointer model: a left press ON the fabric grabs it; a left
   // press on empty space orbits the camera. Returns true when orbit is allowed.
   const tryOrbit = (e: PointerEvent): boolean => {
@@ -1450,6 +1529,38 @@ async function main(): Promise<void> {
     // tack picker below stays unfiltered so tacks remain removable.
     const hit = pickParticle(posCache, count, ray.origin, ray.dir, 0.15, (i) => system.isMovable(i));
     if (!hit) return true;
+    // 🪡 armé : le clic 3D près d'un bord choisit le bord à coudre (même
+    // machine que le plan 2D — 1er bord, 2e bord, couture). Marche à plat ET
+    // sur le vêtement drapé (la correspondance cellule→bord est topologique).
+    if (sceneMode === 'atelier' && patternView.sewing) {
+      const front = pickFrontmost(ray) ?? hit; // la pièce VISIBLE, pas celle cachée derrière
+      const pe = pieceEdgeAt(front.index);
+      if (pe) {
+        patternView.selectPiece(pe.pid);
+        patternView.pickEdgeForSeam(pe.pid, pe.edge);
+        return false;
+      }
+      return true; // armé mais loin d'un bord → orbite
+    }
+    // Mode conception (pièces gelées à plat) : saisir une pièce = la DÉPLACER
+    // (le drag physique n'aurait aucun effet, la simulation est figée).
+    if (sceneMode === 'atelier' && atelierDesign) {
+      const front = pickFrontmost(ray) ?? hit; // saisir CE QU'ON VOIT (les pièces à plat s'empilent en profondeur)
+      const pr = pieceRangeAt(front.index);
+      if (!pr) return true; // tube système ou hors patron → orbite
+      pieceDrag = {
+        ...pr,
+        depth: front.depth,
+        start: [
+          ray.origin[0] + ray.dir[0] * front.depth,
+          ray.origin[1] + ray.dir[1] * front.depth,
+          ray.origin[2] + ray.dir[2] * front.depth,
+        ],
+        delta: [0, 0, 0],
+      };
+      patternView.selectPiece(pr.pid); // le plan 2D suit la sélection 3D
+      return false;
+    }
     dragIndex = hit.index;
     dragDepth = hit.depth;
     return false; // fabric grabbed — the camera stays put
@@ -1904,6 +2015,47 @@ async function main(): Promise<void> {
       });
     }
 
+    // PATRONNER EN 3D : la pièce saisie suit la souris dans son plan de saisie
+    // (translation rigide, écrite directement dans les buffers GPU — la sim est
+    // figée en conception). Au relâchement, le déplacement se grave dans le
+    // patron (glissement du contour dans sa boîte / topY pour une pièce
+    // enroulée) puis build() reconstruit à l'identique.
+    if (pieceDrag) {
+      if (mouse.leftDown && sceneMode === 'atelier' && atelierDesign) {
+        const d = pieceDrag;
+        // Plan x/y seulement (patronner de face) : l'aperçu montre exactement
+        // ce qui sera gravé dans le patron au relâchement.
+        d.delta = [
+          ray.origin[0] + ray.dir[0] * d.depth - d.start[0],
+          ray.origin[1] + ray.dir[1] * d.depth - d.start[1],
+          0,
+        ];
+        system.translateRange(d.first, d.count, d.delta);
+      } else {
+        const d = pieceDrag;
+        pieceDrag = null;
+        const [dx, dy] = d.delta;
+        if (draft && Math.hypot(dx, dy) >= 0.005) {
+          pushHistory();
+          const piece = draftPieceOf(d.pid);
+          if (piece && d.pid >= 2 && piece.wrap) {
+            // Une pièce ENROULÉE (manche, col) est tenue par son support : le
+            // déplacement utile est vertical — elle glisse le long du bras/cou.
+            piece.topY += dy;
+          } else if (piece) {
+            if (d.pid === 1 && !draft.back) {
+              draft.back = structuredClone(draft.piece); // matérialiser le dos avant de le décaler seul
+              shiftPieceInBox(draft.back, dx, dy);
+            } else {
+              shiftPieceInBox(piece, dx, dy);
+            }
+          }
+          draftTouched = true;
+          atelierDesign = true;
+        }
+        build(); // reconstruit (ou repose la pièce si le geste était trop petit)
+      }
+    }
     // Drive or release the drag constraint.
     if (dragIndex !== null) {
       if (mouse.leftDown) {

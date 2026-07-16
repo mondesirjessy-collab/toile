@@ -613,6 +613,27 @@ export class ParticleSystem {
     if (c.bend !== undefined) this.complianceBend = c.bend;
   }
 
+  /**
+   * ATELIER — déplacer une PIÈCE gelée (mode conception) : translate rigidement
+   * une plage de particules depuis ses positions de REPOS (pas d'accumulation
+   * d'erreur pendant le drag). Écrit position ET prevPosition, comme reset() —
+   * aucune vitesse fantôme si la simulation se réveille ensuite.
+   */
+  translateRange(first: number, count: number, d: readonly [number, number, number]): void {
+    const n = Math.max(0, Math.min(count, this.count - first));
+    if (n === 0) return;
+    const src = this.initialPositions.subarray(first * 4, (first + n) * 4);
+    const out = new Float32Array(src.length);
+    for (let i = 0; i < out.length; i += 4) {
+      out[i] = src[i]! + d[0];
+      out[i + 1] = src[i + 1]! + d[1];
+      out[i + 2] = src[i + 2]! + d[2];
+      out[i + 3] = src[i + 3]!;
+    }
+    this.device.queue.writeBuffer(this.positionBuffer, first * 16, out);
+    this.device.queue.writeBuffer(this.prevPositionBuffer, first * 16, out);
+  }
+
   /** Re-drop the cloth: restore the rest pose, zero velocities, release pins. */
   reset(): void {
     this.pinned = false;

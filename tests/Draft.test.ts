@@ -16,6 +16,8 @@ import {
   reindexAssemblySeams,
   pieceIdOf,
   docPieces,
+  nearestOutlineEdgeInfo,
+  shiftOutlineUV,
   type UV,
   type DraftPiece,
 } from '../src/engine/pattern/Draft';
@@ -561,5 +563,44 @@ describe('multi-piece free editor (pieceId / cross-seams)', () => {
     expect(out.pieces.length).toBe(1);
     expect(out.seams.length).toBe(1); // seam to piece 2 doesn't touch 3 → survives
     expect(pieceIdOf(out.seams[0]!.a)).toBe(2); // 2 < 3 → unchanged
+  });
+});
+
+describe('patronner en 3D — aides pures', () => {
+  const piece = (): import('../src/engine/pattern/Draft').DraftPiece => ({
+    outline: [[0.3, 0.2], [0.7, 0.2], [0.7, 0.8], [0.3, 0.8]] as [number, number][],
+    width: 0.8,
+    height: 1.0,
+    topY: 1.5,
+    gap: 0.9,
+    darts: [{ apex: [0.5, 0.5] as [number, number], legA: [0.45, 0.6] as [number, number], legB: [0.55, 0.6] as [number, number] }],
+    openEdges: [{ from: 0, to: 1 }],
+    seams: [{ a: { from: 1, to: 2 }, b: { from: 3, to: 0 } }],
+  });
+
+  it('nearestOutlineEdgeInfo : une cellule près du bord droit choisit ce bord', () => {
+    // Bord 1 = [0.7,0.2]→[0.7,0.8] (le côté droit).
+    const ne = nearestOutlineEdgeInfo([0.72, 0.5], piece().outline);
+    expect(ne.edge).toBe(1);
+    expect(ne.dist).toBeCloseTo(0.02, 6);
+    // Un point au centre est loin de tout bord.
+    expect(nearestOutlineEdgeInfo([0.5, 0.5], piece().outline).dist).toBeGreaterThan(0.19);
+  });
+
+  it('shiftOutlineUV : décale contour + pinces, index de coutures intacts', () => {
+    const s = shiftOutlineUV(piece(), 0.1, -0.05);
+    expect(s.outline[0]).toEqual([0.4, 0.15000000000000002]);
+    expect(s.darts[0]!.apex[0]).toBeCloseTo(0.6, 6);
+    expect(s.darts[0]!.apex[1]).toBeCloseTo(0.45, 6);
+    expect(s.seams).toEqual(piece().seams); // les bords gardent leurs numéros
+    expect(s.openEdges).toEqual(piece().openEdges);
+  });
+
+  it('shiftOutlineUV : borné pour que l emprise reste dans [0,1]²', () => {
+    const s = shiftOutlineUV(piece(), 0.9, -0.9); // demande énorme → clamp
+    const us = s.outline.map((p) => p[0]);
+    const vs = s.outline.map((p) => p[1]);
+    expect(Math.max(...us)).toBeCloseTo(1, 6); // poussé au bord droit, pas au-delà
+    expect(Math.min(...vs)).toBeCloseTo(0, 6); // poussé en haut, pas au-delà
   });
 });
