@@ -183,15 +183,24 @@ describe('boxyTee (patron BOXY FIT reproduit — 6 tailles)', () => {
     }
   });
 
-  it('la tête de manche a le VRAI profil (hauteur 8,3 cm en M, pas une sinusoïde plate)', () => {
+  it('bouche du tube de manche : vraie courbe de tête pliée SYMÉTRIQUE, profondeur bornée à 17 %', () => {
+    // La version monotone (« moitié pliée », plus fidèle au pliage réel) SPLAYE
+    // le tube en drapeaux — testé A/B : les épingles u=0→haut la vrillent. La
+    // topologie éprouvée v96-128 = apex au CENTRE du panneau ; on y pose la
+    // vraie courbe, profondeur bornée (limite v112 : contour rogné = instable).
     const d = boxyTee('M', m, ref);
     const sl = d.pieces![0]!;
-    // bouche : v=0 à l'apex (milieu), v=capH/L aux coins
-    const vs = sl.outline.map((p) => p[1]);
-    const capH = Math.max(...sl.outline.filter((p) => p[1] < 0.9).map((p) => p[1])) * sl.height;
-    expect(Math.min(...vs)).toBeLessThan(0.01); // l'apex touche le haut
-    expect(capH).toBeGreaterThan(0.075); // 8,3 cm réels (±)
-    expect(capH).toBeLessThan(0.09);
+    const mouth = sl.outline.filter((p) => p[1] < 0.9);
+    // apex ≈ au centre (u≈0.5, v≈0), coins de dessous de bras des deux côtés
+    const apex = mouth.reduce((a, b) => (b[1] < a[1] ? b : a));
+    expect(apex[1]).toBeLessThan(0.02);
+    expect(apex[0]).toBeGreaterThan(0.4);
+    expect(apex[0]).toBeLessThan(0.6);
+    const capH = Math.max(...mouth.map((p) => p[1]));
+    expect(capH).toBeGreaterThan(0.14);
+    expect(capH).toBeLessThanOrEqual(0.175);
+    // symétrie : v(u) ≈ v(1−u)
+    expect(mouth[0]![1]).toBeCloseTo(mouth[mouth.length - 1]![1], 3);
   });
 
   it('taille absolue : XS ≠ XXL (les cotes changent avec la taille, pas avec l’avatar)', () => {
