@@ -11,7 +11,7 @@ Génère src/engine/pattern/boxyData.ts depuis le SVG du patron BOXY FIT A0.
 """
 import re, math, json
 
-SVG = "BOXY.svg (pdftocairo -svg "BOXY T-SHIRT A0.pdf" boxy.svg)"
+SVG = "/private/tmp/claude-501/-Users-jessymondesir/15716893-5578-4ab5-860c-e64b62c9457d/scratchpad/boxy.svg"
 OUT = "/Users/jessymondesir/dev/toile/src/engine/pattern/boxyData.ts"
 PT2CM = 2.54 / 72.0
 SIZES = ["XS", "S", "M", "L", "XL", "XXL"]
@@ -294,22 +294,38 @@ def body_outline_uv(sec):
     return out, Wbox, Hbox
 
 def sleeve_outline_uv(sl):
-    """Panneau de tube = la MOITIÉ PLIÉE de la vraie pièce plate : pli à l'apex
-    de la tête (bord u=0, posé sur le deltoïde — l'épinglage met u=0 en haut de
-    l'emmanchure), couture de dessous de bras à u=1 (le bas de l'emmanchure).
-    La bouche suit la VRAIE demi-courbe de tête, monotone apex → dessous de
-    bras ; le fuselage du poignet porte tout entier sur le côté couture."""
+    """Panneau de tube de manche. La VRAIE courbe de tête, PLIÉE SYMÉTRIQUEMENT
+    (apex au centre du panneau — la topologie de tube éprouvée v96-128 ; la
+    version monotone « moitié pliée », plus fidèle au pliage réel, SPLAYE le
+    tube en drapeaux : testé A/B v129, les épingles u=0→haut la vrillent).
+    STABILITÉ (limite v112 : « contour rogné = tube instable ») : profondeur de
+    bouche bornée à MOUTH_MAX — le profil réel est comprimé au-delà (la forme
+    de la courbe est conservée, la profondeur bornée)."""
+    MOUTH_MAX = 0.17  # profondeur max de la coupe de bouche (fraction de la longueur)
     L = sl["length"] / 100
     capH = sl["cap_h"] / 100
     span = sl["span"] / 100
-    half = sl["half_profile"]  # [(t 0..1 de l'apex au coin, h cm)]
-    cuffIn = max(0.0, (span - sl["cuff"] / 100) / span)  # tout le rentré côté couture
-    out = [(-0.01, 0.0)]  # apex (le pli), en haut
-    for (t, h) in half[1:-1]:
-        out.append((round(t, 4), round((capH - h / 100) / L, 4)))
-    out.append((1.01, round(capH / L, 4)))  # coin de base (dessous de bras)
-    out.append((round(1.01 - cuffIn, 4), 1.01))  # poignet côté couture (fuselé)
-    out.append((-0.01, 1.01))  # poignet côté pli
+    scale = min(1.0, MOUTH_MAX * L / capH)
+    capHs = capH * scale
+    half = sl["half_profile"]  # [(t 0..1 de l'apex au coin, h cm)] — la vraie demi-courbe
+    # v(u) symétrique : t = |2u−1| (apex u=0.5 → t=0), h interpolé sur le demi-profil réel.
+    def h_of(t):
+        for k in range(1, len(half)):
+            t0, h0 = half[k - 1]
+            t1, h1 = half[k]
+            if t <= t1 or k == len(half) - 1:
+                r = 0 if t1 == t0 else max(0.0, min(1.0, (t - t0) / (t1 - t0)))
+                return h0 + (h1 - h0) * r
+        return half[-1][1]
+    cuffIn = max(0.0, (span - sl["cuff"] / 100) / span / 2)  # rentré réparti sur les 2 côtés
+    out = [(-0.01, round(capHs / L, 4))]  # coin dessous-de-bras gauche
+    for k in range(1, 16):
+        u = k / 16
+        t = abs(2 * u - 1)
+        out.append((round(u, 4), round((capHs - h_of(t) / 100 * scale) / L, 4)))
+    out.append((1.01, round(capHs / L, 4)))  # coin dessous-de-bras droit
+    out.append((round(1.01 - cuffIn, 4), 1.01))
+    out.append((round(-0.01 + cuffIn, 4), 1.01))
     return out, span / 2, L
 
 NB = None
