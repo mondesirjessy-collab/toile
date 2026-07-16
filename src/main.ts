@@ -2,7 +2,7 @@ import { initGpu, WebGPUNotSupportedError } from './engine/gpu/Device';
 import { ParticleSystem } from './engine/solver/ParticleSystem';
 import { generateClothGrid, generateSeamedPanels, combineClothMeshes, type CrossSeam, type ClothMeshData } from './engine/cloth/ClothMesh';
 import { defaultDraft, tshirtDraft, compileDraft, compileAssembly, compileCrossSeams, crossSewnOpenCells, removeFreePiece, reboxPiece, pieceIdOf, nearestOutlineEdgeInfo, movePieceWorld, moveFaceWorld, sanitizeDraft, pointInPolygon, pointInTriangle, type DraftDoc, type AssemblySeam, type DraftPiece } from './engine/pattern/Draft';
-import { oversizeTee } from './engine/pattern/draftTee';
+import { boxyTee, boxyChestCm, BOXY_SIZES, type BoxySize } from './engine/pattern/draftTee';
 import type { SceneMode } from './app/ControlPanel';
 import { ClothRenderer, DEFAULT_FABRIC } from './app/ClothRenderer';
 import { OrbitCamera } from './app/OrbitCamera';
@@ -662,20 +662,37 @@ async function main(): Promise<void> {
   // les mensurations de l'avatar. ÉDITABLE (c'est un draft) et imprimable en
   // pièces numérotées. Remplace le préréglage kimono d'un seul tenant (v108),
   // qui n'était ni un vrai patron ni éditable.
-  (document.getElementById('at-tshirt') as HTMLElement).addEventListener('click', () => {
+  // Taille du patron BOXY (sélecteur XS→XXL). Le patron est ABSOLU (XS = tour
+  // 100 cm … XXL = 130 cm), l'avatar ne sert qu'au placement.
+  let boxySize: BoxySize = 'S';
+  const loadBoxyTee = (): void => {
     if (!bigPanel) setBig(true);
     atelierDesign = true;
     simBtn().classList.remove('running');
     resetPlacement(); // le patron chargé remplace tout : placement en attente caduc
     pushHistory();
     teePreset = false;
-    draft = oversizeTee(lastMeasure, REF);
+    draft = boxyTee(boxySize, lastMeasure, REF);
     draftTouched = true; // un vrai draft : éditable, exportable
     atelierSleeves = false; // les manches sont DES PIÈCES du patron
     atelierCollar = false;
     document.getElementById('at-sleeves')?.classList.remove('active');
     build();
-  });
+  };
+  (document.getElementById('at-tshirt') as HTMLElement).addEventListener('click', loadBoxyTee);
+  // Remplir + brancher le sélecteur de taille.
+  const sizeSel = document.getElementById('at-size') as HTMLSelectElement | null;
+  if (sizeSel) {
+    sizeSel.innerHTML = BOXY_SIZES.map((s) => `<option value="${s}">${s} · ${boxyChestCm(s)} cm</option>`).join('');
+    sizeSel.value = boxySize;
+    sizeSel.addEventListener('change', () => {
+      boxySize = sizeSel.value as BoxySize;
+      // Si un t-shirt boxy est déjà en cours (5 pièces : devant+dos+2 manches+col),
+      // le recharger à la nouvelle taille ; sinon on prépare juste la prochaine.
+      const looksBoxy = !!draft && draft.manual === true && (draft.pieces?.length ?? 0) === 3 && !!draft.pieces?.[2]?.wrap;
+      if (sceneMode === 'atelier' && looksBoxy) loadBoxyTee();
+    });
+  }
   // (✎ Devant / ✎ Dos / ✎ Manche retirés en v124 : la confection est LIBRE —
   // une seule plume « ✎ Pièce », le placement se choisit à la fermeture.)
   // « + Pièce / − Pièce / + Col » : boutons retirés (v109) — le moteur ne cousait

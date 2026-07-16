@@ -50,6 +50,14 @@
     }
     #atelier-bar button:hover { background: rgba(60, 66, 78, 0.95); color: rgba(237, 233, 223, 1); }
     #atelier-bar button.active { border-color: rgba(255, 159, 107, 0.9); color: rgba(255, 190, 150, 1); }
+    /* Sélecteur de taille (à côté du bouton 👕). */
+    #at-size {
+      font: inherit; font-size: 11px; letter-spacing: 0.04em;
+      color: rgba(237, 233, 223, 0.82); background: rgba(40, 44, 52, 0.6);
+      border: 1px solid rgba(237, 233, 223, 0.13); border-radius: 4px;
+      padding: 3px 6px; cursor: pointer;
+    }
+    #at-size:hover { background: rgba(60, 66, 78, 0.95); color: rgba(237, 233, 223, 1); }
     /* « Terminer » : contextuel (visible pendant un tracé), en accent pour dire
        « une action est en cours ». */
     #at-pen { border-color: rgba(255, 159, 107, 0.8); color: rgba(255, 190, 150, 1); }
@@ -123,7 +131,7 @@
   <canvas id="view"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 3 — plan 2D en demi-écran ajustable · une couleur par couture · v127</small></span>
+    <span class="title">TOILE<small>phase 3 — 👕 patron BOXY FIT réel · 6 tailles XS→XXL · v128</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
       <span id="hint">glisser sur le tissu : le tirer · glisser à côté : tourner · clic droit + glisser : se déplacer · molette : zoom · R : reset</span>
@@ -136,7 +144,8 @@
          tracé à la plume. -->
     <div id="atelier-bar">
       <span class="tgrp">
-        <button id="at-tshirt" title="Charger un t-shirt de base déjà assemblé, dimensionné à l'avatar">👕 T-shirt</button>
+        <button id="at-tshirt" title="Charger le patron BOXY FIT (devant, dos, 2 manches, col) — coupe oversize, à la taille choisie">👕 T-shirt</button>
+        <select id="at-size" title="Taille du t-shirt (tour de poitrine) — le patron se recharge à la nouvelle taille"></select>
         <button id="at-piece" title="Tracer une pièce à la plume sur la silhouette (le gabarit grandeur nature) — à la fermeture, tu choisis où elle va : devant, dos, bras, cou… ou libre">✎ Pièce</button>
         <button id="at-sleeves" title="Manches AUTOMATIQUES : deux tubes tout faits, posés et cousus en un clic (pour les dessiner toi-même : ✎ Pièce → Bras)">Manches auto</button>
         <button id="at-pen" hidden title="Fermer la forme dessinée (ou cliquer le premier point)">✓ Terminer</button>

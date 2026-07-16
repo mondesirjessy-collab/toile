@@ -158,6 +158,124 @@ export function oversizeTee(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
   };
 }
 
+// ---------------------------------------------------------------------------
+// BOXY FIT T-SHIRT — reproduction FIDÈLE du patron papier fourni par Jessy
+// (BOXY T-SHIRT A0.pdf). Coupe oversize à épaules tombantes, 4 pièces
+// (devant/dos sur pliure, manche ×2, col), 6 TAILLES XS→XXL. Les cotes viennent
+// des contours lus AU 1/10 DE CM dans le vecteur (carré-témoin 6×6 cm vérifié) —
+// voir la mémoire `patron-boxy-tshirt`. Contrairement à oversizeTee (gradé sur
+// l'avatar), ici chaque taille est ABSOLUE : XS = tour 100 cm, …, XXL = 130 cm ;
+// l'avatar ne sert qu'au placement vertical. Reproduit sur la mécanique éprouvée
+// (corps devant/dos cousu épaules+côtés pleine hauteur, manches WRAP, col WRAP).
+// ---------------------------------------------------------------------------
+export type BoxySize = 'XS' | 'S' | 'M' | 'L' | 'XL' | 'XXL';
+
+/** Cotes exactes par taille, en MÈTRES (extraites du patron). halfW = demi-
+ * largeur (sur pliure) ; len = longueur ; neckHW = demi-encolure ; fDepth/bDepth
+ * = creux d'encolure devant/dos ; shTipX = x du bout d'épaule (tombée) ; armD =
+ * profondeur d'emmanchure ; capSpan = tour de tête de manche ; cuff = ouverture
+ * de manche ; sleeveLen = longueur de manche ; collar = longueur de la bande. */
+interface BoxyDims {
+  halfW: number; len: number; neckHW: number; fDepth: number; bDepth: number;
+  shTipX: number; armD: number; capSpan: number; cuff: number; sleeveLen: number; collar: number;
+}
+const BOXY: Record<BoxySize, BoxyDims> = {
+  XS:  { halfW: 0.250, len: 0.68, neckHW: 0.087, fDepth: 0.072, bDepth: 0.022, shTipX: 0.224, armD: 0.183, capSpan: 0.420, cuff: 0.360, sleeveLen: 0.140, collar: 0.270 },
+  S:   { halfW: 0.265, len: 0.70, neckHW: 0.089, fDepth: 0.074, bDepth: 0.025, shTipX: 0.238, armD: 0.193, capSpan: 0.445, cuff: 0.380, sleeveLen: 0.150, collar: 0.280 },
+  M:   { halfW: 0.280, len: 0.72, neckHW: 0.092, fDepth: 0.077, bDepth: 0.027, shTipX: 0.253, armD: 0.203, capSpan: 0.468, cuff: 0.400, sleeveLen: 0.155, collar: 0.290 },
+  L:   { halfW: 0.295, len: 0.74, neckHW: 0.094, fDepth: 0.079, bDepth: 0.030, shTipX: 0.269, armD: 0.213, capSpan: 0.492, cuff: 0.420, sleeveLen: 0.165, collar: 0.300 },
+  XL:  { halfW: 0.310, len: 0.76, neckHW: 0.097, fDepth: 0.082, bDepth: 0.032, shTipX: 0.284, armD: 0.223, capSpan: 0.515, cuff: 0.440, sleeveLen: 0.175, collar: 0.310 },
+  XXL: { halfW: 0.325, len: 0.78, neckHW: 0.099, fDepth: 0.084, bDepth: 0.035, shTipX: 0.305, armD: 0.233, capSpan: 0.540, cuff: 0.460, sleeveLen: 0.185, collar: 0.320 },
+};
+export const BOXY_SIZES: BoxySize[] = ['XS', 'S', 'M', 'L', 'XL', 'XXL'];
+/** Tour de poitrine (cm) d'une taille — pour l'étiquette du sélecteur. */
+export function boxyChestCm(sz: BoxySize): number {
+  return Math.round(BOXY[sz].halfW * 4 * 100); // 2 faces × 2 (pliure)
+}
+
+export function boxyTee(size: BoxySize, m: BodyMeasure, ref: BodyMeasure): DraftDoc {
+  const D = BOXY[size];
+  const MARGIN = 0.02; // 2 cm de marge de chaque côté (le corps ne touche pas le bord u=0/1)
+  const W = 2 * D.halfW + 2 * MARGIN; // largeur physique de la pièce (m)
+  const H = D.len;
+  const topY = 1.52 + (m.shoulderY - ref.shoulderY); // ligne épaule-encolure = haut de la pièce (v=0)
+  const u = (xM: number): number => 0.5 + xM / W; // x monde (m, centré 0) → u
+  const vDropTip = D.armD > 0 ? 0.051 / H : 0; // tombée d'épaule 5,1 cm (constante)
+  const vUnder = (0.051 + D.armD) / H; // dessous de bras = tombée + emmanchure
+  const hollowX = (D.shTipX + D.halfW) / 2 - 0.024; // l'emmanchure se creuse de ~2,4 cm
+  const vHollow = (vDropTip + vUnder) / 2;
+  // Une face, DEVANT (creux profond) ou DOS (creux faible). Même structure
+  // d'indices qu'oversizeTee → les mêmes coutures/bords ouverts s'appliquent.
+  const face = (neckDepth: number): DraftPiece => {
+    const vNeckC = neckDepth / H;
+    const neckArc: UV[] = [];
+    for (const t of [0.82, 0.45, 0, -0.45, -0.82]) {
+      neckArc.push([0.5 + t * (D.neckHW / W), vNeckC * Math.cos((t * Math.PI) / 2)]);
+    }
+    const outline: UV[] = [
+      [u(-D.neckHW), 0],       // 0 encolure↔épaule G
+      [u(-D.shTipX), vDropTip], // 1 bout d'épaule G (tombante)
+      [u(-hollowX), vHollow],   // 2 creux d'emmanchure G
+      [u(-D.halfW), vUnder],    // 3 dessous de bras G
+      [u(-D.halfW), 0.985],     // 4 ourlet G
+      [u(D.halfW), 0.985],      // 5 ourlet D
+      [u(D.halfW), vUnder],     // 6 dessous de bras D
+      [u(hollowX), vHollow],    // 7 creux d'emmanchure D
+      [u(D.shTipX), vDropTip],  // 8 bout d'épaule D
+      [u(D.neckHW), 0],         // 9 encolure↔épaule D
+      ...neckArc,               // 10-14 arc d'encolure (D → creux → G)
+    ];
+    return {
+      outline, darts: [], seams: [],
+      openEdges: [{ from: 4, to: 5 }, { from: 9, to: 15 }], // ourlet + encolure
+      width: W, height: H, topY, gap: 0.9,
+    };
+  };
+  // Manche WRAP ×2 : tube court et large (boxy). La tête (courbe) se coud à
+  // l'emmanchure (wrapCrossSeams) ; le poignet reste ouvert et large.
+  const CAP = 0.16; // hauteur de tête (fraction de la longueur)
+  const cuffIn = ((D.capSpan - D.cuff) / D.capSpan) / 2; // rentré au poignet (tête plus large que poignet)
+  const sleeve = (wrap: 'armL' | 'armR'): DraftPiece => {
+    const capArc: UV[] = [];
+    for (const uu of [0.1, 0.28, 0.5, 0.72, 0.9]) {
+      capArc.push([uu, CAP * (1 - Math.sin(Math.PI * uu))]);
+    }
+    return {
+      outline: [
+        [-0.01, CAP], ...capArc, [1.01, CAP],
+        [1.01 - cuffIn, 1.01], [-0.01 + cuffIn, 1.01],
+      ],
+      darts: [], seams: [], openEdges: [],
+      width: 0.5 * D.capSpan, // demi-tour de tête = ce qui s'épingle à l'emmanchure
+      height: D.sleeveLen,
+      topY: m.shoulderY + 0.01,
+      gap: 0.20, // tube large (boxy) autour du bras
+      wrap,
+    };
+  };
+  // BANDE D'ENCOLURE (col) : anneau coupé plus court que l'encolure (~88 %),
+  // resserre le col. Tube wrap 'neck'.
+  const neckRing = 2 * (D.fDepth + D.bDepth) + 2.2 * D.neckHW; // approx. du tour d'encolure
+  const band = (): DraftPiece => ({
+    outline: [[-0.01, -0.01], [1.01, -0.01], [1.01, 1.01], [-0.01, 1.01]],
+    darts: [], seams: [], openEdges: [],
+    width: 0.88 * neckRing * 0.5,
+    height: 0.035,
+    topY: m.neckY - 0.005,
+    gap: 0.15,
+    wrap: 'neck',
+  });
+  const seam = (from: number, to: number): AssemblySeam => ({ a: { face: 'front', from, to }, b: { face: 'back', from, to } });
+  return {
+    format: 'toile-draft', version: 1, gridN: 64,
+    piece: face(D.fDepth), back: face(D.bDepth), manual: true,
+    pieces: [sleeve('armR'), sleeve('armL'), band()],
+    // Épaules {0,1}/{8,9} + côtés pleine hauteur {1,4}/{5,8} (la ligne soudée
+    // qui verrouille l'épinglage des manches — recette éprouvée v104/v112).
+    seams: [seam(0, 1), seam(8, 9), seam(1, 4), seam(5, 8)],
+  };
+}
+
 /** A real set-in-sleeve tee pattern (front + back, drafted to `m`). `ref` is the
  * reference mannequin (for the vertical placement, like the archetypes). */
 export function draftTee(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
