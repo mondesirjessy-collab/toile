@@ -1,13 +1,21 @@
-# Avatars scannés
+# Avatars
 
-`homme-scan.*` et `femme-scan.*` sont dérivés de :
+`femme-scan.*` et `homme-scan.*` sont des corps **générés avec MakeHuman**
+(via l'extension Blender **MPFB** 2.0.16, <https://extensions.blender.org/add-ons/mpfb/>),
+dont les maillages et cibles morphologiques sont publiés sous **CC0 1.0**
+(domaine public) par le projet MakeHuman
+(<https://static.makehumancommunity.org/makehuman/license.html>).
 
-**« Body male realistic » et « Body female realistic »** — Human Base Meshes, Blender Studio (Dan Ulrich
-et contributions de la communauté), publié sous **CC0 1.0** (domaine public).
-Fichier source : Wikimedia Commons,
-<https://commons.wikimedia.org/wiki/File:Body_male_realistic_by_Dan_Ulrich_(CC0).stl> (et le fichier femme homonyme).
-Bundle officiel : <https://www.blender.org/download/demo-files/> (Asset Bundles).
+Pipeline (reproductible) :
 
-Pipeline de conversion : `tools/bake.py` — normalisation (pieds y=0, 1,755 m,
-face +z), décimation à ~60 000 triangles pour le rendu, et cuisson d'une
-grille de distances signées (int16, millimètres) pour la collision GPU.
+1. `tools/mh_avatar.py` (Blender headless + MPFB) — génère le corps
+   (macros : genre, âge, muscle, poids…), supprime la géométrie d'aide,
+   cuit les shape keys, subdivise ×2, exporte en STL.
+2. `tools/tpose_blender.py` — monte les bras à l'horizontale (T-pose)
+   par armature à poids lissés.
+3. `tools/bake.py` — normalisation (pieds y=0, stature réelle, face +z),
+   décimation à ~60 000 triangles pour le rendu, et cuisson d'une grille
+   de distances signées (int16, millimètres) pour la collision GPU.
+
+Historique : les versions ≤ v132 utilisaient les sculpts CC0 « Body
+male/female realistic » de Dan Ulrich (Blender Studio, Wikimedia Commons).
