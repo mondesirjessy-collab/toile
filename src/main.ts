@@ -1,7 +1,7 @@
 import { initGpu, WebGPUNotSupportedError } from './engine/gpu/Device';
 import { ParticleSystem } from './engine/solver/ParticleSystem';
 import { generateClothGrid, generateSeamedPanels, combineClothMeshes, type CrossSeam, type ClothMeshData } from './engine/cloth/ClothMesh';
-import { defaultDraft, tshirtDraft, compileDraft, compileAssembly, compileCrossSeams, crossSewnOpenCells, removeFreePiece, reboxPiece, pieceIdOf, nearestOutlineEdgeInfo, shiftOutlineUV, sanitizeDraft, pointInPolygon, pointInTriangle, type DraftDoc, type AssemblySeam, type DraftPiece } from './engine/pattern/Draft';
+import { defaultDraft, tshirtDraft, compileDraft, compileAssembly, compileCrossSeams, crossSewnOpenCells, removeFreePiece, reboxPiece, pieceIdOf, nearestOutlineEdgeInfo, movePieceWorld, moveFaceWorld, sanitizeDraft, pointInPolygon, pointInTriangle, type DraftDoc, type AssemblySeam, type DraftPiece } from './engine/pattern/Draft';
 import { oversizeTee } from './engine/pattern/draftTee';
 import type { SceneMode } from './app/ControlPanel';
 import { ClothRenderer, DEFAULT_FABRIC } from './app/ClothRenderer';
@@ -427,6 +427,7 @@ async function main(): Promise<void> {
     // Manual assembly: the user sewed edge A ↔ edge B (Shift+click).
     (seam: AssemblySeam) => {
       document.getElementById('at-sew')?.classList.remove('active'); // le mode guidé se referme après la couture
+      refreshHint();
       pushHistory();
       const gridN = resolution as 32 | 64 | 128;
       if (!draft) draft = { format: 'toile-draft', version: 1, gridN, piece: defaultDraft(gridN).piece, manual: true, seams: [] };
@@ -667,6 +668,7 @@ async function main(): Promise<void> {
   (document.getElementById('at-sew') as HTMLElement).addEventListener('click', (e) => {
     const on = patternView.toggleSew();
     (e.currentTarget as HTMLElement).classList.toggle('active', on);
+    refreshHint(); // l'aide guide la couture pendant que 🪡 est armé
   });
   // − PIÈCE : supprime la pièce active (cliquer d'abord sa colonne) — Ctrl+Z annule.
   (document.getElementById('at-del') as HTMLElement).addEventListener('click', () => {
@@ -1333,13 +1335,27 @@ async function main(): Promise<void> {
     // Manual-assembly seams (red free edges / blue sewn links) for the 2D editor.
     patternView.setAssembly(sceneMode === 'atelier' && draft ? draft.seams ?? [] : []);
     updateAtelierBar();
-    // Scene-aware hint: the atelier needs its drawing gestures spelled out.
+    refreshHint();
+  };
+  // Scene-aware hint: the atelier needs its drawing gestures spelled out — and
+  // pendant que 🪡 est armé, l'aide GUIDE la couture pas à pas (les contours
+  // s'allument en 3D ; le pied du plan 2D guide aussi).
+  const refreshHint = (): void => {
     const hintEl = document.getElementById('hint');
-    if (hintEl)
+    if (!hintEl) return;
+    if (sceneMode !== 'atelier') {
       hintEl.textContent =
-        sceneMode === 'atelier'
-          ? 'atelier : ✎ Pièce = tracer puis placer · 3D : glisser une pièce = la déplacer · 🪡 + 2 clics sur les bords (2D ou 3D) = coudre · 2D : points/bords = déformer/courber (Alt = pince) · Ctrl+Z · ▶ Simuler'
-          : 'glisser sur le tissu : le tirer · glisser à côté : tourner · clic droit + glisser : se déplacer · molette : zoom · R : reset';
+        'glisser sur le tissu : le tirer · glisser à côté : tourner · clic droit + glisser : se déplacer · molette : zoom · R : reset';
+      return;
+    }
+    if (patternView.sewing || patternView.seamPick) {
+      hintEl.textContent = patternView.seamPick
+        ? '🪡 1er bord retenu (en orange) — cliquez maintenant le 2e bord, celui à assembler · re-cliquer le même bord = annuler'
+        : '🪡 couture : cliquez près d’un bord de pièce — en 3D sur l’avatar (contours allumés) ou dans le plan 2D';
+      return;
+    }
+    hintEl.textContent =
+      'atelier : ✎ Pièce = tracer puis placer · 3D : glisser une pièce = la déplacer · 🪡 + 2 clics sur les bords (2D ou 3D) = coudre · 2D : points/bords = déformer/courber (Alt = pince) · Ctrl+Z · ▶ Simuler';
   };
 
   // The editable measurements of the current scene, pinned to their cut edges.
@@ -1470,13 +1486,6 @@ async function main(): Promise<void> {
     if (pid === 1) return draft.back ?? draft.piece; // dos absent = miroir du devant
     return draft.pieces?.[pid - 2] ?? null;
   };
-  // Déplacement 3D (mètres) → glissement du contour DANS sa boîte, borné [0,1]².
-  // u suit +x ; v grandit vers le BAS (y = topY − v·height), d'où le signe.
-  const shiftPieceInBox = (piece: DraftPiece, dx: number, dy: number): void => {
-    const s = shiftOutlineUV(piece, dx / piece.width, -dy / piece.height);
-    piece.outline = s.outline;
-    piece.darts = s.darts;
-  };
   // Saisie « ce qu'on voit » : parmi les particules proches du rayon, prendre
   // la plus EN AVANT (profondeur minimale) — pickParticle prend la plus proche
   // du rayon, ce qui peut attraper le DOS à travers le corps quand on vise une
@@ -1514,6 +1523,99 @@ async function main(): Promise<void> {
     const ne = nearestOutlineEdgeInfo([u, v], piece.outline);
     if (ne.dist > 2.5 / resolution) return null; // trop loin du bord : pas un choix de couture
     return { pid: pr.pid, edge: ne.edge };
+  };
+  // SURLIGNAGE 3D — le contour d'une pièce en coordonnées MONDE (la même
+  // géométrie que son spawn : faces à ±gap/2, pièce libre devant le corps,
+  // manche inclinée sur son bras, col autour du cou). `delta` = translation
+  // vivante pendant une saisie.
+  const outlineWorld = (pid: number, delta: readonly [number, number, number] = [0, 0, 0]): [number, number, number][] | null => {
+    if (!draft) return null;
+    const piece = draftPieceOf(pid);
+    if (!piece) return null;
+    const base = draft.piece;
+    const w = piece.width;
+    const h = piece.height;
+    const pts: [number, number, number][] = [];
+    if (pid >= 2 && (piece.wrap === 'armL' || piece.wrap === 'armR')) {
+      const sign = piece.wrap === 'armR' ? 1 : -1;
+      const theta = Math.atan2(0.11 * (h / 0.5) * sign, h);
+      const cosT = Math.cos(theta);
+      const sinT = Math.sin(theta);
+      const armX = lastMeasure.shoulderHalfW * sign;
+      for (const [u, v] of piece.outline) {
+        const px = (u - 0.5) * w;
+        const py = -v * h; // relatif au pivot (topY)
+        pts.push([px * cosT - py * sinT + armX + delta[0], px * sinT + py * cosT + piece.topY + delta[1], piece.gap / 2 + delta[2]]);
+      }
+    } else {
+      const z = pid === 0 ? base.gap / 2 : pid === 1 ? -base.gap / 2 : piece.wrap === 'neck' ? piece.gap / 2 : piece.gap / 2 + base.gap / 2;
+      for (const [u, v] of piece.outline) {
+        pts.push([(u - 0.5) * w + delta[0], piece.topY - v * h + delta[1], z + delta[2]]);
+      }
+    }
+    return pts;
+  };
+  // Par-dessus le rendu 3D (canvas miroir) : 🪡 armé → les contours de TOUTES
+  // les pièces s'allument (voilà ce qui se clique) ; le 1er bord retenu =
+  // trait ORANGE épais ; une pièce saisie = contour orange qui suit la main.
+  const drawAtelierOverlay = (): void => {
+    if (!mirrorCtx || sceneMode !== 'atelier' || !draft || teePreset) return;
+    const sewing = patternView.sewing;
+    const pick = patternView.seamPick;
+    if (!sewing && !pick && !pieceDrag) return;
+    const m = camera.matrix(canvas.width / Math.max(1, canvas.height));
+    const W = mirror.width;
+    const H = mirror.height;
+    const proj = (p: [number, number, number]): [number, number] | null => {
+      const cw = m[3]! * p[0] + m[7]! * p[1] + m[11]! * p[2] + m[15]!;
+      if (cw <= 1e-6) return null; // derrière la caméra
+      const cx = (m[0]! * p[0] + m[4]! * p[1] + m[8]! * p[2] + m[12]!) / cw;
+      const cy = (m[1]! * p[0] + m[5]! * p[1] + m[9]! * p[2] + m[13]!) / cw;
+      return [(cx * 0.5 + 0.5) * W, (1 - (cy * 0.5 + 0.5)) * H];
+    };
+    const stroke = (pid: number, style: string, width: number, delta?: readonly [number, number, number]): void => {
+      const pts = outlineWorld(pid, delta);
+      if (!pts) return;
+      mirrorCtx.strokeStyle = style;
+      mirrorCtx.lineWidth = width;
+      mirrorCtx.beginPath();
+      let started = false;
+      for (const p of pts) {
+        const s = proj(p);
+        if (!s) continue;
+        if (started) mirrorCtx.lineTo(s[0], s[1]);
+        else {
+          mirrorCtx.moveTo(s[0], s[1]);
+          started = true;
+        }
+      }
+      if (started) {
+        mirrorCtx.closePath();
+        mirrorCtx.stroke();
+      }
+    };
+    const nPieces = 2 + (draft.pieces?.length ?? 0);
+    if (sewing || pick) {
+      for (let pid = 0; pid < nPieces; pid++) stroke(pid, 'rgba(150, 195, 255, 0.55)', 1.5);
+    }
+    if (pick) {
+      const pts = outlineWorld(pick.pieceId);
+      if (pts) {
+        const a = proj(pts[pick.edge % pts.length]!);
+        const b = proj(pts[(pick.edge + 1) % pts.length]!);
+        if (a && b) {
+          mirrorCtx.strokeStyle = 'rgba(255, 159, 107, 0.98)';
+          mirrorCtx.lineWidth = 5;
+          mirrorCtx.lineCap = 'round';
+          mirrorCtx.beginPath();
+          mirrorCtx.moveTo(a[0], a[1]);
+          mirrorCtx.lineTo(b[0], b[1]);
+          mirrorCtx.stroke();
+          mirrorCtx.lineCap = 'butt';
+        }
+      }
+    }
+    if (pieceDrag) stroke(pieceDrag.pid, 'rgba(255, 159, 107, 0.9)', 2.5, pieceDrag.delta);
   };
   // CLO3D-style pointer model: a left press ON the fabric grabs it; a left
   // press on empty space orbits the camera. Returns true when orbit is allowed.
@@ -2042,13 +2144,16 @@ async function main(): Promise<void> {
             // Une pièce ENROULÉE (manche, col) est tenue par son support : le
             // déplacement utile est vertical — elle glisse le long du bras/cou.
             piece.topY += dy;
+          } else if (piece && d.pid >= 2) {
+            // Pièce libre : déplacement SANS LIMITE (la boîte s'élargit seule).
+            draft.pieces![d.pid - 2] = movePieceWorld(piece, dx, dy);
           } else if (piece) {
-            if (d.pid === 1 && !draft.back) {
-              draft.back = structuredClone(draft.piece); // matérialiser le dos avant de le décaler seul
-              shiftPieceInBox(draft.back, dx, dy);
-            } else {
-              shiftPieceInBox(piece, dx, dy);
-            }
+            // Face du torse : les deux faces partagent la boîte de base — elle
+            // est re-taillée pour couvrir la face déplacée, sans limite.
+            if (!draft.back) draft.back = structuredClone(draft.piece); // matérialiser le dos avant de bouger une face seule
+            const r = moveFaceWorld(draft.piece, draft.back, d.pid as 0 | 1, dx, dy);
+            draft.piece = r.front;
+            draft.back = r.back;
           }
           draftTouched = true;
           atelierDesign = true;
@@ -2095,6 +2200,7 @@ async function main(): Promise<void> {
     if (!sleeping) system.step(dt, substeps, profiler.simSpan());
     renderer.render(camera.matrix(aspect), profiler.renderSpan());
     blit();
+    drawAtelierOverlay(); // surlignage patronnage (couture 3D, pièce saisie)
     profiler.resolve();
 
     frames++;
@@ -2119,6 +2225,7 @@ async function main(): Promise<void> {
       hud.textContent =
         `${fps} fps · ${timing} · ${liveParticleCount.toLocaleString('fr-FR')} part. · ` +
         `${system.constraintCount.toLocaleString('fr-FR')} contr. · ${substeps} substeps${substeps < panel.substeps ? ' (auto)' : ''}`;
+      if (sceneMode === 'atelier') refreshHint(); // suit l'état de la couture (1er bord retenu, etc.)
       frames = 0;
       fpsAccum = 0;
       cpuAccum = 0;

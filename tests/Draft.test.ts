@@ -17,6 +17,8 @@ import {
   pieceIdOf,
   docPieces,
   nearestOutlineEdgeInfo,
+  movePieceWorld,
+  moveFaceWorld,
   shiftOutlineUV,
   type UV,
   type DraftPiece,
@@ -602,5 +604,80 @@ describe('patronner en 3D — aides pures', () => {
     const vs = s.outline.map((p) => p[1]);
     expect(Math.max(...us)).toBeCloseTo(1, 6); // poussé au bord droit, pas au-delà
     expect(Math.min(...vs)).toBeCloseTo(0, 6); // poussé en haut, pas au-delà
+  });
+});
+
+describe('déplacement 3D illimité (movePieceWorld / moveFaceWorld)', () => {
+  const libre = (): DraftPiece => ({
+    outline: [[0.3, 0.1], [0.7, 0.1], [0.7, 0.9], [0.3, 0.9]] as UV[],
+    width: 0.5,
+    height: 0.6,
+    topY: 1.4,
+    gap: 0.2,
+    darts: [],
+    openEdges: [{ from: 0, to: 1 }],
+    seams: [],
+  });
+  const world = (p: DraftPiece, [u, v]: UV): [number, number] => [(u - 0.5) * p.width, p.topY - v * p.height];
+
+  it('vertical : la boîte suit, le contour ne bouge pas dedans', () => {
+    const m = movePieceWorld(libre(), 0, -0.25);
+    expect(m.topY).toBeCloseTo(1.15, 6);
+    expect(m.width).toBe(0.5);
+    expect(m.outline).toEqual(libre().outline);
+  });
+
+  it('horizontal petit : glisse dans la boîte (boîte inchangée)', () => {
+    const m = movePieceWorld(libre(), 0.05, 0);
+    expect(m.width).toBe(0.5);
+    expect(m.outline[0]![0]).toBeCloseTo(0.4, 6); // 0.3 + 0.05/0.5
+  });
+
+  it('horizontal GRAND : la boîte s élargit, géométrie monde exacte', () => {
+    const p = libre();
+    const m = movePieceWorld(p, 0.5, 0); // pousse loin à droite (déborde)
+    expect(m.width).toBeGreaterThan(p.width);
+    for (let i = 0; i < p.outline.length; i++) {
+      const [x0, y0] = world(p, p.outline[i]!);
+      const [x1, y1] = world(m, m.outline[i]!);
+      expect(x1).toBeCloseTo(x0 + 0.5, 6);
+      expect(y1).toBeCloseTo(y0, 6);
+    }
+    // Et le contour tient dans la nouvelle boîte.
+    for (const [u] of m.outline) {
+      expect(u).toBeGreaterThanOrEqual(0);
+      expect(u).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('moveFaceWorld : la face visée bouge, l autre reste en place (monde)', () => {
+    const doc = defaultDraft(64);
+    const front = doc.piece;
+    const back = structuredClone(front);
+    const w0 = front.outline.map((p) => [(p[0] - 0.5) * front.width, front.topY - p[1] * front.height]);
+    const r = moveFaceWorld(front, back, 0, 0.3, -0.4);
+    // Boîte partagée synchronisée.
+    expect(r.front.width).toBe(r.back.width);
+    expect(r.front.topY).toBe(r.back.topY);
+    expect(r.front.height).toBe(r.back.height);
+    for (let i = 0; i < front.outline.length; i++) {
+      const f = r.front.outline[i]!;
+      const b = r.back.outline[i]!;
+      const fx = (f[0] - 0.5) * r.front.width;
+      const fy = r.front.topY - f[1] * r.front.height;
+      const bx = (b[0] - 0.5) * r.back.width;
+      const by = r.back.topY - b[1] * r.back.height;
+      expect(fx).toBeCloseTo(w0[i]![0]! + 0.3, 6); // le devant a bougé
+      expect(fy).toBeCloseTo(w0[i]![1]! - 0.4, 6);
+      expect(bx).toBeCloseTo(w0[i]![0]!, 6); // le dos n'a pas bougé
+      expect(by).toBeCloseTo(w0[i]![1]!, 6);
+    }
+    // Tout tient dans la nouvelle boîte.
+    for (const [u, v] of [...r.front.outline, ...r.back.outline]) {
+      expect(u).toBeGreaterThanOrEqual(0);
+      expect(u).toBeLessThanOrEqual(1);
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThanOrEqual(1);
+    }
   });
 });

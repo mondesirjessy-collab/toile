@@ -477,6 +477,11 @@ export class PatternView {
     return this.sewMode;
   }
 
+  /** Le 1er bord retenu par la machine à coudre (pour le surlignage 3D). */
+  get seamPick(): { pieceId: number; edge: number } | null {
+    return this.seamPickA;
+  }
+
   /** Close the drawn outline into a piece (≥3 points), seeding a top opening.
    * Sans 3 points, le tracé est ABANDONNÉ et la pièce d'origine restaurée. */
   finishPen(): void {

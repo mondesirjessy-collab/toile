@@ -271,6 +271,91 @@ export function shiftOutlineUV(piece: DraftPiece, du: number, dv: number): Draft
 }
 
 /**
+ * Déplacer une pièce LIBRE sans limite (patronner en 3D). Vertical : la boîte
+ * suit (topY += dy, le contour ne bouge pas dedans). Horizontal : le contour
+ * glisse dans sa boîte ; s'il déborde, la boîte S'ÉLARGIT symétriquement —
+ * x = (u−0.5)·width est centré sur 0, donc poser une pièce loin du centre
+ * demande une boîte qui couvre jusque-là — puis le contour est re-mappé à
+ * géométrie monde constante. Pinces suivies, index de bords intacts. Pure.
+ */
+export function movePieceWorld(piece: DraftPiece, dx: number, dy: number): DraftPiece {
+  const moved: DraftPiece = { ...piece, topY: piece.topY + dy };
+  if (Math.abs(dx) < 1e-9) return moved;
+  let uMin = Infinity;
+  let uMax = -Infinity;
+  for (const [u] of piece.outline) {
+    uMin = Math.min(uMin, u);
+    uMax = Math.max(uMax, u);
+  }
+  const du = dx / piece.width;
+  if (uMin + du >= 0 && uMax + du <= 1) {
+    const sh = ([u, v]: UV): UV => [u + du, v];
+    return {
+      ...moved,
+      outline: piece.outline.map(sh),
+      darts: piece.darts.map((d) => ({ apex: sh(d.apex), legA: sh(d.legA), legB: sh(d.legB) })),
+    };
+  }
+  // Débordement : élargir la boîte pour couvrir le contour décalé (en monde).
+  const xMinW = (uMin - 0.5) * piece.width + dx;
+  const xMaxW = (uMax - 0.5) * piece.width + dx;
+  const w2 = 2 * (Math.max(Math.abs(xMinW), Math.abs(xMaxW)) + 0.02);
+  const sh = ([u, v]: UV): UV => [((u - 0.5) * piece.width + dx) / w2 + 0.5, v];
+  return {
+    ...moved,
+    width: w2,
+    outline: piece.outline.map(sh),
+    darts: piece.darts.map((d) => ({ apex: sh(d.apex), legA: sh(d.legA), legB: sh(d.legB) })),
+  };
+}
+
+/**
+ * Déplacer une FACE du torse (devant 0 / dos 1) sans limite. Les deux faces
+ * partagent LA boîte de base (le mesh est généré sur la boîte du devant) : la
+ * face visée est décalée en MONDE, puis la boîte est re-taillée pour couvrir
+ * les deux faces (+ marge), et les deux contours sont re-mappés à géométrie
+ * monde constante. Les champs de boîte des deux pièces restent synchrones.
+ * Rend { front, back } neufs. Pure.
+ */
+export function moveFaceWorld(
+  front: DraftPiece,
+  back: DraftPiece,
+  which: 0 | 1,
+  dx: number,
+  dy: number,
+): { front: DraftPiece; back: DraftPiece } {
+  const box = front; // la boîte de référence du mesh de base
+  const world = (piece: DraftPiece, mdx: number, mdy: number): { pts: [number, number][]; darts: [number, number][][] } => ({
+    pts: piece.outline.map(([u, v]) => [(u - 0.5) * box.width + mdx, box.topY - v * box.height + mdy]),
+    darts: piece.darts.map((d) => [d.apex, d.legA, d.legB].map(([u, v]) => [(u - 0.5) * box.width + mdx, box.topY - v * box.height + mdy])),
+  });
+  const wF = world(front, which === 0 ? dx : 0, which === 0 ? dy : 0);
+  const wB = world(back, which === 1 ? dx : 0, which === 1 ? dy : 0);
+  const PAD = 0.02;
+  let xAbs = 0;
+  let yTop = -Infinity;
+  let yBot = Infinity;
+  for (const [x, y] of [...wF.pts, ...wB.pts]) {
+    xAbs = Math.max(xAbs, Math.abs(x));
+    yTop = Math.max(yTop, y);
+    yBot = Math.min(yBot, y);
+  }
+  const width = 2 * (xAbs + PAD);
+  const topY = yTop + PAD;
+  const height = Math.max(0.05, topY - yBot + PAD);
+  const uv = ([x, y]: [number, number]): UV => [x / width + 0.5, (topY - y) / height];
+  const rebox = (piece: DraftPiece, w: { pts: [number, number][]; darts: [number, number][][] }): DraftPiece => ({
+    ...piece,
+    width,
+    height,
+    topY,
+    outline: w.pts.map(uv),
+    darts: w.darts.map((t) => ({ apex: uv(t[0]!), legA: uv(t[1]!), legB: uv(t[2]!) })),
+  });
+  return { front: rebox(front, wF), back: rebox(back, wB) };
+}
+
+/**
  * Re-boîter une pièce sur l'EMPRISE de son tracé : la boîte (width/height/topY)
  * devient le rectangle englobant du contour dessiné, contour et pinces re-mappés
  * en UV pour que la GÉOMÉTRIE MONDE reste identique. C'est le pont « zone de
