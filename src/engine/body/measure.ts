@@ -110,14 +110,32 @@ export function measureBody(sd: Sd, height: number): BodyMeasure {
 
   // Shoulder line: widest outer point in the anthropometric shoulder band
   // (77.5% of stature up to the neck) — below that, hanging arms take over.
+  // T-POSE (scans re-cuits, bras à l'horizontale) : les bras traversent cette
+  // bande avec des largeurs d'ENVERGURE (aucune carrure humaine ne dépasse
+  // 0.19·H) — ces tranches sont sautées ; la ligne d'épaule devient le HAUT de
+  // la bande de bras, et la carrure la largeur du torse juste SOUS le bras
+  // (la racine de l'épaule, là où la manche naît).
+  const WINGSPAN = 0.19 * H;
   let shoulderY = 0.8 * H;
   let shoulderHalfW = 0;
+  let armBandTop = -1;
+  let armBandBot = Infinity;
   for (let y = 0.79 * H; y <= neckY; y += step) {
     const w = outerX(sd, y);
+    if (w > WINGSPAN) {
+      armBandTop = Math.max(armBandTop, y);
+      armBandBot = Math.min(armBandBot, y);
+      continue; // bras horizontal : pas une épaule
+    }
     if (w > shoulderHalfW) {
       shoulderHalfW = w;
       shoulderY = y;
     }
+  }
+  if (armBandTop > 0) {
+    shoulderY = armBandTop;
+    const wRoot = outerX(sd, Math.max(0.6 * H, armBandBot - 2 * step));
+    if (wRoot > 0.05 && wRoot <= WINGSPAN) shoulderHalfW = wRoot;
   }
 
   // Chest/bust: fullest caliper circumference below the shoulders — capped

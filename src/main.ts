@@ -171,7 +171,7 @@ function avatarSilhouette(positions: Float32Array, indices: Uint32Array): Avatar
  * cross-garment sewing proven on the gathered dress). It hangs from the armhole
  * at this stage; wrapping the arm is a later step.
  */
-function sleeveMesh(n: number, side: 'L' | 'R', shoulderX: number, shoulderY: number, armLen = 0.5): ClothMeshData {
+function sleeveMesh(n: number, side: 'L' | 'R', shoulderX: number, shoulderY: number, armLen = 0.5, tPose = false): ClothMeshData {
   const outX = 0.11 * (armLen / 0.5); // A-pose outward angle scales with length (short sleeve ⇒ small drift)
   const SPAWN_TOP = 1.0; // the tube's top-centre y before we reposition it
   // Tube hugs the arm WITHOUT spawning inside its collider: gap 0.18 keeps both
@@ -207,14 +207,17 @@ function sleeveMesh(n: number, side: 'L' | 'R', shoulderX: number, shoulderY: nu
   // the armhole seam attaches it. A small gap keeps it OUTSIDE the arm (spawning
   // inside the collider ejects it).
   const sign = side === 'R' ? 1 : -1;
-  const theta = Math.atan2(outX * sign, armLen); // tilt from vertical toward the arm
+  // T-POSE (scans re-cuits) : bras horizontal → tube pivoté de 90°, axe ~6 cm
+  // sous la ligne d'épaule mesurée. Sinon : la légère inclinaison A-pose.
+  const theta = tPose ? sign * (Math.PI / 2) : Math.atan2(outX * sign, armLen);
+  const axisY = tPose ? shoulderY - 0.06 : shoulderY;
   const cos = Math.cos(theta);
   const sin = Math.sin(theta);
   for (let i = 0; i < mesh.count; i++) {
     const px = mesh.positions[i * 4]!;
     const py = mesh.positions[i * 4 + 1]! - SPAWN_TOP; // relative to the top-centre pivot
     mesh.positions[i * 4] = px * cos - py * sin + shoulderX * sign;
-    mesh.positions[i * 4 + 1] = px * sin + py * cos + shoulderY;
+    mesh.positions[i * 4 + 1] = px * sin + py * cos + axisY;
     // z untouched: the tube straddles the arm (arm at z≈0 between the two panels).
   }
   return mesh;
@@ -266,7 +269,7 @@ function armholeCrossSeams(base: ClothMeshData, side: 'L' | 'R', n: number): Cro
  * chemin wrap n'est atteignable que par import ; l'UI « + Manches » (v111)
  * passe par sleeveMesh, le chemin éprouvé.
  */
-function wrapCrossSeams(base: ClothMeshData, piece: ClothMeshData, side: 'L' | 'R', n: number): CrossSeam[] {
+function wrapCrossSeams(base: ClothMeshData, piece: ClothMeshData, side: 'L' | 'R', n: number, tPose = false): CrossSeam[] {
   const ps = n * n;
   const keptBase = (local: number): boolean => base.invMasses[local]! > 0;
   const armBot = Math.max(2, Math.round(0.22 * n)); // shoulder band, top ~22% of rows
@@ -297,7 +300,16 @@ function wrapCrossSeams(base: ClothMeshData, piece: ClothMeshData, side: 'L' | '
   for (let p = 0; p < 2; p++) {
     for (let k = 0; k < cap.length; k++) {
       const bodyLocal = arm[Math.min(arm.length - 1, Math.floor((k * arm.length) / cap.length))]!;
-      cross.push({ i: p * ps + bodyLocal, j: base.count + p * ps + cap[k]! });
+      // SENS DU ZIP en T-POSE : le tube est horizontal, l'axe u de la pièce
+      // devient l'axe Y monde — ASCENDANT pour le bras droit (y' = px + pivot),
+      // DESCENDANT pour le gauche (y' = −px + pivot). Le scan du corps va
+      // toujours de HAUT en BAS : côté droit, il faut donc parcourir les
+      // colonnes de la manche À L'ENVERS, sinon la bouche se zippe en
+      // demi-vrille et la manche glisse à la racine du bras (le démon v111,
+      // réveillé par l'horizontale). En A-pose (tubes quasi verticaux), le
+      // comportement éprouvé v96-118 est conservé tel quel.
+      const kk = tPose && side === 'R' ? cap.length - 1 - k : k;
+      cross.push({ i: p * ps + bodyLocal, j: base.count + p * ps + cap[kk]! });
     }
   }
   return cross;
@@ -1149,15 +1161,20 @@ async function main(): Promise<void> {
                 // a mechanical lock the arm cannot slide out of. An armhole
                 // run left open leaves the mouth agape and the tube slides.
                 const sign = fp.wrap === 'armR' ? 1 : -1;
-                const theta = Math.atan2(0.11 * (fp.height / 0.5) * sign, fp.height);
+                // T-POSE (scans re-cuits) : le bras est HORIZONTAL — le tube
+                // pivote de 90° et son axe descend au niveau du bras (l'axe
+                // de l'humérus est ~6 cm sous la ligne d'épaule mesurée).
+                const tPose = useScan;
+                const theta = tPose ? sign * (Math.PI / 2) : Math.atan2(0.11 * (fp.height / 0.5) * sign, fp.height);
+                const pivotY = tPose ? fp.topY - 0.06 : fp.topY;
                 const cosT = Math.cos(theta);
                 const sinT = Math.sin(theta);
                 const armX = m.shoulderHalfW * sign;
                 for (let q = 0; q < pieceMesh.count; q++) {
                   const px = pieceMesh.positions[q * 4]!;
-                  const py = pieceMesh.positions[q * 4 + 1]! - fp.topY;
+                  const py = pieceMesh.positions[q * 4 + 1]! - pivotY;
                   pieceMesh.positions[q * 4] = px * cosT - py * sinT + armX;
-                  pieceMesh.positions[q * 4 + 1] = px * sinT + py * cosT + fp.topY;
+                  pieceMesh.positions[q * 4 + 1] = px * sinT + py * cosT + pivotY;
                 }
               } else if (fp.wrap === 'neck') {
                 // NECKBAND: the tube spawns already centred on the neck axis
@@ -1178,7 +1195,7 @@ async function main(): Promise<void> {
               // rings the neckline scoop); flat pieces keep the drawn seams.
               const pins =
                 fp.wrap === 'armL' || fp.wrap === 'armR'
-                  ? wrapCrossSeams(garment, pieceMesh, fp.wrap === 'armR' ? 'R' : 'L', resolution)
+                  ? wrapCrossSeams(garment, pieceMesh, fp.wrap === 'armR' ? 'R' : 'L', resolution, useScan)
                   : fp.wrap === 'neck'
                     ? collarCrossSeams(garment, resolution)
                     : compileCrossSeams(doc, resolution, offsets, pid);
@@ -1188,9 +1205,9 @@ async function main(): Promise<void> {
             // via the SAME combineClothMeshes cross-seaming the gathered dress
             // uses. Gated on the button — without it the mesh is exactly the body.
             if (atelierSleeves) {
-              const sL = sleeveMesh(resolution, 'L', m.shoulderHalfW, m.shoulderY, atelierSleeveLen);
+              const sL = sleeveMesh(resolution, 'L', m.shoulderHalfW, m.shoulderY, atelierSleeveLen, useScan);
               garment = combineClothMeshes(garment, sL, armholeCrossSeams(garment, 'L', resolution));
-              const sR = sleeveMesh(resolution, 'R', m.shoulderHalfW, m.shoulderY, atelierSleeveLen);
+              const sR = sleeveMesh(resolution, 'R', m.shoulderHalfW, m.shoulderY, atelierSleeveLen, useScan);
               garment = combineClothMeshes(garment, sR, armholeCrossSeams(garment, 'R', resolution));
             }
             if (atelierCollar) {
@@ -1595,14 +1612,17 @@ async function main(): Promise<void> {
     const pts: [number, number, number][] = [];
     if (pid >= 2 && (piece.wrap === 'armL' || piece.wrap === 'armR')) {
       const sign = piece.wrap === 'armR' ? 1 : -1;
-      const theta = Math.atan2(0.11 * (h / 0.5) * sign, h);
+      // Même géométrie que le spawn : T-pose (scans) = tube horizontal.
+      const tPose = bodyKind.startsWith('scan');
+      const theta = tPose ? sign * (Math.PI / 2) : Math.atan2(0.11 * (h / 0.5) * sign, h);
+      const pivotY = tPose ? piece.topY - 0.06 : piece.topY;
       const cosT = Math.cos(theta);
       const sinT = Math.sin(theta);
       const armX = lastMeasure.shoulderHalfW * sign;
       for (const [u, v] of piece.outline) {
         const px = (u - 0.5) * w;
-        const py = -v * h; // relatif au pivot (topY)
-        pts.push([px * cosT - py * sinT + armX + delta[0], px * sinT + py * cosT + piece.topY + delta[1], piece.gap / 2 + delta[2]]);
+        const py = -v * h; // relatif au pivot
+        pts.push([px * cosT - py * sinT + armX + delta[0], px * sinT + py * cosT + pivotY + delta[1], piece.gap / 2 + delta[2]]);
       }
     } else {
       const z = pid === 0 ? base.gap / 2 : pid === 1 ? -base.gap / 2 : piece.wrap === 'neck' ? piece.gap / 2 : piece.gap / 2 + base.gap / 2;
