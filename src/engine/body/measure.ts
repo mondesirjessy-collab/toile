@@ -27,6 +27,11 @@ export interface BodyMeasure {
   waist: Level;
   hip: Level;
   thigh: Level; // one leg, mid-thigh
+  /** T-pose : axe du bras horizontal mesuré (hauteur, profondeur, racine) —
+   * absent sur un corps bras baissés. Le tube de manche DOIT se centrer
+   * dessus : un bras naturel s'arque en z, supposer z=0 fait naître un
+   * panneau du tube dans le bras et le SDF l'éjecte. */
+  arm?: { y: number; z: number; rootX: number };
 }
 
 /** Distance from the body axis (0,y,0) to the surface along (dx,0,dz). */
@@ -110,32 +115,58 @@ export function measureBody(sd: Sd, height: number): BodyMeasure {
 
   // Shoulder line: widest outer point in the anthropometric shoulder band
   // (77.5% of stature up to the neck) — below that, hanging arms take over.
-  // T-POSE (scans re-cuits, bras à l'horizontale) : les bras traversent cette
-  // bande avec des largeurs d'ENVERGURE (aucune carrure humaine ne dépasse
-  // 0.19·H) — ces tranches sont sautées ; la ligne d'épaule devient le HAUT de
-  // la bande de bras, et la carrure la largeur du torse juste SOUS le bras
-  // (la racine de l'épaule, là où la manche naît).
+  // T-POSE (scans re-cuits, bras à l'horizontale) : les bras traversent avec
+  // des largeurs d'ENVERGURE (aucune carrure humaine ne dépasse 0.19·H) —
+  // ces tranches sont sautées ; la ligne d'épaule devient le HAUT de la bande
+  // de bras, et la carrure la largeur du torse juste SOUS le bras (la racine
+  // de l'épaule, là où la manche naît).
   const WINGSPAN = 0.19 * H;
   let shoulderY = 0.8 * H;
   let shoulderHalfW = 0;
-  let armBandTop = -1;
-  let armBandBot = Infinity;
   for (let y = 0.79 * H; y <= neckY; y += step) {
     const w = outerX(sd, y);
-    if (w > WINGSPAN) {
-      armBandTop = Math.max(armBandTop, y);
-      armBandBot = Math.min(armBandBot, y);
-      continue; // bras horizontal : pas une épaule
-    }
+    if (w > WINGSPAN) continue; // bras horizontal : pas une épaule
     if (w > shoulderHalfW) {
       shoulderHalfW = w;
       shoulderY = y;
     }
   }
+  // Bande du bras horizontal : cherchée PLUS BAS que la bande d'épaule —
+  // l'aisselle d'un corps naturel vit vers 0,75·H et l'ancienne bande 0,79·H
+  // la ratait. Un corps bras baissés ne produit jamais outerX > 0,19·H ici
+  // (le coude collé à la hanche plafonne bien en dessous) : sans bande, pas
+  // de T-pose, rien ne change.
+  let armBandTop = -1;
+  let armBandBot = Infinity;
+  for (let y = 0.68 * H; y <= neckY; y += step) {
+    const w = outerX(sd, y);
+    if (w > WINGSPAN) {
+      armBandTop = Math.max(armBandTop, y);
+      armBandBot = Math.min(armBandBot, y);
+    }
+  }
+  let arm: BodyMeasure['arm'];
   if (armBandTop > 0) {
     shoulderY = armBandTop;
     const wRoot = outerX(sd, Math.max(0.6 * H, armBandBot - 2 * step));
     if (wRoot > 0.05 && wRoot <= WINGSPAN) shoulderHalfW = wRoot;
+    // Axe du bras : centre des cellules solides sur des tranches x au-delà de
+    // la racine (droite ; les mannequins sont symétriques).
+    let sy = 0;
+    let sz = 0;
+    let cnt = 0;
+    for (let dx = 0.08; dx <= 0.26; dx += 0.06) {
+      for (let y = armBandBot - 0.03; y <= armBandTop + 0.03; y += step) {
+        for (let z = -0.3; z <= 0.3; z += step) {
+          if (sd(shoulderHalfW + dx, y, z) < 0) {
+            sy += y;
+            sz += z;
+            cnt++;
+          }
+        }
+      }
+    }
+    if (cnt > 0) arm = { y: sy / cnt, z: sz / cnt, rootX: shoulderHalfW };
   }
 
   // Chest/bust: fullest caliper circumference below the shoulders — capped
@@ -207,7 +238,7 @@ export function measureBody(sd: Sd, height: number): BodyMeasure {
     circ: ellipse(legHalfW, Math.min(legHalfD, 1.5 * legHalfW)),
   };
 
-  return { height: H, neckY, shoulderY, shoulderHalfW, chest, waist, hip, thigh };
+  return { height: H, neckY, shoulderY, shoulderHalfW, chest, waist, hip, thigh, arm };
 }
 
 /** Trilinear SDF sampler over a baked scan grid (CPU side). */
