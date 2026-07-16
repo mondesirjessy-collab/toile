@@ -11,7 +11,7 @@ import { buildSceneMesh, SCENE_VERTEX_FLOATS, type SceneMesh } from './app/Scene
 import { computeNormals, downloadGlb, type GltfPiece } from './app/gltfExport';
 import { GpuProfiler } from './app/GpuProfiler';
 import { ControlPanel } from './app/ControlPanel';
-import { PatternView, type PatternHandleSpec } from './app/PatternView';
+import { PatternView, SEAM_COLORS, type PatternHandleSpec } from './app/PatternView';
 import { exportPatternPdf } from './app/patternPdf';
 import { exportPatternSvg } from './app/patternSvg';
 import { pickParticle } from './app/pick';
@@ -529,14 +529,54 @@ async function main(): Promise<void> {
     }
   });
   const simBtn = (): HTMLElement => document.getElementById('at-sim') as HTMLElement;
+  // GRAND PLAN = demi-écran (fenêtre 2D | fenêtre 3D, façon CLO). Le partage
+  // se règle en tirant le séparateur central ; la 3D se recadre dans l'autre
+  // moitié (le ResizeObserver du canvas suit le CSS).
+  let splitPx = Math.round(window.innerWidth / 2);
+  const applySplit = (): void => {
+    splitPx = Math.min(Math.max(splitPx, 340), Math.max(360, window.innerWidth - 340));
+    document.documentElement.style.setProperty('--plan2d', `${splitPx}px`);
+    if (!bigPanel) {
+      patternView.resize(250, 290);
+      return;
+    }
+    // Le canvas 2D remplit le panneau : largeur du partage moins les marges,
+    // hauteur de la fenêtre moins l'en-tête, l'étiquette et la barre d'outils.
+    const w = Math.max(300, splitPx - 26);
+    const h = Math.max(280, window.innerHeight - 40 - 92);
+    patternView.resize(w, h);
+  };
   const setBig = (on: boolean): void => {
     bigPanel = on;
     patternBox.classList.toggle('big', on);
-    // Fit the big panel to the window (leave room for the toolbar/label/padding).
-    const w = on ? Math.min(760, Math.round(window.innerWidth * 0.7)) : 250;
-    const h = on ? Math.min(720, window.innerHeight - 96) : 290;
-    patternView.resize(w, h);
+    document.body.classList.toggle('plan-split', on);
+    applySplit();
   };
+  // Séparateur : glisser = ajuster le partage en direct (2D et 3D suivent).
+  {
+    const divider = document.getElementById('split-divider') as HTMLElement;
+    let dragging = false;
+    divider.addEventListener('pointerdown', (e) => {
+      dragging = true;
+      divider.classList.add('dragging');
+      divider.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+    divider.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      splitPx = e.clientX;
+      applySplit();
+    });
+    const end = (): void => {
+      dragging = false;
+      divider.classList.remove('dragging');
+    };
+    divider.addEventListener('pointerup', end);
+    divider.addEventListener('pointercancel', end);
+    window.addEventListener('resize', () => {
+      if (bigPanel) applySplit();
+    });
+  }
   // Back to the drawing board: re-freeze flat (a rebuild re-spawns the piece at
   // its flat rest pose) so it can be edited without physics moving it.
   const enterDesign = (): void => {
@@ -1597,6 +1637,35 @@ async function main(): Promise<void> {
     const nPieces = 2 + (draft.pieces?.length ?? 0);
     if (sewing || pick) {
       for (let pid = 0; pid < nPieces; pid++) stroke(pid, 'rgba(150, 195, 255, 0.55)', 1.5);
+      // Les bords DÉJÀ cousus, chacun dans la couleur de sa couture (la même
+      // qu'au plan 2D) : on voit sur l'avatar quel bord est lié à quel bord.
+      const strokeRun3D = (fr: { from: number; to: number; face?: 'front' | 'back'; pieceId?: number }, color: string): void => {
+        const pid = pieceIdOf(fr);
+        const piece = draftPieceOf(pid);
+        const pts = outlineWorld(pid);
+        if (!piece || !pts) return;
+        const N = piece.outline.length;
+        const steps = ((fr.to - fr.from + N) % N) || 1;
+        mirrorCtx.strokeStyle = color;
+        mirrorCtx.lineWidth = 3;
+        mirrorCtx.beginPath();
+        let started = false;
+        for (let i = 0; i <= steps; i++) {
+          const s = proj(pts[(fr.from + i) % N]!);
+          if (!s) continue;
+          if (started) mirrorCtx.lineTo(s[0], s[1]);
+          else {
+            mirrorCtx.moveTo(s[0], s[1]);
+            started = true;
+          }
+        }
+        if (started) mirrorCtx.stroke();
+      };
+      (draft.seams ?? []).forEach((s, k) => {
+        const color = SEAM_COLORS[k % SEAM_COLORS.length]!;
+        strokeRun3D(s.a, color);
+        strokeRun3D(s.b, color);
+      });
     }
     if (pick) {
       const pts = outlineWorld(pick.pieceId);

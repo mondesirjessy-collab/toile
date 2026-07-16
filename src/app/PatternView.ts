@@ -112,6 +112,13 @@ export function bendSamples(a: UV, b: UV, grab: UV, m: UV, minDepth = 0.006): UV
   return pts;
 }
 
+/**
+ * UNE COULEUR PAR COUTURE : les deux bords cousus ensemble portent la même
+ * couleur (dans le plan 2D ET sur l'avatar en 3D) — le lien se lit d'un coup
+ * d'œil. Palette lisible sur fond sombre, cyclée par index de couture.
+ */
+export const SEAM_COLORS = ['#7fb2ff', '#7ddc96', '#ffd166', '#e08bff', '#6bdfdf', '#ff8fa3', '#c9d96b', '#ffb26b'] as const;
+
 const HIT_RADIUS = 12;
 const EDGE_HIT = 8; // click within this many px of an outline edge → add point / bend
 const DART_DRAG = 7; // drag farther than this from an edge → it's a bend (Alt: dart), not an add
@@ -1225,36 +1232,41 @@ export class PatternView {
         ctx.stroke();
       });
     };
-    for (const s of this.assembly) {
+    this.assembly.forEach((s, k) => {
+      const color = SEAM_COLORS[k % SEAM_COLORS.length]!;
       const pidA = pieceIdOf(s.a);
       const pidB = pieceIdOf(s.b);
       const pa = edgePts(pidA, s.a.from);
       const pb = edgePts(pidB, s.b.from);
-      if (!pa || !pb) continue;
+      if (!pa || !pb) return;
       const ma: [number, number] = [(pa[0][0] + pa[1][0]) / 2, (pa[0][1] + pa[1][1]) / 2];
       const mb: [number, number] = [(pb[0][0] + pb[1][0]) / 2, (pb[0][1] + pb[1][1]) / 2];
       const la = runLenCm(pidA, { from: s.a.from, to: s.a.to });
       const lb = runLenCm(pidB, { from: s.b.from, to: s.b.to });
       const ratio = Math.max(la, lb) / (Math.min(la, lb) || 1);
       const gathered = ratio >= 1.12;
-      ctx.strokeStyle = gathered ? 'rgba(255, 190, 120, 0.85)' : 'rgba(127, 178, 255, 0.8)';
+      // Les DEUX bords de la couture k dans SA couleur : le lien se voit sans
+      // suivre le trait de liaison (qui reste, discret, pour le clic-défaire).
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = 0.9;
       ctx.lineWidth = 2.5;
       strokeRun(pidA, { from: s.a.from, to: s.a.to });
       strokeRun(pidB, { from: s.b.from, to: s.b.to });
       ctx.lineWidth = 1;
-      ctx.strokeStyle = gathered ? 'rgba(255, 190, 120, 0.45)' : 'rgba(127, 178, 255, 0.3)';
+      ctx.globalAlpha = 0.35;
       ctx.beginPath();
       ctx.moveTo(ma[0], ma[1]);
       ctx.lineTo(mb[0], mb[1]);
       ctx.stroke();
+      ctx.globalAlpha = 1;
       if (gathered) {
         ctx.font = '9px ui-monospace, monospace';
-        ctx.fillStyle = 'rgba(255, 190, 120, 1)';
+        ctx.fillStyle = color;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(`${ratio.toFixed(1).replace('.', ',')}:1 fronce`, (ma[0] + mb[0]) / 2, (ma[1] + mb[1]) / 2 - 6);
       }
-    }
+    });
     // First-picked edge, awaiting the second click.
     if (this.seamPickA) {
       const pts = edgePts(this.seamPickA.pieceId, this.seamPickA.edge);
