@@ -119,6 +119,16 @@ export function bendSamples(a: UV, b: UV, grab: UV, m: UV, minDepth = 0.006): UV
  */
 export const SEAM_COLORS = ['#7fb2ff', '#7ddc96', '#ffd166', '#e08bff', '#6bdfdf', '#ff8fa3', '#c9d96b', '#ffb26b'] as const;
 
+/** Un lien SYSTÈME : les cellules réellement épinglées d'une pièce wrap
+ * (bouche de manche, bas de col) et du corps (emmanchure, encolure) —
+ * converties en (u,v) par pièce pour être surlignées comme une couture. */
+export interface SystemLink {
+  pid: number; // la pièce wrap (manche / col)
+  body0: UV[]; // cellules épinglées du corps, panneau DEVANT
+  body1: UV[]; // panneau DOS
+  piece: UV[]; // cellules de la bouche de la pièce
+}
+
 const HIT_RADIUS = 12;
 const EDGE_HIT = 8; // click within this many px of an outline edge → add point / bend
 const DART_DRAG = 7; // drag farther than this from an edge → it's a bend (Alt: dart), not an add
@@ -238,6 +248,7 @@ export class PatternView {
   // Manual assembly: user-defined seams (front/back edge ↔ edge), plus the first
   // edge picked while awaiting the second (Shift+click), which may be on either face.
   private assembly: AssemblySeam[] = [];
+  private systemLinks: SystemLink[] = [];
   private seamPickA: { pieceId: number; edge: number } | null = null;
   // Mode COUDRE guidé (bouton 🪡) : les clics SIMPLES près d'un bord font les
   // deux choix de couture (plus besoin de connaître Maj+clic) ; le mode se
@@ -351,6 +362,14 @@ export class PatternView {
   /** Update the manual-assembly seams to render (front/back edge ↔ edge). */
   setAssembly(seams: AssemblySeam[]): void {
     this.assembly = seams.map((s) => ({ a: { ...s.a }, b: { ...s.b } }));
+    this.render();
+  }
+
+  /** Liens SYSTÈME (manche↔emmanchure, col↔encolure) : les épingles réelles
+   * compilées au build, converties en cellules (u,v) par pièce — surlignées
+   * dans les couleurs qui suivent celles des coutures manuelles. */
+  setSystemLinks(links: SystemLink[]): void {
+    this.systemLinks = links;
     this.render();
   }
 
@@ -1266,6 +1285,47 @@ export class PatternView {
         ctx.textBaseline = 'middle';
         ctx.fillText(`${ratio.toFixed(1).replace('.', ',')}:1 fronce`, (ma[0] + mb[0]) / 2, (ma[1] + mb[1]) / 2 - 6);
       }
+    });
+    // Liens SYSTÈME (manche↔emmanchure, col↔encolure) : les cellules
+    // réellement épinglées, tracées comme des coutures — chaque lien dans la
+    // couleur qui SUIT celles des coutures manuelles, sur les deux bords
+    // (corps devant/dos + bouche de la pièce) avec le trait fin de liaison.
+    this.systemLinks.forEach((sl, k) => {
+      const color = SEAM_COLORS[(this.assembly.length + k) % SEAM_COLORS.length]!;
+      const poly = (pid: number, cells: UV[]): [number, number] | null => {
+        const piece = this.pieceAt(pid);
+        if (!piece || cells.length < 2) return null;
+        const off = this.pieceOffset(pid);
+        let mid: [number, number] | null = null;
+        ctx.beginPath();
+        let started = false;
+        for (let i = 0; i < cells.length; i++) {
+          const s = this.vertexScreen(cells[i]!, piece, off);
+          if (!s) continue;
+          if (started) ctx.lineTo(s[0], s[1]);
+          else ctx.moveTo(s[0], s[1]);
+          started = true;
+          if (i === Math.floor(cells.length / 2)) mid = s;
+        }
+        if (started) ctx.stroke();
+        return mid;
+      };
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = 0.9;
+      ctx.lineWidth = 2.5;
+      const m0 = poly(0, sl.body0);
+      const m1 = poly(1, sl.body1);
+      const mp = poly(sl.pid, sl.piece);
+      ctx.lineWidth = 1;
+      ctx.globalAlpha = 0.35;
+      for (const m of [m0, m1]) {
+        if (!m || !mp) continue;
+        ctx.beginPath();
+        ctx.moveTo(m[0], m[1]);
+        ctx.lineTo(mp[0], mp[1]);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
     });
     // First-picked edge, awaiting the second click.
     if (this.seamPickA) {

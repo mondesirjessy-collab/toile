@@ -11,7 +11,7 @@ import { buildSceneMesh, SCENE_VERTEX_FLOATS, type SceneMesh } from './app/Scene
 import { computeNormals, downloadGlb, type GltfPiece } from './app/gltfExport';
 import { GpuProfiler } from './app/GpuProfiler';
 import { ControlPanel } from './app/ControlPanel';
-import { PatternView, SEAM_COLORS, type PatternHandleSpec } from './app/PatternView';
+import { PatternView, SEAM_COLORS, type PatternHandleSpec, type SystemLink } from './app/PatternView';
 import { exportPatternPdf } from './app/patternPdf';
 import { exportPatternSvg } from './app/patternSvg';
 import { pickParticle } from './app/pick';
@@ -881,6 +881,9 @@ async function main(): Promise<void> {
   // Stashed by build() so the pattern-view handles use the graded dimensions.
   let lastGrade = { topScale: 1, dressScale: 1, skirtScale: 1, dyShoulder: 0, dyWaist: 0 };
   let lastMeasure: BodyMeasure = REF; // dernière mensuration mesurée par build()
+  // Liens SYSTÈME du dernier build (manche↔emmanchure, col↔encolure) — les
+  // épingles réelles converties en cellules (u,v), pour l'affichage 2D/3D.
+  let systemLinks: SystemLink[] = [];
 
   let currentMesh: ReturnType<typeof generateClothGrid> | null = null;
   let currentScene: SceneMesh | null = null;
@@ -1100,6 +1103,7 @@ async function main(): Promise<void> {
             // stays exactly `body` — byte-identical to v97.
             const freePieces = doc.pieces ?? [];
             const offsets: number[] = [0, resolution * resolution]; // global base index per pieceId
+            systemLinks = [];
             for (let k = 0; k < freePieces.length; k++) {
               const pid = 2 + k;
               const fp = freePieces[k];
@@ -1216,6 +1220,29 @@ async function main(): Promise<void> {
                   : fp.wrap === 'neck'
                     ? collarCrossSeams(garment, resolution)
                     : compileCrossSeams(doc, resolution, offsets, pid);
+              if (fp.wrap) {
+                // Lien SYSTÈME visible : les épingles réelles → cellules (u,v)
+                // par pièce (corps devant/dos + bouche), dédoublonnées en
+                // séquence, pour surligner le montage dans le plan et en 3D.
+                const ps2 = resolution * resolution;
+                const cell = (local: number): [number, number] => [
+                  ((local % resolution) + 0.5) / resolution,
+                  (Math.floor(local / resolution) + 0.5) / resolution,
+                ];
+                const push = (arr: [number, number][], c: [number, number]): void => {
+                  const last = arr[arr.length - 1];
+                  if (!last || last[0] !== c[0] || last[1] !== c[1]) arr.push(c);
+                };
+                const link: SystemLink = { pid, body0: [], body1: [], piece: [] };
+                for (const pr of pins) {
+                  const bp = Math.floor(pr.i / ps2);
+                  if (bp === 0) push(link.body0, cell(pr.i % ps2));
+                  else if (bp === 1) push(link.body1, cell(pr.i - ps2));
+                  const rel = pr.j - garment.count;
+                  if (rel >= 0 && rel < ps2) push(link.piece, cell(rel)); // panneau avant seulement
+                }
+                systemLinks.push(link);
+              }
               garment = combineClothMeshes(garment, pieceMesh, pins);
             }
             // Multi-piece (stage 1): sew a rectangular sleeve to each armhole,
@@ -1425,6 +1452,8 @@ async function main(): Promise<void> {
     );
     // Manual-assembly seams (red free edges / blue sewn links) for the 2D editor.
     patternView.setAssembly(sceneMode === 'atelier' && draft ? draft.seams ?? [] : []);
+    // Liens système (manches/col) surlignés comme les coutures manuelles.
+    patternView.setSystemLinks(sceneMode === 'atelier' && draft && !teePreset ? systemLinks : []);
     updateAtelierBar();
     refreshHint();
   };
@@ -1652,6 +1681,35 @@ async function main(): Promise<void> {
     }
     return pts;
   };
+  // Mappeur (u,v) → monde pour une CELLULE quelconque d'une pièce (pas
+  // seulement le contour) — même géométrie de spawn qu'outlineWorld ; sert au
+  // surlignage 3D des liens système (cellules intérieures épinglées).
+  const uvWorldOf = (pid: number): ((u: number, v: number) => [number, number, number]) | null => {
+    if (!draft) return null;
+    const piece = draftPieceOf(pid);
+    if (!piece) return null;
+    const base = draft.piece;
+    const w = piece.width;
+    const h = piece.height;
+    if (pid >= 2 && (piece.wrap === 'armL' || piece.wrap === 'armR')) {
+      const sign = piece.wrap === 'armR' ? 1 : -1;
+      const tPose = bodyKind.startsWith('scan');
+      const theta = tPose ? sign * (Math.PI / 2) : Math.atan2(0.11 * (h / 0.5) * sign, h);
+      const marm = lastMeasure.arm;
+      const pivotY = tPose ? (marm ? marm.y : piece.topY - 0.06) : piece.topY;
+      const cosT = Math.cos(theta);
+      const sinT = Math.sin(theta);
+      const armX = (tPose && marm ? marm.rootX + 0.06 : lastMeasure.shoulderHalfW) * sign;
+      const armZ = tPose && marm ? marm.z : 0;
+      return (u, v) => {
+        const px = (u - 0.5) * w;
+        const py = -v * h;
+        return [px * cosT - py * sinT + armX, px * sinT + py * cosT + pivotY, piece.gap / 2 + armZ];
+      };
+    }
+    const z = pid === 0 ? base.gap / 2 : pid === 1 ? -base.gap / 2 : piece.wrap === 'neck' ? piece.gap / 2 : piece.gap / 2 + base.gap / 2;
+    return (u, v) => [(u - 0.5) * w, piece.topY - v * h, z];
+  };
   // Par-dessus le rendu 3D (canvas miroir) : 🪡 armé → les contours de TOUTES
   // les pièces s'allument (voilà ce qui se clique) ; le 1er bord retenu =
   // trait ORANGE épais ; une pièce saisie = contour orange qui suit la main.
@@ -1722,6 +1780,31 @@ async function main(): Promise<void> {
         const color = SEAM_COLORS[k % SEAM_COLORS.length]!;
         strokeRun3D(s.a, color);
         strokeRun3D(s.b, color);
+      });
+      // Liens SYSTÈME (manche↔emmanchure, col↔encolure) : mêmes couleurs
+      // qu'au plan 2D (suite du cycle après les coutures manuelles).
+      const nSeams = (draft.seams ?? []).length;
+      systemLinks.forEach((sl, k) => {
+        const color = SEAM_COLORS[(nSeams + k) % SEAM_COLORS.length]!;
+        const drawCells = (pid: number, cells: [number, number][]): void => {
+          const map = uvWorldOf(pid);
+          if (!map || cells.length < 2) return;
+          mirrorCtx.strokeStyle = color;
+          mirrorCtx.lineWidth = 3;
+          mirrorCtx.beginPath();
+          let started = false;
+          for (const [u, v] of cells) {
+            const s = proj(map(u, v));
+            if (!s) continue;
+            if (started) mirrorCtx.lineTo(s[0], s[1]);
+            else mirrorCtx.moveTo(s[0], s[1]);
+            started = true;
+          }
+          if (started) mirrorCtx.stroke();
+        };
+        drawCells(0, sl.body0);
+        drawCells(1, sl.body1);
+        drawCells(sl.pid, sl.piece);
       });
     }
     if (pick) {
