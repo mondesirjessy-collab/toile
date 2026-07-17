@@ -19,14 +19,16 @@ from bl_ext.user_default.mpfb.services.targetservice import TargetService
 
 macro = TargetService.get_default_macro_info_dict()
 print("[mh] macros par défaut :", macro)
-# Corps adultes moyens, ni bodybuildés ni maigres — des mannequins d'atelier.
+# Mannequins d'atelier IDÉALISÉS (référence fournie par Jessy, 17/07/2026) :
+# proportions ~idéales, silhouette athlétique lisse — épaules dessinées,
+# taille marquée — pas des corps moyens scannés.
 if GENDER == "f":
-    macro.update(gender=0.0, age=0.45, muscle=0.45, weight=0.5, height=0.5, proportions=0.55)
-    for k, v in (("cupsize", 0.55), ("firmness", 0.65)):
+    macro.update(gender=0.0, age=0.42, muscle=0.58, weight=0.45, height=0.5, proportions=0.9)
+    for k, v in (("cupsize", 0.5), ("firmness", 0.75)):
         if k in macro:
             macro[k] = v
 else:
-    macro.update(gender=1.0, age=0.5, muscle=0.55, weight=0.5, height=0.55, proportions=0.55)
+    macro.update(gender=1.0, age=0.45, muscle=0.68, weight=0.47, height=0.55, proportions=0.9)
 
 obj = HumanService.create_human(macro_detail_dict=macro)
 bpy.context.view_layer.objects.active = obj
