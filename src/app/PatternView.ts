@@ -23,6 +23,7 @@ import {
   assemblySeamIsClosed,
   runCoversEdge,
   defaultSurfaceStitches,
+  draftPieceLabel,
   surfaceAttachmentUV,
   type UV,
   type DraftPiece,
@@ -1262,15 +1263,7 @@ export class PatternView {
   }
   /** Human label for a column: DEVANT / DOS / MANCHE D/G / COL / PIÈCE n. */
   private pieceLabel(pid: number): string {
-    const named = this.pieceAt(pid)?.name?.trim();
-    if (named) return named;
-    if (pid === 0) return 'devant';
-    if (pid === 1) return 'dos';
-    const wrap = this.pieceAt(pid)?.wrap;
-    if (wrap === 'armR') return 'manche D';
-    if (wrap === 'armL') return 'manche G';
-    if (wrap === 'neck') return 'col';
-    return `pièce ${pid + 1}`;
+    return draftPieceLabel(this.pieceAt(pid), pid);
   }
   private pieceFabricFill(piece: DraftPiece, alpha: number): string {
     const rgb: Record<string, [number, number, number]> = {

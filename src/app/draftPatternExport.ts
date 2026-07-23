@@ -7,7 +7,12 @@
  * line and therefore must not be re-rasterised or offset a second time.
  */
 import { jsPDF } from 'jspdf';
-import { docPieces, type DraftDoc, type DraftPiece } from '../engine/pattern/Draft';
+import {
+  docPieces,
+  draftPieceLabel,
+  type DraftDoc,
+  type DraftPiece,
+} from '../engine/pattern/Draft';
 
 const PAGE_W = 210;
 const PAGE_H = 297;
@@ -54,14 +59,19 @@ const cutExtent = (piece: DraftPiece): {
 
 /** Shelf-pack every cut piece while retaining exact physical dimensions. */
 export function layoutDraftPattern(doc: DraftDoc): DraftPatternLayout {
-  const source = docPieces(doc).filter((p): p is DraftPiece => !!p);
+  const source = docPieces(doc)
+    .map((piece, pieceId) => ({ piece, pieceId }))
+    .filter(
+      (entry): entry is { piece: DraftPiece; pieceId: number } =>
+        !!entry.piece,
+    );
   const pieces: DraftPatternPieceLayout[] = [];
   let rowX = 0;
   let rowY = 0;
   let rowH = 0;
   let width = 0;
 
-  source.forEach((piece, index) => {
+  source.forEach(({ piece, pieceId }) => {
     const cut = cutExtent(piece);
     if (rowX > 0 && rowX + cut.width > MAX_ROW_W) {
       rowY += rowH + GUTTER;
@@ -69,8 +79,8 @@ export function layoutDraftPattern(doc: DraftDoc): DraftPatternLayout {
       rowH = 0;
     }
     pieces.push({
-      name: piece.name ?? (index === 0 ? 'devant' : index === 1 ? 'dos' : `pièce ${index + 1}`),
-      cut: piece.cut ?? (index < 2 ? 2 : 1),
+      name: draftPieceLabel(piece, pieceId),
+      cut: piece.cut ?? (pieceId < 2 ? 2 : 1),
       onFold: piece.onFold === true,
       points: cut.points.map(([x, y]) => [x + rowX, y + rowY]),
       x: rowX,

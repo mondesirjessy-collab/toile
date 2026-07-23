@@ -192,6 +192,21 @@ export function docPieces(doc: DraftDoc): (DraftPiece | null)[] {
   return [doc.piece, doc.back ?? null, ...(doc.pieces ?? [])];
 }
 
+/** One stable human label everywhere the same pieceId is displayed or exported. */
+export function draftPieceLabel(
+  piece: DraftPiece | null | undefined,
+  pieceId: number,
+): string {
+  const named = piece?.name?.trim();
+  if (named) return named;
+  if (pieceId === 0) return 'Devant';
+  if (pieceId === 1) return 'Dos';
+  if (piece?.wrap === 'armR') return 'Manche droite';
+  if (piece?.wrap === 'armL') return 'Manche gauche';
+  if (piece?.wrap === 'neck') return 'Col';
+  return `Pièce ${pieceId + 1}`;
+}
+
 /** Every outline segment starts sewn for an appliqué; the user can open any
  * segment afterwards (for example the top of a patch pocket). */
 export function defaultSurfaceStitches(piece: DraftPiece): number[] {

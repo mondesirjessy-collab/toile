@@ -19,6 +19,7 @@ import {
   reindexAssemblySeams,
   pieceIdOf,
   docPieces,
+  draftPieceLabel,
   nearestOutlineEdgeInfo,
   movePieceWorld,
   moveFaceWorld,
@@ -36,6 +37,22 @@ describe('Draft geometry', () => {
     [1, 1],
     [0, 1],
   ];
+
+  it('affiche un nom stable à partir du pieceId, sans compacter les trous', () => {
+    const anonymous = {
+      outline: square,
+      width: 0.4,
+      height: 0.5,
+      topY: 1.5,
+      gap: 0.3,
+    } as DraftPiece;
+    expect(draftPieceLabel(anonymous, 0)).toBe('Devant');
+    expect(draftPieceLabel(null, 1)).toBe('Dos');
+    expect(draftPieceLabel(anonymous, 5)).toBe('Pièce 6');
+    expect(draftPieceLabel({ ...anonymous, name: ' Poche ' }, 5)).toBe(
+      'Poche',
+    );
+  });
 
   it('pointInPolygon: inside vs outside a square', () => {
     expect(pointInPolygon([0.5, 0.5], square)).toBe(true);

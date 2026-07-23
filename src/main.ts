@@ -25,7 +25,7 @@ import {
   type FabricDynamics,
 } from './engine/solver/FabricMaterial';
 import { generateClothGrid, generateSeamedPanels, combineClothMeshes, scaleMeshInverseMassesToReferenceCellArea, type CrossSeam, type ClothMeshData } from './engine/cloth/ClothMesh';
-import { defaultDraft, tshirtDraft, compileDraft, compileAssembly, compileCrossSeams, compileSurfaceContacts, compileSurfaceSeams, crossSewnOpenCells, neckOpeningCells, removeFreePiece, reboxPiece, pieceIdOf, nearestOutlineEdgeInfo, syncPieceFrames, sanitizeDraft, pointInPolygon, pointInTriangle, surfaceAttachmentUV, type DraftDoc, type AssemblySeam, type DraftPiece } from './engine/pattern/Draft';
+import { defaultDraft, tshirtDraft, compileDraft, compileAssembly, compileCrossSeams, compileSurfaceContacts, compileSurfaceSeams, crossSewnOpenCells, draftPieceLabel, neckOpeningCells, removeFreePiece, reboxPiece, pieceIdOf, nearestOutlineEdgeInfo, syncPieceFrames, sanitizeDraft, pointInPolygon, pointInTriangle, surfaceAttachmentUV, type DraftDoc, type AssemblySeam, type DraftPiece } from './engine/pattern/Draft';
 import {
   applyStagingOffset,
   autoPlaceMeshFromCrossSeams,
@@ -839,7 +839,7 @@ async function main(): Promise<void> {
           : pieceId === 1
             ? draft?.back
             : draft?.pieces?.[pieceId - 2];
-      return piece?.name ?? `Pièce ${pieceId + 1}`;
+      return draftPieceLabel(piece, pieceId);
     });
     simulationExcludedPieceIds.clear();
     atelierDesign = true;
@@ -902,10 +902,10 @@ async function main(): Promise<void> {
         'Simulation en attente',
         ...(pendingBlocks && placePending !== null
           ? [
-              `${
-                draft?.pieces?.[placePending - 2]?.name ??
-                `Pièce ${placePending + 1}`
-              } n’a pas encore de destination`,
+              `${draftPieceLabel(
+                draft?.pieces?.[placePending - 2],
+                placePending,
+              )} n’a pas encore de destination`,
             ]
           : []),
         ...blocking.map((issue) => issue.message),
@@ -935,8 +935,10 @@ async function main(): Promise<void> {
     const excludedName =
       excludedPieceId === null
         ? null
-        : draft?.pieces?.[excludedPieceId - 2]?.name ??
-          `Pièce ${excludedPieceId + 1}`;
+        : draftPieceLabel(
+            draft?.pieces?.[excludedPieceId - 2],
+            excludedPieceId,
+          );
     const exclusionMessage = excludedName
       ? `${excludedName} non simulée · elle reste en attente dans le plan 2D et sera réintégrée après son placement.`
       : null;
@@ -1050,7 +1052,7 @@ async function main(): Promise<void> {
     placePending = pid;
     showChooser(true);
     showPlacementStatus([
-      `${draft.pieces[pid - 2]!.name ?? `Pièce ${pid + 1}`} : choisissez sa destination corporelle.`,
+      `${draftPieceLabel(draft.pieces[pid - 2], pid)} : choisissez sa destination corporelle.`,
     ]);
   });
   (document.getElementById('at-reverse') as HTMLElement).addEventListener('click', () => {
@@ -1127,7 +1129,7 @@ async function main(): Promise<void> {
         ? hasStagingOffset(current)
         : Math.hypot(...stagingOffsetOf(current, pickedInstance)) > 1e-8;
     if (!hasOffset) {
-      showPlacementStatus([`${current.name ?? `Pièce ${pid + 1}`} est déjà à sa position 3D de référence.`], true);
+      showPlacementStatus([`${draftPieceLabel(current, pid)} est déjà à sa position 3D de référence.`], true);
       return;
     }
     pushHistory();
@@ -1142,7 +1144,7 @@ async function main(): Promise<void> {
     build();
     showPlacementStatus(
       [
-        `${current.name ?? `Pièce ${pid + 1}`}${
+        `${draftPieceLabel(current, pid)}${
           pickedInstance === null ? '' : ` · exemplaire ${pickedInstance + 1}`
         } replacé à sa position 3D de référence.`,
       ],
@@ -1582,10 +1584,10 @@ async function main(): Promise<void> {
     selectionName.textContent =
       selected.length > 1
         ? `${selected.length} pièces sélectionnées`
-        : piece?.name ?? `Pièce ${activeId + 1}`;
+        : draftPieceLabel(piece, activeId);
     fabricSel.value = piece?.fabricPreset ?? GLOBAL_FABRIC_INHERIT_VALUE;
     fabricSel.title = piece
-      ? `${piece.name ?? `Pièce ${activeId + 1}`} · ${piece.fabricPreset ?? 'tissu global'}`
+      ? `${draftPieceLabel(piece, activeId)} · ${piece.fabricPreset ?? 'tissu global'}`
       : 'Sélectionnez une pièce du patron';
     if (!gsmInput || !gsmReset || !gsmHelp) return;
     const pieces = selected.map((pieceId) => draftPieceAt(pieceId)!).filter(Boolean);
