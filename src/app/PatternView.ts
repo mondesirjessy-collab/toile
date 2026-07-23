@@ -1545,6 +1545,7 @@ export class PatternView {
       this.zipperHover = null;
       this.surfacePlacementHover = null;
       this.pieceResizeHover = null;
+      this.penPointerInside = null;
       document.body.style.cursor = '';
       this.render();
     }
@@ -1725,6 +1726,7 @@ export class PatternView {
     this.updateCanvasLabel();
     this.setPen(false);
     this.penPoints = [];
+    this.penPointerInside = null;
     this.resetDraftTransient();
   }
 
@@ -2277,6 +2279,7 @@ export class PatternView {
     this.activePiece = 0; // fall back to the front before the columns re-index
     this.setPen(false);
     this.penPoints = [];
+    this.penPointerInside = null;
     this.resetDraftTransient();
     this.onDeletePiece(pid);
   }

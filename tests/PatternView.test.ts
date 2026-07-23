@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   beginLogicalCurveLengthEdit,
   beginSegmentLengthEdit,
@@ -20,11 +20,13 @@ import {
   outlineEdgeGeometry,
   outlineEdgeLengthCm,
   patternPanCenter,
+  patternDrawingZonePrompt,
   patternScreenToLayout,
   patternViewportTransform,
   patternZoomCenterAt,
   pieceResizeCornerPoint,
   pieceResizeScale,
+  pointInPatternDrawingZone,
   pointInPatternPolygon,
   resizeDraftPieceGlobally,
   resizeDraftPiecesTogether,
@@ -48,6 +50,143 @@ import {
   type DraftPiece,
   type UV,
 } from '../src/engine/pattern/Draft';
+
+describe('zone active de l’outil Nouvelle pièce', () => {
+  it('accepte précisément les bords de la zone et refuse les points extérieurs', () => {
+    const zone = { left: 120, right: 360, top: 45, bottom: 285 };
+
+    expect(pointInPatternDrawingZone([120, 45], zone)).toBe(true);
+    expect(pointInPatternDrawingZone([360, 285], zone)).toBe(true);
+    expect(pointInPatternDrawingZone([119.99, 160], zone)).toBe(false);
+    expect(pointInPatternDrawingZone([240, 285.01], zone)).toBe(false);
+    expect(patternDrawingZonePrompt(2)).toBe('Dessinez dans la zone PIÈCE 3');
+  });
+
+  it('montre le feedback hors zone, adapte le curseur et n’ajoute aucun point avalé', () => {
+    const oldDocument = globalThis.document;
+    const oldWindow = globalThis.window;
+    const listeners = new Map<string, (event: PointerEvent) => void>();
+    const attributes = new Map<string, string>();
+    const drawnText: string[] = [];
+    const context = new Proxy(
+      {
+        measureText: (text: string) => ({ width: text.length * 7 }),
+        fillText: (text: string) => drawnText.push(text),
+      },
+      {
+        get: (target, key) =>
+          key in target
+            ? target[key as keyof typeof target]
+            : () => {},
+        set: (target, key, value) => {
+          (target as Record<PropertyKey, unknown>)[key] = value;
+          return true;
+        },
+      },
+    ) as unknown as CanvasRenderingContext2D;
+    const fakeCanvas = {
+      width: 600,
+      height: 400,
+      getContext: () => context,
+      setAttribute: (name: string, value: string) => attributes.set(name, value),
+      removeAttribute: (name: string) => attributes.delete(name),
+      dispatchEvent: () => true,
+      getBoundingClientRect: () => ({
+        left: 0,
+        top: 0,
+        right: 600,
+        bottom: 400,
+        width: 600,
+        height: 400,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }),
+    };
+    const bodyStyle = { cursor: '' };
+    Object.defineProperty(globalThis, 'document', {
+      configurable: true,
+      value: {
+        body: { style: bodyStyle },
+        createElement: () => ({ ...fakeCanvas }),
+      },
+    });
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        addEventListener: (type: string, listener: (event: PointerEvent) => void) =>
+          listeners.set(type, listener),
+      },
+    });
+
+    const piece: DraftPiece = {
+      outline: [[0.2, 0.1], [0.8, 0.1], [0.8, 0.9], [0.2, 0.9]],
+      darts: [],
+      seams: [],
+      openEdges: [],
+      width: 0.8,
+      height: 1.2,
+      topY: 1.6,
+      gap: 0.8,
+    };
+    const committed: DraftPiece[] = [];
+    const eventAt = (x: number, y: number): PointerEvent =>
+      ({
+        button: 0,
+        pointerId: 1,
+        clientX: x,
+        clientY: y,
+        metaKey: false,
+        ctrlKey: false,
+        preventDefault: () => {},
+        stopPropagation: () => {},
+      }) as unknown as PointerEvent;
+
+    let view: PatternView | null = null;
+    try {
+      vi.useFakeTimers();
+      view = new PatternView(
+        fakeCanvas as unknown as HTMLCanvasElement,
+        () => {},
+        (next) => committed.push(next),
+      );
+      view.setDraft(piece, structuredClone(piece));
+      view.startPen(piece.width, piece.height, piece.topY, piece.gap, 2);
+      const zone = view.debugPenDrawingZone();
+      expect(zone).not.toBeNull();
+      expect(attributes.get('aria-live')).toBe('polite');
+
+      const outside: [number, number] = [Math.max(2, zone!.left - 30), (zone!.top + zone!.bottom) / 2];
+      listeners.get('pointermove')!(eventAt(...outside));
+      expect(bodyStyle.cursor).toBe('not-allowed');
+      for (let click = 0; click < 3; click++) listeners.get('pointerdown')!(eventAt(...outside));
+
+      expect(attributes.get('data-pattern-feedback')).toBe('Dessinez dans la zone PIÈCE 3');
+      expect(drawnText).toContain('⚠ Dessinez dans la zone PIÈCE 3');
+      vi.advanceTimersByTime(2199);
+      expect(attributes.get('data-pattern-feedback')).toBe('Dessinez dans la zone PIÈCE 3');
+      vi.advanceTimersByTime(1);
+      expect(attributes.has('data-pattern-feedback')).toBe(false);
+
+      // Three invalid clicks must not accidentally form a three-point polygon.
+      view.finishPen();
+      expect(committed).toEqual([]);
+
+      view.startPen(piece.width, piece.height, piece.topY, piece.gap, 2);
+      const active = view.debugPenDrawingZone()!;
+      const inside: [number, number] = [(active.left + active.right) / 2, (active.top + active.bottom) / 2];
+      listeners.get('pointermove')!(eventAt(...inside));
+      expect(bodyStyle.cursor).toBe('crosshair');
+    } finally {
+      if (view?.drawing) view.finishPen();
+      vi.useRealTimers();
+      if (oldDocument === undefined) delete (globalThis as { document?: Document }).document;
+      else Object.defineProperty(globalThis, 'document', { configurable: true, value: oldDocument });
+      if (oldWindow === undefined) delete (globalThis as { window?: Window }).window;
+      else Object.defineProperty(globalThis, 'window', { configurable: true, value: oldWindow });
+    }
+  });
+});
 
 describe('outil fermeture éclair', () => {
   it('crée une association ZIP fermée sans muter les runs fournis', () => {
