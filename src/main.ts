@@ -79,6 +79,11 @@ import {
   ControlPanel,
   type SceneMode,
 } from './app/ControlPanel';
+import {
+  normalizeResolution,
+  resolutionRebuildMessage,
+  type SupportedResolution,
+} from './app/ControlStateSync';
 import { PatternView, SEAM_COLORS, type PatternHandleSpec, type SystemLink } from './app/PatternView';
 import { exportDraftPatternPdf, exportDraftPatternSvg } from './app/draftPatternExport';
 import { exportPatternPdf } from './app/patternPdf';
@@ -113,7 +118,7 @@ import { isNeutral, morphGrid, morphMesh, morphPrims, NO_MORPH, type MorphMarks,
 import { applySkin, buildSkin, poseIdle, type Skin } from './engine/body/pose';
 import { bodyRestVertices } from './app/SceneGeometry';
 
-const DEFAULT_RESOLUTION = 64;
+const DEFAULT_RESOLUTION: SupportedResolution = 64;
 const DEFAULT_SUBSTEPS = 20;
 const CLOTH_SIZE = 1.6;
 const CLOTH_TOP_Y = 1.7;
@@ -348,6 +353,7 @@ async function main(): Promise<void> {
   const canvas = document.getElementById('view') as HTMLCanvasElement;
   const mirror = document.getElementById('mirror') as HTMLCanvasElement;
   const hud = document.getElementById('hud') as HTMLElement;
+  const resolutionStatus = document.getElementById('resolution-rebuild-status') as HTMLElement;
   const overlay = document.getElementById('overlay') as HTMLElement;
   // 2D mirror of the WebGPU canvas — some systems never present WebGPU frames
   // to screen even though the content is rendered; a 2D canvas always shows.
@@ -1413,7 +1419,7 @@ async function main(): Promise<void> {
   let fabricStyle = DEFAULT_FABRIC;
   let fitMap = false; // tension view: survives rebuilds so it isn't lost on a slider (M29)
   let sceneMode: SceneMode = 'drapé';
-  let resolution = DEFAULT_RESOLUTION;
+  let resolution: SupportedResolution = DEFAULT_RESOLUTION;
   let selfCollision = true;
   let wind = 0;
   let seamAllowanceM = 0.01; // seam allowance drawn on the pattern (meters)
@@ -2734,7 +2740,13 @@ async function main(): Promise<void> {
       document.body.classList.toggle('scene-transitioning', !idle);
       canvas.setAttribute('aria-busy', String(!idle));
       patternView.setInteractionEnabled(idle);
-      if (idle) autosave?.notifyIdle();
+      if (idle) {
+        if (resolutionStatus.dataset.pendingResolution === String(resolution)) {
+          resolutionStatus.hidden = true;
+          delete resolutionStatus.dataset.pendingResolution;
+        }
+        autosave?.notifyIdle();
+      }
     },
     onError: (error, context) => {
       const detail = error instanceof Error ? error.stack ?? error.message : String(error);
@@ -3460,10 +3472,17 @@ async function main(): Promise<void> {
         }
       },
       onResolution: (r) => {
-        resolution = r;
+        const nextResolution = normalizeResolution(r, resolution);
+        resolution = nextResolution;
+        resolutionStatus.dataset.pendingResolution = String(nextResolution);
+        resolutionStatus.textContent = resolutionRebuildMessage(nextResolution);
+        resolutionStatus.hidden = false;
         // Keep the persisted draft grid in sync with the sim resolution (the
         // atelier cuts on `resolution`, so a stale gridN would lie in the file).
-        if (draft) draft.gridN = r as 32 | 64 | 128;
+        if (draft) draft.gridN = nextResolution;
+        // An option change is a real lifecycle request, even when the target
+        // scene itself did not change. This starts teardown synchronously; the
+        // status above remains visible until that transaction reaches idle.
         build();
       },
       onCompliance: (c) => {
