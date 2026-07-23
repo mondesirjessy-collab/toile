@@ -8,6 +8,7 @@
 import GUI from 'lil-gui';
 import type { FabricStyle } from './ClothRenderer';
 import {
+  FABRIC_PRESET_NAMES,
   FABRIC_PHYSICS,
   MAX_FABRIC_GSM,
   MIN_FABRIC_GSM,
@@ -16,12 +17,17 @@ import {
   type FabricCompliance,
   type FabricDynamics,
   type FabricPhysics,
+  type FabricPresetName,
 } from '../engine/solver/FabricMaterial';
 import {
   makeFabricMeasurementTemplate,
   parseFabricMeasurementText,
 } from '../engine/solver/FabricMeasurement';
-import { fabricProfileReport } from './ControlStateSync';
+import {
+  fabricProfileReport,
+  normalizeResolution,
+  normalizeSelectValue,
+} from './ControlStateSync';
 
 export type SceneMode =
   | 'drapé'
@@ -34,6 +40,26 @@ export type SceneMode =
   | 'tenue'
   | 'pantalon'
   | 'atelier';
+
+const SCENE_OPTIONS: readonly SceneMode[] = [
+  'drapé',
+  'couture',
+  'robe',
+  'robe froncée',
+  't-shirt',
+  'chemise',
+  'ensemble',
+  'tenue',
+  'pantalon',
+  'atelier',
+];
+
+const SELECTABLE_BODY_OPTIONS = ['scan femme', 'scan homme'] as const;
+export type GlobalFabricPreset = FabricPresetName | 'Mesuré';
+const GLOBAL_FABRIC_OPTIONS: readonly GlobalFabricPreset[] = [
+  ...FABRIC_PRESET_NAMES,
+  'Mesuré',
+];
 
 /** Parametric pattern measurements (grading) for the dress. */
 export interface PatternParams {
@@ -58,6 +84,7 @@ export interface BodyMeasurementsCm {
 export interface PanelCallbacks {
   onScene(mode: SceneMode): void;
   onResolution(resolution: number): void;
+  onFabricPreset(preset: GlobalFabricPreset): void;
   onCompliance(c: FabricCompliance): void;
   onFriction(staticMu: number, dynamicMu: number): void;
   onDynamics(dynamics: FabricDynamics): void;
@@ -92,6 +119,13 @@ export interface PanelCallbacks {
 }
 
 export type BodyKind = 'femme' | 'homme' | 'scan homme' | 'scan femme';
+
+export interface EngineSelectState {
+  scene: SceneMode;
+  body: BodyKind;
+  resolution: number;
+  fabricPreset: GlobalFabricPreset;
+}
 
 interface Settings {
   scene: SceneMode;
@@ -132,7 +166,7 @@ interface Settings {
   creaseRecovery: number;
   pinCorners: boolean;
   fitMap: boolean;
-  preset: string;
+  preset: GlobalFabricPreset;
   fabricReport: string;
   motif: string;
   motifCm: number;
@@ -194,6 +228,9 @@ export class ControlPanel {
   private readonly cb: PanelCallbacks;
   private readonly settings: Settings;
   private readonly controllers: { updateDisplay(): void }[] = [];
+  private readonly selectControllers: Partial<
+    Record<'scene' | 'body' | 'resolution' | 'preset', { updateDisplay(): void }>
+  > = {};
   private morphControllers: Record<string, { updateDisplay(): void }> = {};
   private fabricProfileName = 'Tissu mesuré';
   private fabricProfileSource: string | undefined;
@@ -269,18 +306,16 @@ export class ControlPanel {
         this.applyFabricMeasurement(text, filename ?? 'mesure-labo.json');
     }
 
-    this.controllers.push(
-      this.gui
-        .add(this.settings, 'scene', ['drapé', 'couture', 'robe', 'robe froncée', 't-shirt', 'chemise', 'ensemble', 'tenue', 'pantalon', 'atelier'])
-        .name('scène')
-        .onChange((m: SceneMode) => this.cb.onScene(m)),
-    );
-    this.controllers.push(
-      this.gui
-        .add(this.settings, 'body', ['scan femme', 'scan homme'])
-        .name('mannequin')
-        .onChange((k: BodyKind) => this.cb.onBody(k)),
-    );
+    this.selectControllers.scene = this.gui
+      .add(this.settings, 'scene', [...SCENE_OPTIONS])
+      .name('scène')
+      .onChange((m: SceneMode) => this.cb.onScene(m));
+    this.controllers.push(this.selectControllers.scene);
+    this.selectControllers.body = this.gui
+      .add(this.settings, 'body', [...SELECTABLE_BODY_OPTIONS])
+      .name('mannequin')
+      .onChange((k: BodyKind) => this.cb.onBody(k));
+    this.controllers.push(this.selectControllers.body);
     // Prêt-à-porter measurements, in centimeters. The sliders open on the
     // selected mannequin's OWN measured values (syncMorphCm).
     const morphFolder = this.gui.addFolder('mannequin · mensurations (cm)');
@@ -299,12 +334,11 @@ export class ControlPanel {
     this.controllers.push(...Object.values(this.morphControllers));
     morphFolder.close();
 
-    this.controllers.push(
-      this.gui
-        .add(this.settings, 'resolution', [32, 64, 128])
-        .name('résolution')
-        .onChange((v: number) => this.cb.onResolution(v)),
-    );
+    this.selectControllers.resolution = this.gui
+      .add(this.settings, 'resolution', [32, 64, 128])
+      .name('résolution')
+      .onChange((v: number) => this.cb.onResolution(v));
+    this.controllers.push(this.selectControllers.resolution);
     this.controllers.push(
       this.gui.add(this.settings, 'substeps', 5, 40, 1).name('substeps'),
     );
@@ -386,7 +420,13 @@ export class ControlPanel {
       fabric.add(this.settings, 'creaseRecovery', 0, 2, 0.05).name('récupération du pli').onChange(pushDynamics),
       fabric.add(this.settings, 'friction', 0, 1, 0.01).name('friction statique μs').onChange(pushFriction),
       fabric.add(this.settings, 'frictionDynamic', 0, 1, 0.01).name('friction dynamique μd').onChange(pushFriction),
-      fabric.add(this.settings, 'preset', ['Jersey', 'Maille', 'Popeline', 'Denim', 'Lin', 'Laine', 'Soie', 'Mesuré']).name('preset').onChange((name: string) => this.applyPreset(name)),
+    );
+    this.selectControllers.preset = fabric
+      .add(this.settings, 'preset', [...GLOBAL_FABRIC_OPTIONS])
+      .name('preset')
+      .onChange((name: GlobalFabricPreset) => this.applyPreset(name));
+    this.controllers.push(this.selectControllers.preset);
+    this.controllers.push(
       fabric
         .add(this.settings, 'fitMap')
         .name('carte de tension')
@@ -478,6 +518,10 @@ export class ControlPanel {
     return this.settings.substeps;
   }
 
+  get globalFabricPreset(): GlobalFabricPreset {
+    return this.settings.preset;
+  }
+
   /** Keep the pin checkbox in sync when pins are toggled elsewhere (P key / reset). */
   syncPins(held: boolean): void {
     this.settings.pinCorners = held;
@@ -492,8 +536,40 @@ export class ControlPanel {
 
   /** Keep the scene select in sync when the scene changes elsewhere. */
   syncScene(mode: SceneMode): void {
-    this.settings.scene = mode;
-    for (const c of this.controllers) c.updateDisplay();
+    this.settings.scene = normalizeSelectValue(mode, SCENE_OPTIONS, this.settings.scene);
+    this.selectControllers.scene?.updateDisplay();
+  }
+
+  /**
+   * Re-assert every option control after a scene transaction. lil-gui keeps its
+   * own native select nodes, so rebuilding the simulation must explicitly copy
+   * the committed engine state back into those stable controllers.
+   */
+  syncEngineSelects(state: EngineSelectState): void {
+    this.settings.scene = normalizeSelectValue(
+      state.scene,
+      SCENE_OPTIONS,
+      this.settings.scene,
+    );
+    const visibleBody: (typeof SELECTABLE_BODY_OPTIONS)[number] =
+      state.body.includes('homme') ? 'scan homme' : 'scan femme';
+    this.settings.body = normalizeSelectValue(
+      visibleBody,
+      SELECTABLE_BODY_OPTIONS,
+      'scan femme',
+    );
+    this.settings.resolution = normalizeResolution(
+      state.resolution,
+      normalizeResolution(this.settings.resolution, 64),
+    );
+    this.settings.preset = normalizeSelectValue(
+      state.fabricPreset,
+      GLOBAL_FABRIC_OPTIONS,
+      this.settings.preset,
+    );
+    for (const controller of Object.values(this.selectControllers)) {
+      controller?.updateDisplay();
+    }
   }
 
   private morphCm(): BodyMeasurementsCm {
@@ -662,6 +738,7 @@ export class ControlPanel {
       'Paramètres : déjà calibrés pour le solveur',
       'Validation : complète',
     ];
+    this.cb.onFabricPreset('Mesuré');
     this.emitFabricPhysics(p);
     return true;
   }
@@ -945,7 +1022,11 @@ export class ControlPanel {
     }
     s.seamAllowance = num(d.seamAllowance, 0, 4, s.seamAllowance);
     if (d.fabric) {
-      if (d.fabric.preset && (PRESETS[d.fabric.preset] || d.fabric.preset === 'Mesuré')) s.preset = d.fabric.preset;
+      s.preset = normalizeSelectValue(
+        d.fabric.preset,
+        GLOBAL_FABRIC_OPTIONS,
+        s.preset,
+      );
       const preset = PRESETS[s.preset] ?? PRESETS.Jersey!;
       if (s.preset === 'Mesuré') {
         this.fabricProfileName = 'Tissu mesuré importé';
@@ -1057,6 +1138,7 @@ export class ControlPanel {
       hanches: s.hanches,
       cuisse: s.cuisse,
     });
+    this.cb.onFabricPreset(s.preset);
     if (PRESETS[s.preset]) this.pushStyle();
     this.cb.onCompliance({
       stretch: 10 ** s.stretchExp,
@@ -1157,12 +1239,23 @@ export class ControlPanel {
     });
   }
 
-  private applyPreset(name: string): void {
+  private applyPreset(name: GlobalFabricPreset): void {
     const p = PRESETS[name];
-    if (!p) return;
+    if (!p) {
+      // “Mesuré” is a display state populated by an import, not an empty
+      // factory preset. Reject selecting it by hand unless the active baseline
+      // is genuinely a measured profile.
+      this.settings.preset = PRESETS[this.fabricBaselineName]
+        ? (this.fabricBaselineName as FabricPresetName)
+        : 'Mesuré';
+      this.selectControllers.preset?.updateDisplay();
+      this.cb.onFabricPreset(this.settings.preset);
+      return;
+    }
     this.writeFabricPhysics(p);
     this.settings.preset = name;
     this.setFabricBaseline(name, p, `preset ${name} · calibré`);
+    this.cb.onFabricPreset(name);
     this.fabricDiagnosticTitle = `Preset ${name}`;
     this.fabricDiagnosticLines = [
       'Source : calibration qualitative TOILE',

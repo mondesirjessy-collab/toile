@@ -62,6 +62,10 @@ describe('atelier workspace markup', () => {
     expect(html).toMatch(
       /<select id="at-fabric" aria-label="Tissu de la sélection"/,
     );
+    expect(html).toContain(
+      '<option value="__global__">🧵 Tissu global — Jersey</option>',
+    );
+    expect(html).not.toMatch(/<option value="">/);
     expect(html).toMatch(/<label class="field-label" for="at-gsm">Grammage \(GSM\)<\/label>/);
     expect(html).toContain('inputmode="decimal"');
     expect(html).toContain('aria-describedby="at-gsm-help at-gsm-explanation"');

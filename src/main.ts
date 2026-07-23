@@ -79,10 +79,14 @@ import {
   AVATAR_STATURE_MAX_CM,
   AVATAR_STATURE_MIN_CM,
   ControlPanel,
+  type GlobalFabricPreset,
   type SceneMode,
 } from './app/ControlPanel';
 import {
+  GLOBAL_FABRIC_INHERIT_VALUE,
+  inheritedFabricLabel,
   normalizeResolution,
+  pieceFabricSelectEnabled,
   resolutionRebuildMessage,
   type SupportedResolution,
 } from './app/ControlStateSync';
@@ -1507,6 +1511,7 @@ async function main(): Promise<void> {
     creaseRecovery: initialFabric.creaseRecovery,
   };
   let fabricStyle = DEFAULT_FABRIC;
+  let globalFabricPreset: GlobalFabricPreset = 'Jersey';
   let fitMap = false; // tension view: survives rebuilds so it isn't lost on a slider (M29)
   let sceneMode: SceneMode = 'drapé';
   let resolution: SupportedResolution = DEFAULT_RESOLUTION;
@@ -1562,11 +1567,21 @@ async function main(): Promise<void> {
     const activeId = patternView.activeDraftPieceId;
     const piece = draftPieceAt(activeId);
     const selected = selectedFabricPieceIds();
+    const inheritOption = Array.from(fabricSel.options).find(
+      (option) => option.value === GLOBAL_FABRIC_INHERIT_VALUE,
+    );
+    if (inheritOption) {
+      inheritOption.textContent = inheritedFabricLabel(globalFabricPreset);
+    }
+    fabricSel.dataset.globalPreset = globalFabricPreset;
+    // A draft can persist while another scene is mounted. Keep its hidden
+    // toolbar select non-interactive so no orphan control can mutate that draft.
+    fabricSel.disabled = !pieceFabricSelectEnabled(sceneMode, !!piece);
     selectionName.textContent =
       selected.length > 1
         ? `${selected.length} pièces sélectionnées`
         : piece?.name ?? `Pièce ${activeId + 1}`;
-    fabricSel.value = piece?.fabricPreset ?? '';
+    fabricSel.value = piece?.fabricPreset ?? GLOBAL_FABRIC_INHERIT_VALUE;
     fabricSel.title = piece
       ? `${piece.name ?? `Pièce ${activeId + 1}`} · ${piece.fabricPreset ?? 'tissu global'}`
       : 'Sélectionnez une pièce du patron';
@@ -1596,8 +1611,9 @@ async function main(): Promise<void> {
   fabricSel?.addEventListener('change', () => {
     if (!draft) return;
     const chosen = fabricSel.value;
+    const inheritsGlobal = chosen === GLOBAL_FABRIC_INHERIT_VALUE;
     const preset = isFabricPresetName(chosen) ? chosen : undefined;
-    if (chosen && !preset) return;
+    if (!inheritsGlobal && !preset) return;
     const selected = patternView.selectedDraftPieceIds;
     const active = patternView.activeDraftPieceId;
     const ids = selected.includes(active) ? selected : [active];
@@ -1617,10 +1633,10 @@ async function main(): Promise<void> {
     build();
     showPlacementStatus(
       [
-        `${valid.length} pièce${valid.length > 1 ? 's' : ''} · ${chosen || 'tissu global'} appliqué.`,
+        `${valid.length} pièce${valid.length > 1 ? 's' : ''} · ${preset ?? `tissu global (${globalFabricPreset})`} appliqué.`,
         valid.some((pid) => draftPieceAt(pid)?.arealDensityGsm !== undefined)
           ? 'Le grammage personnalisé est conservé ; les autres propriétés viennent du tissu choisi.'
-          : chosen
+          : preset
             ? `Grammage estimé : ${formatGsm(FABRIC_PHYSICS[preset!].arealDensity * 1000)} g/m². Il peut être précisé juste dessous.`
             : 'La pièce suivra désormais les réglages du panneau tissu global.',
       ],
@@ -2839,6 +2855,13 @@ async function main(): Promise<void> {
       await buildNow(target, context);
       committedSceneMode = target;
       committedSceneRevision = context.revision;
+      panel.syncEngineSelects({
+        scene: target,
+        body: bodyKind,
+        resolution,
+        fabricPreset: globalFabricPreset,
+      });
+      syncPieceFabricSelect();
       if (transitionRecoveryInFlight) {
         console.info(`[toile] scène ${target} restaurée après une transition interrompue`);
       }
@@ -3603,6 +3626,12 @@ async function main(): Promise<void> {
         // status above remains visible until that transaction reaches idle.
         build();
       },
+      onFabricPreset: (preset) => {
+        globalFabricPreset = preset;
+        // The atelier selector's inherit option is a view of this canonical
+        // global state, never an independent second preset setting.
+        syncPieceFabricSelect();
+      },
       onCompliance: (c) => {
         compliance = c;
         if (sceneTransitionBusy()) {
@@ -3939,6 +3968,13 @@ async function main(): Promise<void> {
   // Open the measurement sliders on the default mannequin's own values.
   const initialBodyCm = baseCm(bodyKind, scans[bodyKind] ?? null);
   panel.syncMorphCm(initialBodyCm);
+  panel.syncEngineSelects({
+    scene: sceneMode,
+    body: bodyKind,
+    resolution,
+    fabricPreset: globalFabricPreset,
+  });
+  syncPieceFabricSelect();
   syncAvatarStature(initialBodyCm.stature!);
 
   // Canonical garment autosave. A lightweight change detector also catches

@@ -2,6 +2,7 @@ import type { FabricPhysics } from '../engine/solver/FabricMaterial';
 
 export const SUPPORTED_RESOLUTIONS = [32, 64, 128] as const;
 export type SupportedResolution = (typeof SUPPORTED_RESOLUTIONS)[number];
+export const GLOBAL_FABRIC_INHERIT_VALUE = '__global__';
 
 /** Keep values coming from DOM option controls inside the supported GPU grids. */
 export function normalizeResolution(
@@ -16,6 +17,27 @@ export function normalizeResolution(
 
 export function resolutionRebuildMessage(resolution: SupportedResolution): string {
   return `Reconstruction ${resolution} × ${resolution} en cours…`;
+}
+
+export function normalizeSelectValue<T extends string>(
+  value: unknown,
+  options: readonly T[],
+  fallback: T,
+): T {
+  return typeof value === 'string' && options.includes(value as T)
+    ? (value as T)
+    : fallback;
+}
+
+export function inheritedFabricLabel(globalPreset: string): string {
+  return `🧵 Tissu global — ${globalPreset}`;
+}
+
+export function pieceFabricSelectEnabled(
+  scene: string,
+  hasActivePiece: boolean,
+): boolean {
+  return scene === 'atelier' && hasActivePiece;
 }
 
 const FABRIC_PHYSICS_KEYS: readonly (keyof FabricPhysics)[] = [

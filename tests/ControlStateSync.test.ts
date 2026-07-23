@@ -2,7 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { FABRIC_PHYSICS, type FabricPhysics } from '../src/engine/solver/FabricMaterial';
 import {
   fabricProfileReport,
+  GLOBAL_FABRIC_INHERIT_VALUE,
+  inheritedFabricLabel,
   normalizeResolution,
+  normalizeSelectValue,
+  pieceFabricSelectEnabled,
   resolutionRebuildMessage,
   sameFabricPhysics,
 } from '../src/app/ControlStateSync';
@@ -78,6 +82,7 @@ vi.mock('lil-gui', () => {
 const makeCallbacks = () => ({
   onScene: vi.fn(),
   onResolution: vi.fn(),
+  onFabricPreset: vi.fn(),
   onCompliance: vi.fn(),
   onFriction: vi.fn(),
   onDynamics: vi.fn(),
@@ -194,5 +199,78 @@ describe('fabric profile calibration state', () => {
       }),
     );
     expect(reapply.domElement.id).toBe('toile-reapply-fabric-preset');
+  });
+});
+
+describe('resynchronisation des sélecteurs', () => {
+  beforeEach(() => {
+    fakeControllers.length = 0;
+    vi.stubGlobal('window', globalThis);
+  });
+
+  it('conserve une valeur valide et un libellé explicite pour le tissu hérité', () => {
+    expect(GLOBAL_FABRIC_INHERIT_VALUE).not.toBe('');
+    expect(inheritedFabricLabel('Denim')).toBe('🧵 Tissu global — Denim');
+    expect(normalizeSelectValue('atelier', ['drapé', 'atelier'] as const, 'drapé')).toBe('atelier');
+    expect(normalizeSelectValue('', ['drapé', 'atelier'] as const, 'drapé')).toBe('drapé');
+    expect(pieceFabricSelectEnabled('atelier', true)).toBe(true);
+    expect(pieceFabricSelectEnabled('robe', true)).toBe(false);
+    expect(pieceFabricSelectEnabled('atelier', false)).toBe(false);
+  });
+
+  it('recopie systématiquement les quatre valeurs moteur après reconstruction', async () => {
+    const { ControlPanel } = await import('../src/app/ControlPanel');
+    const callbacks = makeCallbacks();
+    const panel = new ControlPanel(callbacks, { resolution: 64, substeps: 20 });
+    const byProperty = (property: string): FakeController =>
+      fakeControllers.find((controller) => controller.property === property)!;
+
+    // Reproduit le symptôme QA avant qu’une reconstruction ne republie l’état.
+    byProperty('scene').object.scene = '';
+    byProperty('body').object.body = '';
+    byProperty('resolution').object.resolution = '';
+    byProperty('preset').object.preset = '';
+
+    panel.syncEngineSelects({
+      scene: 'atelier',
+      body: 'scan homme',
+      resolution: 128,
+      fabricPreset: 'Denim',
+    });
+
+    expect(byProperty('scene').object.scene).toBe('atelier');
+    expect(byProperty('body').object.body).toBe('scan homme');
+    expect(byProperty('resolution').object.resolution).toBe(128);
+    expect(byProperty('preset').object.preset).toBe('Denim');
+    for (const property of ['scene', 'body', 'resolution', 'preset']) {
+      expect(fakeControllers.filter((controller) => controller.property === property)).toHaveLength(1);
+      expect(byProperty(property).object[property]).not.toBe('');
+    }
+  });
+
+  it('publie chaque changement du preset global dans la source moteur unique', async () => {
+    const { ControlPanel } = await import('../src/app/ControlPanel');
+    const callbacks = makeCallbacks();
+    const panel = new ControlPanel(callbacks, { resolution: 64, substeps: 20 });
+    const preset = fakeControllers.find((controller) => controller.property === 'preset')!;
+
+    preset.setValue('Denim');
+    preset.setValue('Lin');
+    preset.setValue('Jersey');
+    panel.syncEngineSelects({
+      scene: 'robe',
+      body: 'scan femme',
+      resolution: 64,
+      fabricPreset: 'Jersey',
+    });
+
+    expect(callbacks.onFabricPreset.mock.calls.map(([value]) => value)).toEqual([
+      'Jersey',
+      'Denim',
+      'Lin',
+      'Jersey',
+    ]);
+    expect(panel.globalFabricPreset).toBe('Jersey');
+    expect(preset.object.preset).toBe('Jersey');
   });
 });
