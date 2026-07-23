@@ -21,6 +21,7 @@ import {
   makeFabricMeasurementTemplate,
   parseFabricMeasurementText,
 } from '../engine/solver/FabricMeasurement';
+import { fabricProfileReport } from './ControlStateSync';
 
 export type SceneMode =
   | 'drapé'
@@ -198,6 +199,9 @@ export class ControlPanel {
   private fabricProfileSource: string | undefined;
   private fabricDiagnosticTitle = 'Profil tissu';
   private fabricDiagnosticLines: string[] = [];
+  private fabricBaseline: FabricPhysics = { ...FABRIC_PHYSICS.Jersey! };
+  private fabricBaselineName = 'Jersey';
+  private fabricCalibratedReport = 'preset Jersey · calibré';
 
   constructor(cb: PanelCallbacks, initial: { resolution: number; substeps: number }) {
     this.cb = cb;
@@ -330,7 +334,8 @@ export class ControlPanel {
     );
 
     const fabric = this.gui.addFolder('tissu');
-    const pushCompliance = (): void =>
+    const pushCompliance = (): void => {
+      this.refreshFabricReport();
       this.cb.onCompliance({
         stretch: 10 ** this.settings.stretchExp,
         stretchWarp: 10 ** this.settings.stretchWarpExp,
@@ -340,15 +345,18 @@ export class ControlPanel {
         stretchLimit: this.settings.stretchLimitPct / 100,
         shearLimit: this.settings.shearLimitPct / 100,
       });
+    };
     const pushFriction = (): void => {
       const s = this.settings;
       if (s.frictionDynamic > s.friction) {
         s.frictionDynamic = s.friction;
         for (const c of this.controllers) c.updateDisplay();
       }
+      this.refreshFabricReport();
       this.cb.onFriction(s.friction, s.frictionDynamic);
     };
-    const pushDynamics = (): void =>
+    const pushDynamics = (): void => {
+      this.refreshFabricReport();
       this.cb.onDynamics({
         arealDensity: this.settings.densityGsm / 1000,
         collisionThickness: this.settings.thicknessMm / 1000,
@@ -360,6 +368,7 @@ export class ControlPanel {
         creaseMemory: this.settings.creaseMemory,
         creaseRecovery: this.settings.creaseRecovery,
       });
+    };
     this.controllers.push(
       fabric.add(this.settings, 'stretchExp', -9, -3, 0.1).name('étirement trame (log)').onChange(pushCompliance),
       fabric.add(this.settings, 'stretchWarpExp', -9, -3, 0.1).name('étirement chaîne (log)').onChange(pushCompliance),
@@ -567,6 +576,54 @@ export class ControlPanel {
     };
   }
 
+  private setFabricBaseline(
+    name: string,
+    physics: FabricPhysics,
+    calibratedReport: string,
+  ): void {
+    this.fabricBaselineName = name;
+    this.fabricBaseline = { ...physics };
+    this.fabricCalibratedReport = calibratedReport;
+    this.refreshFabricReport();
+  }
+
+  /** Derive the badge from the live numbers; it is never a sticky preset label. */
+  private refreshFabricReport(): void {
+    this.settings.fabricReport = fabricProfileReport(
+      this.currentFabricPhysics(),
+      this.fabricBaseline,
+      this.fabricBaselineName,
+      this.fabricCalibratedReport,
+    );
+    for (const c of this.controllers) c.updateDisplay();
+  }
+
+  private writeFabricPhysics(physics: FabricPhysics): void {
+    const s = this.settings;
+    s.stretchExp = Math.log10(physics.stretch);
+    s.stretchWarpExp = Math.log10(physics.stretchWarp);
+    s.shearExp = Math.log10(physics.shear);
+    s.bendExp = Math.log10(physics.bend);
+    s.bendWarpExp = Math.log10(physics.bendWarp);
+    s.stretchLimitPct = physics.stretchLimit * 100;
+    s.shearLimitPct = physics.shearLimit * 100;
+    s.friction = physics.frictionStatic;
+    s.frictionDynamic = physics.frictionDynamic;
+    s.densityGsm = physics.arealDensity * 1000;
+    s.thicknessMm = physics.collisionThickness * 1000;
+    s.damping = physics.damping;
+    s.airDrag = physics.airDrag;
+    s.creaseYieldDeg = physics.creaseYieldDeg;
+    s.creaseMemory = physics.creaseMemory;
+    s.creaseRecovery = physics.creaseRecovery;
+  }
+
+  private emitFabricPhysics(physics: FabricPhysics): void {
+    this.cb.onCompliance(physics);
+    this.cb.onFriction(physics.frictionStatic, physics.frictionDynamic);
+    this.cb.onDynamics(physics);
+  }
+
   /** Validate and apply a calibrated .toile-fabric.json profile live. */
   private applyFabricProfile(raw: unknown): boolean {
     const doc = sanitizeFabricProfile(raw);
@@ -574,35 +631,17 @@ export class ControlPanel {
     const p = doc.physics;
     const s = this.settings;
     s.preset = 'Mesuré';
-    s.stretchExp = Math.log10(p.stretch);
-    s.stretchWarpExp = Math.log10(p.stretchWarp);
-    s.shearExp = Math.log10(p.shear);
-    s.bendExp = Math.log10(p.bend);
-    s.bendWarpExp = Math.log10(p.bendWarp);
-    s.stretchLimitPct = p.stretchLimit * 100;
-    s.shearLimitPct = p.shearLimit * 100;
-    s.densityGsm = p.arealDensity * 1000;
-    s.thicknessMm = p.collisionThickness * 1000;
-    s.damping = p.damping;
-    s.airDrag = p.airDrag;
-    s.friction = p.frictionStatic;
-    s.frictionDynamic = p.frictionDynamic;
-    s.creaseYieldDeg = p.creaseYieldDeg;
-    s.creaseMemory = p.creaseMemory;
-    s.creaseRecovery = p.creaseRecovery;
+    this.writeFabricPhysics(p);
     this.fabricProfileName = doc.name;
     this.fabricProfileSource = doc.source;
-    s.fabricReport = 'profil solveur · validé';
+    this.setFabricBaseline(doc.name, p, 'profil solveur · validé');
     this.fabricDiagnosticTitle = doc.name;
     this.fabricDiagnosticLines = [
       `Source : ${doc.source ?? 'profil TOILE'}`,
       'Paramètres : déjà calibrés pour le solveur',
       'Validation : complète',
     ];
-    for (const c of this.controllers) c.updateDisplay();
-    this.cb.onCompliance(p);
-    this.cb.onFriction(p.frictionStatic, p.frictionDynamic);
-    this.cb.onDynamics(p);
+    this.emitFabricPhysics(p);
     return true;
   }
 
@@ -621,6 +660,7 @@ export class ControlPanel {
     if (!this.applyFabricProfile(conversion.profile)) return false;
     this.settings.fabricReport =
       `${conversion.system} · confiance ${conversion.confidence} · ${conversion.estimated.length} estimés`;
+    this.fabricCalibratedReport = this.settings.fabricReport;
     this.fabricDiagnosticTitle = `${conversion.profile.name} · ${conversion.system}`;
     this.fabricDiagnosticLines = [
       `Confiance : ${conversion.confidence}`,
@@ -926,6 +966,20 @@ export class ControlPanel {
       s.creaseYieldDeg = num(d.fabric.creaseYieldDeg, 5, 85, preset.creaseYieldDeg);
       s.creaseMemory = num(d.fabric.creaseMemory, 0, 2, preset.creaseMemory);
       s.creaseRecovery = num(d.fabric.creaseRecovery, 0, 2, preset.creaseRecovery);
+      const namedPreset = PRESETS[s.preset];
+      if (namedPreset) {
+        this.setFabricBaseline(
+          s.preset,
+          namedPreset,
+          `preset ${s.preset} · calibré`,
+        );
+      } else {
+        this.setFabricBaseline(
+          this.fabricProfileName,
+          this.currentFabricPhysics(),
+          'profil importé · calibré',
+        );
+      }
     }
     if (d.pattern) {
       s.dressLength = num(d.pattern.length, 0.9, 1.55, s.dressLength);
@@ -1085,52 +1139,16 @@ export class ControlPanel {
   private applyPreset(name: string): void {
     const p = PRESETS[name];
     if (!p) return;
-    this.settings.stretchExp = Math.log10(p.stretch);
-    this.settings.stretchWarpExp = Math.log10(p.stretchWarp);
-    this.settings.shearExp = Math.log10(p.shear);
-    this.settings.bendExp = Math.log10(p.bend);
-    this.settings.bendWarpExp = Math.log10(p.bendWarp);
-    this.settings.stretchLimitPct = p.stretchLimit * 100;
-    this.settings.shearLimitPct = p.shearLimit * 100;
-    this.settings.friction = p.frictionStatic;
-    this.settings.frictionDynamic = p.frictionDynamic;
-    this.settings.densityGsm = p.arealDensity * 1000;
-    this.settings.thicknessMm = p.collisionThickness * 1000;
-    this.settings.damping = p.damping;
-    this.settings.airDrag = p.airDrag;
-    this.settings.creaseYieldDeg = p.creaseYieldDeg;
-    this.settings.creaseMemory = p.creaseMemory;
-    this.settings.creaseRecovery = p.creaseRecovery;
+    this.writeFabricPhysics(p);
     this.settings.preset = name;
-    this.settings.fabricReport = `preset ${name} · calibré`;
+    this.setFabricBaseline(name, p, `preset ${name} · calibré`);
     this.fabricDiagnosticTitle = `Preset ${name}`;
     this.fabricDiagnosticLines = [
       'Source : calibration qualitative TOILE',
       'Mesures de laboratoire : aucune',
       'Utilisez « importer KES / FAST / profil » pour un échantillon réel.',
     ];
-    for (const c of this.controllers) c.updateDisplay();
-    this.cb.onCompliance({
-      stretch: p.stretch,
-      stretchWarp: p.stretchWarp,
-      shear: p.shear,
-      bend: p.bend,
-      bendWarp: p.bendWarp,
-      stretchLimit: p.stretchLimit,
-      shearLimit: p.shearLimit,
-    });
-    this.cb.onFriction(p.frictionStatic, p.frictionDynamic);
-    this.cb.onDynamics({
-      arealDensity: p.arealDensity,
-      collisionThickness: p.collisionThickness,
-      damping: p.damping,
-      airDrag: p.airDrag,
-      frictionStatic: p.frictionStatic,
-      frictionDynamic: p.frictionDynamic,
-      creaseYieldDeg: p.creaseYieldDeg,
-      creaseMemory: p.creaseMemory,
-      creaseRecovery: p.creaseRecovery,
-    });
+    this.emitFabricPhysics(p);
     this.pushStyle();
   }
 }
