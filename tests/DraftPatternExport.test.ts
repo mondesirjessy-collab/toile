@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { layoutDraftPattern } from '../src/app/draftPatternExport';
+import {
+  draftPatternSvgFilename,
+  layoutDraftPattern,
+} from '../src/app/draftPatternExport';
 import type {
   DraftDoc,
   DraftPiece,
@@ -30,5 +33,11 @@ describe('numérotation du patron exporté', () => {
       'Devant',
       'Pièce 3',
     ]);
+  });
+
+  it('retourne le nom exact qui sera présenté après le téléchargement SVG', () => {
+    expect(draftPatternSvgFilename('Lucas Hoodie · taille M')).toBe(
+      'patron-Lucas-Hoodie---taille-M.svg',
+    );
   });
 });

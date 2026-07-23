@@ -330,6 +330,8 @@ export interface LogicalCurveLengthEdit {
   moving: number;
   fixed: number;
   unit: [number, number];
+  /** Exact point grabbed on the curve, used only to explain off-axis drags. */
+  grab: UV;
   grabAlong: number;
   startChordM: number;
   startLengthM: number;
@@ -380,6 +382,7 @@ export function beginLogicalCurveLengthEdit(
     moving,
     fixed,
     unit,
+    grab: [grab[0], grab[1]],
     grabAlong: (m[0] - g[0]) * unit[0] + (m[1] - g[1]) * unit[1],
     startChordM,
     startLengthM: logicalCurveLengthM(piece, outline, run),
@@ -456,6 +459,8 @@ export interface SegmentLengthEdit {
   moving: number;
   fixed: number;
   unit: [number, number]; // fixed → moving, in physical pattern metres
+  /** Exact point grabbed on the edge, used only to explain off-axis drags. */
+  grab: UV;
   grabAlong: number; // moving endpoint → grabbed point offset, along the axis
   minLength: number;
   startLength: number;
@@ -466,11 +471,61 @@ export interface DraftPieceUpdate {
   piece: DraftPiece;
 }
 
-const metricUV = (piece: DraftPiece, p: UV): [number, number] => [p[0] * piece.width, p[1] * piece.height];
+export interface PatternCancelResult {
+  cancelledTool: boolean;
+  cancelledGesture: boolean;
+}
+
+const metricUV = (
+  piece: Pick<DraftPiece, 'width' | 'height'>,
+  p: UV,
+): [number, number] => [p[0] * piece.width, p[1] * piece.height];
 const worldUV = (piece: DraftPiece, p: UV): [number, number] => [
   (p[0] - 0.5) * piece.width,
   piece.topY - p[1] * piece.height,
 ];
+
+/** Read-only interpretation of a pointer drag against one effective length axis. */
+export interface AxisDragIntent {
+  /** Signed useful travel along the constrained axis, in physical metres. */
+  alongM: number;
+  /** Signed travel ignored by the length edit, perpendicular to the axis. */
+  acrossM: number;
+  /** True once a deliberate drag is dominated by the ignored direction. */
+  mostlyPerpendicular: boolean;
+}
+
+/**
+ * Explain an axis-constrained drag without changing its geometry.
+ *
+ * The production resize functions below remain the sole source of truth. This
+ * helper only preserves the user's raw intent so the canvas can show a ghost
+ * and point toward the direction that actually changes the length.
+ */
+export function axisDragIntent(
+  piece: Pick<DraftPiece, 'width' | 'height'>,
+  grab: UV,
+  pointer: UV,
+  unit: readonly [number, number],
+  thresholdM = 0.005,
+): AxisDragIntent {
+  const g = metricUV(piece, grab);
+  const p = metricUV(piece, pointer);
+  const dx = p[0] - g[0];
+  const dy = p[1] - g[1];
+  const norm = Math.hypot(unit[0], unit[1]) || 1;
+  const ux = unit[0] / norm;
+  const uy = unit[1] / norm;
+  const alongM = dx * ux + dy * uy;
+  const acrossM = dx * -uy + dy * ux;
+  const deliberate = Math.hypot(dx, dy) >= Math.max(0, thresholdM);
+  return {
+    alongM,
+    acrossM,
+    mostlyPerpendicular:
+      deliberate && Math.abs(acrossM) > Math.abs(alongM),
+  };
+}
 
 /** True physical length of one outline segment, in centimetres. */
 export function outlineEdgeLengthCm(piece: DraftPiece, outline: readonly UV[], edge: number): number {
@@ -842,6 +897,7 @@ export function beginSegmentLengthEdit(piece: DraftPiece, edge: number, grab: UV
     moving,
     fixed,
     unit,
+    grab: [grab[0], grab[1]],
     grabAlong,
     minLength,
     startLength: length,
@@ -1398,6 +1454,9 @@ export class PatternView {
     | (LogicalCurveLengthEdit & {
         pointerId: number;
         orig: UV[];
+        rawPointerScreen: [number, number];
+        pointerToMovingScreen: [number, number];
+        intent: AxisDragIntent;
       })
     | null = null;
   // Mode LONGUEUR : le bord survolé affiche sa cote ; au glisser, l'extrémité
@@ -1408,6 +1467,9 @@ export class PatternView {
     | (SegmentLengthEdit & {
         pointerId: number;
         orig: UV[];
+        rawPointerScreen: [number, number];
+        pointerToMovingScreen: [number, number];
+        intent: AxisDragIntent;
         linked?: {
           pieceId: number;
           edge: number;
@@ -1670,6 +1732,82 @@ export class PatternView {
     this.zipperHover = null;
   }
 
+  /**
+   * Cancel every 2D editing tool and in-flight gesture without committing it.
+   *
+   * Escape calls this single transaction from the workspace. Live whole-piece
+   * edits are restored from their pointer-down snapshots before transient state
+   * is cleared; outline previews never reach `onDraftChange`.
+   */
+  cancelInteractions(): PatternCancelResult {
+    const cancelledTool =
+      this.penMode ||
+      this.lengthMode ||
+      this.lengthSnapEnabled ||
+      this.linkMode ||
+      this.sewMode ||
+      this.zipperMode ||
+      this.surfacePlacementPieceId !== null ||
+      this.seamPickA !== null ||
+      this.linkPickA !== null ||
+      this.zipperPickA !== null ||
+      this.selectedPiece !== null ||
+      this.selectedPieces.size > 0;
+    const cancelledGesture =
+      this.panDrag !== null ||
+      this.drag !== null ||
+      this.draftPreview !== null ||
+      this.draftDrag !== null ||
+      this.curveDrag !== null ||
+      this.curveLengthDrag !== null ||
+      this.pieceResizeDrag !== null ||
+      this.pieceMoveDrag !== null ||
+      this.lengthDrag !== null ||
+      this.linkedPreview !== null ||
+      this.draftEdge !== null ||
+      this.penPoints.length > 0;
+
+    // These two gestures mutate their live display state while the pointer is
+    // down. Restore their immutable pointer-down snapshots before nulling them.
+    if (this.pieceMoveDrag) {
+      for (const member of this.pieceMoveDrag.members) {
+        this.layoutShifts[member.pieceId] = [...member.startShift];
+      }
+    }
+    if (this.pieceResizeDrag) {
+      for (const member of this.pieceResizeDrag.members) {
+        this.pieces[member.pieceId] = this.clonePiece(member.original);
+      }
+    }
+
+    // A half-drawn piece has its own backup contract. Aborting it restores the
+    // former piece (or removes the newly opened empty column) without callbacks.
+    if (this.penMode) this.abortPen(false);
+    else this.resetDraftTransient();
+
+    this.panDrag = null;
+    this.drag = null;
+    this.hover = null;
+    this.lengthMode = false;
+    this.lengthSnapEnabled = false;
+    this.linkMode = false;
+    this.linkNotice = null;
+    this.sewMode = false;
+    this.zipperMode = false;
+    this.surfacePlacementPieceId = null;
+    this.surfacePlacementHover = null;
+    this.selectedPiece = null;
+    this.selectedPieces.clear();
+    this.penPoints = [];
+    this.penPointerInside = null;
+    this.clearPenFeedback();
+    this.resetDraftTransient();
+    document.body.style.cursor = '';
+    this.updateCanvasLabel();
+    this.render();
+    return { cancelledTool, cancelledGesture };
+  }
+
   /** Update the manual-assembly seams to render (front/back edge ↔ edge). */
   setAssembly(seams: AssemblySeam[]): void {
     this.assembly = seams.map((s) => ({ ...s, a: { ...s.a }, b: { ...s.b } }));
@@ -1787,21 +1925,29 @@ export class PatternView {
 
   /** Abandonner le tracé en cours : restaure la pièce mise de côté (ou retire
    * la colonne vide d'une pièce toute neuve). Rien n'est perdu. */
-  private abortPen(): void {
+  private abortPen(render = true): void {
     if (!this.penMode) return;
     this.setPen(false);
     this.penPoints = [];
     this.penPointerInside = null;
     if (this.penBackup) {
       this.applyActive(this.penBackup);
-    } else if (this.penBackupPid !== null && this.penBackupPid >= 2 && this.penBackupPid === this.pieces.length - 1 && !this.pieceAt(this.penBackupPid)) {
+    } else if (
+      this.penBackupPid !== null &&
+      this.penBackupPid >= 2 &&
+      this.penBackupPid === this.pieces.length - 1 &&
+      (this.pieceAt(this.penBackupPid)?.outline.length ?? 0) === 0
+    ) {
       this.pieces.pop(); // la colonne vide d'une pièce jamais dessinée disparaît
-      if (this.activePiece === this.penBackupPid) this.activePiece = 0;
+      if (this.activePiece === this.penBackupPid) {
+        this.activePiece = 0;
+        this.emitActivePiece();
+      }
     }
     this.penBackup = null;
     this.penBackupPid = null;
     this.staticDirty = true; // la colonne abandonnée disparaît, la silhouette de tracé aussi
-    this.render();
+    if (render) this.render();
   }
 
   get drawing(): boolean {
@@ -2493,8 +2639,21 @@ export class PatternView {
     const grab = this.screenToUV(grabPoint?.[0] ?? p[0], grabPoint?.[1] ?? p[1], false);
     const edit = beginLogicalCurveLengthEdit(piece, orig, run, grab);
     if (!edit) return;
+    const rawPointer = this.screenToUV(p[0], p[1], false);
+    const movingScreen = this.vertexScreen(orig[edit.moving]!);
+    if (!movingScreen) return;
     this.draftPreview = orig.map((q) => [q[0], q[1]] as UV);
-    this.curveLengthDrag = { ...edit, pointerId: e.pointerId, orig };
+    this.curveLengthDrag = {
+      ...edit,
+      pointerId: e.pointerId,
+      orig,
+      rawPointerScreen: [p[0], p[1]],
+      pointerToMovingScreen: [
+        movingScreen[0] - p[0],
+        movingScreen[1] - p[1],
+      ],
+      intent: axisDragIntent(piece, edit.grab, rawPointer, edit.unit),
+    };
     this.curveHover = curveIndex;
     document.body.style.cursor = 'ew-resize';
     e.preventDefault();
@@ -2989,7 +3148,21 @@ export class PatternView {
             }
             this.draftPreview = orig.map((q) => [q[0], q[1]] as UV);
             this.lengthHover = { pieceId: this.activePiece, edge: ne.edge };
-            this.lengthDrag = { ...edit, pointerId: e.pointerId, orig, linked };
+            const rawPointer = this.screenToUV(p[0], p[1], false);
+            const movingScreen = this.vertexScreen(orig[edit.moving]!);
+            if (!movingScreen) return;
+            this.lengthDrag = {
+              ...edit,
+              pointerId: e.pointerId,
+              orig,
+              rawPointerScreen: [p[0], p[1]],
+              pointerToMovingScreen: [
+                movingScreen[0] - p[0],
+                movingScreen[1] - p[1],
+              ],
+              intent: axisDragIntent(this.draftPiece, edit.grab, rawPointer, edit.unit),
+              linked,
+            };
             this.lengthSnap = null;
             this.linkedPreview = null;
             document.body.style.cursor = 'grabbing';
@@ -3179,7 +3352,22 @@ export class PatternView {
     if (this.draftPiece) {
       if (this.curveLengthDrag && e.pointerId === this.curveLengthDrag.pointerId) {
         const r = this.canvas.getBoundingClientRect();
-        const pointer = this.screenToUV(e.clientX - r.left, e.clientY - r.top, false);
+        const rawPointerScreen: [number, number] = [
+          e.clientX - r.left,
+          e.clientY - r.top,
+        ];
+        const pointer = this.screenToUV(
+          rawPointerScreen[0],
+          rawPointerScreen[1],
+          false,
+        );
+        this.curveLengthDrag.rawPointerScreen = rawPointerScreen;
+        this.curveLengthDrag.intent = axisDragIntent(
+          this.draftPiece,
+          this.curveLengthDrag.grab,
+          pointer,
+          this.curveLengthDrag.unit,
+        );
         this.draftPreview = resizeLogicalCurveLengthFromPointer(
           this.draftPiece,
           this.curveLengthDrag.orig,
@@ -3211,7 +3399,22 @@ export class PatternView {
       }
       if (this.lengthDrag && e.pointerId === this.lengthDrag.pointerId) {
         const r = this.canvas.getBoundingClientRect();
-        const pointer = this.screenToUV(e.clientX - r.left, e.clientY - r.top, false);
+        const rawPointerScreen: [number, number] = [
+          e.clientX - r.left,
+          e.clientY - r.top,
+        ];
+        const pointer = this.screenToUV(
+          rawPointerScreen[0],
+          rawPointerScreen[1],
+          false,
+        );
+        this.lengthDrag.rawPointerScreen = rawPointerScreen;
+        this.lengthDrag.intent = axisDragIntent(
+          this.draftPiece,
+          this.lengthDrag.grab,
+          pointer,
+          this.lengthDrag.unit,
+        );
         let preview = resizeSegmentFromPointer(this.draftPiece, this.lengthDrag.orig, this.lengthDrag, pointer);
         this.lengthSnap = null;
         if (this.lengthSnapEnabled) {
@@ -4070,6 +4273,150 @@ export class PatternView {
     ctx.restore();
   }
 
+  /**
+   * Raw pointer ghost for ↔ Longueur.
+   *
+   * The solid outline remains the exact axis-projected production preview. The
+   * neutral dashed outline follows the unconstrained pointer, while the cyan
+   * arrows expose the direction that actually changes the length. Smart guides
+   * and snapping remain completely independent from this explanatory overlay.
+   */
+  private drawAxisLengthGesture(
+    ctx: CanvasRenderingContext2D,
+    pts: readonly [number, number][],
+  ): void {
+    const gesture = this.lengthDrag ?? this.curveLengthDrag;
+    if (!gesture || !this.tf) return;
+    const fixed = pts[gesture.fixed];
+    const projected = pts[gesture.moving];
+    const originalFixed = this.vertexScreen(gesture.orig[gesture.fixed]!);
+    const originalMoving = this.vertexScreen(gesture.orig[gesture.moving]!);
+    if (!fixed || !projected || !originalFixed || !originalMoving) return;
+
+    const dx = originalMoving[0] - originalFixed[0];
+    const dy = originalMoving[1] - originalFixed[1];
+    const length = Math.hypot(dx, dy);
+    if (length < 1e-3) return;
+    const ux = dx / length;
+    const uy = dy / length;
+    const nx = -uy;
+    const ny = ux;
+    const raw = gesture.rawPointerScreen;
+    // Preserve the complete pointer-to-endpoint offset, including the normal
+    // component of a bowed curve or a slightly off-edge press. The ghost now
+    // starts exactly on the endpoint and follows the raw hand without jumping.
+    const ghost: [number, number] = [
+      raw[0] + gesture.pointerToMovingScreen[0],
+      raw[1] + gesture.pointerToMovingScreen[1],
+    ];
+    const axisStart: [number, number] = [
+      originalFixed[0] - ux * 30,
+      originalFixed[1] - uy * 30,
+    ];
+    const axisEnd: [number, number] = [
+      originalMoving[0] + ux * 30,
+      originalMoving[1] + uy * 30,
+    ];
+
+    ctx.save();
+    // Effective axis: deliberately cyan, distinct from the yellow/violet/green
+    // construction relations already used by the smart guides.
+    ctx.strokeStyle = 'rgba(107, 223, 223, 0.72)';
+    ctx.lineWidth = 1.6;
+    ctx.setLineDash([7, 5]);
+    ctx.beginPath();
+    ctx.moveTo(axisStart[0], axisStart[1]);
+    ctx.lineTo(axisEnd[0], axisEnd[1]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    const arrow = (
+      tip: readonly [number, number],
+      direction: readonly [number, number],
+    ): void => {
+      ctx.beginPath();
+      ctx.moveTo(tip[0], tip[1]);
+      ctx.lineTo(
+        tip[0] - direction[0] * 8 + nx * 4,
+        tip[1] - direction[1] * 8 + ny * 4,
+      );
+      ctx.moveTo(tip[0], tip[1]);
+      ctx.lineTo(
+        tip[0] - direction[0] * 8 - nx * 4,
+        tip[1] - direction[1] * 8 - ny * 4,
+      );
+      ctx.stroke();
+    };
+    arrow(axisStart, [-ux, -uy]);
+    arrow(axisEnd, [ux, uy]);
+
+    // Unconstrained ghost requested by the hand, then its rejected normal
+    // component back to the effective projected endpoint.
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+    ctx.lineWidth = 1.4;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(fixed[0], fixed[1]);
+    ctx.lineTo(ghost[0], ghost[1]);
+    ctx.moveTo(ghost[0], ghost[1]);
+    ctx.lineTo(projected[0], projected[1]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.arc(ghost[0], ghost[1], 5.5, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.65)';
+    ctx.stroke();
+
+    if (gesture.intent.mostlyPerpendicular) {
+      const fullLabel =
+        '↔ Glissez dans le sens du bord pour changer sa longueur';
+      ctx.font = '700 10px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const availableW = Math.max(40, this.canvas.width - 12);
+      const lines =
+        ctx.measureText(fullLabel).width + 14 <= availableW
+          ? [fullLabel]
+          : ['↔ Glissez le long du bord', 'pour changer sa longueur'];
+      const labelW = Math.min(
+        availableW,
+        Math.max(...lines.map((line) => ctx.measureText(line).width)) + 14,
+      );
+      const lineHeight = 12;
+      const labelH = lines.length * lineHeight + 6;
+      const labelX = Math.min(
+        this.canvas.width - labelW / 2 - 6,
+        Math.max(labelW / 2 + 6, raw[0]),
+      );
+      const preferredY =
+        raw[1] + labelH + 10 < this.canvas.height
+          ? raw[1] + labelH / 2 + 10
+          : raw[1] - labelH / 2 - 10;
+      const labelY = Math.min(
+        this.canvas.height - labelH / 2 - 4,
+        Math.max(labelH / 2 + 4, preferredY),
+      );
+      ctx.fillStyle = 'rgba(10, 12, 15, 0.95)';
+      ctx.fillRect(
+        labelX - labelW / 2,
+        labelY - labelH / 2,
+        labelW,
+        labelH,
+      );
+      ctx.fillStyle = 'rgba(188, 244, 244, 1)';
+      lines.forEach((line, index) => {
+        ctx.fillText(
+          line,
+          labelX,
+          labelY + (index - (lines.length - 1) / 2) * lineHeight,
+        );
+      });
+    }
+    ctx.restore();
+  }
+
   /** Freeform outline: the live preview polygon (while dragging) + vertex handles. */
   private renderDraft(): void {
     const ctx = this.ctx;
@@ -4235,6 +4582,8 @@ export class PatternView {
       ctx.fillText(label, hs[0], y - 2);
       ctx.restore();
     }
+
+    this.drawAxisLengthGesture(ctx, pts);
 
     // ↔ LONGUEUR : le segment actif devient une cote de patron lisible. La
     // ligne de mesure est placée à l'extérieur de la pièce, avec prolongements,

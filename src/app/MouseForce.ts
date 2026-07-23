@@ -17,6 +17,17 @@ export class MouseForce {
   leftDown = false;
   rightDown = false;
 
+  /**
+   * Release the logical mouse buttons after an external cancellation such as
+   * Escape. The following physical pointerup is harmless and idempotent.
+   */
+  cancelGesture(): boolean {
+    const active = this.leftDown || this.rightDown;
+    this.leftDown = false;
+    this.rightDown = false;
+    return active;
+  }
+
   attach(canvas: HTMLElement): void {
     // Right button drives repulsion, so suppress the native context menu.
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -35,11 +46,16 @@ export class MouseForce {
       if (e.button === 2) this.rightDown = false;
     };
     canvas.addEventListener('pointerup', release);
-    canvas.addEventListener('pointercancel', release);
+    canvas.addEventListener('pointercancel', () => this.cancelGesture());
+    // Pointer capture should normally route the release back to the canvas,
+    // but embedded views and overlays can still retarget a synthetic/native
+    // release. The window fallback prevents a piece from remaining attached
+    // when the pointer ends outside the visible 3D pane.
+    window.addEventListener('pointerup', release);
+    window.addEventListener('pointercancel', () => this.cancelGesture());
     // If focus is lost mid-hold the up event never arrives — reset defensively.
     window.addEventListener('blur', () => {
-      this.leftDown = false;
-      this.rightDown = false;
+      this.cancelGesture();
     });
   }
 

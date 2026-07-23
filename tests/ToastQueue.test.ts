@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   boundedToastMessages,
   MAX_VISIBLE_TOASTS,
+  TOAST_BOTTOM_CSS,
   TOAST_VISIBLE_MS,
   undoToastMessage,
 } from '../src/app/ToastQueue';
@@ -19,6 +20,7 @@ describe('file de notifications', () => {
 
   it('reste lisible six secondes et normalise les limites invalides', () => {
     expect(TOAST_VISIBLE_MS).toBe(6_000);
+    expect(TOAST_BOTTOM_CSS).toBe('var(--toile-toast-bottom,24px)');
     expect(boundedToastMessages([], 'message', 0)).toEqual(['message']);
     expect(
       boundedToastMessages(['un', 'deux', 'trois'], 'quatre', Number.NaN),

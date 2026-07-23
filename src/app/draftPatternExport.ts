@@ -149,6 +149,8 @@ function clipToRect(
 }
 
 const safeName = (name: string): string => name.replace(/[^a-z0-9]/gi, '-');
+export const draftPatternSvgFilename = (garmentName: string): string =>
+  `patron-${safeName(garmentName)}.svg`;
 const escapeXml = (value: string): string =>
   value.replace(
     /[<>&'"]/g,
@@ -204,17 +206,19 @@ export function exportDraftPatternSvg(
   doc: DraftDoc,
   garmentName: string,
   seamAllowanceCm = 1.25,
-): void {
+): string | null {
   const svg = draftPatternSvg(doc, garmentName, seamAllowanceCm);
-  if (!svg) return;
+  if (!svg) return null;
   const blob = new Blob([svg], { type: 'image/svg+xml' });
   const anchor = document.createElement('a');
   anchor.href = URL.createObjectURL(blob);
-  anchor.download = `patron-${safeName(garmentName)}.svg`;
+  const filename = draftPatternSvgFilename(garmentName);
+  anchor.download = filename;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
   setTimeout(() => URL.revokeObjectURL(anchor.href), 30000);
+  return filename;
 }
 
 export function exportDraftPatternPdf(

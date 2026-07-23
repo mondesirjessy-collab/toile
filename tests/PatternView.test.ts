@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  axisDragIntent,
   beginLogicalCurveLengthEdit,
   beginSegmentLengthEdit,
   bendSamples,
@@ -262,6 +263,334 @@ describe('outil fermeture éclair', () => {
       expect(view.toggleZipper()).toBe(true);
       expect(view.toggleSew()).toBe(true);
       expect(view.zippering).toBe(false);
+    } finally {
+      if (oldDocument === undefined) delete (globalThis as { document?: Document }).document;
+      else Object.defineProperty(globalThis, 'document', { configurable: true, value: oldDocument });
+      if (oldWindow === undefined) delete (globalThis as { window?: Window }).window;
+      else Object.defineProperty(globalThis, 'window', { configurable: true, value: oldWindow });
+    }
+  });
+});
+
+describe('annulation atomique des outils 2D', () => {
+  it('désarme tous les modes et restaure une plume sans aucun commit', () => {
+    const oldDocument = globalThis.document;
+    const oldWindow = globalThis.window;
+    const fakeCanvas = {
+      width: 600,
+      height: 400,
+      getContext: () => null,
+      setAttribute: () => {},
+      removeAttribute: () => {},
+      dispatchEvent: () => true,
+      getBoundingClientRect: () => ({
+        left: 0,
+        top: 0,
+        right: 600,
+        bottom: 400,
+        width: 600,
+        height: 400,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }),
+    };
+    Object.defineProperty(globalThis, 'document', {
+      configurable: true,
+      value: {
+        body: { style: { cursor: '' } },
+        createElement: () => ({ ...fakeCanvas }),
+      },
+    });
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { addEventListener: () => {} },
+    });
+
+    const body: DraftPiece = {
+      outline: [[0.2, 0.2], [0.8, 0.2], [0.8, 0.9], [0.2, 0.9]],
+      width: 0.8,
+      height: 1.1,
+      topY: 1.6,
+      gap: 0.8,
+      darts: [],
+      openEdges: [],
+      seams: [],
+    };
+    const pocket: DraftPiece = {
+      ...structuredClone(body),
+      width: 0.22,
+      height: 0.25,
+      placement: { role: 'pocket', autoAlign: true },
+    };
+    const draftChanges: DraftPiece[] = [];
+    const assemblyChanges: AssemblySeam[] = [];
+    const penStates: boolean[] = [];
+
+    try {
+      const view = new PatternView(
+        fakeCanvas as unknown as HTMLCanvasElement,
+        () => {},
+        (piece) => draftChanges.push(piece),
+        (seam) => assemblyChanges.push(seam),
+        () => {},
+        () => {},
+        (drawing) => penStates.push(drawing),
+      );
+      view.setDraft(body, structuredClone(body), [pocket]);
+
+      expect(view.toggleLengthSnap()).toBe(true);
+      expect(view.cancelInteractions()).toEqual({
+        cancelledTool: true,
+        cancelledGesture: false,
+      });
+      expect(view.lengthEditing).toBe(false);
+      expect(view.lengthSnapping).toBe(false);
+
+      expect(view.toggleSegmentLink()).toBe(true);
+      expect(view.cancelInteractions().cancelledTool).toBe(true);
+      expect(view.linkingSegments).toBe(false);
+      expect(view.segmentLinkPick).toBeNull();
+
+      expect(view.toggleSew()).toBe(true);
+      view.pickEdgeForSeam(0, 0);
+      expect(view.seamPick).toEqual({ pieceId: 0, edge: 0 });
+      expect(view.cancelInteractions().cancelledTool).toBe(true);
+      expect(view.sewing).toBe(false);
+      expect(view.seamPick).toBeNull();
+
+      expect(view.toggleZipper()).toBe(true);
+      view.pickEdgeForZipper(0, 0);
+      expect(view.zipperPick).toEqual({ pieceId: 0, edge: 0 });
+      expect(view.cancelInteractions().cancelledTool).toBe(true);
+      expect(view.zippering).toBe(false);
+      expect(view.zipperPick).toBeNull();
+
+      expect(view.startSurfacePlacement(2)).toBe(true);
+      expect(view.placingSurfacePiece).toBe(true);
+      expect(view.cancelInteractions().cancelledTool).toBe(true);
+      expect(view.placingSurfacePiece).toBe(false);
+
+      view.selectPiece(0);
+      const lengthsBefore = view.debugEdgeLengthsCm();
+      view.startPen(body.width, body.height, body.topY, body.gap, 0);
+      expect(view.drawing).toBe(true);
+      expect(view.debugEdgeLengthsCm()).toEqual([]);
+      expect(view.cancelInteractions().cancelledTool).toBe(true);
+      expect(view.drawing).toBe(false);
+      expect(view.debugEdgeLengthsCm()).toEqual(lengthsBefore);
+
+      expect(draftChanges).toEqual([]);
+      expect(assemblyChanges).toEqual([]);
+      expect(penStates).toEqual([true, false]);
+    } finally {
+      if (oldDocument === undefined) delete (globalThis as { document?: Document }).document;
+      else Object.defineProperty(globalThis, 'document', { configurable: true, value: oldDocument });
+      if (oldWindow === undefined) delete (globalThis as { window?: Window }).window;
+      else Object.defineProperty(globalThis, 'window', { configurable: true, value: oldWindow });
+    }
+  });
+
+  it('jette les aperçus fantômes droite et courbe sans modifier le patron', () => {
+    const oldDocument = globalThis.document;
+    const oldWindow = globalThis.window;
+    const listeners = new Map<string, (event: PointerEvent) => void>();
+    const drawnText: string[] = [];
+    const lineDashes: number[][] = [];
+    const ghostPoints: Array<[number, number]> = [];
+    const fillRects: Array<[number, number, number, number]> = [];
+    const context = new Proxy(
+      {
+        measureText: (text: string) => ({ width: text.length * 6 }),
+        fillText: (text: string) => drawnText.push(text),
+        setLineDash: (dash: number[]) => lineDashes.push([...dash]),
+        arc: (x: number, y: number, radius: number) => {
+          if (Math.abs(radius - 5.5) < 1e-6) ghostPoints.push([x, y]);
+        },
+        fillRect: (x: number, y: number, width: number, height: number) =>
+          fillRects.push([x, y, width, height]),
+      },
+      {
+        get: (target, key) =>
+          key in target
+            ? target[key as keyof typeof target]
+            : () => {},
+        set: (target, key, value) => {
+          (target as Record<PropertyKey, unknown>)[key] = value;
+          return true;
+        },
+      },
+    ) as unknown as CanvasRenderingContext2D;
+    const fakeCanvas = {
+      width: 700,
+      height: 440,
+      getContext: () => context,
+      setAttribute: () => {},
+      removeAttribute: () => {},
+      dispatchEvent: () => true,
+      getBoundingClientRect: () => ({
+        left: 0,
+        top: 0,
+        right: 700,
+        bottom: 440,
+        width: 700,
+        height: 440,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }),
+    };
+    Object.defineProperty(globalThis, 'document', {
+      configurable: true,
+      value: {
+        body: { style: { cursor: '' } },
+        createElement: () => ({ ...fakeCanvas }),
+      },
+    });
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        addEventListener: (
+          type: string,
+          listener: (event: PointerEvent) => void,
+        ) => listeners.set(type, listener),
+      },
+    });
+
+    const piece: DraftPiece = {
+      outline: [[0.2, 0.25], [0.8, 0.25], [0.8, 0.85], [0.2, 0.85]],
+      width: 1,
+      height: 0.8,
+      topY: 1.4,
+      gap: 0.8,
+      darts: [],
+      openEdges: [],
+      seams: [],
+    };
+    const changes: DraftPiece[] = [];
+    const eventAt = (x: number, y: number): PointerEvent =>
+      ({
+        button: 0,
+        pointerId: 7,
+        clientX: x,
+        clientY: y,
+        shiftKey: false,
+        altKey: false,
+        metaKey: false,
+        ctrlKey: false,
+        preventDefault: () => {},
+        stopPropagation: () => {},
+      }) as unknown as PointerEvent;
+
+    try {
+      const view = new PatternView(
+        fakeCanvas as unknown as HTMLCanvasElement,
+        () => {},
+        (next) => changes.push(next),
+      );
+      view.setDraft(piece, structuredClone(piece));
+      view.setAssembly([]); // initialise la transformation du canvas de test
+      expect(view.toggleLength()).toBe(true);
+      const [a, b] = view.debugVertexScreens();
+      const down: [number, number] = [
+        a![0] + (b![0] - a![0]) * 0.75,
+        a![1] + (b![1] - a![1]) * 0.75,
+      ];
+      const before = view.debugEdgeLengthsCm();
+
+      ghostPoints.length = 0;
+      listeners.get('pointerdown')!(eventAt(...down));
+      expect(ghostPoints.at(-1)?.[0]).toBeCloseTo(b![0], 6);
+      expect(ghostPoints.at(-1)?.[1]).toBeCloseTo(b![1], 6);
+      drawnText.length = 0;
+      lineDashes.length = 0;
+      ghostPoints.length = 0;
+      listeners.get('pointermove')!(eventAt(down[0], down[1] + 70));
+
+      expect(drawnText).toContain(
+        '↔ Glissez dans le sens du bord pour changer sa longueur',
+      );
+      expect(lineDashes).toContainEqual([7, 5]);
+      expect(lineDashes).toContainEqual([4, 4]);
+      expect(ghostPoints.at(-1)?.[0]).toBeCloseTo(b![0], 6);
+      expect(ghostPoints.at(-1)?.[1]).toBeCloseTo(b![1] + 70, 6);
+
+      drawnText.length = 0;
+      const result = view.cancelInteractions();
+      expect(result).toEqual({
+        cancelledTool: true,
+        cancelledGesture: true,
+      });
+      expect(view.debugEdgeLengthsCm()).toEqual(before);
+      expect(view.lengthEditing).toBe(false);
+      expect(drawnText).not.toContain(
+        '↔ Glissez dans le sens du bord pour changer sa longueur',
+      );
+
+      // Le pointerup physique qui arrive après Escape ne doit rien valider.
+      listeners.get('pointerup')!(eventAt(down[0], down[1] + 70));
+
+      const curved: DraftPiece = {
+        ...structuredClone(piece),
+        outline: [[0.1, 0.5], [0.3, 0.38], [0.5, 0.34], [0.7, 0.38], [0.9, 0.5], [0.9, 0.9], [0.1, 0.9]],
+        openEdges: [{ from: 0, to: 4 }],
+      };
+      view.setDraft(curved, structuredClone(curved));
+      view.setAssembly([]);
+      expect(view.toggleLength()).toBe(true);
+      const run = logicalCurveRuns(curved)[0]!;
+      const curveScreens = view.debugVertexScreens();
+      const curveA = curveScreens[run.indices[0]!]!;
+      const curveB = curveScreens[run.indices[1]!]!;
+      const curveDown: [number, number] = [
+        (curveA[0] + curveB[0]) / 2,
+        (curveA[1] + curveB[1]) / 2,
+      ];
+      drawnText.length = 0;
+      ghostPoints.length = 0;
+      listeners.get('pointerdown')!(eventAt(...curveDown));
+      expect(ghostPoints.at(-1)?.[0]).toBeCloseTo(curveA[0], 6);
+      expect(ghostPoints.at(-1)?.[1]).toBeCloseTo(curveA[1], 6);
+      ghostPoints.length = 0;
+      listeners.get('pointermove')!(
+        eventAt(curveDown[0], curveDown[1] + 70),
+      );
+      expect(drawnText).toContain(
+        '↔ Glissez dans le sens du bord pour changer sa longueur',
+      );
+      expect(ghostPoints.at(-1)?.[0]).toBeCloseTo(curveA[0], 6);
+      expect(ghostPoints.at(-1)?.[1]).toBeCloseTo(curveA[1] + 70, 6);
+      expect(view.cancelInteractions().cancelledGesture).toBe(true);
+      listeners.get('pointerup')!(
+        eventAt(curveDown[0], curveDown[1] + 70),
+      );
+
+      // Le plan compact replie le conseil au lieu de le couper hors canvas.
+      view.resize(300, 260);
+      view.setDraft(piece, structuredClone(piece));
+      view.setAssembly([]);
+      expect(view.toggleLength()).toBe(true);
+      const [compactA, compactB] = view.debugVertexScreens();
+      const compactDown: [number, number] = [
+        compactA![0] + (compactB![0] - compactA![0]) * 0.75,
+        compactA![1] + (compactB![1] - compactA![1]) * 0.75,
+      ];
+      listeners.get('pointerdown')!(eventAt(...compactDown));
+      drawnText.length = 0;
+      fillRects.length = 0;
+      listeners.get('pointermove')!(
+        eventAt(compactDown[0], compactDown[1] + 70),
+      );
+      expect(drawnText).toContain('↔ Glissez le long du bord');
+      expect(drawnText).toContain('pour changer sa longueur');
+      expect(
+        fillRects.some(
+          ([x, _y, width, height]) =>
+            height === 30 && x >= 0 && x + width <= 300,
+        ),
+      ).toBe(true);
+      expect(view.cancelInteractions().cancelledGesture).toBe(true);
+      expect(changes).toEqual([]);
     } finally {
       if (oldDocument === undefined) delete (globalThis as { document?: Document }).document;
       else Object.defineProperty(globalThis, 'document', { configurable: true, value: oldDocument });
@@ -592,6 +921,42 @@ describe('courbes logiques uniques', () => {
     const resized = resizeLogicalCurveLengthFromPointer(piece, piece.outline, edit, pointer);
     expect(logicalCurveLengthM(piece, resized, run)).toBeGreaterThan(10);
   });
+
+  it('explique aussi le drag perpendiculaire silencieux d’une courbe', () => {
+    const piece: DraftPiece = {
+      outline: [[0.1, 0.5], [0.3, 0.38], [0.5, 0.34], [0.7, 0.38], [0.9, 0.5], [0.9, 0.9], [0.1, 0.9]],
+      width: 1,
+      height: 1,
+      topY: 1.5,
+      gap: 0.9,
+      darts: [],
+      openEdges: [{ from: 0, to: 4 }],
+      seams: [],
+    };
+    const run = logicalCurveRuns(piece)[0]!;
+    const edit = beginLogicalCurveLengthEdit(
+      piece,
+      piece.outline,
+      run,
+      piece.outline[run.from]!,
+    )!;
+    const pointer: UV = [edit.grab[0], edit.grab[1] + 0.1];
+    const intent = axisDragIntent(piece, edit.grab, pointer, edit.unit);
+    const resized = resizeLogicalCurveLengthFromPointer(
+      piece,
+      piece.outline,
+      edit,
+      pointer,
+    );
+
+    expect(intent.alongM).toBeCloseTo(0, 8);
+    expect(Math.abs(intent.acrossM)).toBeCloseTo(0.1, 8);
+    expect(intent.mostlyPerpendicular).toBe(true);
+    expect(logicalCurveLengthM(piece, resized, run)).toBeCloseTo(
+      logicalCurveLengthM(piece, piece.outline, run),
+      8,
+    );
+  });
 });
 
 describe('curveNeighbors (glisser-courbe)', () => {
@@ -731,6 +1096,23 @@ describe('outil ↔ Longueur des segments', () => {
     const out = resizeSegmentFromPointer(p, p.outline, edit, pointer);
     expect(out[edit.moving]![0]).toBeCloseTo(p.outline[edit.moving]![0], 6);
     expect(out[edit.moving]![1]).toBeCloseTo(p.outline[edit.moving]![1], 6);
+    const intent = axisDragIntent(p, edit.grab, pointer, edit.unit);
+    expect(intent.alongM).toBeCloseTo(0, 8);
+    expect(Math.abs(intent.acrossM)).toBeCloseTo(Math.SQRT2 * 0.1, 8);
+    expect(intent.mostlyPerpendicular).toBe(true);
+  });
+
+  it('distingue le déplacement utile sur l axe du mouvement ignoré', () => {
+    const p = piece();
+    const edit = beginSegmentLengthEdit(p, 0, [0.75, 0.3])!;
+    const pointer: UV = [edit.grab[0] + 0.1, edit.grab[1]];
+    const intent = axisDragIntent(p, edit.grab, pointer, edit.unit);
+    const out = resizeSegmentFromPointer(p, p.outline, edit, pointer);
+
+    expect(intent.alongM).toBeCloseTo(0.1, 8);
+    expect(intent.acrossM).toBeCloseTo(0, 8);
+    expect(intent.mostlyPerpendicular).toBe(false);
+    expect(outlineEdgeLengthCm(p, out, 0)).toBeCloseTo(70, 6);
   });
 
   it('n impose aucun maximum et empêche seulement un segment nul', () => {

@@ -95,7 +95,12 @@ import { PatternView, SEAM_COLORS, type PatternHandleSpec, type SystemLink } fro
 import { exportDraftPatternPdf, exportDraftPatternSvg } from './app/draftPatternExport';
 import { exportPatternPdf } from './app/patternPdf';
 import { exportPatternSvg } from './app/patternSvg';
-import { pickParticle } from './app/pick';
+import {
+  STAGING_PICK_RADIUS,
+  pickFrontmostInRanges,
+  pickParticle,
+  type TaggedParticleRange,
+} from './app/pick';
 import {
   SceneBuildTimeoutError,
   SceneLifecycle,
@@ -416,6 +421,13 @@ async function main(): Promise<void> {
   let hoodieFitMode: 'avatar' | 'standard' = 'avatar';
   let hoodieFitPristine = true;
   let hoodieFitBodyKey = '';
+  // Freeform "atelier" pattern (draw-your-own piece). Lazily created; a peer
+  // of the archetype patterns, reached only by sceneMode 'atelier'.
+  let draft: DraftDoc | null = null;
+  // `draft` alone cannot distinguish the lazy rendering fallback from a real
+  // user/imported pattern. Keep that distinction available to the onboarding
+  // and size controls from their very first synchronisation.
+  let draftTouched = false;
   const hoodieBodyKey = (body: BodyMeasure): string =>
     [
       body.height,
@@ -622,6 +634,79 @@ async function main(): Promise<void> {
   const guidanceEl = document.getElementById('atelier-guidance') as HTMLElement;
   const avatarStatureInput = document.getElementById('at-avatar-stature') as HTMLInputElement;
   const avatarStatureValue = document.getElementById('at-avatar-stature-value') as HTMLOutputElement;
+  const avatarStatureHelp = document.getElementById('at-avatar-stature-help') as HTMLElement;
+  const atelierHelpButton = document.getElementById('at-help') as HTMLButtonElement;
+  const atelierHelpPanel = document.getElementById('atelier-cheatsheet') as HTMLElement;
+  const atelierHelpClose = document.getElementById('at-help-close') as HTMLButtonElement;
+  const atelierEmptyState = document.getElementById('atelier-empty-state') as HTMLElement;
+  let atelierHelpReturnFocus: HTMLElement | null = null;
+  const setAtelierHelpOpen = (
+    open: boolean,
+    restoreFocus = true,
+  ): void => {
+    if (open === !atelierHelpPanel.hidden) return;
+    atelierHelpPanel.hidden = !open;
+    atelierHelpButton.setAttribute('aria-expanded', String(open));
+    if (open) {
+      atelierHelpReturnFocus =
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : atelierHelpButton;
+      atelierHelpPanel.focus();
+    } else if (restoreFocus) {
+      atelierHelpReturnFocus?.focus();
+      atelierHelpReturnFocus = null;
+    } else {
+      atelierHelpReturnFocus = null;
+    }
+  };
+  atelierHelpButton.addEventListener('click', () => {
+    setAtelierHelpOpen(atelierHelpPanel.hidden);
+  });
+  atelierHelpClose.addEventListener('click', () => setAtelierHelpOpen(false));
+  document.getElementById('at-empty-tshirt')?.addEventListener('click', () => {
+    document.getElementById('at-tshirt')?.click();
+  });
+  document.getElementById('at-empty-piece')?.addEventListener('click', () => {
+    document.getElementById('at-piece')?.click();
+  });
+  const firstUseTipsSeen = new Set<string>();
+  document.addEventListener('click', (event) => {
+    if (sceneMode !== 'atelier') return;
+    const button =
+      event.target instanceof Element
+        ? event.target.closest<HTMLButtonElement>('button[data-first-tip]')
+        : null;
+    const tip = button?.dataset.firstTip;
+    if (!button?.id || !tip) return;
+    const key = `toile:first-use:v139:${button.id}`;
+    if (firstUseTipsSeen.has(key)) return;
+    try {
+      if (sessionStorage.getItem(key)) return;
+      sessionStorage.setItem(key, '1');
+    } catch {
+      // Storage may be unavailable in a private webview; the in-memory set
+      // below still keeps the tip one-shot for this session.
+    }
+    firstUseTipsSeen.add(key);
+    window.setTimeout(() => showToast(`Astuce · ${tip}`), 0);
+  });
+  window.addEventListener('keydown', (event) => {
+    if (sceneMode !== 'atelier' || event.key !== '?' || event.metaKey || event.ctrlKey || event.altKey) {
+      return;
+    }
+    const target = event.target;
+    if (
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLSelectElement ||
+      target instanceof HTMLTextAreaElement ||
+      (target instanceof HTMLElement && target.isContentEditable)
+    ) {
+      return;
+    }
+    event.preventDefault();
+    setAtelierHelpOpen(atelierHelpPanel.hidden);
+  });
   avatarStatureInput.min = String(AVATAR_STATURE_MIN_CM);
   avatarStatureInput.max = String(AVATAR_STATURE_MAX_CM);
   const syncAvatarStature = (cm: number): void => {
@@ -689,13 +774,23 @@ async function main(): Promise<void> {
   };
   // ANNULER (Ctrl/Cmd+Z) : historique par instantanés du patron — un cran par
   // geste (déplacement de point, couture, suppression de pièce, chargement).
-  const draftHistory: { draft: DraftDoc | null; touched: boolean }[] = [];
+  const draftHistory: {
+    draft: DraftDoc | null;
+    touched: boolean;
+    hoodieFitPristine: boolean;
+    hoodieFitBodyKey: string;
+  }[] = [];
   const undoButton = document.getElementById('at-undo') as HTMLButtonElement;
   const syncUndoButton = (): void => {
     undoButton.disabled = draftHistory.length === 0;
   };
   const pushHistory = (): void => {
-    draftHistory.push({ draft: draft ? structuredClone(draft) : null, touched: draftTouched });
+    draftHistory.push({
+      draft: draft ? structuredClone(draft) : null,
+      touched: draftTouched,
+      hoodieFitPristine,
+      hoodieFitBodyKey,
+    });
     if (draftHistory.length > 40) draftHistory.shift();
     syncUndoButton();
   };
@@ -710,6 +805,12 @@ async function main(): Promise<void> {
     if (!h) return;
     draft = h.draft;
     draftTouched = h.touched;
+    hoodieFitPristine = h.hoodieFitPristine;
+    hoodieFitBodyKey = h.hoodieFitBodyKey;
+    syncPatternContextFromDraft(draft, {
+      pristine: hoodieFitPristine,
+      bodyKey: hoodieFitBodyKey,
+    });
     teePreset = false;
     atelierDesign = true;
     resetPlacement(); // un placement en attente ne survit pas à l'annulation
@@ -978,12 +1079,22 @@ async function main(): Promise<void> {
   });
   const updateAtelierBar = (): void => {
     const active = sceneMode === 'atelier';
+    const wasActive = document.body.classList.contains('atelier-active');
     atelierBar.classList.toggle('on', active);
     document.body.classList.toggle('atelier-active', active);
     if (active) {
       syncAtelierPhase();
       requestAnimationFrame(applySplit);
+      if (!wasActive) {
+        requestAnimationFrame(() => {
+          const entryTarget = atelierEmptyState.hidden
+            ? document.getElementById('at-tshirt')
+            : document.getElementById('at-empty-tshirt');
+          entryTarget?.focus({ preventScroll: true });
+        });
+      }
     } else {
+      setAtelierHelpOpen(false, false);
       patternView.setInteractionEnabled(true);
       document.body.classList.remove(
         'atelier-simulating',
@@ -998,6 +1109,7 @@ async function main(): Promise<void> {
         patternView.toggleZipper();
       }
       syncAtelierControls();
+      if (wasActive) canvas.focus({ preventScroll: true });
     }
   };
   (document.getElementById('at-big') as HTMLElement).addEventListener('click', () => {
@@ -1094,6 +1206,8 @@ async function main(): Promise<void> {
     } else {
       move3DEnabled = !move3DEnabled;
     }
+    pieceHoverDirty = true;
+    if (!move3DEnabled) setPieceHover(null);
     setPressed('at-move3d', move3DEnabled);
     showPlacementStatus(
       move3DEnabled
@@ -1271,6 +1385,56 @@ async function main(): Promise<void> {
   let hoodieSize: LucasHoodieSize = 'S';
   let loadedPattern: 'boxy' | 'pants' | 'hoodie' = 'boxy';
   const sizeSel = document.getElementById('at-size') as HTMLSelectElement | null;
+  const syncAvatarStatureHelp = (): void => {
+    if (sizeSel) sizeSel.disabled = !draftTouched;
+    if (!draftTouched) {
+      const nextSize =
+        loadedPattern === 'pants'
+          ? pantsSize
+          : loadedPattern === 'hoodie'
+            ? hoodieFitMode === 'avatar'
+              ? 'un ajustement au mannequin'
+              : hoodieSize
+            : boxySize;
+      avatarStatureHelp.textContent =
+        `Redimensionne le mannequin et ses collisions. Le prochain patron sera chargé avec ${nextSize}.`;
+      return;
+    }
+    const frozenHoodie =
+      loadedPattern === 'hoodie' &&
+      hoodieFitMode === 'avatar' &&
+      !hoodieFitPristine;
+    const frozenValue = 'avatar-frozen';
+    const frozenOption = sizeSel?.querySelector<HTMLOptionElement>(
+      `option[value="${frozenValue}"]`,
+    );
+    if (frozenHoodie) {
+      if (sizeSel && !frozenOption) {
+        const option = document.createElement('option');
+        option.value = frozenValue;
+        option.textContent = 'Ajustement personnalisé · dimensions figées';
+        sizeSel.prepend(option);
+      }
+      if (sizeSel) sizeSel.value = frozenValue;
+      avatarStatureHelp.textContent =
+        'Redimensionne le mannequin et ses collisions. Le vêtement personnalisé garde ses dimensions ; choisissez « Ajusté au mannequin » pour recalculer le patron.';
+      return;
+    }
+    frozenOption?.remove();
+    if (loadedPattern === 'hoodie' && hoodieFitMode === 'avatar') {
+      avatarStatureHelp.textContent =
+        'Redimensionne le mannequin et ses collisions. « Ajusté au mannequin » suit ces mensurations ; choisissez une taille PDF pour garder des mesures fixes.';
+      return;
+    }
+    const selectedSize =
+      loadedPattern === 'pants'
+        ? pantsSize
+        : loadedPattern === 'hoodie'
+          ? hoodieSize
+          : boxySize;
+    avatarStatureHelp.textContent =
+      `Redimensionne le mannequin et ses collisions. Le vêtement garde sa taille (${selectedSize}) — changez « Taille du vêtement » pour le regrader.`;
+  };
   const showSizes = (kind: 'boxy' | 'pants' | 'hoodie'): void => {
     if (!sizeSel) return;
     loadedPattern = kind;
@@ -1296,15 +1460,92 @@ async function main(): Promise<void> {
       ].join('');
       sizeSel.value = hoodieFitMode === 'avatar' ? 'avatar' : hoodieSize;
     }
+    syncAvatarStatureHelp();
   };
+  const isLegacyBoxyDraft = (source: DraftDoc): boolean =>
+    source.preset === undefined &&
+    !!source.back &&
+    (source.seams?.length ?? 0) === 4 &&
+    source.pieces?.length === 3 &&
+    source.pieces[0]?.wrap === 'armR' &&
+    source.pieces[1]?.wrap === 'armL' &&
+    source.pieces[2]?.wrap === 'neck';
+  const nearestBoxySize = (source: DraftDoc): BoxySize => {
+    let bestSize = boxySize;
+    let bestError = Number.POSITIVE_INFINITY;
+    for (const candidateSize of BOXY_SIZES) {
+      const candidate = boxyTee(candidateSize, lastMeasure, REF);
+      const error =
+        Math.abs(candidate.piece.width - source.piece.width) +
+        Math.abs(candidate.piece.height - source.piece.height) +
+        Math.abs(
+          (candidate.pieces?.[0]?.width ?? 0) -
+            (source.pieces?.[0]?.width ?? 0),
+        ) +
+        Math.abs(
+          (candidate.pieces?.[0]?.height ?? 0) -
+            (source.pieces?.[0]?.height ?? 0),
+        );
+      if (error < bestError) {
+        bestError = error;
+        bestSize = candidateSize;
+      }
+    }
+    return bestSize;
+  };
+  function syncPatternContextFromDraft(
+    source: DraftDoc | null,
+    hoodieState: { pristine: boolean; bodyKey: string } = {
+      pristine: false,
+      bodyKey: '',
+    },
+  ): boolean {
+    if (!source) {
+      showSizes('boxy');
+      return true;
+    }
+    const legacyBoxy = isLegacyBoxyDraft(source);
+    if (source.preset === 'boxy-tee' || legacyBoxy) {
+      const savedSize = source.presetSize;
+      boxySize =
+        savedSize && BOXY_SIZES.includes(savedSize as BoxySize)
+          ? (savedSize as BoxySize)
+          : nearestBoxySize(source);
+      showSizes('boxy');
+      return true;
+    }
+    if (source.preset === 'loose-pants') {
+      const savedSize = source.presetSize;
+      if (
+        savedSize &&
+        LOOSE_PANTS_SIZES.includes(savedSize as LoosePantsSize)
+      ) {
+        pantsSize = savedSize as LoosePantsSize;
+      }
+      showSizes('pants');
+      return true;
+    }
+    if (source.preset === 'lucas-hoodie') {
+      const sourceSize = lucasHoodieSourceSize(source);
+      hoodieFitMode = source.presetSize?.startsWith('fit-')
+        ? 'avatar'
+        : 'standard';
+      if (sourceSize) hoodieSize = sourceSize;
+      hoodieFitPristine = hoodieState.pristine;
+      hoodieFitBodyKey = hoodieState.bodyKey;
+      showSizes('hoodie');
+      return true;
+    }
+    return false;
+  }
   const loadBoxyTee = (): void => {
     if (!bigPanel) setBig(true);
     patternView.resetView();
-    showSizes('boxy');
     atelierDesign = true;
     simBtn().classList.remove('running');
     resetPlacement(); // le patron chargé remplace tout : placement en attente caduc
     pushHistory();
+    showSizes('boxy');
     teePreset = false;
     draft = boxyTee(boxySize, lastMeasure, REF);
     draftTouched = true; // un vrai draft : éditable, exportable
@@ -1318,11 +1559,11 @@ async function main(): Promise<void> {
   const loadLoosePants = (): void => {
     if (!bigPanel) setBig(true);
     patternView.resetView();
-    showSizes('pants');
     atelierDesign = true;
     simBtn().classList.remove('running');
     resetPlacement();
     pushHistory();
+    showSizes('pants');
     teePreset = false;
     draft = loosePants(pantsSize, lastMeasure);
     draftTouched = true;
@@ -1336,18 +1577,20 @@ async function main(): Promise<void> {
   const loadLucasHoodie = (): void => {
     if (!bigPanel) setBig(true);
     patternView.resetView();
-    showSizes('hoodie');
     atelierDesign = true;
     simBtn().classList.remove('running');
     resetPlacement();
     pushHistory();
+    // Selecting either the live mannequin grade or a PDF size explicitly
+    // starts from a fresh built-in pattern. Later manual edits mark it frozen.
+    hoodieFitPristine = true;
+    showSizes('hoodie');
     teePreset = false;
     const fit = lucasHoodieFit(lastMeasure);
     draft =
       hoodieFitMode === 'avatar'
         ? lucasHoodieAdjusted(lastMeasure)
         : lucasHoodie(hoodieSize, lastMeasure);
-    hoodieFitPristine = true;
     hoodieFitBodyKey = hoodieBodyKey(lastMeasure);
     draftTouched = true;
     atelierSleeves = false;
@@ -1377,8 +1620,10 @@ async function main(): Promise<void> {
         pantsSize = sizeSel.value as LoosePantsSize;
         if (sceneMode === 'atelier') loadLoosePants();
       } else if (loadedPattern === 'hoodie') {
+        if (sizeSel.value === 'avatar-frozen') return;
         if (sizeSel.value === 'avatar') {
           hoodieFitMode = 'avatar';
+          hoodieFitPristine = true;
         } else {
           hoodieFitMode = 'standard';
           hoodieSize = sizeSel.value as LucasHoodieSize;
@@ -1531,14 +1776,6 @@ async function main(): Promise<void> {
     Array.from({ length: 6 }, (_, k) => 0.21 + (flare - 0.21) * (k / 5));
   let dressPattern = { length: 1.3, flare: 0.5, neck: 0.1, profile: linearProfile(0.5) };
   let shirtPattern = { sleeve: 0.47, profile: [0.22, 0.22, 0.22] }; // stations v=0.57/0.79/1
-  // Freeform "atelier" pattern (draw-your-own piece). Lazily created; a peer of
-  // the archetype patterns, reached only by sceneMode 'atelier'.
-  let draft: DraftDoc | null = null;
-  // Did the user ACTUALLY draw/import a draft? `draft` alone can't tell: build()
-  // lazily fills it with defaultDraft on the first atelier visit (a render
-  // fallback), so a plain atelier peek must NOT make archetype exports carry a
-  // parasitic draft. Only real edits + import set this.
-  let draftTouched = false;
   const fabricSel = document.getElementById('at-fabric') as HTMLSelectElement | null;
   const gsmInput = document.getElementById('at-gsm') as HTMLInputElement | null;
   const gsmReset = document.getElementById('at-gsm-reset') as HTMLButtonElement | null;
@@ -1903,10 +2140,16 @@ async function main(): Promise<void> {
   let dragIndex: number | null = null;
   let dragDepth = 0;
   type PieceParticleRange = { first: number; count: number; instance: number };
+  type StagingPieceIdentity = { pid: number; instance: number };
   // Physical instances generated for each draft piece. Repeated cutting
   // pieces keep the same pid (and therefore the same editable 2D pattern), but
   // receive distinct instance numbers so either copy can be arranged alone.
   let pieceParticleRanges = new Map<number, PieceParticleRange[]>();
+  let taggedPieceRanges: TaggedParticleRange<StagingPieceIdentity>[] = [];
+  let pieceBoundaryIndexCache = new Map<
+    string,
+    Array<{ first: number; indices: number[] }>
+  >();
   const registerPieceRange = (
     pid: number,
     first: number,
@@ -1916,6 +2159,11 @@ async function main(): Promise<void> {
     const ranges = pieceParticleRanges.get(pid) ?? [];
     ranges.push({ first, count, instance });
     pieceParticleRanges.set(pid, ranges);
+    taggedPieceRanges.push({
+      first,
+      count,
+      tag: { pid, instance },
+    });
   };
   // ORGANISER DANS LA 3D (mode conception, pièces gelées) : the grabbed piece
   // follows the pointer as a rigid whole. On release only its preparation
@@ -1927,7 +2175,75 @@ async function main(): Promise<void> {
     depth: number; // profondeur de saisie le long du rayon (le drag reste dans ce plan)
     start: [number, number, number]; // point monde saisi
     delta: [number, number, number];
+    pointerId: number;
+    positions: Float32Array; // immutable CPU snapshot from the instant of grab
   } | null = null;
+  type StagingPiecePick = StagingPieceIdentity & {
+    index: number;
+    depth: number;
+    ranges: PieceParticleRange[];
+  };
+  let pieceHover: StagingPieceIdentity | null = null;
+  let pointerInside3D = false;
+  let pointerButtons3D = 0;
+  let pieceHoverDirty = true;
+  let nextPieceHoverAt = 0;
+  const setPieceHover = (next: StagingPieceIdentity | null): void => {
+    const same =
+      pieceHover?.pid === next?.pid &&
+      pieceHover?.instance === next?.instance;
+    if (same) return;
+    pieceHover = next;
+    canvas.classList.toggle('piece-hover', !!next && !pieceDrag);
+  };
+  const releasePiecePointer = (pointerId: number): void => {
+    try {
+      if (canvas.hasPointerCapture(pointerId)) {
+        canvas.releasePointerCapture(pointerId);
+      }
+    } catch {
+      // The browser can release capture itself during pointercancel/teardown.
+    }
+  };
+  canvas.addEventListener('pointerenter', (event) => {
+    pointerInside3D = true;
+    pointerButtons3D = event.buttons;
+    pieceHoverDirty = true;
+  });
+  canvas.addEventListener('pointermove', (event) => {
+    pointerInside3D = true;
+    pointerButtons3D = event.buttons;
+    pieceHoverDirty = true;
+  });
+  canvas.addEventListener(
+    'wheel',
+    () => {
+      pieceHoverDirty = true;
+    },
+    { passive: true },
+  );
+  canvas.addEventListener('pointerdown', (event) => {
+    pointerButtons3D = event.buttons;
+    pieceHoverDirty = true;
+    if (event.button !== 0 || event.shiftKey) setPieceHover(null);
+  });
+  const finishPointerState = (event: PointerEvent): void => {
+    pointerButtons3D = event.buttons;
+    pieceHoverDirty = true;
+  };
+  canvas.addEventListener('pointerup', finishPointerState);
+  canvas.addEventListener('pointercancel', finishPointerState);
+  window.addEventListener('pointerup', finishPointerState);
+  window.addEventListener('pointercancel', finishPointerState);
+  canvas.addEventListener('lostpointercapture', () => {
+    pieceHoverDirty = true;
+  });
+  canvas.addEventListener('pointerleave', (event) => {
+    pointerInside3D = false;
+    pointerButtons3D = event.buttons;
+    pieceHoverDirty = true;
+    if (!pieceDrag) setPieceHover(null);
+  });
 
   const buildNow = async (
     target: SceneMode,
@@ -1935,6 +2251,8 @@ async function main(): Promise<void> {
   ): Promise<void> => {
     const checkpoint = context?.checkpoint ?? (async (): Promise<void> => {});
     pieceParticleRanges = new Map();
+    taggedPieceRanges = [];
+    pieceBoundaryIndexCache = new Map();
     // 'drapé': one sheet falling onto the sphere. 'couture': two pattern pieces
     // stitched around the sphere. 'robe': the same seamed pieces closing around
     // a dress form (stacked-sphere bust), falling to the floor.
@@ -2850,7 +3168,14 @@ async function main(): Promise<void> {
       system.retire();
       posCache = null;
       dragIndex = null;
+      if (pieceDrag) releasePiecePointer(pieceDrag.pointerId);
       pieceDrag = null;
+      mouse.cancelGesture();
+      camera.cancelGesture();
+      pointerButtons3D = 0;
+      pieceHoverDirty = true;
+      setPieceHover(null);
+      canvas.classList.remove('piece-dragging');
       await system.prepareDispose();
       renderer.dispose();
       await system.dispose();
@@ -2958,6 +3283,17 @@ async function main(): Promise<void> {
   const refreshHint = (): void => {
     const hintEl = document.getElementById('hint');
     if (!hintEl) return;
+    const emptyAtelier = (
+      sceneMode === 'atelier' &&
+      atelierDesign &&
+      !draftTouched &&
+      !patternView.drawing
+    );
+    atelierEmptyState.hidden = !emptyAtelier;
+    // Loading/importing/drawing flips draftTouched after the preset selector
+    // was first populated. Re-assert its enabled state and honest M4 wording
+    // with the same transaction that refreshes the workspace guidance.
+    syncAvatarStatureHelp();
     let message: string;
     if (sceneMode !== 'atelier') {
       message =
@@ -3120,6 +3456,40 @@ async function main(): Promise<void> {
     }
     return null;
   };
+  /**
+   * Picker unique de préparation 3D : il ne considère que les plages qui
+   * appartiennent réellement à une pièce du patron. Le survol et le clic
+   * partagent donc exactement la même cible, même si un tube système ou une
+   * pièce cachée est plus près du rayon.
+   */
+  const pickStagingPiece = (
+    ray: {
+      origin: readonly [number, number, number];
+      dir: readonly [number, number, number];
+    },
+  ): StagingPiecePick | null => {
+    if (!posCache) return null;
+    const hit = pickFrontmostInRanges(
+      posCache,
+      system.count,
+      taggedPieceRanges,
+      ray.origin,
+      ray.dir,
+      STAGING_PICK_RADIUS,
+      (index) => system.isMovable(index),
+    );
+    if (!hit) return null;
+    const ranges = (pieceParticleRanges.get(hit.tag.pid) ?? []).filter(
+      (range) => range.instance === hit.tag.instance,
+    );
+    if (!ranges.length) return null;
+    return {
+      ...hit.tag,
+      index: hit.index,
+      depth: hit.depth,
+      ranges,
+    };
+  };
   const draftPieceOf = (pid: number): DraftPiece | null => {
     if (!draft) return null;
     if (pid === 0) return draft.piece;
@@ -3228,6 +3598,61 @@ async function main(): Promise<void> {
     }
     return pts;
   };
+  /**
+   * Topological boundary particles for one physical cutting instance.
+   * The result is cached for the current build: camera motion and staging
+   * translation change positions, never this grid topology.
+   */
+  const physicalPieceBoundaries = (
+    pid: number,
+    instance: number,
+  ): Array<{ first: number; indices: number[] }> => {
+    const key = `${pid}:${instance}`;
+    const cached = pieceBoundaryIndexCache.get(key);
+    if (cached) return cached;
+
+    const panelSize = resolution * resolution;
+    const boundaries: Array<{ first: number; indices: number[] }> = [];
+    const ranges = (pieceParticleRanges.get(pid) ?? []).filter(
+      (range) => range.instance === instance,
+    );
+    for (const range of ranges) {
+      for (
+        let panelOffset = 0;
+        panelOffset < range.count;
+        panelOffset += panelSize
+      ) {
+        const first = range.first + panelOffset;
+        const count = Math.min(panelSize, range.count - panelOffset);
+        const live = (local: number): boolean =>
+          local >= 0 &&
+          local < count &&
+          first + local < system.count &&
+          system.isPatternParticle(first + local);
+        const boundary: number[] = [];
+        for (let local = 0; local < count; local++) {
+          if (!live(local)) continue;
+          const x = local % resolution;
+          const y = Math.floor(local / resolution);
+          if (
+            x === 0 ||
+            y === 0 ||
+            x === resolution - 1 ||
+            y === resolution - 1 ||
+            !live(local - 1) ||
+            !live(local + 1) ||
+            !live(local - resolution) ||
+            !live(local + resolution)
+          ) {
+            boundary.push(first + local);
+          }
+        }
+        if (boundary.length) boundaries.push({ first, indices: boundary });
+      }
+    }
+    pieceBoundaryIndexCache.set(key, boundaries);
+    return boundaries;
+  };
   // Mappeur (u,v) → monde pour une CELLULE quelconque d'une pièce (pas
   // seulement le contour) — même géométrie de spawn qu'outlineWorld ; sert au
   // surlignage 3D des liens système (cellules intérieures épinglées).
@@ -3281,6 +3706,7 @@ async function main(): Promise<void> {
       !sewing &&
       !zippering &&
       !pick &&
+      !pieceHover &&
       !pieceDrag &&
       !surfacePieces.length
     ) {
@@ -3322,6 +3748,138 @@ async function main(): Promise<void> {
         mirrorCtx.closePath();
         mirrorCtx.stroke();
       }
+    };
+    type ScreenPoint = [number, number];
+    const convexHull = (points: ScreenPoint[]): ScreenPoint[] => {
+      if (points.length <= 2) return points;
+      points.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+      const cross = (
+        o: ScreenPoint,
+        a: ScreenPoint,
+        b: ScreenPoint,
+      ): number =>
+        (a[0] - o[0]) * (b[1] - o[1]) -
+        (a[1] - o[1]) * (b[0] - o[0]);
+      const lower: ScreenPoint[] = [];
+      for (const point of points) {
+        while (
+          lower.length >= 2 &&
+          cross(lower[lower.length - 2]!, lower[lower.length - 1]!, point) <= 0
+        ) {
+          lower.pop();
+        }
+        lower.push(point);
+      }
+      const upper: ScreenPoint[] = [];
+      for (let index = points.length - 1; index >= 0; index--) {
+        const point = points[index]!;
+        while (
+          upper.length >= 2 &&
+          cross(upper[upper.length - 2]!, upper[upper.length - 1]!, point) <= 0
+        ) {
+          upper.pop();
+        }
+        upper.push(point);
+      }
+      lower.pop();
+      upper.pop();
+      return [...lower, ...upper];
+    };
+    const physicalContours = (
+      pid: number,
+      instance: number,
+      positions: Float32Array,
+      delta: readonly [number, number, number] = [0, 0, 0],
+    ): ScreenPoint[][] => {
+      const contours: ScreenPoint[][] = [];
+      const piece = draftPieceOf(pid);
+      for (const boundaryGroup of physicalPieceBoundaries(pid, instance)) {
+        const { first, indices: boundary } = boundaryGroup;
+        let ordered = boundary;
+        if (piece && piece.outline.length >= 3) {
+          const sampled: number[] = [];
+          const seen = new Set<number>();
+          for (let edge = 0; edge < piece.outline.length; edge++) {
+            const a = piece.outline[edge]!;
+            const b = piece.outline[(edge + 1) % piece.outline.length]!;
+            const steps = Math.max(
+              1,
+              Math.ceil(
+                Math.hypot(
+                  (b[0] - a[0]) * (resolution - 1),
+                  (b[1] - a[1]) * (resolution - 1),
+                ) * 1.25,
+              ),
+            );
+            for (let step = 0; step < steps; step++) {
+              const t = step / steps;
+              const tx =
+                Math.min(1, Math.max(0, a[0] + (b[0] - a[0]) * t)) *
+                (resolution - 1);
+              const ty =
+                Math.min(1, Math.max(0, a[1] + (b[1] - a[1]) * t)) *
+                (resolution - 1);
+              let nearest = -1;
+              let nearestD2 = Number.POSITIVE_INFINITY;
+              for (const index of boundary) {
+                const local = index - first;
+                const dx = (local % resolution) - tx;
+                const dy = Math.floor(local / resolution) - ty;
+                const d2 = dx * dx + dy * dy;
+                if (d2 < nearestD2) {
+                  nearestD2 = d2;
+                  nearest = index;
+                }
+              }
+              if (nearest >= 0 && sampled.at(-1) !== nearest) {
+                sampled.push(nearest);
+                seen.add(nearest);
+              }
+            }
+          }
+          // An ordered UV contour preserves armholes, necklines and trouser
+          // forks. If a specialised folded panel cannot be mapped reliably,
+          // retain the topology-only convex fallback below.
+          if (seen.size >= Math.max(3, Math.ceil(boundary.length * 0.35))) {
+            if (sampled.length > 1 && sampled.at(-1) === sampled[0]) {
+              sampled.pop();
+            }
+            ordered = sampled;
+          }
+        }
+        const points: ScreenPoint[] = [];
+        for (const index of ordered) {
+          if (index * 4 + 2 >= positions.length) continue;
+          const x = positions[index * 4]! + delta[0];
+          const y = positions[index * 4 + 1]! + delta[1];
+          const z = positions[index * 4 + 2]! + delta[2];
+          if (![x, y, z].every(Number.isFinite)) continue;
+          const point = proj([x, y, z]);
+          if (point) points.push(point);
+        }
+        const contour = ordered === boundary ? convexHull(points) : points;
+        if (contour.length >= 2) contours.push(contour);
+      }
+      return contours;
+    };
+    const strokeContours = (
+      contours: readonly ScreenPoint[][],
+      style: string,
+      width: number,
+    ): void => {
+      mirrorCtx.strokeStyle = style;
+      mirrorCtx.lineWidth = width;
+      mirrorCtx.lineJoin = 'round';
+      for (const contour of contours) {
+        mirrorCtx.beginPath();
+        mirrorCtx.moveTo(contour[0]![0], contour[0]![1]);
+        for (let index = 1; index < contour.length; index++) {
+          mirrorCtx.lineTo(contour[index]![0], contour[index]![1]);
+        }
+        mirrorCtx.closePath();
+        mirrorCtx.stroke();
+      }
+      mirrorCtx.lineJoin = 'miter';
     };
     const nPieces = 2 + (draft.pieces?.length ?? 0);
     if (sewing || zippering || pick) {
@@ -3471,14 +4029,52 @@ async function main(): Promise<void> {
         }
       }
     }
+    if (pieceHover && !pieceDrag) {
+      const contours = posCache
+        ? physicalContours(
+            pieceHover.pid,
+            pieceHover.instance,
+            posCache,
+        )
+        : [];
+      if (contours.length) {
+        strokeContours(contours, 'rgba(112, 202, 255, 0.24)', 6);
+        strokeContours(contours, 'rgba(160, 225, 255, 0.98)', 2.5);
+      } else {
+        stroke(
+          pieceHover.pid,
+          'rgba(112, 202, 255, 0.24)',
+          6,
+          undefined,
+          pieceHover.instance,
+        );
+        stroke(
+          pieceHover.pid,
+          'rgba(160, 225, 255, 0.98)',
+          2.5,
+          undefined,
+          pieceHover.instance,
+        );
+      }
+    }
     if (pieceDrag) {
-      stroke(
+      const contours = physicalContours(
         pieceDrag.pid,
-        'rgba(255, 159, 107, 0.9)',
-        2.5,
-        pieceDrag.delta,
         pieceDrag.instance,
+        pieceDrag.positions,
+        pieceDrag.delta,
       );
+      if (contours.length) {
+        strokeContours(contours, 'rgba(255, 159, 107, 0.9)', 2.5);
+      } else {
+        stroke(
+          pieceDrag.pid,
+          'rgba(255, 159, 107, 0.9)',
+          2.5,
+          pieceDrag.delta,
+          pieceDrag.instance,
+        );
+      }
     }
   };
   // CLO3D-style pointer model: a left press ON the fabric grabs it; a left
@@ -3491,6 +4087,49 @@ async function main(): Promise<void> {
     const ndcY = 1 - ((e.clientY - rect.top) / rect.height) * 2;
     const ray = camera.pickRay(ndcX, ndcY, canvas.width / canvas.height);
     const count = Math.min(system.count, posCache.length / 4);
+    // En préparation, ne lancer la recherche que dans les plages de pièces
+    // enregistrées. C'est le même picker que le survol : ce qui s'allume est
+    // exactement ce qui sera saisi, avec une zone généreuse près du contour.
+    if (
+      sceneMode === 'atelier' &&
+      atelierDesign &&
+      move3DEnabled &&
+      !patternView.sewing &&
+      !patternView.zippering
+    ) {
+      const target = pickStagingPiece(ray);
+      if (!target) {
+        setPieceHover(null);
+        return true;
+      }
+      setPieceHover(null);
+      pieceDrag = {
+        pid: target.pid,
+        instance: target.instance,
+        ranges: target.ranges,
+        depth: target.depth,
+        start: [
+          ray.origin[0] + ray.dir[0] * target.depth,
+          ray.origin[1] + ray.dir[1] * target.depth,
+          ray.origin[2] + ray.dir[2] * target.depth,
+        ],
+        delta: [0, 0, 0],
+        pointerId: e.pointerId,
+        positions: posCache,
+      };
+      try {
+        canvas.setPointerCapture(e.pointerId);
+      } catch {
+        // A synthetic or already-cancelled pointer cannot be captured.
+      }
+      canvas.classList.add('piece-dragging');
+      activeStagingInstance = {
+        pid: target.pid,
+        instance: target.instance,
+      };
+      patternView.selectPiece(target.pid);
+      return false;
+    }
     // Skip immovable particles (pinned/tacked/cut) so a press on one falls
     // through to camera orbit instead of a dead click (audit M37); the dblclick
     // tack picker below stays unfiltered so tacks remain removable.
@@ -3516,32 +4155,68 @@ async function main(): Promise<void> {
       }
       return true; // armé mais loin d'un bord → orbite
     }
-    // Mode conception + outil ✥ : saisir une pièce la déplace comme un objet
-    // rigide de préparation. Outil coupé = le même geste orbite la caméra.
-    if (sceneMode === 'atelier' && atelierDesign && move3DEnabled) {
-      const front = pickFrontmost(ray) ?? hit; // saisir CE QU'ON VOIT (les pièces à plat s'empilent en profondeur)
-      const pr = pieceRangeAt(front.index);
-      if (!pr) return true; // tube système ou hors patron → orbite
-      pieceDrag = {
-        ...pr,
-        depth: front.depth,
-        start: [
-          ray.origin[0] + ray.dir[0] * front.depth,
-          ray.origin[1] + ray.dir[1] * front.depth,
-          ray.origin[2] + ray.dir[2] * front.depth,
-        ],
-        delta: [0, 0, 0],
-      };
-      activeStagingInstance = { pid: pr.pid, instance: pr.instance };
-      patternView.selectPiece(pr.pid); // le plan 2D suit la sélection 3D
-      return false;
-    }
     if (sceneMode === 'atelier' && atelierDesign) return true;
     dragIndex = hit.index;
     dragDepth = hit.depth;
     return false; // fabric grabbed — the camera stays put
   };
   camera.attach(canvas, tryOrbit);
+  window.addEventListener('keydown', (event) => {
+    if (sceneMode !== 'atelier' || event.key !== 'Escape') return;
+    if (!atelierHelpPanel.hidden) {
+      event.preventDefault();
+      setAtelierHelpOpen(false);
+      return;
+    }
+
+    const chooserWasOpen = !placeChooser.hidden;
+    const placementWasPending = placePending !== null || penPlacement;
+    const patternCancel = patternView.cancelInteractions();
+    let cancelled3D = false;
+    if (pieceDrag) {
+      const cancelledDrag = pieceDrag;
+      for (const range of cancelledDrag.ranges) {
+        system.translateRange(range.first, range.count, [0, 0, 0]);
+      }
+      releasePiecePointer(cancelledDrag.pointerId);
+      pieceDrag = null;
+      pointerButtons3D = 0;
+      pieceHoverDirty = true;
+      canvas.classList.remove('piece-dragging');
+      cancelled3D = true;
+    }
+    if (dragIndex !== null) {
+      system.setDrag(null, [0, 0, 0]);
+      dragIndex = null;
+      cancelled3D = true;
+    }
+    if (mouse.cancelGesture()) cancelled3D = true;
+    if (camera.cancelGesture()) cancelled3D = true;
+    pointerButtons3D = 0;
+    if (move3DEnabled) {
+      move3DEnabled = false;
+      cancelled3D = true;
+    }
+    setPieceHover(null);
+    activeStagingInstance = null;
+    if (chooserWasOpen || placementWasPending) {
+      showChooser(false);
+      placePending = null;
+      penPlacement = false;
+    }
+
+    const cancelled =
+      patternCancel.cancelledTool ||
+      patternCancel.cancelledGesture ||
+      cancelled3D ||
+      chooserWasOpen ||
+      placementWasPending;
+    if (!cancelled) return;
+    event.preventDefault();
+    syncAtelierControls();
+    refreshHint();
+    showToast('Outil annulé · navigation libre');
+  });
   // Double-click: tack the fabric in place right where you aim (pin/unpin).
   canvas.addEventListener('dblclick', (e) => {
     if (sceneTransitionBusy()) return;
@@ -3568,6 +4243,7 @@ async function main(): Promise<void> {
     // the user starts the 3D fitting. Open directly in the split workspace.
     if (mode === 'atelier') {
       atelierDesign = true;
+      canvas.focus({ preventScroll: true });
       document.body.classList.remove('atelier-advanced-open');
       advancedButton.classList.remove('active');
       advancedButton.setAttribute('aria-pressed', 'false');
@@ -3575,6 +4251,10 @@ async function main(): Promise<void> {
     }
     build(options.selector ?? false);
   };
+  document.getElementById('at-exit')?.addEventListener('click', () => {
+    setAtelierHelpOpen(false, false);
+    requestScene('drapé', { syncPanel: true });
+  });
 
   panel = new ControlPanel(
     {
@@ -3786,23 +4466,28 @@ async function main(): Promise<void> {
       },
       onPatternSvg: () => {
         if (draft?.preset === 'loose-pants') {
-          exportDraftPatternSvg(
+          return exportDraftPatternSvg(
             draft,
             `pantalon-large-taille-${draft.presetSize ?? pantsSize}`,
             1.25,
           );
-          return;
         }
         if (draft?.preset === 'lucas-hoodie') {
-          exportDraftPatternSvg(
+          return exportDraftPatternSvg(
             draft,
             `lucas-hoodie-taille-${draft.presetSize ?? hoodieSize}`,
             1,
           );
-          return;
         }
         const hasBack = sceneMode === 'atelier' && !!(draft?.back && draft.back.outline.length >= 3);
-        if (currentMesh) exportPatternSvg(currentMesh, sceneMode, hasBack, seamAllowanceM);
+        return currentMesh
+          ? exportPatternSvg(
+              currentMesh,
+              sceneMode,
+              hasBack,
+              seamAllowanceM,
+            )
+          : null;
       },
       // Atelier draft persistence: only hand out a draft the user actually drew
       // (draftTouched) — never the lazy build() default. On import, null clears
@@ -3814,20 +4499,19 @@ async function main(): Promise<void> {
         if (raw == null) {
           draft = null;
           draftTouched = false;
+          showSizes('boxy');
         } else {
           draft = sanitizeDraft(raw); // validates/clamps both faces
           draftTouched = true;
-          if (draft.preset === 'lucas-hoodie') {
-            const sourceSize = lucasHoodieSourceSize(draft);
-            hoodieFitMode = draft.presetSize?.startsWith('fit-')
-              ? 'avatar'
-              : 'standard';
-            if (sourceSize) hoodieSize = sourceSize;
-            // Imported geometry belongs to the user. Never silently replace it
-            // on the next avatar change, even when it originated from "fit-".
-            hoodieFitPristine = false;
-            hoodieFitBodyKey = '';
-            showSizes('hoodie');
+          // Imported geometry belongs to the user. Never silently replace it
+          // on the next avatar change, even when it originated from "fit-".
+          if (
+            !syncPatternContextFromDraft(draft, {
+              pristine: false,
+              bodyKey: '',
+            })
+          ) {
+            syncAvatarStatureHelp();
           }
         }
       },
@@ -4611,6 +5295,7 @@ async function main(): Promise<void> {
     const aspect = canvas.width / Math.max(1, canvas.height);
     if (lastAvatarBounds) camera.frameBounds(lastAvatarBounds, aspect);
     else camera.frameAvatar(lastMeasure.height, aspect);
+    pieceHoverDirty = true;
     guidanceEl.textContent = 'Vue cadrée sur le mannequin · ses dimensions physiques restent inchangées.';
   });
 
@@ -4686,6 +5371,28 @@ async function main(): Promise<void> {
 
     const aspect = canvas.width / canvas.height;
     const ray = camera.pickRay(mouse.ndcX, mouse.ndcY, aspect);
+    const canHoverPiece =
+      pointerInside3D &&
+      pointerButtons3D === 0 &&
+      sceneMode === 'atelier' &&
+      atelierDesign &&
+      move3DEnabled &&
+      !mouse.leftDown &&
+      !pieceDrag &&
+      !patternView.sewing &&
+      !patternView.zippering;
+    if (!canHoverPiece) {
+      setPieceHover(null);
+    } else if (pieceHoverDirty && now >= nextPieceHoverAt) {
+      pieceHoverDirty = false;
+      nextPieceHoverAt = now + 45;
+      const hovered = pickStagingPiece(ray);
+      setPieceHover(
+        hovered
+          ? { pid: hovered.pid, instance: hovered.instance }
+          : null,
+      );
+    }
 
     // Anything that keeps the cloth alive also keeps the solver awake.
     // Gate on animate && animPrims: checking 'animation bras' on a scan/drapé/
@@ -4763,6 +5470,7 @@ async function main(): Promise<void> {
         sleepSnapshot = p;
         sleepSnapshotT = tArrive;
         posCache = p;
+        pieceHoverDirty = true;
       });
     }
 
@@ -4783,8 +5491,12 @@ async function main(): Promise<void> {
         }
       } else {
         const d = pieceDrag;
+        releasePiecePointer(d.pointerId);
         pieceDrag = null;
-        if (draft && Math.hypot(...d.delta) >= 0.005) {
+        pieceHoverDirty = true;
+        canvas.classList.remove('piece-dragging');
+        const moved = !!draft && Math.hypot(...d.delta) >= 0.005;
+        if (moved && draft) {
           pushHistory();
           let piece = draftPieceOf(d.pid);
           if (piece) {
@@ -4798,8 +5510,15 @@ async function main(): Promise<void> {
           }
           draftTouched = true;
           atelierDesign = true;
+          build(); // reconstruct the preparation preview from canonical + offset
+        } else {
+          // A click is also how a user selects a piece. Do not pay for a full
+          // hoodie rebuild when the pointer never crossed the drag threshold.
+          for (const range of d.ranges) {
+            system.translateRange(range.first, range.count, [0, 0, 0]);
+          }
+          posCache = d.positions;
         }
-        build(); // reconstruct the preparation preview from canonical + offset
       }
     }
     // Drive or release the drag constraint.

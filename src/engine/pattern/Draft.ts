@@ -180,9 +180,9 @@ export interface DraftDoc {
   // combined onto the base via combineClothMeshes (see compileCrossSeams). Absent
   // ⇒ the garment is exactly the front/back base (byte-identical to pre-N-piece).
   pieces?: DraftPiece[];
-  /** Optional built-in construction whose assembly needs more than the generic
-   * front/back tube (currently the mirrored two-leg loose-pants assembly). */
-  preset?: 'loose-pants' | 'lucas-hoodie';
+  /** Optional built-in pattern identity, preserved through export/import so the
+   * matching size controls and any specialised assembly can be restored. */
+  preset?: 'boxy-tee' | 'loose-pants' | 'lucas-hoodie';
   presetSize?: string;
 }
 
@@ -2019,6 +2019,12 @@ export function sanitizeDraft(raw: unknown): DraftDoc {
       .filter((s) => pieceExists(s.a) && pieceExists(s.b));
   const seams = parseEdgePairs(d.seams);
   const segmentLinks = parseEdgePairs(d.segmentLinks);
+  const preset =
+    d.preset === 'boxy-tee' ||
+    d.preset === 'loose-pants' ||
+    d.preset === 'lucas-hoodie'
+      ? d.preset
+      : undefined;
   return {
     format: 'toile-draft',
     version: 1,
@@ -2029,11 +2035,8 @@ export function sanitizeDraft(raw: unknown): DraftDoc {
     manual: d.manual === true,
     seams,
     ...(segmentLinks.length ? { segmentLinks } : {}),
-    ...(d.preset === 'loose-pants' || d.preset === 'lucas-hoodie'
-      ? { preset: d.preset }
-      : {}),
-    ...((d.preset === 'loose-pants' || d.preset === 'lucas-hoodie') &&
-    typeof d.presetSize === 'string'
+    ...(preset ? { preset } : {}),
+    ...(preset && typeof d.presetSize === 'string'
       ? { presetSize: d.presetSize.slice(0, 8) }
       : {}),
   };

@@ -10,6 +10,92 @@ export interface Pick {
   depth: number; // distance along the ray to the grabbed particle
 }
 
+/** Generous world-space tolerance used while arranging whole pattern pieces. */
+export const STAGING_PICK_RADIUS = 0.18;
+
+/** A contiguous particle span carrying the identity needed by its caller. */
+export interface TaggedParticleRange<Tag> {
+  first: number;
+  count: number;
+  tag: Tag;
+}
+
+/** A particle hit together with the identity of the range that owns it. */
+export interface TaggedPick<Tag> extends Pick {
+  tag: Tag;
+}
+
+/**
+ * Pick the visually frontmost movable particle from explicit particle ranges.
+ *
+ * Unlike `pickParticle`, this deliberately prioritises depth once a particle
+ * lies inside the pick cylinder. That makes overlapping flat pieces behave
+ * like what the user sees: the front piece wins. Iterating the supplied ranges
+ * directly also prevents unrelated cloth or system-generated geometry from
+ * masking an otherwise valid pattern piece.
+ */
+export function pickFrontmostInRanges<Tag>(
+  positions: Float32Array,
+  count: number,
+  ranges: readonly TaggedParticleRange<Tag>[],
+  origin: readonly [number, number, number],
+  dir: readonly [number, number, number],
+  maxPickDist = STAGING_PICK_RADIUS,
+  movable?: (i: number) => boolean,
+): TaggedPick<Tag> | null {
+  const available = Math.floor(positions.length / 4);
+  const limit = Math.min(
+    available,
+    Number.isFinite(count) ? Math.max(0, Math.trunc(count)) : 0,
+  );
+  if (limit === 0 || !Number.isFinite(maxPickDist) || maxPickDist < 0) {
+    return null;
+  }
+
+  const maxPerp2 = maxPickDist * maxPickDist;
+  let best: TaggedPick<Tag> | null = null;
+  let bestPerp2 = Number.POSITIVE_INFINITY;
+
+  for (const range of ranges) {
+    if (
+      !Number.isFinite(range.first) ||
+      !Number.isFinite(range.count) ||
+      range.count <= 0
+    ) {
+      continue;
+    }
+    const rawFirst = Math.trunc(range.first);
+    const rawEnd = rawFirst + Math.trunc(range.count);
+    const first = Math.max(0, Math.min(limit, rawFirst));
+    const end = Math.max(first, Math.min(limit, rawEnd));
+
+    for (let i = first; i < end; i++) {
+      if (movable && !movable(i)) continue;
+      const vx = positions[i * 4 + 0]! - origin[0];
+      const vy = positions[i * 4 + 1]! - origin[1];
+      const vz = positions[i * 4 + 2]! - origin[2];
+      const depth = vx * dir[0] + vy * dir[1] + vz * dir[2];
+      if (!Number.isFinite(depth) || depth <= 0) continue;
+      const perp2 = Math.max(
+        0,
+        vx * vx + vy * vy + vz * vz - depth * depth,
+      );
+      if (!Number.isFinite(perp2) || perp2 > maxPerp2) continue;
+
+      if (
+        !best ||
+        depth < best.depth ||
+        (depth === best.depth && perp2 < bestPerp2)
+      ) {
+        best = { index: i, depth, tag: range.tag };
+        bestPerp2 = perp2;
+      }
+    }
+  }
+
+  return best;
+}
+
 export function pickParticle(
   positions: Float32Array,
   count: number,

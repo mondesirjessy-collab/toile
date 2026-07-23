@@ -1,5 +1,6 @@
 export const TOAST_VISIBLE_MS = 6_000;
 export const MAX_VISIBLE_TOASTS = 2;
+export const TOAST_BOTTOM_CSS = 'var(--toile-toast-bottom,24px)';
 
 /** Pure queue rule shared by the DOM implementation and regression tests. */
 export function boundedToastMessages(
@@ -37,7 +38,7 @@ export function showToast(
     stack.setAttribute('aria-live', 'polite');
     stack.setAttribute('aria-atomic', 'false');
     stack.style.cssText =
-      'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);' +
+      `position:fixed;left:50%;bottom:${TOAST_BOTTOM_CSS};transform:translateX(-50%);` +
       'z-index:120;display:grid;gap:6px;width:max-content;max-width:min(520px,calc(100vw - 32px));' +
       'pointer-events:none';
     document.body.appendChild(stack);

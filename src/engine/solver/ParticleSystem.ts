@@ -807,15 +807,23 @@ export class ParticleSystem {
     return this.pinned;
   }
   /**
+   * True for a particle that belongs to the authored cloth mask. Unlike
+   * isMovable(), temporary tacks and held corner pins do not change this
+   * topological answer, so it is safe to cache for visual piece contours.
+   */
+  isPatternParticle(index: number): boolean {
+    if (!this.gpuActive) return false;
+    if (index < 0 || index >= this.count) return false;
+    return this.baseInvMasses[index] !== 0;
+  }
+  /**
    * Can this particle be grabbed and dragged? False for the three immovable
    * kinds: pattern-cut particles (baseInvMass 0, parked off-scene), double-click
    * tacks (extraPins) and the held corner pins. Used so a press on an immovable
    * particle falls through to camera orbit instead of a dead click (audit M37).
    */
   isMovable(index: number): boolean {
-    if (!this.gpuActive) return false;
-    if (index < 0 || index >= this.count) return false;
-    if (this.baseInvMasses[index] === 0) return false; // pattern-cut particle
+    if (!this.isPatternParticle(index)) return false; // pattern-cut particle
     if (this.extraPins.has(index)) return false; // double-click tack
     if (this.pinned && (index === this.cornerIndices[0] || index === this.cornerIndices[1])) return false;
     return true;

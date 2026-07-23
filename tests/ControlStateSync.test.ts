@@ -16,10 +16,12 @@ type ChangeHandler = (value: unknown) => void;
 class FakeController {
   readonly domElement = { id: '' };
   private changeHandler: ChangeHandler | undefined;
+  hidden = false;
 
   constructor(
     readonly object: Record<string, unknown>,
     readonly property: string,
+    readonly folderName = 'root',
   ) {}
 
   name(): this {
@@ -40,6 +42,11 @@ class FakeController {
     return this;
   }
 
+  show(show = true): this {
+    this.hidden = !show;
+    return this;
+  }
+
   updateDisplay(): this {
     return this;
   }
@@ -56,11 +63,18 @@ class FakeController {
 }
 
 const fakeControllers: FakeController[] = [];
+const fakeFolders: Array<{ folderName: string; hidden: boolean }> = [];
 
 vi.mock('lil-gui', () => {
   class FakeGui {
+    hidden = false;
+
+    constructor(readonly folderName = 'root') {
+      fakeFolders.push(this);
+    }
+
     add(object: Record<string, unknown>, property: string): FakeController {
-      const controller = new FakeController(object, property);
+      const controller = new FakeController(object, property, this.folderName);
       fakeControllers.push(controller);
       return controller;
     }
@@ -69,7 +83,12 @@ vi.mock('lil-gui', () => {
       return this.add(object, property);
     }
 
-    addFolder(): FakeGui {
+    addFolder(name: string): FakeGui {
+      return new FakeGui(name);
+    }
+
+    show(show = true): this {
+      this.hidden = !show;
       return this;
     }
 
@@ -123,6 +142,7 @@ describe('synchronisation de la résolution', () => {
 describe('fabric profile calibration state', () => {
   beforeEach(() => {
     fakeControllers.length = 0;
+    fakeFolders.length = 0;
     vi.stubGlobal('window', globalThis);
   });
 
@@ -205,6 +225,7 @@ describe('fabric profile calibration state', () => {
 describe('resynchronisation des sélecteurs', () => {
   beforeEach(() => {
     fakeControllers.length = 0;
+    fakeFolders.length = 0;
     vi.stubGlobal('window', globalThis);
   });
 
@@ -248,6 +269,77 @@ describe('resynchronisation des sélecteurs', () => {
     }
   });
 
+  it('masque seulement la navigation procédurale dans l’atelier puis la restaure', async () => {
+    const { ControlPanel } = await import('../src/app/ControlPanel');
+    const callbacks = makeCallbacks();
+    const panel = new ControlPanel(callbacks, { resolution: 64, substeps: 20 });
+    const scene = fakeControllers.find(
+      (controller) => controller.property === 'scene',
+    )!;
+    const proceduralFolders = [
+      'patron · robe',
+      'patron · chemise',
+      'patron · jupe',
+    ].map(
+      (name) => fakeFolders.find((folder) => folder.folderName === name)!,
+    );
+
+    panel.syncEngineSelects({
+      scene: 'atelier',
+      body: 'scan femme',
+      resolution: 64,
+      fabricPreset: 'Jersey',
+    });
+
+    expect(scene.hidden).toBe(true);
+    expect(proceduralFolders.every((folder) => folder.hidden)).toBe(true);
+    expect(
+      fakeFolders.find((folder) => folder.folderName === 'tissu')?.hidden,
+    ).toBe(false);
+    expect(
+      fakeFolders.find((folder) => folder.folderName === 'fichier')?.hidden,
+    ).toBe(false);
+
+    panel.syncEngineSelects({
+      scene: 'robe',
+      body: 'scan femme',
+      resolution: 64,
+      fabricPreset: 'Jersey',
+    });
+
+    expect(scene.hidden).toBe(false);
+    expect(proceduralFolders.every((folder) => !folder.hidden)).toBe(true);
+    expect(
+      fakeControllers.filter((controller) => controller.property === 'scene'),
+    ).toHaveLength(1);
+  });
+
+  it('filtre immédiatement les contrôles pendant un import vers l’atelier', async () => {
+    const { ControlPanel } = await import('../src/app/ControlPanel');
+    const callbacks = makeCallbacks();
+    const panel = new ControlPanel(callbacks, { resolution: 64, substeps: 20 });
+    const scene = fakeControllers.find(
+      (controller) => controller.property === 'scene',
+    )!;
+    const proceduralFolders = [
+      'patron · robe',
+      'patron · chemise',
+      'patron · jupe',
+    ].map(
+      (name) => fakeFolders.find((folder) => folder.folderName === name)!,
+    );
+
+    const imported = {
+      ...panel.snapshotGarment(),
+      scene: 'atelier',
+    };
+    expect(panel.applyGarment(imported)).toBe(true);
+
+    expect(scene.hidden).toBe(true);
+    expect(proceduralFolders.every((folder) => folder.hidden)).toBe(true);
+    expect(callbacks.onScene).toHaveBeenLastCalledWith('atelier');
+  });
+
   it('publie chaque changement du preset global dans la source moteur unique', async () => {
     const { ControlPanel } = await import('../src/app/ControlPanel');
     const callbacks = makeCallbacks();
@@ -272,5 +364,106 @@ describe('resynchronisation des sélecteurs', () => {
     ]);
     expect(panel.globalFabricPreset).toBe('Jersey');
     expect(preset.object.preset).toBe('Jersey');
+  });
+});
+
+describe('retour utilisateur des exports', () => {
+  beforeEach(() => {
+    fakeControllers.length = 0;
+    fakeFolders.length = 0;
+    vi.stubGlobal('window', globalThis);
+  });
+
+  it('annonce le nom SVG réellement retourné par l’exporteur', async () => {
+    const { ControlPanel } = await import('../src/app/ControlPanel');
+    const callbacks = makeCallbacks();
+    callbacks.onPatternSvg.mockReturnValue('patron-lucas-hoodie-M.svg');
+    const panel = new ControlPanel(callbacks, {
+      resolution: 64,
+      substeps: 20,
+    });
+    const toast = vi.fn();
+    (panel as unknown as { toast: typeof toast }).toast = toast;
+    const svg = fakeControllers.find(
+      (controller) =>
+        controller.folderName === 'fichier' && controller.property === 'svg',
+    )!;
+
+    svg.invoke();
+
+    expect(callbacks.onPatternSvg).toHaveBeenCalledOnce();
+    expect(toast).toHaveBeenCalledWith(
+      'Patron exporté — patron-lucas-hoodie-M.svg',
+    );
+  });
+
+  it('reste silencieux lorsqu’aucun SVG n’a pu être produit', async () => {
+    const { ControlPanel } = await import('../src/app/ControlPanel');
+    const callbacks = makeCallbacks();
+    callbacks.onPatternSvg.mockReturnValue(null);
+    const panel = new ControlPanel(callbacks, {
+      resolution: 64,
+      substeps: 20,
+    });
+    const toast = vi.fn();
+    (panel as unknown as { toast: typeof toast }).toast = toast;
+    const svg = fakeControllers.find(
+      (controller) =>
+        controller.folderName === 'fichier' && controller.property === 'svg',
+    )!;
+
+    svg.invoke();
+
+    expect(toast).not.toHaveBeenCalled();
+  });
+
+  it('annonce le nom du vêtement JSON téléchargé', async () => {
+    const { ControlPanel } = await import('../src/app/ControlPanel');
+    const callbacks = makeCallbacks();
+    const panel = new ControlPanel(callbacks, {
+      resolution: 64,
+      substeps: 20,
+    });
+    const toast = vi.fn();
+    (panel as unknown as { toast: typeof toast }).toast = toast;
+    const anchor = {
+      href: '',
+      download: '',
+      click: vi.fn(),
+      remove: vi.fn(),
+    };
+    const appendChild = vi.fn();
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal('document', {
+      createElement: vi.fn(() => anchor),
+      body: { appendChild },
+    });
+    vi.stubGlobal('URL', {
+      createObjectURL: vi.fn(() => 'blob:garment'),
+      revokeObjectURL,
+    });
+    const exporter = fakeControllers.find(
+      (controller) =>
+        controller.folderName === 'fichier' &&
+        controller.property === 'exporter',
+    )!;
+
+    vi.useFakeTimers();
+    try {
+      exporter.invoke();
+
+      expect(anchor.download).toBe('vetement.toile.json');
+      expect(anchor.click).toHaveBeenCalledOnce();
+      expect(appendChild).toHaveBeenCalledWith(anchor);
+      expect(revokeObjectURL).not.toHaveBeenCalled();
+      expect(toast).toHaveBeenCalledWith(
+        'Vêtement exporté — vetement.toile.json',
+      );
+
+      vi.advanceTimersByTime(30_000);
+      expect(revokeObjectURL).toHaveBeenCalledWith('blob:garment');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -12,9 +12,17 @@ import type { ClothMeshData } from '../engine/cloth/ClothMesh';
 const escapeXml = (s: string): string =>
   s.replace(/[<>&'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' })[c]!);
 
-export function exportPatternSvg(mesh: ClothMeshData, garmentName: string, hasIndependentBack = false, margin = 0.01): void {
+export const patternSvgFilename = (garmentName: string): string =>
+  `patron-${garmentName.replace(/[^a-z0-9]/gi, '-')}.svg`;
+
+export function exportPatternSvg(
+  mesh: ClothMeshData,
+  garmentName: string,
+  hasIndependentBack = false,
+  margin = 0.01,
+): string | null {
   const { segs, seam, notches, labels, w, h, pieces } = frontOutline(mesh, margin);
-  if (!segs.length || !Number.isFinite(w + h)) return; // no front piece → export nothing (parity with the PDF)
+  if (!segs.length || !Number.isFinite(w + h)) return null; // no front piece → export nothing (parity with the PDF)
   const cm = margin * 100;
   const marginCm = (Number.isInteger(cm) ? String(cm) : cm.toFixed(1)).replace('.', ',');
   const M = 22; // outer margin, mm
@@ -77,10 +85,12 @@ export function exportPatternSvg(mesh: ClothMeshData, garmentName: string, hasIn
   const blob = new Blob([svg], { type: 'image/svg+xml' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `patron-${garmentName.replace(/[^a-z0-9]/gi, '-')}.svg`;
+  const filename = patternSvgFilename(garmentName);
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();
   // Defer the revoke: revoking immediately after click() can abort the download.
   setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+  return filename;
 }

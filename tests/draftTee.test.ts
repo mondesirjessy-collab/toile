@@ -298,5 +298,34 @@ describe('boxyTee (patron BOXY FIT reproduit — 6 tailles)', () => {
     const s = sanitizeDraft(d);
     expect(s.piece.outline.length).toBe(d.piece.outline.length);
     expect(s.pieces?.length).toBe(3);
+    expect(s.preset).toBe('boxy-tee');
+    expect(s.presetSize).toBe('S');
+  });
+
+  it('conserve le preset et la taille BOXY pendant un export/import JSON', () => {
+    const source = boxyTee('XL', m, ref);
+    const imported = sanitizeDraft(JSON.parse(JSON.stringify(source)));
+
+    expect(source).toMatchObject({
+      preset: 'boxy-tee',
+      presetSize: 'XL',
+    });
+    expect(imported).toMatchObject({
+      preset: 'boxy-tee',
+      presetSize: 'XL',
+    });
+  });
+
+  it('accepte encore un ancien document BOXY sans métadonnées de preset', () => {
+    const legacy = boxyTee('M', m, ref);
+    delete legacy.preset;
+    delete legacy.presetSize;
+
+    const imported = sanitizeDraft(JSON.parse(JSON.stringify(legacy)));
+
+    expect(imported.preset).toBeUndefined();
+    expect(imported.presetSize).toBeUndefined();
+    expect(imported.piece.outline).toEqual(legacy.piece.outline);
+    expect(imported.pieces).toHaveLength(3);
   });
 });

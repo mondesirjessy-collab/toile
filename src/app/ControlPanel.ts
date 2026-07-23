@@ -101,7 +101,7 @@ export interface PanelCallbacks {
   onShirtPattern(p: { sleeve: number }): void;
   onSkirtPattern(p: { length: number; flare: number }): void;
   onPatternPdf(): void;
-  onPatternSvg(): void;
+  onPatternSvg(): string | null | void;
   onSeamAllowance(cm: number): void;
   onGltf(): void;
   onPins(held: boolean): void;
@@ -230,8 +230,14 @@ export class ControlPanel {
   private readonly settings: Settings;
   private readonly controllers: { updateDisplay(): void }[] = [];
   private readonly selectControllers: Partial<
-    Record<'scene' | 'body' | 'resolution' | 'preset', { updateDisplay(): void }>
+    Record<
+      'scene' | 'body' | 'resolution' | 'preset',
+      { updateDisplay(): void; show(show?: boolean): unknown }
+    >
   > = {};
+  private readonly nonAtelierControls: Array<{
+    show(show?: boolean): unknown;
+  }> = [];
   private morphControllers: Record<string, { updateDisplay(): void }> = {};
   private fabricProfileName = 'Tissu mesuré';
   private fabricProfileSource: string | undefined;
@@ -310,8 +316,12 @@ export class ControlPanel {
     this.selectControllers.scene = this.gui
       .add(this.settings, 'scene', [...SCENE_OPTIONS])
       .name('scène')
-      .onChange((m: SceneMode) => this.cb.onScene(m));
+      .onChange((m: SceneMode) => {
+        this.syncContextControls(m);
+        this.cb.onScene(m);
+      });
     this.controllers.push(this.selectControllers.scene);
+    this.nonAtelierControls.push(this.selectControllers.scene);
     this.selectControllers.body = this.gui
       .add(this.settings, 'body', [...SELECTABLE_BODY_OPTIONS])
       .name('mannequin')
@@ -489,11 +499,12 @@ export class ControlPanel {
     );
     shirtPattern.close();
     skirtPattern.close();
+    this.nonAtelierControls.push(pattern, shirtPattern, skirtPattern);
 
     // Open garment format: save/load the whole garment as JSON.
     const file = this.gui.addFolder('fichier');
     file.add({ pdf: () => this.cb.onPatternPdf() }, 'pdf').name('imprimer le patron (PDF 1:1)');
-    file.add({ svg: () => this.cb.onPatternSvg() }, 'svg').name('exporter le patron (SVG)');
+    file.add({ svg: () => this.exportPatternSvg() }, 'svg').name('exporter le patron (SVG)');
     this.controllers.push(
       file
         .add(this.settings, 'seamAllowance', 0, 4, 0.5)
@@ -539,6 +550,15 @@ export class ControlPanel {
   syncScene(mode: SceneMode): void {
     this.settings.scene = normalizeSelectValue(mode, SCENE_OPTIONS, this.settings.scene);
     this.selectControllers.scene?.updateDisplay();
+    this.syncContextControls(this.settings.scene);
+  }
+
+  /** Hide controls that can only mutate non-atelier procedural scenes. */
+  private syncContextControls(scene: SceneMode): void {
+    const showProceduralScenes = scene !== 'atelier';
+    for (const control of this.nonAtelierControls) {
+      control.show(showProceduralScenes);
+    }
   }
 
   /**
@@ -568,6 +588,7 @@ export class ControlPanel {
       GLOBAL_FABRIC_OPTIONS,
       this.settings.preset,
     );
+    this.syncContextControls(this.settings.scene);
     for (const controller of Object.values(this.selectControllers)) {
       controller?.updateDisplay();
     }
@@ -942,7 +963,16 @@ export class ControlPanel {
     document.body.appendChild(a);
     a.click();
     a.remove();
-    URL.revokeObjectURL(a.href);
+    const objectUrl = a.href;
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 30_000);
+    this.toast(`Vêtement exporté — ${a.download}`);
+  }
+
+  /** Report the exact file selected by whichever SVG exporter the host uses. */
+  private exportPatternSvg(): void {
+    const returnedFilename = this.cb.onPatternSvg();
+    const filename = typeof returnedFilename === 'string' ? returnedFilename : null;
+    if (filename) this.toast(`Patron exporté — ${filename}`);
   }
 
   /** Load a garment file and apply it end-to-end (pattern, fabric, sim). */
@@ -1194,6 +1224,7 @@ export class ControlPanel {
     this.cb.onDraft?.(d.draft ?? null);
     this.cb.onResolution(s.resolution);
     s.scene = targetScene;
+    this.syncContextControls(targetScene);
     for (const c of this.controllers) c.updateDisplay();
       this.cb.onScene(targetScene); // sets sceneMode (its build is still deferred)
       return true;

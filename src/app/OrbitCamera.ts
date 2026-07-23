@@ -20,6 +20,7 @@ export class OrbitCamera {
   private readonly target: [number, number, number] = [0, 0.8, 0];
   private readonly viewProj = new Float32Array(16);
   private readonly fov = Math.PI / 4;
+  private cancelAttachedGesture: (() => boolean) | null = null;
 
   /**
    * Bring a standing mannequin back into view without changing its physical
@@ -92,7 +93,16 @@ export class OrbitCamera {
     this.radius = Math.min(20, needed);
   }
 
+  /**
+   * Stop the current orbit/pan/pinch without changing the camera pose already
+   * reached. A late pointermove/up from the physical gesture is then ignored.
+   */
+  cancelGesture(): boolean {
+    return this.cancelAttachedGesture?.() ?? false;
+  }
+
   attach(canvas: HTMLCanvasElement, shouldOrbit?: (e: PointerEvent) => boolean): void {
+    this.cancelGesture();
     // Active CAMERA pointers, keyed by pointerId (cloth grabs stay untracked).
     // Tracking each pointer is what lets a second finger start a pinch instead
     // of corrupting the shared last-position and jerking the orbit around.
@@ -101,6 +111,23 @@ export class OrbitCamera {
     let lastX = 0; // for a single-pointer drag, or the pinch midpoint
     let lastY = 0;
     let pinchDist = 1;
+    this.cancelAttachedGesture = (): boolean => {
+      const active = mode !== 'none' || pointers.size > 0;
+      for (const pointerId of pointers.keys()) {
+        try {
+          if (canvas.hasPointerCapture(pointerId)) {
+            canvas.releasePointerCapture(pointerId);
+          }
+        } catch {
+          // The browser may already have released capture during a native
+          // cancellation. Clearing our own state remains the source of truth.
+        }
+      }
+      pointers.clear();
+      mode = 'none';
+      pinchDist = 1;
+      return active;
+    };
 
     canvas.addEventListener('pointerdown', (e) => {
       // A second camera pointer turns the gesture into a pinch (zoom + pan).

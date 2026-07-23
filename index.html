@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TOILE — moteur de simulation textile · phase 0</title>
+  <title>TOILE — conception manuelle guidée · v139</title>
   <style>
     :root {
       color-scheme: dark;
@@ -11,6 +11,7 @@
       --atelier-rail-w: 232px;
       --atelier-status-h: 40px;
       --plan2d: 470px;
+      --toile-toast-bottom: 24px;
     }
     * { margin: 0; box-sizing: border-box; }
     html, body { height: 100%; }
@@ -20,8 +21,14 @@
       font-family: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, monospace;
       overflow: hidden;
     }
+    body.atelier-active {
+      --toile-toast-bottom: calc(var(--atelier-status-h) + 12px);
+    }
     #view { width: 100vw; height: 100vh; display: block; touch-action: none; cursor: grab; }
     #view:active { cursor: grabbing; }
+    #view.piece-hover { cursor: move; }
+    #view.piece-dragging,
+    #view.piece-dragging:active { cursor: grabbing; }
     /* 2D mirror of the WebGPU canvas: some systems fail to present WebGPU
        frames to screen while the content is correct — a plain 2D canvas
        always composites. Clicks pass through to #view underneath. */
@@ -60,12 +67,22 @@
       flex-direction: column;
       gap: 9px;
       padding: 12px 10px 10px;
-      overflow-x: hidden;
-      overflow-y: auto;
+      overflow: hidden;
       background:
         linear-gradient(180deg, rgba(27, 30, 37, 0.99), rgba(17, 19, 24, 0.99));
       border-right: 1px solid rgba(237, 233, 223, 0.13);
       box-shadow: 12px 0 35px rgba(0, 0, 0, 0.24);
+    }
+    .atelier-rail-scroll {
+      min-height: 0;
+      display: flex;
+      flex: 1 1 auto;
+      flex-direction: column;
+      gap: 9px;
+      overflow-x: hidden;
+      overflow-y: auto;
+      padding-right: 2px;
+      scrollbar-gutter: stable;
     }
     .atelier-rail-head {
       display: grid;
@@ -73,6 +90,27 @@
       align-items: start;
       gap: 8px;
       padding: 0 2px 4px;
+    }
+    .atelier-head-actions {
+      display: grid;
+      grid-template-columns: repeat(2, 30px);
+      gap: 4px;
+      justify-items: stretch;
+    }
+    .atelier-head-actions .mode-chip {
+      grid-column: 1 / -1;
+      justify-self: end;
+    }
+    #atelier-bar .atelier-head-actions button {
+      width: 30px;
+      min-height: 27px;
+      padding: 2px;
+      font-size: 12px;
+    }
+    #at-help[aria-expanded="true"] {
+      border-color: rgba(112, 184, 255, 0.75);
+      color: #cde7ff;
+      background: rgba(80, 150, 220, 0.16);
     }
     .atelier-eyebrow,
     .tool-section h2,
@@ -376,14 +414,14 @@
     #at-pen { border-color: rgba(255, 159, 107, 0.8); color: rgba(255, 190, 150, 1); }
     #at-pen[hidden] { display: none; }
     .atelier-rail-footer {
-      position: sticky;
-      bottom: -10px;
-      z-index: 2;
+      position: static;
+      flex: 0 0 auto;
       display: grid;
       gap: 6px;
       margin-top: auto;
-      padding: 10px 0 2px;
-      background: linear-gradient(180deg, rgba(17, 19, 24, 0), #111318 26%);
+      padding: 8px 0 2px;
+      border-top: 1px solid rgba(237, 233, 223, 0.1);
+      background: #111318;
     }
     .view-actions {
       display: grid;
@@ -627,6 +665,135 @@
     body.atelier-active:not(.atelier-advanced-open) .lil-gui.lil-root {
       display: none;
     }
+    #atelier-cheatsheet {
+      position: fixed;
+      z-index: 30;
+      top: calc(var(--appbar-h) + 12px);
+      left: calc(var(--atelier-rail-w) + 12px);
+      width: min(520px, calc(100vw - var(--atelier-rail-w) - 24px));
+      max-height: calc(100vh - var(--appbar-h) - var(--atelier-status-h) - 24px);
+      padding: 15px;
+      overflow: auto;
+      pointer-events: auto;
+      color: rgba(239, 241, 245, 0.92);
+      background: rgba(15, 18, 23, 0.98);
+      border: 1px solid rgba(112, 184, 255, 0.42);
+      border-radius: 10px;
+      box-shadow: 0 20px 58px rgba(0, 0, 0, 0.48);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+    }
+    #atelier-cheatsheet[hidden] { display: none; }
+    .cheatsheet-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .cheatsheet-head h2 { margin: 2px 0 3px; font-size: 16px; }
+    .cheatsheet-head p,
+    .cheatsheet-note {
+      color: rgba(210, 217, 228, 0.66);
+      font-size: 10px;
+      line-height: 1.45;
+    }
+    #at-help-close {
+      flex: 0 0 auto;
+      min-width: 30px;
+      min-height: 30px;
+      color: #dcecff;
+      background: rgba(67, 74, 88, 0.72);
+      border: 1px solid rgba(237, 233, 223, 0.16);
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .cheatsheet-flow {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      margin: 0 0 14px;
+      padding: 0;
+      list-style: none;
+    }
+    .cheatsheet-flow li {
+      padding: 8px;
+      color: rgba(235, 237, 241, 0.84);
+      background: rgba(112, 184, 255, 0.07);
+      border: 1px solid rgba(112, 184, 255, 0.14);
+      border-radius: 7px;
+      font-size: 10px;
+      line-height: 1.35;
+    }
+    .cheatsheet-flow strong {
+      display: block;
+      margin-bottom: 3px;
+      color: #b9dcff;
+      font-size: 11px;
+    }
+    .cheatsheet-gestures {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 6px 10px;
+      margin: 0 0 10px;
+      font-size: 10px;
+      line-height: 1.35;
+    }
+    .cheatsheet-gestures dt {
+      color: #ffd1ad;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+    .cheatsheet-gestures dd { color: rgba(225, 228, 234, 0.78); }
+    #atelier-empty-state {
+      position: absolute;
+      z-index: 4;
+      top: 50%;
+      left: 50%;
+      width: min(330px, calc(100% - 28px));
+      padding: 16px;
+      transform: translate(-50%, -50%);
+      pointer-events: auto;
+      color: rgba(239, 241, 245, 0.92);
+      background: rgba(15, 18, 23, 0.95);
+      border: 1px solid rgba(112, 184, 255, 0.35);
+      border-radius: 10px;
+      box-shadow: 0 16px 44px rgba(0, 0, 0, 0.4);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+      text-align: center;
+    }
+    #atelier-empty-state[hidden] { display: none; }
+    #atelier-empty-state h2 {
+      display: block;
+      margin: 0;
+      font-size: 14px;
+    }
+    #atelier-empty-state p {
+      margin: 5px 0 11px;
+      color: rgba(211, 217, 227, 0.7);
+      font-size: 10px;
+      line-height: 1.4;
+    }
+    .empty-state-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+    .empty-state-actions button {
+      min-height: 34px;
+      color: rgba(239, 241, 245, 0.92);
+      background: rgba(67, 74, 88, 0.82);
+      border: 1px solid rgba(237, 233, 223, 0.16);
+      border-radius: 6px;
+      font: 650 10px/1.2 Inter, ui-sans-serif, sans-serif;
+      cursor: pointer;
+    }
+    .empty-state-actions button:first-child {
+      color: #c8f3d5;
+      background: rgba(80, 174, 113, 0.16);
+      border-color: rgba(120, 220, 150, 0.42);
+    }
     /* GRAND PLAN = a dedicated 2D pane beside the 3D view. The tool rail is
        outside both panes, so neither canvas is covered by controls. */
     #patternBox.big {
@@ -711,6 +878,7 @@
         gap: 5px;
         padding: 7px 8px 6px;
       }
+      .atelier-rail-scroll { gap: 5px; }
       .atelier-rail-head { padding-bottom: 1px; }
       .atelier-mode { font-size: 14px; }
       .tool-section { gap: 4px; padding: 6px 7px; }
@@ -733,6 +901,23 @@
       #atelier-bar .tgrp { grid-template-columns: 1fr; }
       .view-actions { grid-template-columns: 1fr; }
       #atelier-view3d-tools .view3d-title { display: none; }
+    }
+    @media (max-width: 720px) {
+      #atelier-cheatsheet {
+        left: calc(var(--atelier-rail-w) + 6px);
+        width: calc(100vw - var(--atelier-rail-w) - 12px);
+        padding: 12px;
+      }
+      .cheatsheet-flow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .cheatsheet-gestures { grid-template-columns: 1fr; gap: 2px; }
+      .cheatsheet-gestures dt {
+        margin-top: 6px;
+        white-space: normal;
+      }
+    }
+    @media (max-width: 520px) {
+      .cheatsheet-flow,
+      .empty-state-actions { grid-template-columns: 1fr; }
     }
     header {
       position: fixed; top: 0; left: 0; right: 0;
@@ -772,10 +957,10 @@
   </style>
 </head>
 <body>
-  <canvas id="view"></canvas>
+  <canvas id="view" tabindex="-1" aria-label="Vue 3D du vêtement et du mannequin"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 3 — atelier fiable et synchronisé · v138</small></span>
+    <span class="title">TOILE<small>phase 4 — conception manuelle guidée · v139</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
       <span id="resolution-rebuild-status" role="status" aria-live="polite" hidden></span>
@@ -787,6 +972,7 @@
     <!-- The rail is fixed beside the two work panes. IDs stay stable because
          main.ts owns the behaviour; this markup only clarifies the workflow. -->
     <aside id="atelier-bar" aria-label="Outils de l’atelier">
+      <div class="atelier-rail-scroll">
       <div class="atelier-rail-head">
         <div>
           <span class="atelier-eyebrow">Espace de travail</span>
@@ -795,8 +981,12 @@
           <span class="atelier-mode-detail only-design">Dessinez, ajustez puis assemblez le patron à plat.</span>
           <span class="atelier-mode-detail only-simulation">La physique est active. Contrôlez le tombé et les collisions.</span>
         </div>
-        <span class="mode-chip only-design">2D</span>
-        <span class="mode-chip only-simulation">3D</span>
+        <div class="atelier-head-actions">
+          <span class="mode-chip only-design">2D</span>
+          <span class="mode-chip only-simulation">3D</span>
+          <button id="at-help" type="button" aria-label="Afficher l’aide des gestes et raccourcis" aria-expanded="false" aria-controls="atelier-cheatsheet" title="Afficher la fiche des gestes et raccourcis de l’atelier">?</button>
+          <button id="at-exit" type="button" title="Quitter l’atelier et revenir aux scènes de démonstration" aria-label="Quitter l’atelier">↩</button>
+        </div>
       </div>
 
       <section class="avatar-size-card" aria-labelledby="atelier-avatar-title">
@@ -809,7 +999,7 @@
           <output id="at-avatar-stature-value" class="avatar-size-value" for="at-avatar-stature">175 cm</output>
         </label>
         <input id="at-avatar-stature" type="range" min="140" max="210" step="1" value="175" aria-describedby="at-avatar-stature-help" aria-valuetext="175 centimètres">
-        <p id="at-avatar-stature-help" class="avatar-size-help">Redimensionne réellement le corps et ses collisions. Les patrons automatiques sont regradés.</p>
+        <p id="at-avatar-stature-help" class="avatar-size-help">Redimensionne le mannequin et ses collisions. Le vêtement garde sa taille choisie ; utilisez « Taille du vêtement » pour le regrader.</p>
       </section>
 
       <section class="tool-section" aria-labelledby="atelier-patron-title">
@@ -843,10 +1033,10 @@
           </div>
         </div>
         <div class="tgrp">
-          <button id="at-piece" title="Tracer une pièce à la plume sur la silhouette (le gabarit grandeur nature) — à la fermeture, choisissez où elle va : devant, dos, bras, cou… ou libre">✎ Nouvelle pièce</button>
+          <button id="at-piece" data-first-tip="Posez les points du contour sur la silhouette, puis cliquez le premier point pour fermer la pièce." title="Tracer une pièce à la plume sur la silhouette (le gabarit grandeur nature) — à la fermeture, choisissez où elle va : devant, dos, bras, cou… ou libre">✎ Nouvelle pièce</button>
           <button id="at-pen" hidden title="Fermer la forme dessinée (ou cliquer le premier point)">✓ Terminer le contour</button>
-          <button id="at-length" aria-pressed="false" title="Modifier un bord sans limite. Sur une courbe jaune, tirer près d’une extrémité change la longueur totale en gardant l’autre extrémité fixe.">↔ Longueur</button>
-          <button id="at-snap" aria-pressed="false" title="Option du mode Longueur : près de la bonne valeur, ajuste exactement la longueur, le parallélisme ou l’angle droit.">🧲 Ajustement auto</button>
+          <button id="at-length" data-first-tip="Tirez dans le sens du bord. Le fantôme montre votre main et les flèches indiquent la direction réellement efficace." aria-pressed="false" title="Modifier un bord sans limite. Sur une courbe jaune, tirer près d’une extrémité change la longueur totale en gardant l’autre extrémité fixe.">↔ Longueur</button>
+          <button id="at-snap" data-first-tip="Approchez la valeur recherchée : TOILE verrouille alors couture, même longueur, parallèle ou angle droit." aria-pressed="false" title="Option du mode Longueur : près de la bonne valeur, ajuste exactement la longueur, le parallélisme ou l’angle droit.">🧲 Ajustement auto</button>
         </div>
       </section>
 
@@ -859,9 +1049,9 @@
           </div>
         </div>
         <div class="tgrp">
-          <button id="at-link" aria-pressed="false" title="Marier deux segments : cliquez le premier bord puis le second. Leurs longueurs évolueront ensemble. Cliquez un bord déjà lié pour le dissocier.">🔗 Marier</button>
-          <button id="at-sew" aria-pressed="false" title="Coudre deux bords : cliquez le bouton, puis le premier bord et le second. Pour une poche posée, cliquez directement un côté pointillé.">🪡 Coudre</button>
-          <button id="at-zipper" aria-pressed="false" title="Ajouter une fermeture éclair : cliquez le premier bord, puis le bord opposé. Les deux rubans restent identifiables dans le patron et sont fermés au premier essayage.">⚡ Fermeture éclair</button>
+          <button id="at-link" data-first-tip="Cliquez les deux bords à marier : leurs longueurs évolueront ensuite ensemble, sans créer de couture." aria-pressed="false" title="Marier deux segments : cliquez le premier bord puis le second. Leurs longueurs évolueront ensemble. Cliquez un bord déjà lié pour le dissocier.">🔗 Marier</button>
+          <button id="at-sew" data-first-tip="Cliquez le premier bord, puis son bord partenaire. Les couleurs vous permettent de suivre la couture en 2D et en 3D." aria-pressed="false" title="Coudre deux bords : cliquez le bouton, puis le premier bord et le second. Pour une poche posée, cliquez directement un côté pointillé.">🪡 Coudre</button>
+          <button id="at-zipper" data-first-tip="Sélectionnez les deux rubans du bas vers le haut. La fermeture sera fermée au premier essayage." aria-pressed="false" title="Ajouter une fermeture éclair : cliquez le premier bord, puis le bord opposé. Les deux rubans restent identifiables dans le patron et sont fermés au premier essayage.">⚡ Fermeture éclair</button>
         </div>
       </section>
 
@@ -909,6 +1099,7 @@
           <button id="at-undo" disabled title="Annuler la dernière modification du patron (Commande/Ctrl + Z)">↶ Annuler</button>
         </div>
       </section>
+      </div>
 
       <div class="atelier-rail-footer">
         <div class="view-actions">
@@ -924,6 +1115,35 @@
         </button>
       </div>
     </aside>
+    <section id="atelier-cheatsheet" role="dialog" aria-modal="false" aria-labelledby="atelier-cheatsheet-title" hidden tabindex="-1">
+      <div class="cheatsheet-head">
+        <div>
+          <span class="atelier-eyebrow">Aide rapide</span>
+          <h2 id="atelier-cheatsheet-title">Les gestes essentiels</h2>
+          <p>Un premier essayage guidé, puis les raccourcis qui accélèrent la conception.</p>
+        </div>
+        <button id="at-help-close" type="button" aria-label="Fermer l’aide">×</button>
+      </div>
+      <ol class="cheatsheet-flow" aria-label="Premier T-shirt en six étapes">
+        <li><strong>1 · Patron</strong>Chargez « T-shirt » et choisissez sa taille.</li>
+        <li><strong>2 · Essayer</strong>Lancez l’essayage 3D pour observer la coupe.</li>
+        <li><strong>3 · Ajuster</strong>Tirez le tissu en 3D et repérez le bord à modifier.</li>
+        <li><strong>4 · Longueur</strong>Revenez au patron, activez Longueur, puis tirez le bord dans son axe.</li>
+        <li><strong>5 · Réessayer</strong>Relancez l’essayage 3D et vérifiez le tombé.</li>
+        <li><strong>6 · Exporter</strong>Ouvrez Réglages et exportez le patron en PDF 1:1.</li>
+      </ol>
+      <dl class="cheatsheet-gestures">
+        <dt>Fond 2D + glisser</dt><dd>Déplacer le plan sans modifier les pièces.</dd>
+        <dt>Molette</dt><dd>Zoomer précisément sous le pointeur.</dd>
+        <dt>Clic droit</dt><dd>Sélectionner toute une pièce ; avec ⌘/Ctrl, former un groupe.</dd>
+        <dt>Coin + glisser</dt><dd>Redimensionner la pièce ou tout le groupe sélectionné.</dd>
+        <dt>Alt + glisser un bord</dt><dd>Créer une pince ; un glisser simple bombe le bord.</dd>
+        <dt>Survol 3D + glisser</dt><dd>Déplacer l’exemplaire surligné pour préparer la vue, sans changer l’assemblage final.</dd>
+        <dt>Échap</dt><dd>Annuler le geste ou désarmer l’outil actif.</dd>
+        <dt>⌘/Ctrl + Z</dt><dd>Annuler la dernière modification validée.</dd>
+      </dl>
+      <p class="cheatsheet-note">Astuce : la position libre des pièces en 2D ou en préparation 3D ne remplace jamais les coutures. Au lancement de l’essayage, TOILE reconstruit leur pose d’assemblage.</p>
+    </section>
 
     <div id="pattern-pane-head">
       <div class="pane-title">
@@ -963,6 +1183,14 @@
       <span id="placement-status-message"></span>
       <button id="at-sim-without-piece" type="button" hidden>Simuler sans cette pièce</button>
     </div>
+    <section id="atelier-empty-state" aria-labelledby="atelier-empty-state-title" aria-live="polite" aria-atomic="true" hidden>
+      <h2 id="atelier-empty-state-title">Commencez votre patron</h2>
+      <p>Partez d’un modèle prêt à ajuster ou tracez votre première pièce dans le plan 2D, puis choisissez son placement sur le mannequin.</p>
+      <div class="empty-state-actions">
+        <button id="at-empty-tshirt" type="button">1️⃣ Charger un T-shirt</button>
+        <button id="at-empty-piece" type="button">✎ Tracer une pièce</button>
+      </div>
+    </section>
     <canvas id="pattern" width="250" height="290" title="Navigation : glisser le fond pour déplacer le plan · bouton central : déplacer depuis n’importe où · molette : zoomer sous le pointeur · clic droit : sélectionner une pièce · Commande/Ctrl + clic droit : ajouter ou retirer du groupe · tirer un coin : redimensionner le groupe · glisser une pièce sélectionnée : l’organiser sans changer la simulation"></canvas>
   </div>
   <div id="atelier-view3d-tools" aria-label="Outils de la vue 3D">
@@ -970,7 +1198,7 @@
       <span class="pane-kicker">Vue 3D</span>
       <strong>Préparation et essayage</strong>
     </div>
-    <button id="at-move3d" aria-pressed="true" title="Déplacer librement la pièce ou l’exemplaire saisi pour organiser la préparation 3D. Le patron et les coutures ne changent pas; l’essayage reconstruira automatiquement la pose finale.">✥ Déplacer une pièce</button>
+    <button id="at-move3d" data-first-tip="Survolez jusqu’au contour bleu, puis glissez : seul cet exemplaire bouge et l’assemblage final reste inchangé." aria-pressed="true" title="Déplacer librement la pièce ou l’exemplaire saisi pour organiser la préparation 3D. Le patron et les coutures ne changent pas; l’essayage reconstruira automatiquement la pose finale.">✥ Déplacer une pièce</button>
     <button id="at-reset3d" title="Annuler uniquement le déplacement manuel de préparation de la pièce active. Son placement final sera toujours reconstruit depuis les coutures au lancement de l’essayage.">⌖ Réinitialiser la pose</button>
   </div>
   <div id="atelier-statusbar" role="status">

@@ -54,3 +54,82 @@ describe('OrbitCamera mannequin framing', () => {
     expect(fittedRadius).toBeGreaterThan(estimatedRadius);
   });
 });
+
+describe('OrbitCamera gesture cancellation', () => {
+  const pointer = (
+    pointerId: number,
+    clientX: number,
+    clientY: number,
+    pointerType = 'mouse',
+  ): PointerEvent =>
+    ({
+      pointerId,
+      clientX,
+      clientY,
+      pointerType,
+      button: 0,
+      shiftKey: false,
+    }) as PointerEvent;
+
+  const harness = () => {
+    const listeners = new Map<string, Array<(event: PointerEvent) => void>>();
+    const captures = new Set<number>();
+    const releases: number[] = [];
+    const canvas = {
+      addEventListener: (
+        type: string,
+        listener: (event: PointerEvent) => void,
+      ) => {
+        const current = listeners.get(type) ?? [];
+        current.push(listener);
+        listeners.set(type, current);
+      },
+      setPointerCapture: (pointerId: number) => captures.add(pointerId),
+      hasPointerCapture: (pointerId: number) => captures.has(pointerId),
+      releasePointerCapture: (pointerId: number) => {
+        captures.delete(pointerId);
+        releases.push(pointerId);
+      },
+    } as unknown as HTMLCanvasElement;
+    const dispatch = (type: string, event: PointerEvent): void => {
+      for (const listener of listeners.get(type) ?? []) listener(event);
+    };
+    return { canvas, captures, releases, dispatch };
+  };
+
+  it('arrête un orbit en cours et ignore les événements physiques tardifs', () => {
+    const camera = new OrbitCamera();
+    const { canvas, captures, releases, dispatch } = harness();
+    camera.attach(canvas, () => true);
+
+    const before = camera.pickRay(0, 0, 1).origin;
+    dispatch('pointerdown', pointer(7, 100, 100));
+    dispatch('pointermove', pointer(7, 150, 125));
+    const moved = camera.pickRay(0, 0, 1).origin;
+    expect(distance(moved, before)).toBeGreaterThan(0.01);
+    expect(captures.has(7)).toBe(true);
+
+    expect(camera.cancelGesture()).toBe(true);
+    expect(releases).toEqual([7]);
+    const cancelledAt = camera.pickRay(0, 0, 1).origin;
+
+    dispatch('pointermove', pointer(7, 260, 220));
+    dispatch('pointerup', pointer(7, 260, 220));
+    expect(camera.pickRay(0, 0, 1).origin).toEqual(cancelledAt);
+    expect(camera.cancelGesture()).toBe(false);
+  });
+
+  it('libère toutes les captures d’un pinch', () => {
+    const camera = new OrbitCamera();
+    const { canvas, captures, releases, dispatch } = harness();
+    camera.attach(canvas);
+
+    dispatch('pointerdown', pointer(1, 100, 100, 'touch'));
+    dispatch('pointerdown', pointer(2, 180, 100, 'touch'));
+    expect([...captures]).toEqual([1, 2]);
+
+    expect(camera.cancelGesture()).toBe(true);
+    expect(releases).toEqual([1, 2]);
+    expect(captures.size).toBe(0);
+  });
+});

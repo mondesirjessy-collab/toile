@@ -49,7 +49,15 @@ describe('atelier workspace markup', () => {
       'at-zoom-in',
       'at-big',
       'at-advanced',
+      'at-help',
+      'at-help-close',
+      'at-exit',
       'at-sim',
+      'atelier-cheatsheet',
+      'atelier-empty-state',
+      'atelier-empty-state-title',
+      'at-empty-tshirt',
+      'at-empty-piece',
     ];
 
     for (const id of requiredIds) expect(countId(id), id).toBe(1);
@@ -84,7 +92,9 @@ describe('atelier workspace markup', () => {
     expect(html).toMatch(/<canvas id="pattern"/);
     expect(html).toContain('Taille globale');
     expect(html).toContain('Taille du vêtement');
-    expect(html).toContain('corps et ses collisions');
+    expect(html).toContain('Le vêtement garde sa taille choisie');
+    expect(html).toContain('« Taille du vêtement » pour le regrader');
+    expect(html).not.toContain('Les patrons automatiques sont regradés');
     expect(html).toContain('⊙ Cadrer la vue');
     expect(html).toContain('Choisir le patron');
     expect(html).toContain('Dessiner et ajuster');
@@ -99,6 +109,63 @@ describe('atelier workspace markup', () => {
     expect(html).toContain('⌖ Réinitialiser la pose');
     expect(html).toContain('La position du dessin n’influence pas l’essayage');
     expect(html).toContain('Automatique par les coutures (recommandé)');
+    expect(html).toContain('Les gestes essentiels');
+    expect(html).toContain('Échap</dt><dd>Annuler le geste ou désarmer');
+    expect(html).toContain('Commencez votre patron');
+    expect(html).toContain(
+      'aria-label="Afficher l’aide des gestes et raccourcis"',
+    );
+    expect(html).toContain(
+      '<canvas id="view" tabindex="-1" aria-label="Vue 3D du vêtement et du mannequin">',
+    );
+    expect(html).toMatch(
+      /id="atelier-empty-state"[^>]+aria-labelledby="atelier-empty-state-title"[^>]+aria-live="polite"/,
+    );
+    expect(html).toContain(
+      '<h2 id="atelier-empty-state-title">Commencez votre patron</h2>',
+    );
+    expect(html).toContain('aria-label="Premier T-shirt en six étapes"');
+    expect(html).toContain(
+      'tracez votre première pièce dans le plan 2D, puis choisissez son placement sur le mannequin',
+    );
+    const firstTshirtFlow = html.match(
+      /<ol class="cheatsheet-flow"[^>]*>([\s\S]*?)<\/ol>/,
+    )?.[1];
+    expect(firstTshirtFlow).toBeDefined();
+    expect(firstTshirtFlow?.match(/<li>/g)).toHaveLength(6);
+    expect(firstTshirtFlow).toContain('2 · Essayer');
+    expect(firstTshirtFlow).toContain('4 · Longueur');
+    expect(firstTshirtFlow).toContain('6 · Exporter');
+    expect(firstTshirtFlow).not.toContain('Coudre');
+    expect(html).toMatch(
+      /\.cheatsheet-flow\s*\{[\s\S]{0,160}grid-template-columns:\s*repeat\(3,/,
+    );
+    expect(html).toContain(
+      '--toile-toast-bottom: calc(var(--atelier-status-h) + 12px)',
+    );
+    expect(html).toMatch(
+      /@media \(max-width: 720px\)[\s\S]*\.cheatsheet-flow\s*\{\s*grid-template-columns:\s*repeat\(2,/,
+    );
+    expect(html).toMatch(
+      /@media \(max-width: 520px\)[\s\S]*\.cheatsheet-flow,[\s\S]*\.empty-state-actions\s*\{\s*grid-template-columns:\s*1fr;/,
+    );
+    expect(html).toContain('data-first-tip=');
+    expect(html).toContain('#view.piece-hover { cursor: move; }');
+  });
+
+  it('keeps the scrollable tools separate from the non-overlapping footer', () => {
+    expect(html).toMatch(
+      /<div class="atelier-rail-scroll">[\s\S]*<section class="selection-card"[\s\S]*<\/section>\s*<\/div>\s*<div class="atelier-rail-footer">/,
+    );
+    expect(html).toMatch(
+      /\.atelier-rail-scroll\s*\{[\s\S]*overflow-y:\s*auto;/,
+    );
+    expect(html).toMatch(
+      /\.atelier-rail-footer\s*\{[\s\S]*position:\s*static;/,
+    );
+    expect(html).not.toMatch(
+      /\.atelier-rail-footer\s*\{[\s\S]{0,160}position:\s*sticky;/,
+    );
   });
 
   it('preserves every supported placement destination', () => {
