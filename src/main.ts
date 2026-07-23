@@ -90,6 +90,7 @@ import {
   resolutionRebuildMessage,
   type SupportedResolution,
 } from './app/ControlStateSync';
+import { showToast, undoToastMessage } from './app/ToastQueue';
 import { PatternView, SEAM_COLORS, type PatternHandleSpec, type SystemLink } from './app/PatternView';
 import { exportDraftPatternPdf, exportDraftPatternSvg } from './app/draftPatternExport';
 import { exportPatternPdf } from './app/patternPdf';
@@ -715,6 +716,7 @@ async function main(): Promise<void> {
     document.getElementById('at-sim')?.classList.remove('running');
     syncUndoButton();
     build();
+    showToast(undoToastMessage());
   };
   undoButton.addEventListener('click', undoDraft);
   syncUndoButton();

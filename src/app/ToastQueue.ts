@@ -13,6 +13,12 @@ export function boundedToastMessages(
   return [...current, next].slice(-safeLimit);
 }
 
+export function undoToastMessage(
+  detail = 'dernière modification du patron',
+): string {
+  return `Annulé : ${detail}`;
+}
+
 /**
  * Short, non-blocking UI feedback. A single live region owns at most two
  * messages, so repeated commands never cover the atelier.

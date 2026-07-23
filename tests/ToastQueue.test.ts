@@ -3,6 +3,7 @@ import {
   boundedToastMessages,
   MAX_VISIBLE_TOASTS,
   TOAST_VISIBLE_MS,
+  undoToastMessage,
 } from '../src/app/ToastQueue';
 
 describe('file de notifications', () => {
@@ -22,5 +23,14 @@ describe('file de notifications', () => {
     expect(
       boundedToastMessages(['un', 'deux', 'trois'], 'quatre', Number.NaN),
     ).toEqual(['trois', 'quatre']);
+  });
+
+  it('formule une confirmation d’annulation compréhensible', () => {
+    expect(undoToastMessage()).toBe(
+      'Annulé : dernière modification du patron',
+    );
+    expect(undoToastMessage('suppression de couture')).toBe(
+      'Annulé : suppression de couture',
+    );
   });
 });
