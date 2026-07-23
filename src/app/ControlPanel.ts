@@ -392,6 +392,10 @@ export class ControlPanel {
         .name('carte de tension')
         .onChange((v: boolean) => this.cb.onFitMap(v)),
     );
+    const reapplyPresetController = fabric
+      .add({ reapply: () => this.reapplyFabricBase() }, 'reapply')
+      .name('↻ réappliquer le preset');
+    reapplyPresetController.domElement.id = 'toile-reapply-fabric-preset';
     this.controllers.push(
       fabric.add(this.settings, 'fabricReport').name('qualité du profil').disable(),
     );
@@ -622,6 +626,23 @@ export class ControlPanel {
     this.cb.onCompliance(physics);
     this.cb.onFriction(physics.frictionStatic, physics.frictionDynamic);
     this.cb.onDynamics(physics);
+  }
+
+  /**
+   * Reapply stays actionable when the select already displays the current
+   * preset, unlike choosing the same native option a second time.
+   */
+  private reapplyFabricBase(): void {
+    const preset = PRESETS[this.settings.preset];
+    if (preset) {
+      this.applyPreset(this.settings.preset);
+      this.toast(`preset ${this.settings.preset} réappliqué`);
+      return;
+    }
+    this.writeFabricPhysics(this.fabricBaseline);
+    this.refreshFabricReport();
+    this.emitFabricPhysics(this.fabricBaseline);
+    this.toast(`profil ${this.fabricBaselineName} réappliqué`);
   }
 
   /** Validate and apply a calibrated .toile-fabric.json profile live. */

@@ -10,6 +10,7 @@ import {
 type ChangeHandler = (value: unknown) => void;
 
 class FakeController {
+  readonly domElement = { id: '' };
   private changeHandler: ChangeHandler | undefined;
 
   constructor(
@@ -42,6 +43,11 @@ class FakeController {
   setValue(value: unknown): void {
     this.object[this.property] = value;
     this.changeHandler?.(value);
+  }
+
+  invoke(): void {
+    const action = this.object[this.property];
+    if (typeof action === 'function') action();
   }
 }
 
@@ -151,5 +157,42 @@ describe('fabric profile calibration state', () => {
 
     stretch.setValue(Math.log10(FABRIC_PHYSICS.Jersey!.stretch) + 0.1);
     expect(report.object.fabricReport).toBe('modifié (base Jersey)');
+  });
+
+  it('réapplique exactement le preset courant en un geste', async () => {
+    const { ControlPanel } = await import('../src/app/ControlPanel');
+    const callbacks = makeCallbacks();
+    const panel = new ControlPanel(callbacks, {
+      resolution: 64,
+      substeps: 20,
+    });
+    const stretch = fakeControllers.find(
+      (controller) => controller.property === 'stretchExp',
+    )!;
+    const report = fakeControllers.find(
+      (controller) => controller.property === 'fabricReport',
+    )!;
+    const reapply = fakeControllers.find(
+      (controller) => controller.property === 'reapply',
+    )!;
+
+    stretch.setValue(Math.log10(FABRIC_PHYSICS.Jersey!.stretch) + 0.1);
+    expect(report.object.fabricReport).toBe('modifié (base Jersey)');
+
+    (panel as unknown as { toast: () => void }).toast = vi.fn();
+    reapply.invoke();
+
+    expect(report.object.fabricReport).toBe('preset Jersey · calibré');
+    expect(panel.snapshotGarment().fabric).toMatchObject({
+      preset: 'Jersey',
+      stretchExp: Math.log10(FABRIC_PHYSICS.Jersey!.stretch),
+    });
+    expect(callbacks.onCompliance).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        stretch: FABRIC_PHYSICS.Jersey!.stretch,
+        stretchWarp: FABRIC_PHYSICS.Jersey!.stretchWarp,
+      }),
+    );
+    expect(reapply.domElement.id).toBe('toile-reapply-fabric-preset');
   });
 });
