@@ -3,6 +3,7 @@ import {
   assemblySeamIsClosed,
   docPieces,
   pieceIdOf,
+  type AssemblySeam,
   type DraftDoc,
   type DraftPiece,
   type PiecePlacementRole,
@@ -30,6 +31,73 @@ export interface AutoPlacementResult {
 }
 
 export type PieceStagingOffset = [number, number, number];
+
+/**
+ * Build a transient simulation view of a draft without selected free pieces.
+ *
+ * The authored document is deliberately left untouched: the 2D plan, undo,
+ * autosave and garment JSON keep the pending piece. Keeping its array slot and
+ * marking it `patternOnly` also preserves every later pieceId/offset, while
+ * filtering physical joins prevents a retained piece from sewing to a mesh
+ * that was intentionally omitted for this fitting.
+ */
+export function draftForSimulationExcluding(
+  doc: DraftDoc,
+  pieceIds: Iterable<number>,
+): DraftDoc {
+  const excluded = new Set(
+    [...pieceIds].filter(
+      (pieceId) =>
+        Number.isInteger(pieceId) &&
+        pieceId >= 2 &&
+        pieceId - 2 < (doc.pieces?.length ?? 0),
+    ),
+  );
+  if (excluded.size === 0) return structuredClone(doc);
+
+  const derived = structuredClone(doc);
+  derived.pieces = (derived.pieces ?? []).map((piece, index) =>
+    excluded.has(index + 2) ? { ...piece, patternOnly: true } : piece,
+  );
+  const keepsJoin = (join: AssemblySeam): boolean =>
+    !excluded.has(pieceIdOf(join.a)) && !excluded.has(pieceIdOf(join.b));
+  if (derived.seams) derived.seams = derived.seams.filter(keepsJoin);
+  if (derived.segmentLinks) {
+    derived.segmentLinks = derived.segmentLinks.filter(keepsJoin);
+  }
+  return derived;
+}
+
+/**
+ * Placement diagnostics that apply to the mesh which will actually be built.
+ *
+ * The Lucas compiler owns its seven supplied cutting pieces (front, back and
+ * five entries in `pieces`). Running the generic graph over those canonical
+ * pieces would report false errors because their specialised assembly is not
+ * encoded as generic seams. User-added pieces start at pieceId 7 and still
+ * need the ordinary placement checks.
+ */
+export function simulationPlacementIssues(doc: DraftDoc): PlacementIssue[] {
+  const issues = placementIssues(doc);
+  return doc.preset === 'lucas-hoodie'
+    ? issues.filter((issue) => issue.pieceId >= 7)
+    : issues;
+}
+
+/**
+ * Only a physical, user-controlled free piece can be omitted for one fitting.
+ * Built-in specialised pieces must stay present because their compilers own
+ * the complete garment topology.
+ */
+export function canTemporarilyExcludePiece(
+  doc: DraftDoc,
+  pieceId: number,
+): boolean {
+  if (!Number.isInteger(pieceId) || pieceId < 2) return false;
+  const piece = doc.pieces?.[pieceId - 2];
+  if (!piece || piece.patternOnly || piece.outline.length < 3) return false;
+  return doc.preset !== 'lucas-hoodie' || pieceId >= 7;
+}
 
 /** Return a defensive staging offset; malformed/imported values stay inert. */
 export function stagingOffsetOf(

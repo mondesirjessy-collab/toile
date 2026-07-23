@@ -483,6 +483,23 @@
       border-color: rgba(120, 220, 150, 0.42); color: rgba(170, 240, 195, 1);
       background: rgba(25, 46, 34, 0.86);
     }
+    #placement-status-message { display: block; }
+    #at-sim-without-piece {
+      display: block;
+      width: max-content;
+      max-width: 100%;
+      min-height: 30px;
+      margin-top: 7px;
+      padding: 5px 9px;
+      border: 1px solid rgba(255, 190, 120, 0.5);
+      border-radius: 5px;
+      color: rgba(255, 229, 195, 1);
+      background: rgba(118, 75, 35, 0.38);
+      font: 700 10px/1.2 Inter, ui-sans-serif, sans-serif;
+      cursor: pointer;
+    }
+    #at-sim-without-piece:hover { background: rgba(142, 90, 39, 0.58); }
+    #at-sim-without-piece[hidden] { display: none; }
     #pattern-pane-head {
       display: none;
       pointer-events: auto;
@@ -942,7 +959,10 @@
       <button data-place="pocket" title="Poche ou applique : cliquez ensuite sa position exacte sur la pièce support. Le contour est cousu segment par segment et chaque couture reste retirable.">Poche / applique</button>
       <button data-place="free" title="La pièce reste volontairement libre et ne sera pas assemblée automatiquement">Libre</button>
     </div>
-    <div id="placement-status" hidden role="status"></div>
+    <div id="placement-status" hidden role="status">
+      <span id="placement-status-message"></span>
+      <button id="at-sim-without-piece" type="button" hidden>Simuler sans cette pièce</button>
+    </div>
     <canvas id="pattern" width="250" height="290" title="Navigation : glisser le fond pour déplacer le plan · bouton central : déplacer depuis n’importe où · molette : zoomer sous le pointeur · clic droit : sélectionner une pièce · Commande/Ctrl + clic droit : ajouter ou retirer du groupe · tirer un coin : redimensionner le groupe · glisser une pièce sélectionnée : l’organiser sans changer la simulation"></canvas>
   </div>
   <div id="atelier-view3d-tools" aria-label="Outils de la vue 3D">

@@ -8,6 +8,8 @@ import {
 import {
   applyStagingOffset,
   autoPlaceMeshFromCrossSeams,
+  canTemporarilyExcludePiece,
+  draftForSimulationExcluding,
   hasStagingOffset,
   movePieceInstanceInStaging,
   movePieceInStaging,
@@ -15,6 +17,7 @@ import {
   placementIssues,
   placementRoleOf,
   resetPieceInstanceStaging,
+  simulationPlacementIssues,
   stagingOffsetOf,
 } from '../src/engine/pattern/PatternPlacement';
 import type { DraftDoc, DraftPiece } from '../src/engine/pattern/Draft';
@@ -57,6 +60,92 @@ const mesh = (points: Array<[number, number, number]>): ClothMeshData => {
     invMasses: new Float32Array(points.length).fill(1),
   } as ClothMeshData;
 };
+
+describe('essayage sans une pièce en attente', () => {
+  it('conserve les slots et le document original tout en neutralisant la cible', () => {
+    const pending = piece('poche en attente');
+    pending.placement = { role: 'pocket', autoAlign: true };
+    const later = piece('empiècement cousu');
+    const draft: DraftDoc = {
+      ...doc(pending),
+      pieces: [pending, later],
+      seams: [
+        {
+          a: { pieceId: 2, face: 'front', from: 0, to: 1 },
+          b: { pieceId: 0, face: 'front', from: 0, to: 1 },
+        },
+        {
+          a: { pieceId: 3, face: 'front', from: 1, to: 2 },
+          b: { pieceId: 0, face: 'front', from: 1, to: 2 },
+        },
+      ],
+    };
+    const before = structuredClone(draft);
+
+    const derived = draftForSimulationExcluding(draft, [2]);
+
+    expect(draft).toEqual(before);
+    expect(derived.pieces).toHaveLength(2);
+    expect(derived.pieces?.[0]?.patternOnly).toBe(true);
+    expect(derived.pieces?.[1]?.patternOnly).not.toBe(true);
+    expect(derived.seams).toHaveLength(1);
+    expect(derived.seams?.[0]?.a.pieceId).toBe(3);
+    expect(placementIssues(draft)).toMatchObject([
+      { pieceId: 2, code: 'missing-support' },
+    ]);
+    expect(placementIssues(derived)).toEqual([]);
+  });
+
+  it('laisse visible une dépendance invalide quand son support est exclu', () => {
+    const support = piece('support libre');
+    const pocket = piece('poche dépendante');
+    pocket.placement = {
+      role: 'pocket',
+      autoAlign: true,
+      surface: {
+        supportPieceId: 2,
+        anchor: [0.5, 0.5],
+        stitchedEdges: [0],
+      },
+    };
+    const draft: DraftDoc = {
+      ...doc(support),
+      pieces: [support, pocket],
+    };
+
+    expect(
+      placementIssues(draftForSimulationExcluding(draft, [2])),
+    ).toMatchObject([
+      { pieceId: 3, code: 'missing-support', severity: 'error' },
+    ]);
+  });
+
+  it('diagnostique une pièce ajoutée au hoodie sans fausse alerte sur ses pièces système', () => {
+    const builtIns = Array.from({ length: 5 }, (_, index) => {
+      const builtIn = piece(`système ${index + 1}`);
+      if (index === 0) builtIn.placement = { role: 'armL' };
+      if (index === 1) builtIn.placement = { role: 'neck' };
+      return builtIn;
+    });
+    const added = piece('empiècement utilisateur');
+    const hoodie: DraftDoc = {
+      ...doc(builtIns[0]!),
+      pieces: [...builtIns, added],
+      preset: 'lucas-hoodie',
+    };
+
+    expect(simulationPlacementIssues(hoodie)).toMatchObject([
+      { pieceId: 7, code: 'missing-seam', severity: 'error' },
+    ]);
+    expect(canTemporarilyExcludePiece(hoodie, 2)).toBe(false);
+    expect(canTemporarilyExcludePiece(hoodie, 7)).toBe(true);
+    expect(
+      simulationPlacementIssues(
+        draftForSimulationExcluding(hoodie, [7]),
+      ),
+    ).toEqual([]);
+  });
+});
 
 describe('assistant de placement', () => {
   it('demande un support exact puis au moins une couture pour une applique', () => {

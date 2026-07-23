@@ -14,6 +14,8 @@ describe('atelier workspace markup', () => {
       'pattern',
       'place-chooser',
       'placement-status',
+      'placement-status-message',
+      'at-sim-without-piece',
       'split-divider',
       'at-tshirt',
       'at-pants',
@@ -85,6 +87,9 @@ describe('atelier workspace markup', () => {
     expect(html).toContain('Assembler');
     expect(html).toContain('Pièce active');
     expect(html).toContain('Essayer en 3D');
+    expect(html).toMatch(
+      /<button id="at-sim-without-piece" type="button" hidden>Simuler sans cette pièce<\/button>/,
+    );
     expect(html).toContain('Revenir au patron');
     expect(html).toContain('◎ Placement');
     expect(html).toContain('⌖ Réinitialiser la pose');

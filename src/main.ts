@@ -29,14 +29,16 @@ import { defaultDraft, tshirtDraft, compileDraft, compileAssembly, compileCrossS
 import {
   applyStagingOffset,
   autoPlaceMeshFromCrossSeams,
+  canTemporarilyExcludePiece,
+  draftForSimulationExcluding,
   hasStagingOffset,
   movePieceInstanceInStaging,
   placeMeshOnSurface,
-  placementIssues,
   placementRoleLabel,
   resetPieceInstanceStaging,
   resetPieceStaging,
   stagingOffsetOf,
+  simulationPlacementIssues,
 } from './engine/pattern/PatternPlacement';
 import { boxyTee, boxyChestCm, BOXY_SIZES, type BoxySize } from './engine/pattern/draftTee';
 import {
@@ -513,10 +515,9 @@ async function main(): Promise<void> {
       atelierDesign = true;
       document.getElementById('at-sim')?.classList.remove('running');
       build();
-      const remaining =
-        draft.preset === 'lucas-hoodie'
-          ? []
-          : placementIssues(draft).filter((issue) => issue.severity === 'error');
+      const remaining = simulationPlacementIssues(draft).filter(
+        (issue) => issue.severity === 'error',
+      );
       const assemblyMessage =
         seam.kind === 'zipper'
           ? 'Fermeture éclair enregistrée · les deux rubans sont associés et fermés pour la simulation.'
@@ -649,6 +650,15 @@ async function main(): Promise<void> {
   let placePending: number | null = null; // pieceId en attente de placement
   const placeChooser = document.getElementById('place-chooser') as HTMLElement;
   const placementStatus = document.getElementById('placement-status') as HTMLElement;
+  const placementStatusMessage = document.getElementById(
+    'placement-status-message',
+  ) as HTMLElement;
+  const simulateWithoutPieceButton = document.getElementById(
+    'at-sim-without-piece',
+  ) as HTMLButtonElement;
+  // Runtime-only fitting filter. The authored draft remains the source of
+  // truth for the 2D plan, undo, autosave and garment JSON.
+  let simulationExcludedPieceIds = new Set<number>();
   const showChooser = (on: boolean): void => {
     placeChooser.hidden = !on;
     if (bigPanel) requestAnimationFrame(applySplit);
@@ -656,12 +666,19 @@ async function main(): Promise<void> {
   const showPlacementStatus = (messages: string[], ok = false): void => {
     placementStatus.hidden = messages.length === 0;
     placementStatus.classList.toggle('ok', ok);
-    placementStatus.textContent = messages.join(' · ');
+    placementStatusMessage.textContent = messages.join(' · ');
+    simulateWithoutPieceButton.hidden = true;
+    delete simulateWithoutPieceButton.dataset.pieceId;
     if (bigPanel) requestAnimationFrame(applySplit);
+  };
+  const offerSimulationWithoutPiece = (pieceId: number): void => {
+    simulateWithoutPieceButton.dataset.pieceId = String(pieceId);
+    simulateWithoutPieceButton.hidden = false;
   };
   const resetPlacement = (): void => {
     penPlacement = false;
     placePending = null;
+    simulationExcludedPieceIds.clear();
     showChooser(false);
     showPlacementStatus([]);
   };
@@ -809,21 +826,58 @@ async function main(): Promise<void> {
   // Back to the drawing board: re-freeze flat (a rebuild re-spawns the piece at
   // its flat rest pose) so it can be edited without physics moving it.
   const enterDesign = (): void => {
+    const restored = [...simulationExcludedPieceIds].map((pieceId) => {
+      const piece =
+        pieceId === 0
+          ? draft?.piece
+          : pieceId === 1
+            ? draft?.back
+            : draft?.pieces?.[pieceId - 2];
+      return piece?.name ?? `Pièce ${pieceId + 1}`;
+    });
+    simulationExcludedPieceIds.clear();
     atelierDesign = true;
     syncAtelierPhase();
     build();
+    if (restored.length) {
+      showPlacementStatus([
+        `${restored.join(' + ')} de nouveau active${restored.length > 1 ? 's' : ''} dans le patron.`,
+        'Terminez son placement ou sa couture avant de relancer l’essayage.',
+      ]);
+    }
+    if (placePending !== null) showChooser(true);
   };
   // "The assembly is done" — let the solver drape the piece onto the body.
-  const simulate = (): void => {
-    const issues =
-      draft?.preset === 'lucas-hoodie'
-        ? []
-        : draft
-          ? placementIssues(draft)
-          : [];
+  const simulate = (excludedPieceId: number | null = null): void => {
+    const simulationDraft =
+      draft && excludedPieceId !== null
+        ? draftForSimulationExcluding(draft, [excludedPieceId])
+        : draft;
+    const issues = simulationDraft
+      ? simulationPlacementIssues(simulationDraft)
+      : [];
     const blocking = issues.filter((issue) => issue.severity === 'error');
-    if (placePending !== null || blocking.length) {
+    const pendingBlocks =
+      placePending !== null && placePending !== excludedPieceId;
+    if (pendingBlocks || blocking.length) {
       const first = blocking[0];
+      const pendingPieceId =
+        pendingBlocks &&
+        draft &&
+        placePending !== null &&
+        canTemporarilyExcludePiece(draft, placePending)
+          ? placePending
+          : null;
+      const issuePieceId =
+        blocking.length === 1 &&
+        first &&
+        (first.code === 'missing-support' || first.code === 'missing-seam') &&
+        draft &&
+        canTemporarilyExcludePiece(draft, first.pieceId)
+          ? first.pieceId
+          : null;
+      const skippablePieceId = pendingPieceId ?? issuePieceId;
+      simulationExcludedPieceIds.clear();
       atelierDesign = true;
       syncAtelierPhase();
       if (!bigPanel) setBig(true);
@@ -834,8 +888,20 @@ async function main(): Promise<void> {
           showChooser(true);
         }
       }
+      // The chooser otherwise covers the status card. Once the user explicitly
+      // asks to simulate, keep the one-click escape hatch visible in that same
+      // feedback message; ◎ Placer reopens the chooser whenever desired.
+      if (pendingPieceId !== null) showChooser(false);
       showPlacementStatus([
         'Simulation en attente',
+        ...(pendingBlocks && placePending !== null
+          ? [
+              `${
+                draft?.pieces?.[placePending - 2]?.name ??
+                `Pièce ${placePending + 1}`
+              } n’a pas encore de destination`,
+            ]
+          : []),
         ...blocking.map((issue) => issue.message),
         blocking.some((issue) => issue.code === 'missing-support')
           ? 'Sélectionnez Poche / applique, puis cliquez sa position exacte sur la pièce support'
@@ -845,39 +911,63 @@ async function main(): Promise<void> {
           ? 'Reliez un bord de cet ensemble au devant, au dos, à une manche ou au col'
           : 'Choisissez d’abord la destination de la pièce',
       ]);
+      if (skippablePieceId !== null) {
+        offerSimulationWithoutPiece(skippablePieceId);
+      }
       return;
     }
+    simulationExcludedPieceIds =
+      excludedPieceId === null
+        ? new Set<number>()
+        : new Set([excludedPieceId]);
     const warnings = issues.filter((issue) => issue.severity === 'warning');
     const staged =
       !!draft &&
       [draft.piece, ...(draft.back ? [draft.back] : []), ...(draft.pieces ?? [])].some(
         hasStagingOffset,
       );
+    const excludedName =
+      excludedPieceId === null
+        ? null
+        : draft?.pieces?.[excludedPieceId - 2]?.name ??
+          `Pièce ${excludedPieceId + 1}`;
+    const exclusionMessage = excludedName
+      ? `${excludedName} non simulée · elle reste en attente dans le plan 2D et sera réintégrée après son placement.`
+      : null;
     showPlacementStatus(
       [
         ...warnings.map((issue) => `Attention : ${issue.message}`),
         ...(staged
           ? ['Recalage automatique : les déplacements 3D de préparation sont ignorés pour garantir l’assemblage.']
           : []),
+        ...(exclusionMessage ? [exclusionMessage] : []),
       ],
-      warnings.length === 0,
+      warnings.length === 0 && exclusionMessage === null,
     );
     deactivateEditingTools();
     atelierDesign = false;
     if (!bigPanel) setBig(true);
     syncAtelierPhase();
     build(); // canonical spawn: staging offsets are design-only
-    if (draft && (draft.seams?.length ?? 0) > 0) {
+    if (simulationDraft && (simulationDraft.seams?.length ?? 0) > 0) {
       showPlacementStatus(
         [
           ...warnings.map((issue) => `Attention : ${issue.message}`),
-          `Placement automatique terminé : la pose 3D a été reconstruite depuis ${draft.seams!.length} couture${draft.seams!.length > 1 ? 's' : ''}, indépendamment du plan de coupe.`,
+          `Placement automatique terminé : la pose 3D a été reconstruite depuis ${simulationDraft.seams!.length} couture${simulationDraft.seams!.length > 1 ? 's' : ''}, indépendamment du plan de coupe.`,
+          ...(exclusionMessage ? [exclusionMessage] : []),
         ],
-        warnings.length === 0,
+        warnings.length === 0 && exclusionMessage === null,
       );
     }
     wake();
   };
+  simulateWithoutPieceButton.addEventListener('click', () => {
+    const pieceId = Number(simulateWithoutPieceButton.dataset.pieceId);
+    if (!Number.isInteger(pieceId) || pieceId < 2) return;
+    showChooser(false);
+    patternView.selectPiece(pieceId);
+    simulate(pieceId);
+  });
   const updateAtelierBar = (): void => {
     const active = sceneMode === 'atelier';
     atelierBar.classList.toggle('on', active);
@@ -2030,14 +2120,21 @@ async function main(): Promise<void> {
             // Freeform piece: the user's drawn outline + darts + hand-seams
             // compiled straight to the mask / seam machinery (the atelier editor).
             const doc = (draft ??= defaultDraft(resolution as 32 | 64 | 128));
+            const simulationDoc =
+              !atelierDesign && simulationExcludedPieceIds.size
+                ? draftForSimulationExcluding(
+                    doc,
+                    simulationExcludedPieceIds,
+                  )
+                : doc;
             // Lucas Hoodie: the editable document contains the seven unique
             // cutting pieces, while this specialised compiler materialises
             // their true quantities (two fronts, sleeves, hood sides, pockets
             // and cuffs), unfolds the fold pieces and mounts the separable zip.
-            if (doc.preset === 'lucas-hoodie' && doc.back) {
+            if (simulationDoc.preset === 'lucas-hoodie' && simulationDoc.back) {
               systemLinks = [];
               const hoodie = buildLucasHoodieMesh(
-                doc,
+                simulationDoc,
                 resolution,
                 m,
                 bodyCollisionSd,
@@ -2095,7 +2192,7 @@ async function main(): Promise<void> {
               }
               return pants;
             }
-            const d = doc.piece;
+            const d = simulationDoc.piece;
             const { extraSeams, openCells } = compileDraft(d, resolution);
             const rN = resolution;
             const cellOpen =
@@ -2103,10 +2200,13 @@ async function main(): Promise<void> {
               (uu: number, vv: number): boolean =>
                 set.has(Math.round(vv * (rN - 1)) * rN + Math.round(uu * (rN - 1)));
             // Independent back face (côte-à-côte), if the user drew one.
-            const back = doc.back && doc.back.outline.length >= 3 ? doc.back : null;
+            const back =
+              simulationDoc.back && simulationDoc.back.outline.length >= 3
+                ? simulationDoc.back
+                : null;
             const bc = back ? compileDraft(back, resolution) : null;
             // Manual assembly: nothing auto-sews; the user's seams hold it.
-            const manual = doc.manual === true;
+            const manual = simulationDoc.manual === true;
             const body = generateSeamedPanels({
               resolution,
               width: d.width,
@@ -2124,7 +2224,12 @@ async function main(): Promise<void> {
                     extraOpeningsBack: cellOpen(bc.openCells),
                   }
                 : {}),
-              ...(manual ? { manualAssembly: true, assemblySeams: compileAssembly(doc, resolution) } : {}),
+              ...(manual
+                ? {
+                    manualAssembly: true,
+                    assemblySeams: compileAssembly(simulationDoc, resolution),
+                  }
+                : {}),
             });
             if (!atelierDesign && loadedPattern === 'boxy') {
               prepareCanonicalMirrorSeams(body);
@@ -2142,7 +2247,7 @@ async function main(): Promise<void> {
             // garment and sewn where the user's assembly seams say
             // (compileCrossSeams). Empty ⇒ this loop is skipped and `garment`
             // stays exactly `body` — byte-identical to v97.
-            const freePieces = doc.pieces ?? [];
+            const freePieces = simulationDoc.pieces ?? [];
             const offsets: number[] = [0, resolution * resolution]; // global base index per pieceId
             // Authoritative placement graph. Unlike the mesh constraint buffer,
             // this contains only joins that say WHERE pieces belong; automatic
@@ -2166,7 +2271,10 @@ async function main(): Promise<void> {
               // from this piece's own front↔back rim stitching, so a both-faces
               // assembly seam can't transitively weld the body's open edge shut
               // THROUGH the body (see crossSewnOpenCells).
-              const openAll = new Set([...fpc.openCells, ...crossSewnOpenCells(doc, pid, resolution)]);
+              const openAll = new Set([
+                ...fpc.openCells,
+                ...crossSewnOpenCells(simulationDoc, pid, resolution),
+              ]);
               if (fp.wrap) {
                 // WRAP piece = a TUBE by construction: its mouth (first kept
                 // cell of each column — pinned to the armhole/neckline) AND
@@ -2260,15 +2368,15 @@ async function main(): Promise<void> {
               // Wrap pieces pin to the explicit pattern openings (sleeves) or
               // the neckline scan (neckband); flat pieces keep the drawn seams.
               const surfacePins = surfacePiece
-                ? compileSurfaceSeams(doc, resolution, offsets, pid)
+                ? compileSurfaceSeams(simulationDoc, resolution, offsets, pid)
                 : [];
               const pins =
                 fp.wrap === 'armL' || fp.wrap === 'armR'
                   ? sleeveCrossSeams(
                       garment,
                       pieceMesh,
-                      doc.piece,
-                      doc.back ?? doc.piece,
+                      simulationDoc.piece,
+                      simulationDoc.back ?? simulationDoc.piece,
                       fp.wrap === 'armR' ? 'R' : 'L',
                       resolution,
                       useScan,
@@ -2279,11 +2387,21 @@ async function main(): Promise<void> {
                         back: neckOpeningCells(back ?? d, resolution),
                       })
                     : [
-                        ...compileCrossSeams(doc, resolution, offsets, pid),
+                        ...compileCrossSeams(
+                          simulationDoc,
+                          resolution,
+                          offsets,
+                          pid,
+                        ),
                         ...surfacePins,
                       ];
               const surfaceContacts = surfacePiece
-                ? compileSurfaceContacts(doc, resolution, offsets, pid)
+                ? compileSurfaceContacts(
+                    simulationDoc,
+                    resolution,
+                    offsets,
+                    pid,
+                  )
                 : [];
               if (fp.wrap === 'neck') {
                 fitCollarTubeToNeckline(garment, pieceMesh, pins);
