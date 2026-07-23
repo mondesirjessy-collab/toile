@@ -1,0 +1,20 @@
+{
+  "format": "toile-fabric-measurement",
+  "version": 1,
+  "system": "FAST",
+  "name": "Popeline — exemple FAST",
+  "measurements": {
+    "massGsm": 125,
+    "thicknessMm": 0.35,
+    "extensionWarpPct": 2.5,
+    "extensionWeftPct": 5,
+    "biasExtensionPct": 10,
+    "bendingWarpUNm": 42,
+    "bendingWeftUNm": 28
+  },
+  "notes": {
+    "extension": "FAST E100, en %",
+    "bending": "Rigidité de flexion en µN·m",
+    "optional": "Ajouter frictionMiu, tensileRecoveryPct ou bendingHysteresisRatio si disponibles"
+  }
+}

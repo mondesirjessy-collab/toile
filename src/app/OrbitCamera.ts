@@ -8,6 +8,11 @@
  * Hand-rolled matrices (column-major, WebGPU clip space z in [0,1])
  * to keep the milestone dependency-free.
  */
+export interface CameraBounds {
+  min: readonly [number, number, number];
+  max: readonly [number, number, number];
+}
+
 export class OrbitCamera {
   private azimuth = Math.PI / 5;
   private elevation = Math.PI / 7;
@@ -15,6 +20,77 @@ export class OrbitCamera {
   private readonly target: [number, number, number] = [0, 0.8, 0];
   private readonly viewProj = new Float32Array(16);
   private readonly fov = Math.PI / 4;
+
+  /**
+   * Bring a standing mannequin back into view without changing its physical
+   * size. The horizontal estimate includes a relaxed/T-pose arm span, so the
+   * whole avatar remains reachable even in the narrow half of the atelier.
+   */
+  frameAvatar(heightMeters: number, aspect = 1): void {
+    if (!Number.isFinite(heightMeters) || heightMeters <= 0) return;
+    const height = Math.min(3, Math.max(0.5, heightMeters));
+    const safeAspect = Math.min(4, Math.max(0.35, aspect));
+    const tanHalf = Math.tan(this.fov / 2);
+    const padding = 1.14;
+    const verticalDistance = ((height * 0.5) / tanHalf) * padding;
+    const estimatedArmSpan = height * 0.92;
+    const horizontalDistance =
+      ((estimatedArmSpan * 0.5) / (tanHalf * safeAspect)) * padding;
+
+    this.target[0] = 0;
+    this.target[1] = height * 0.5;
+    this.target[2] = 0;
+    this.radius = Math.min(20, Math.max(1.25, verticalDistance, horizontalDistance));
+  }
+
+  /** Fit an exact avatar AABB in the current viewing direction. */
+  frameBounds(bounds: CameraBounds, aspect = 1): void {
+    const safeAspect = Math.min(4, Math.max(0.35, aspect));
+    const centre: [number, number, number] = [
+      (bounds.min[0] + bounds.max[0]) * 0.5,
+      (bounds.min[1] + bounds.max[1]) * 0.5,
+      (bounds.min[2] + bounds.max[2]) * 0.5,
+    ];
+    if (!centre.every(Number.isFinite)) return;
+
+    // With the target at the bounds centre, solve the perspective inequalities
+    // for each AABB corner in the camera's current right/up/forward basis.
+    const ce = Math.cos(this.elevation);
+    const forward = normalize([
+      -ce * Math.sin(this.azimuth),
+      -Math.sin(this.elevation),
+      -ce * Math.cos(this.azimuth),
+    ]);
+    const right = normalize(cross(forward, [0, 1, 0]));
+    const up = cross(right, forward);
+    const tanHalf = Math.tan(this.fov / 2);
+    const padding = 1.25;
+    let needed = 1.25;
+    for (const x of [bounds.min[0], bounds.max[0]]) {
+      for (const y of [bounds.min[1], bounds.max[1]]) {
+        for (const z of [bounds.min[2], bounds.max[2]]) {
+          const offset: [number, number, number] = [
+            x - centre[0],
+            y - centre[1],
+            z - centre[2],
+          ];
+          const depthOffset = dot(offset, forward);
+          const horizontal = Math.abs(dot(offset, right));
+          const vertical = Math.abs(dot(offset, up));
+          needed = Math.max(
+            needed,
+            (horizontal * padding) / (tanHalf * safeAspect) - depthOffset,
+            (vertical * padding) / tanHalf - depthOffset,
+          );
+        }
+      }
+    }
+
+    this.target[0] = centre[0];
+    this.target[1] = centre[1];
+    this.target[2] = centre[2];
+    this.radius = Math.min(20, needed);
+  }
 
   attach(canvas: HTMLCanvasElement, shouldOrbit?: (e: PointerEvent) => boolean): void {
     // Active CAMERA pointers, keyed by pointerId (cloth grabs stay untracked).

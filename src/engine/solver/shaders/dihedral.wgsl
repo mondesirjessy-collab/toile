@@ -28,6 +28,26 @@ struct SimParams {
   damping: f32,
   max_speed: f32,
   drag_index: u32,
+  body_min: vec3f,
+  blend_k: f32,
+  body_max: vec3f,
+  use_grid: u32,
+  spin_cos: f32,
+  spin_sin: f32,
+  spin_dtheta: f32,
+  compliance_stretch_warp: f32,
+  layer_gap: f32,
+  anchor_stiffness: f32,
+  max_layer: f32,
+  compliance_bend_warp: f32,
+  friction_dynamic: f32,
+  air_drag: f32,
+  stretch_limit: f32,
+  shear_limit: f32,
+  crease_yield: f32,
+  crease_memory: f32,
+  crease_recovery: f32,
+  _material_pad2: f32,
 };
 
 struct BendQuad {
@@ -37,8 +57,8 @@ struct BendQuad {
   w1: u32,
   rest_angle: f32,
   softness: f32, // compliance multiplier: 1 = fabric bending, >1 = softer (pressing)
-  _p1: f32,
-  _p2: f32,
+  warp_weight: f32, // 0 = weft curvature, 1 = warp/grain curvature
+  base_rest_angle: f32,
 };
 
 struct Batch {
@@ -48,18 +68,29 @@ struct Batch {
   _pad1: u32,
 };
 
+struct FabricMaterial {
+  in_plane: vec4f,
+  limits_mass: vec4f,
+  contact_motion: vec4f,
+  friction_crease: vec4f,
+};
+
 @group(0) @binding(0) var<uniform> params: SimParams;
 @group(0) @binding(1) var<storage, read_write> positions: array<vec4f>;
 @group(0) @binding(2) var<storage, read> inv_masses: array<f32>;
-@group(0) @binding(3) var<storage, read> quads: array<BendQuad>;
+@group(0) @binding(3) var<storage, read_write> quads: array<BendQuad>;
 @group(0) @binding(4) var<uniform> batch: Batch;
+@group(0) @binding(5) var<storage, read> material_ids: array<u32>;
+@group(0) @binding(6) var<storage, read> materials: array<FabricMaterial>;
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
   let k = gid.x;
   if (k >= batch.count) { return; }
 
-  let q = quads[batch.offset + k];
+  let quad_index = batch.offset + k;
+  let q = quads[quad_index];
+  let material = materials[material_ids[q.e0]];
   let w1 = inv_masses[q.e0];
   let w2 = inv_masses[q.e1];
   let w3 = inv_masses[q.w0];
@@ -96,7 +127,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // 1/spacing. Dividing by spacing² keeps the same slider range meaningful
   // (and resolution-independent): low = leather-stiff, high = chiffon-floppy.
   let sp2 = params.cloth_spacing * params.cloth_spacing;
-  let alpha = max(q.softness, 1.0) * params.compliance_bend / (params.dt * params.dt * max(sp2, 1e-8));
+  let bend_compliance = mix(material.in_plane.w, material.limits_mass.x, clamp(q.warp_weight, 0.0, 1.0));
+  let alpha = max(q.softness, 1.0) * bend_compliance / (params.dt * params.dt * max(sp2, 1e-8));
   // Exact XPBD for the acos formulation (audit M2): q1..q4 are gradients of
   // d = n1·n2, so ∇C = −q/√(1−d²) and Σw|∇C|² = denom/(1−d²). The compliance
   // term must therefore carry the same (1−d²) factor as the numerator —
@@ -113,6 +145,19 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // drape keeps the compliance the fabric was dialed to.
   let foldc = max(fold, 0.04);
   let s = -c * sqrt(fold) / (denom + alpha * foldc);
+
+  // Bending hysteresis / crease memory. Once the fold exceeds the material's
+  // yield angle, its rest angle follows the fold at a material-specific rate.
+  // Recovery then pulls that memory back toward the original rest shape: fast
+  // for knits, extremely slow for linen/denim. Reset rewrites the CPU-baked
+  // quad buffer, so R also acts as a clean "repassage".
+  var remembered = q.rest_angle;
+  let yielded = abs(c) - material.friction_crease.y;
+  if (yielded > 0.0 && material.friction_crease.z > 0.0) {
+    remembered += sign(c) * yielded * min(1.0, material.friction_crease.z * params.dt);
+  }
+  remembered += (q.base_rest_angle - remembered) * min(1.0, material.friction_crease.w * params.dt);
+  quads[quad_index].rest_angle = clamp(remembered, 0.0, 3.14159265);
 
   positions[q.e0] = vec4f(x1 + s * w1 * q1, 0.0);
   positions[q.e1] = vec4f(x1 + p2 + s * w2 * q2, 0.0);

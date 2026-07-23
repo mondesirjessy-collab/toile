@@ -32,10 +32,11 @@ const HEM_LEN = 0.62; // shoulder → hem (hip length, a t-shirt not a tunic)
  * poitrine à plat ≈ chest·1.35/2, longueur ≈ 1.24·poitrine à plat, col ≈ ⅓ de
  * la poitrine à plat, creux de col devant ≈ 10.5 cm (dos ≈ 2 cm), emmanchure
  * (épaule tombante, quasi droite) ≈ 27 cm de tour, manche ≈ biceps 25 ×
- * longueur 24. Le corps = DEVANT + DOS cousus épaules + côtés pleine hauteur
- * (la ligne soudée qui porte l'épinglage des manches — recette v104/v112) ;
+ * longueur 24. Le corps = DEVANT + DOS cousus aux épaules et sous les
+ * emmanchures ; chaque emmanchure reste ouverte pour recevoir séparément le
+ * panneau devant/dos de sa manche ;
  * les manches = pièces WRAP éditables (tube autour du bras, bouche/poignet
- * ouverts par construction, épinglées par wrapCrossSeams). Tout est éditable
+ * ouverts par construction, épinglées par sleeveCrossSeams). Tout est éditable
  * et s'imprime en 4 pièces numérotées.
  */
 export function oversizeTee(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
@@ -79,7 +80,9 @@ export function oversizeTee(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
       darts: [],
       seams: [],
       openEdges: [
+        { from: 1, to: 3 }, // emmanchure G
         { from: 4, to: 5 }, // ourlet
+        { from: 6, to: 8 }, // emmanchure D
         { from: 9, to: 15 }, // encolure (l'arc complet, col D → col G)
       ],
       width: W,
@@ -92,7 +95,7 @@ export function oversizeTee(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
   // monte au milieu (arc sinus, ~14 % de la longueur), les dessous de bras aux
   // coins, et le poignet se resserre à 80 % du biceps (table : ouverture 20 /
   // biceps 25) : les côtés descendent en oblique, comme la pièce du patron
-  // papier. La bouche du tube suit la courbe (wrapCrossSeams épingle la
+  // papier. La bouche du tube suit la courbe (sleeveCrossSeams épingle la
   // première cellule vivante de chaque colonne) et le poignet suit le fuselage
   // (dernière cellule vivante — le contrat tube ouvre les deux).
   const CAP = 0.14; // hauteur de tête (fraction de la longueur de manche)
@@ -119,6 +122,7 @@ export function oversizeTee(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
       topY: m.shoulderY + 0.01, // la tête du tube naît à l'épaule
       gap: 0.18,
       wrap,
+      placement: { role: wrap, autoAlign: true },
     };
   };
   // BANDE D'ENCOLURE (pièce 5 du patron) : un anneau étroit autour du cou,
@@ -142,6 +146,7 @@ export function oversizeTee(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
     topY: m.neckY - 0.005, // le bord bas de la bande rejoint l'encolure
     gap: 0.15, // les panneaux enjambent le cou sans naître dedans
     wrap: 'neck',
+    placement: { role: 'neck', autoAlign: true },
   });
   const seam = (from: number, to: number): AssemblySeam => ({ a: { face: 'front', from, to }, b: { face: 'back', from, to } });
   return {
@@ -152,9 +157,9 @@ export function oversizeTee(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
     back: face(dropB),
     manual: true,
     pieces: [sleeve('armR'), sleeve('armL'), band()],
-    // Épaules + côtés PLEINE hauteur (emmanchure comprise) : la ligne soudée
-    // devant↔dos sur laquelle les épingles de manche verrouillent le tube.
-    seams: [seam(0, 1), seam(8, 9), seam(1, 4), seam(5, 8)],
+    // Épaules + côtés SOUS les emmanchures. Les arcs 1→3 et 6→8 restent
+    // ouverts : manche avant→devant, manche arrière→dos, sans jonction à 4 rims.
+    seams: [seam(0, 1), seam(8, 9), seam(3, 4), seam(5, 6)],
   };
 }
 
@@ -168,7 +173,7 @@ export function oversizeTee(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
 // 98-99 % des deux emmanchures (l'aisance négative du jersey), sur les 6 tailles.
 // La taille est ABSOLUE (XS = tour 100 cm … XXL = 130 cm) ; l'avatar ne sert
 // qu'au placement vertical. Mécanique éprouvée : corps cousu épaules + côtés
-// pleine hauteur (le verrou des manches, v104/v112), manches WRAP, col WRAP.
+// sous les emmanchures, manches WRAP, col WRAP.
 // ---------------------------------------------------------------------------
 import { BOXY_DATA, BOXY_IDX, BOXY_SIZES, type BoxySize } from './boxyData';
 export { BOXY_SIZES, type BoxySize };
@@ -189,7 +194,9 @@ export function boxyTee(size: BoxySize, m: BodyMeasure, ref: BodyMeasure): Draft
     darts: [],
     seams: [],
     openEdges: [
+      { from: BOXY_IDX.tipL, to: BOXY_IDX.uaL }, // emmanchure G
       { from: BOXY_IDX.hemL, to: BOXY_IDX.hemR }, // ourlet
+      { from: BOXY_IDX.uaR, to: BOXY_IDX.tipR }, // emmanchure D
       { from: BOXY_IDX.neckR, to: BOXY_IDX.N }, // encolure (l'arc complet, colD → colG)
     ],
     width: body.width,
@@ -199,7 +206,7 @@ export function boxyTee(size: BoxySize, m: BodyMeasure, ref: BodyMeasure): Draft
   });
   // MANCHE ×2 : panneau de tube WRAP — la bouche = le PROFIL RÉEL de la tête
   // de manche (courbe du patron, hauteur 7,4-9,6 cm selon la taille), le
-  // poignet suit le rentré réel. wrapCrossSeams épingle la bouche à
+  // poignet suit le rentré réel. sleeveCrossSeams épingle la bouche à
   // l'emmanchure ; le contrat tube ouvre bouche et poignet.
   const sleeve = (wrap: 'armL' | 'armR'): DraftPiece => ({
     outline: clone(D.sleeve.outline),
@@ -211,6 +218,7 @@ export function boxyTee(size: BoxySize, m: BodyMeasure, ref: BodyMeasure): Draft
     topY: m.shoulderY + 0.01,
     gap: 0.2,
     wrap,
+    placement: { role: wrap, autoAlign: true },
   });
   // COL : bande wrap 'neck'. La pièce papier fait 64 % du tour d'encolure —
   // une bande CÔTELÉE cousue étirée. La sim n'a pas de pré-étirement : on pose
@@ -231,6 +239,7 @@ export function boxyTee(size: BoxySize, m: BodyMeasure, ref: BodyMeasure): Draft
     topY: m.neckY - 0.005,
     gap: 0.15,
     wrap: 'neck',
+    placement: { role: 'neck', autoAlign: true },
   });
   const seam = (from: number, to: number): AssemblySeam => ({ a: { face: 'front', from, to }, b: { face: 'back', from, to } });
   return {
@@ -241,13 +250,13 @@ export function boxyTee(size: BoxySize, m: BodyMeasure, ref: BodyMeasure): Draft
     back: face(D.back),
     manual: true,
     pieces: [sleeve('armR'), sleeve('armL'), band()],
-    // Épaules + côtés PLEINE hauteur (emmanchure comprise — la ligne soudée
-    // devant↔dos qui verrouille l'épinglage des manches, recette v104/v112).
+    // Épaules + côtés sous les emmanchures. Chaque arc reste ouvert et reçoit
+    // le panneau correspondant de la manche.
     seams: [
       seam(0, BOXY_IDX.tipL), // épaule G
       seam(BOXY_IDX.tipR, BOXY_IDX.neckR), // épaule D
-      seam(BOXY_IDX.tipL, BOXY_IDX.hemL), // côté G (emmanchure + côté)
-      seam(BOXY_IDX.hemR, BOXY_IDX.tipR), // côté D
+      seam(BOXY_IDX.uaL, BOXY_IDX.hemL), // côté G sous l'emmanchure
+      seam(BOXY_IDX.hemR, BOXY_IDX.uaR), // côté D sous l'emmanchure
     ],
   };
 }

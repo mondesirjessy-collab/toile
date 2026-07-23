@@ -33,6 +33,8 @@ TOILE (*French: the muslin test garment a pattern is validated on*) is the open 
 **The solver**
 - **XPBD cloth on GPU compute** — distance (structural + shear) and **true dihedral bending** (4-particle hinges), graph-colored for race-free parallel solving, 20 substeps per frame, all in a single compute pass
 - **Anisotropy** — separate warp / weft / bias stiffness and grain line, so denim, poplin, wool and silk each drape differently (7 fabric presets)
+- **Material-aware motion** — areal mass, contact thickness, static/dynamic friction, damping, air drag and non-linear stretch/shear locking are calibrated per fabric
+- **Crease memory** — linen and denim retain folds after their yield angle, while knits recover toward their original shape; reset restores the initially cut/pressed angles
 - **Self-collision** — GPU spatial hash (atomic linked cells); folds slide instead of interpenetrating
 - **Garment layers** — stacked pieces settle in dressing order (a dress over a tee), gripping *through* the layer beneath by Coulomb friction
 
@@ -49,6 +51,7 @@ TOILE (*French: the muslin test garment a pattern is validated on*) is the open 
 - **1:1 PDF pattern** — tiled over A4 with assembly labels, a 100 mm calibration square, grain line, and a **1 cm seam-allowance line** (cut here, sew on the solid line)
 - **glTF / .glb 3D export** — the draped garment + mannequin, ready for Blender or any 3D viewer
 - **Open `.toile.json` format** — save and reload the whole garment (pattern, fabric, measurements)
+- **Portable `.toile-fabric.json` profiles** — export the live material or import a validated calibrated profile with optional KES/FAST/lab provenance
 
 **Interaction**
 - Grab the fabric (raycast drag), orbit/pan/zoom camera, wind, a rotating **podium**, idle sleep
@@ -71,7 +74,24 @@ TOILE (*French: the muslin test garment a pattern is validated on*) is the open 
 | `R` | Drop the cloth again |
 | `P` | Pin/release the two corners |
 
-The **fichier** panel prints the 1:1 PDF pattern, exports the draped garment as `.glb`, and saves/loads `.toile.json`.
+The **tissu** panel exposes the material construction and crease controls and imports/exports `.toile-fabric.json` profiles. The **fichier** panel prints the 1:1 PDF pattern, exports the draped garment as `.glb`, and saves/loads `.toile.json`.
+
+### KES / FAST laboratory measurements
+
+**Importer KES / FAST / profil** accepts a calibrated `.toile-fabric.json`, the
+versioned TOILE measurement JSON, or a horizontal/vertical CSV/TSV laboratory
+table. **Modèle de relevé labo** downloads the documented neutral form; a filled
+FAST example is available in
+[`public/exemples/popeline-fast.toile-fabric-measurement.json`](public/exemples/popeline-fast.toile-fabric-measurement.json).
+
+The required measurements are mass in g/m², physical thickness in mm, warp and
+weft extension in %, warp and weft bending rigidity, plus shear rigidity in N/m
+or FAST bias extension `EB5`. KES historical units are recognised for weight
+(`mg/cm²`), bending (`gf·cm`) and shear (`gf/cm/degree`). `MIU`, tensile
+resilience and bending hysteresis are optional; when they are absent, TOILE
+marks friction or crease recovery as **estimated** in the on-screen diagnostic.
+The conversion is explicitly versioned because XPBD compliance is
+solver-calibrated, not a universal KES/FAST coefficient.
 
 ## Phase 0 success criteria
 

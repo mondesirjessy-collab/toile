@@ -22,7 +22,7 @@ struct SimParams {
   collider_count: u32,
   _c0: f32,
   _c1: f32,
-  _c2: f32,
+  cloth_spacing: f32,
   drag_target: vec3f,
   drag_stiffness: f32,
   compliance_stretch: f32,
@@ -44,8 +44,18 @@ struct SimParams {
   layer_gap: f32,    // couches : la couche L est repoussée à thickness + L × gap
   anchor_stiffness: f32, // ceinture : rappel vertical par substep vers anchor_y
   max_layer: f32,    // couche la plus profonde de l'empilement (marge de rejet sd_body, M4)
-  _c7: f32,
+  compliance_bend_warp: f32,
+  friction_dynamic: f32,
+  air_drag: f32,
+  stretch_limit: f32,
+  shear_limit: f32,
 };
+
+/** Static friction sticks completely below μs·normal; sliding uses μd. */
+fn friction_scale(tangent_len: f32, normal_push: f32, static_mu: f32, dynamic_mu: f32) -> f32 {
+  if (tangent_len <= static_mu * normal_push) { return 1.0; }
+  return min(1.0, dynamic_mu * normal_push / tangent_len);
+}
 
 // World → body space (inverse podium turn) and back.
 fn to_body(p: vec3f) -> vec3f {
@@ -75,6 +85,15 @@ struct Prim {
 @group(0) @binding(6) var<storage, read> layers: array<f32>;
 // Waistband anchor: target world-Y per particle (sentinel ≤ -1e8 = free).
 @group(0) @binding(7) var<storage, read> anchor_y: array<f32>;
+
+struct FabricMaterial {
+  in_plane: vec4f,
+  limits_mass: vec4f,
+  contact_motion: vec4f,
+  friction_crease: vec4f,
+};
+@group(0) @binding(8) var<storage, read> material_ids: array<u32>;
+@group(0) @binding(9) var<storage, read> materials: array<FabricMaterial>;
 
 // Manual trilinear sample + the interpolant's exact gradient from the same
 // 8 corners (no filterable-float feature needed). Returns vec4(grad, dist).
@@ -162,6 +181,34 @@ fn sd_body(p: vec3f) -> f32 {
   return d;
 }
 
+fn body_distance(p: vec3f) -> f32 {
+  if (params.use_grid == 1u) {
+    if (all(p > params.body_min) && all(p < params.body_max)) {
+      return grid_sample(p).w;
+    }
+    return 1e9;
+  }
+  if (params.collider_count > 0u
+      && all(p > params.body_min) && all(p < params.body_max)) {
+    return sd_body(p);
+  }
+  return 1e9;
+}
+
+// The smooth analytic field is a distance ESTIMATOR after ellipse scaling and
+// blending, so its gradient length is not guaranteed to be one either. Return
+// a metric gradient for the same bounded Newton projection as the scan grid.
+fn analytic_sample(p: vec3f) -> vec4f {
+  let e = 0.002;
+  let k0 = vec3f(1.0, -1.0, -1.0);
+  let k1 = vec3f(-1.0, -1.0, 1.0);
+  let k2 = vec3f(-1.0, 1.0, -1.0);
+  let k3 = vec3f(1.0, 1.0, 1.0);
+  let g = (k0 * sd_body(p + k0 * e) + k1 * sd_body(p + k1 * e)
+          + k2 * sd_body(p + k2 * e) + k3 * sd_body(p + k3 * e)) / (4.0 * e);
+  return vec4f(g, sd_body(p));
+}
+
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
   let i = gid.x;
@@ -170,34 +217,119 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   var x = positions[i].xyz;
   let xp = prev_positions[i].xyz;
+  let material = materials[material_ids[i]];
+  let static_mu = material.contact_motion.w;
+  let dynamic_mu = material.friction_crease.x;
 
   // Dressing order: each garment layer keeps its own distance to the body —
   // the outer one is pushed past where the inner one rests, so stacked
   // garments settle instead of fighting for the same offset surface.
-  let thick = params.cloth_thickness + layers[i] * params.layer_gap;
+  let thick = material.contact_motion.x + layers[i] * params.layer_gap;
+
+  // Anchors are a dressing force, not a contact. Apply them BEFORE the body
+  // query so no positional operator can put a sleeve back inside an arm after
+  // the last collision projection of the substep.
+  let ay = anchor_y[i];
+  if (ay > -1.0e8) {
+    x.y += (ay - x.y) * params.anchor_stiffness;
+  }
 
   // Podium: query the body in ITS rotating frame; the surface under the
   // particle moved by dtheta this substep — friction is measured relative
   // to that motion, so the turning mannequin carries its garment along.
-  let xb = to_body(x);
+  var xb = to_body(x);
+
+  // Continuous body collision for the large corrections made by seams and
+  // other PBD constraints. integrate.wgsl limits velocity displacement, but
+  // a stitch can still move a vertex several centimetres and finish outside
+  // the opposite side of an arm. Sample the swept segment, then bisect the
+  // FIRST entry so the vertex stays on its original side. The branch is cold
+  // for ordinary drape motion and therefore does not tax settled cloth.
+  let travel = distance(x, xp);
+  if (travel > 0.45 * params.cloth_spacing) {
+    let xTarget = x;
+    let xpb = to_body(xp);
+    let deltaBody = xb - xpb;
+    if (body_distance(xpb) >= thick) {
+      let sampleCount = u32(clamp(
+        ceil(travel / max(params.cloth_spacing, 0.003)),
+        4.0,
+        24.0,
+      ));
+      var outsideFraction = 0.0;
+      var insideFraction = -1.0;
+      for (var sampleIndex = 1u; sampleIndex <= 24u; sampleIndex++) {
+        if (sampleIndex > sampleCount) { break; }
+        let fraction = f32(sampleIndex) / f32(sampleCount);
+        let samplePoint = xpb + deltaBody * fraction;
+        if (body_distance(samplePoint) < thick) {
+          insideFraction = fraction;
+          break;
+        }
+        outsideFraction = fraction;
+      }
+      if (insideFraction > 0.0) {
+        var outside = outsideFraction;
+        var inside = insideFraction;
+        for (var iteration = 0u; iteration < 7u; iteration++) {
+          let middle = (outside + inside) * 0.5;
+          if (body_distance(xpb + deltaBody * middle) >= thick) {
+            outside = middle;
+          } else {
+            inside = middle;
+          }
+        }
+        x = mix(xp, xTarget, outside);
+        xb = to_body(x);
+      }
+    }
+  }
   let surf_du = vec3f(-params.spin_dtheta * x.z, 0.0, params.spin_dtheta * x.x);
 
   // --- Scanned-avatar SDF grid (trilinear texture) ---
   if (params.use_grid == 1u
       && all(xb > params.body_min) && all(xb < params.body_max)) {
-    let s = grid_sample(xb);
-    if (s.w < thick) {
+    var touched = false;
+    var contact_normal = vec3f(0.0, 1.0, 0.0);
+    var normal_push = 0.0;
+    let max_correction = max(0.02, 2.0 * params.cloth_spacing);
+    // A trilinearly interpolated 3D texture is no longer a true SDF at strong
+    // curvature: |grad| measured 0.2–0.9 around neck/shoulders. The old
+    // normalize(g)*(thick-d) therefore corrected only that fraction. Two
+    // bounded Newton steps land on d=thick without exploding at a flat cell.
+    for (var projection = 0u; projection < 2u; projection++) {
+      let s = grid_sample(xb);
+      if (s.w >= thick) { break; }
       let gl = length(s.xyz);
-      if (gl > 1e-6) {
-        let nrm = to_world(s.xyz / gl);
-        let push = thick - s.w;
-        x += nrm * push;
-        let disp = x - xp - surf_du;
-        let dispT = disp - dot(disp, nrm) * nrm;
-        let tl = length(dispT);
-        if (tl > 1e-9) {
-          x -= dispT * min(1.0, params.friction * push / tl);
-        }
+      if (gl <= 1e-6) { break; }
+      let n_body = s.xyz / gl;
+      let correction = min((thick - s.w) / max(gl, 0.35), max_correction);
+      xb += n_body * correction;
+      x = to_world(xb);
+      contact_normal = to_world(n_body);
+      normal_push += correction;
+      touched = true;
+    }
+    if (touched) {
+      let disp = x - xp - surf_du;
+      let dispT = disp - dot(disp, contact_normal) * contact_normal;
+      let tl = length(dispT);
+      if (tl > 1e-9) {
+        x -= dispT * friction_scale(tl, normal_push, static_mu, dynamic_mu);
+      }
+      // Tangential friction on a curved neck can itself re-enter the body.
+      // Re-sample once after friction so collision remains the final positional
+      // authority of the substep, including against a quasi-rigid collar seam.
+      xb = to_body(x);
+      let final_sample = grid_sample(xb);
+      let final_gl = length(final_sample.xyz);
+      if (final_sample.w < thick && final_gl > 1e-6) {
+        let final_correction = min(
+          (thick - final_sample.w) / max(final_gl, 0.35),
+          max_correction,
+        );
+        xb += (final_sample.xyz / final_gl) * final_correction;
+        x = to_world(xb);
       }
     }
   }
@@ -205,55 +337,58 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // --- Body field (skip fast when outside the collider AABB) ---
   if (params.collider_count > 0u
       && all(xb > params.body_min) && all(xb < params.body_max)) {
-    let d = sd_body(xb);
-    if (d < thick) {
-      // Field gradient, 4-tap tetrahedral.
-      let e = 0.002;
-      let k0 = vec3f(1.0, -1.0, -1.0);
-      let k1 = vec3f(-1.0, -1.0, 1.0);
-      let k2 = vec3f(-1.0, 1.0, -1.0);
-      let k3 = vec3f(1.0, 1.0, 1.0);
-      let g = k0 * sd_body(xb + k0 * e) + k1 * sd_body(xb + k1 * e)
-            + k2 * sd_body(xb + k2 * e) + k3 * sd_body(xb + k3 * e);
-      let gl = length(g);
-      if (gl > 1e-6) {
-        let nrm = to_world(g / gl);
-        let push = thick - d;
-        x += nrm * push; // project onto the offset surface
-        // Coulomb friction (PBD): the tangential correction is capped by
-        // µ × the normal push. Slow creep dies completely (static friction) —
-        // this is what keeps a strap resting on a sloped shoulder.
-        let disp = x - xp - surf_du;
-        let dispT = disp - dot(disp, nrm) * nrm;
-        let tl = length(dispT);
-        if (tl > 1e-9) {
-          x -= dispT * min(1.0, params.friction * push / tl);
-        }
+    var touched = false;
+    var contact_normal = vec3f(0.0, 1.0, 0.0);
+    var normal_push = 0.0;
+    let max_correction = max(0.02, 2.0 * params.cloth_spacing);
+    for (var projection = 0u; projection < 2u; projection++) {
+      let sample = analytic_sample(xb);
+      if (sample.w >= thick) { break; }
+      let gl = length(sample.xyz);
+      if (gl <= 1e-6) { break; }
+      let n_body = sample.xyz / gl;
+      let correction = min((thick - sample.w) / max(gl, 0.35), max_correction);
+      xb += n_body * correction;
+      x = to_world(xb);
+      contact_normal = to_world(n_body);
+      normal_push += correction;
+      touched = true;
+    }
+    if (touched) {
+      // Coulomb friction (PBD): slow creep dies completely under the static
+      // threshold; sliding stays capped by µd times the actual normal move.
+      let disp = x - xp - surf_du;
+      let dispT = disp - dot(disp, contact_normal) * contact_normal;
+      let tl = length(dispT);
+      if (tl > 1e-9) {
+        x -= dispT * friction_scale(tl, normal_push, static_mu, dynamic_mu);
+      }
+      xb = to_body(x);
+      let final_sample = analytic_sample(xb);
+      let final_gl = length(final_sample.xyz);
+      if (final_sample.w < thick && final_gl > 1e-6) {
+        let final_correction = min(
+          (thick - final_sample.w) / max(final_gl, 0.35),
+          max_correction,
+        );
+        xb += (final_sample.xyz / final_gl) * final_correction;
+        x = to_world(xb);
       }
     }
   }
 
   // --- Ground contact (plane y = ground_y), same Coulomb model ---
-  let floorY = params.ground_y + params.cloth_thickness;
+  let floorY = params.ground_y + material.contact_motion.x;
   if (x.y < floorY) {
     let push = floorY - x.y;
     x.y = floorY;
     let disp = x - xp;
     let tl = length(disp.xz);
     if (tl > 1e-9) {
-      let s = min(1.0, params.friction * push / tl);
+      let s = friction_scale(tl, push, static_mu, dynamic_mu);
       x.x -= disp.x * s;
       x.z -= disp.z * s;
     }
-  }
-
-  // --- Waistband anchor (the belt) ---
-  // A strapless or elastic top slides down a body that narrows below it. The
-  // anchored top band is softly pulled back to its rest HEIGHT each substep,
-  // x/z left free so the fabric still settles and turns with the podium.
-  let ay = anchor_y[i];
-  if (ay > -1.0e8) {
-    x.y += (ay - x.y) * params.anchor_stiffness;
   }
 
   positions[i] = vec4f(x, 0.0);

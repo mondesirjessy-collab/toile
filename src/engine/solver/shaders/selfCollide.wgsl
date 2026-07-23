@@ -27,6 +27,10 @@ struct SelfParams {
 // Grid hops to the nearest sewn boundary (clamped to 3). The cross-panel
 // mirror exclusion applies only where BOTH particles are ≤ 2 hops from a seam.
 @group(0) @binding(6) var<storage, read> seam_dist: array<u32>;
+// Pocket/appliqué contact masks: low 16 bits = support, high 16 bits = overlay.
+// Opposite roles sharing a bit are handled by the triangle-aware unilateral
+// surface pass, so this symmetric point pass must not fight it.
+@group(0) @binding(7) var<storage, read> surface_masks: array<u32>;
 
 const NIL: u32 = 0xffffffffu;
 
@@ -104,19 +108,30 @@ fn collide(@builtin(global_invocation_id) gid: vec3u) {
               // loose (the gathered bodice slid off its bust this way).
               (seam_free[i] == 1u && seam_free[j] == 1u);
             if (!near_weave) {
-              let d = x - positions[j].xyz;
-              let dist = length(d);
-              // A panel folded onto ITSELF packs tighter than two garments
-              // resting on each other: gathers (elastic tops, embu) stack
-              // distant columns at a fabric-thickness distance. Same-panel
-              // contacts get a slimmer radius — still a tunneling barrier,
-              // no longer a bellows that puffs every gather open.
-              let md = select(sp.min_dist, sp.min_dist * 0.5, pj == pi);
-              if (dist < md && dist > 1e-6) {
-                // Gentle relaxation (0.3, not the full half-correction): layered
-                // garments resting on each other settle smoothly instead of
-                // locking into stepped patches.
-                corr += d * ((md - dist) / dist) * 0.3;
+              let mask_i = surface_masks[i];
+              let mask_j = surface_masks[j];
+              let surface_contact =
+                ((mask_i & 0xffffu) & (mask_j >> 16u)) != 0u ||
+                ((mask_j & 0xffffu) & (mask_i >> 16u)) != 0u;
+              if (!surface_contact) {
+                let d = x - positions[j].xyz;
+                let dist = length(d);
+                // A panel folded onto ITSELF packs tighter than two garments
+                // resting on each other: gathers (elastic tops, embu) stack
+                // distant columns at a fabric-thickness distance. Same-panel
+                // contacts get a slimmer radius — still a tunneling barrier,
+                // no longer a bellows that puffs every gather open.
+                let md = select(sp.min_dist, sp.min_dist * 0.5, pj == pi);
+                if (dist < md && dist > 1e-6) {
+                  // Mass-weighted gather correction. Equal GSM preserves the
+                  // historical 0.3/0.3 split; when fabrics differ, the lighter
+                  // particle moves farther and the pair's mass centre stays
+                  // fixed instead of a heavy pocket pushing its support away.
+                  let wi = inv_masses[i];
+                  let wj = inv_masses[j];
+                  let pair_weight = 0.6 * wi / max(wi + wj, 1e-9);
+                  corr += d * ((md - dist) / dist) * pair_weight;
+                }
               }
             }
           }

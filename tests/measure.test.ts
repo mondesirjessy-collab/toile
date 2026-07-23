@@ -1,9 +1,21 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { BODY_BLEND, BODY_FORM, BODY_MALE, sdBody } from '../src/engine/body/BodySdf';
 import { gridSd, measureBody, type Sd } from '../src/engine/body/measure';
 
 const sdF: Sd = (x, y, z) => sdBody(x, y, z, BODY_FORM, BODY_BLEND);
 const sdM: Sd = (x, y, z) => sdBody(x, y, z, BODY_MALE, BODY_BLEND);
+
+function bakedGrid(name: 'femme-scan' | 'homme-scan') {
+  const raw = readFileSync(new URL(`../public/avatars/${name}.sdf.bin`, import.meta.url));
+  const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+  const dims: [number, number, number] = [view.getUint32(0, true), view.getUint32(4, true), view.getUint32(8, true)];
+  const min: [number, number, number] = [view.getFloat32(12, true), view.getFloat32(16, true), view.getFloat32(20, true)];
+  const max: [number, number, number] = [view.getFloat32(24, true), view.getFloat32(28, true), view.getFloat32(32, true)];
+  const mm = new Int16Array(raw.buffer, raw.byteOffset + 36, dims[0] * dims[1] * dims[2]);
+  const data = Float32Array.from(mm, (x) => x / 1000);
+  return { dims, min, max, data };
+}
 
 describe('measureBody (le tailleur)', () => {
   const F = measureBody(sdF, 1.755);
@@ -68,6 +80,17 @@ describe('measureBody (le tailleur)', () => {
     expect(Math.abs(G.chest.circ - F.chest.circ)).toBeLessThan(0.08);
     expect(Math.abs(G.hip.circ - F.hip.circ)).toBeLessThan(0.08);
     expect(Math.abs(G.shoulderY - F.shoulderY)).toBeLessThan(0.05);
+  });
+
+  it('retrouve l axe du bras sur le scan homme en T-pose', () => {
+    const grid = bakedGrid('homme-scan');
+    const scan = measureBody(gridSd(grid), grid.max[1] - 0.06);
+    expect(scan.arm).toBeDefined();
+    expect(scan.arm!.rootX).toBeGreaterThan(0.15);
+    expect(scan.arm!.rootX).toBeLessThan(0.35);
+    // Le bras MakeHuman s'arque vers l'arrière : ce z est indispensable pour
+    // ne pas faire naître le panneau arrière de manche dans le collider.
+    expect(scan.arm!.z).toBeLessThan(-0.06);
   });
 });
 

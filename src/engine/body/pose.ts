@@ -17,18 +17,38 @@ export interface PrimXf {
 
 export const ID_XF: PrimXf = { r: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] };
 
-/** Rotation about the X axis through pivot p, angle φ (arm swing fwd/back). */
-function swingX(pivot: V3, phi: number): PrimXf {
+/** Rodrigues rotation about a unit axis through pivot p. */
+function swingAroundAxis(pivot: V3, axis: V3, phi: number): PrimXf {
   const c = Math.cos(phi);
   const s = Math.sin(phi);
-  // r = Rx(φ); t = pivot − r·pivot
-  const r: PrimXf['r'] = [1, 0, 0, 0, c, -s, 0, s, c];
+  const oneMinusC = 1 - c;
+  const [x, y, z] = axis;
+  const r: PrimXf['r'] = [
+    c + x * x * oneMinusC,
+    x * y * oneMinusC - z * s,
+    x * z * oneMinusC + y * s,
+    y * x * oneMinusC + z * s,
+    c + y * y * oneMinusC,
+    y * z * oneMinusC - x * s,
+    z * x * oneMinusC - y * s,
+    z * y * oneMinusC + x * s,
+    c + z * z * oneMinusC,
+  ];
+  // t = pivot − r·pivot
   const t: V3 = [
     pivot[0] - (r[0] * pivot[0] + r[1] * pivot[1] + r[2] * pivot[2]),
     pivot[1] - (r[3] * pivot[0] + r[4] * pivot[1] + r[5] * pivot[2]),
     pivot[2] - (r[6] * pivot[0] + r[7] * pivot[1] + r[8] * pivot[2]),
   ];
   return { r, t };
+}
+
+/** Axis perpendicular to the upper arm in the XY plane (front/back swing). */
+function localArmSwingAxis(upperArm: SdfPrim): V3 {
+  const dx = upperArm.b[0] - upperArm.a[0];
+  const dy = upperArm.b[1] - upperArm.a[1];
+  const length = Math.hypot(dx, dy);
+  return length > 1e-8 ? [-dy / length, dx / length, 0] : [1, 0, 0];
 }
 
 export function applyXf(xf: PrimXf, p: V3): V3 {
@@ -54,8 +74,8 @@ export function poseIdle(base: SdfPrim[], t: number): { prims: SdfPrim[]; xfs: P
   // Shoulder pivots = the 'a' end of each upper-arm prim (first mirrored pair).
   const upperL = base[first]!;
   const upperR = base[first + 1]!;
-  const xfL = swingX(upperL.a, phi);
-  const xfR = swingX(upperR.a, -phi);
+  const xfL = swingAroundAxis(upperL.a, localArmSwingAxis(upperL), phi);
+  const xfR = swingAroundAxis(upperR.a, localArmSwingAxis(upperR), -phi);
 
   const xfs: PrimXf[] = new Array(n);
   const prims: SdfPrim[] = new Array(n);

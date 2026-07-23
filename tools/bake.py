@@ -77,7 +77,9 @@ with open(f'{OUT}/{NAME}.mesh.bin', 'wb') as f:
 pad = 0.06
 mn = V.min(0) - pad
 mx = V.max(0) + pad
-dims = np.maximum(8, np.minimum(160, np.ceil((mx - mn) / 0.012).astype(int)))
+# 7 mm resolves the neck/shoulder/armpit curvature while the 256 cap stays
+# within WebGPU's guaranteed maxTextureDimension3D on every adapter.
+dims = np.maximum(8, np.minimum(256, np.ceil((mx - mn) / 0.007).astype(int) + 1))
 nx, ny, nz = int(dims[0]), int(dims[1]), int(dims[2])
 print('grid:', nx, ny, nz, '=', nx * ny * nz, 'cells')
 xs = np.linspace(mn[0], mx[0], nx)
@@ -89,7 +91,9 @@ P = np.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=1)
 # Decimated proxy for distance queries keeps this fast and plenty accurate
 S = igl.signed_distance(P, RV.astype(np.float64), RF.astype(np.int64),
                               sign_type=igl.SIGNED_DISTANCE_TYPE_FAST_WINDING_NUMBER)[0]
-S = np.clip(S * 1000.0, -32000, 32000).astype('<i2')  # millimeters, int16
+# Conservative 1.5 mm envelope: trilinear/quantisation error must not put the
+# visible render mesh outside the collision body for 2.5 mm silk.
+S = np.clip((S - 0.0015) * 1000.0, -32000, 32000).astype('<i2')  # millimeters, int16
 with open(f'{OUT}/{NAME}.sdf.bin', 'wb') as f:
     f.write(struct.pack('<III', nx, ny, nz))
     f.write(np.asarray(mn, '<f4').tobytes())

@@ -27,6 +27,22 @@ struct SimParams {
   damping: f32,
   max_speed: f32,
   drag_index: u32,
+  body_min: vec3f,
+  blend_k: f32,
+  body_max: vec3f,
+  use_grid: u32,
+  spin_cos: f32,
+  spin_sin: f32,
+  spin_dtheta: f32,
+  compliance_stretch_warp: f32,
+  layer_gap: f32,
+  anchor_stiffness: f32,
+  max_layer: f32,
+  compliance_bend_warp: f32,
+  friction_dynamic: f32,
+  air_drag: f32,
+  stretch_limit: f32,
+  shear_limit: f32,
 };
 
 @group(0) @binding(0) var<uniform> params: SimParams;
@@ -35,12 +51,22 @@ struct SimParams {
 @group(0) @binding(3) var<storage, read> velocities: array<vec4f>;
 @group(0) @binding(4) var<storage, read> inv_masses: array<f32>;
 
+struct FabricMaterial {
+  in_plane: vec4f,
+  limits_mass: vec4f,
+  contact_motion: vec4f,
+  friction_crease: vec4f,
+};
+@group(0) @binding(5) var<storage, read> material_ids: array<u32>;
+@group(0) @binding(6) var<storage, read> materials: array<FabricMaterial>;
+
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
   let i = gid.x;
   if (i >= params.particle_count) { return; }
 
   let x = positions[i].xyz;
+  let material = materials[material_ids[i]];
 
   // NaN firewall (audit — mobile/relaxed-fp robustness): if a particle blew up
   // (a bad contact, a near-zero denominator on a permissive GPU), freeze it at
@@ -68,7 +94,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let t = params.wind_time;
     let gust = 0.55 + 0.45 * sin(t * 1.9 + x.y * 1.7) * sin(t * 2.7 + x.x * 2.3 + x.z * 1.1);
     let wdir = normalize(vec3f(1.0, 0.15, 0.35));
-    v += wdir * (params.wind_strength * gust) * params.dt;
+    v += wdir * (params.wind_strength * gust * material.contact_motion.z) * params.dt;
   }
 
   // Radial mouse force toward the closest point on the cursor ray (milestone 2).

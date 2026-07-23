@@ -84,10 +84,79 @@ describe('colorConstraints', () => {
     assertVertexDisjointPerColor(ordered, colorOffsets, colorCounts);
   });
 
+  it('projects regular and surface stitches in a terminal solver phase', () => {
+    // Deliberately put stitches first in input order. The coloring contract must
+    // still place every weave/bend edge before them, and must recolor stitches
+    // among themselves when they share a junction particle.
+    const edges = [
+      e(0, 4, ConstraintKind.Seam),
+      e(0, 1, ConstraintKind.Structural),
+      e(1, 2, ConstraintKind.Shear),
+      e(0, 5, ConstraintKind.SurfaceSeam),
+      e(2, 3, ConstraintKind.Bending),
+      e(6, 7, ConstraintKind.Seam),
+      e(4, 7, ConstraintKind.AttachmentSeam),
+    ];
+    const { ordered, colorOffsets, colorCounts, phaseColorRanges } = colorConstraints(edges, 8);
+    const stitch = (edge: Edge): boolean =>
+      edge.kind === ConstraintKind.Seam ||
+      edge.kind === ConstraintKind.AttachmentSeam ||
+      edge.kind === ConstraintKind.SurfaceSeam;
+    const firstStitch = ordered.findIndex(stitch);
+
+    expect(firstStitch).toBeGreaterThan(0);
+    expect(ordered.slice(0, firstStitch).every((edge) => !stitch(edge))).toBe(true);
+    expect(ordered.slice(firstStitch).every(stitch)).toBe(true);
+    const seamStart = colorOffsets[phaseColorRanges.seam.first]!;
+    const surfaceStart = colorOffsets[phaseColorRanges.surfaceSeam.first]!;
+    expect(ordered.slice(0, seamStart).every((edge) => !stitch(edge))).toBe(true);
+    expect(
+      ordered
+        .slice(seamStart, surfaceStart)
+        .every(
+          (edge) =>
+            edge.kind === ConstraintKind.Seam ||
+            edge.kind === ConstraintKind.AttachmentSeam,
+        ),
+    ).toBe(true);
+    expect(
+      ordered
+        .slice(surfaceStart)
+        .every((edge) => edge.kind === ConstraintKind.SurfaceSeam),
+    ).toBe(true);
+    expect(phaseColorRanges.ordinary.first).toBe(0);
+    expect(phaseColorRanges.seam.first).toBe(
+      phaseColorRanges.ordinary.count,
+    );
+    expect(phaseColorRanges.surfaceSeam.first).toBe(
+      phaseColorRanges.seam.first + phaseColorRanges.seam.count,
+    );
+    // No ordinary constraint may execute after a stitch and reopen either of
+    // its endpoints. Shared stitches remain safe through their own coloring.
+    for (let k = firstStitch; k < ordered.length; k++) {
+      const seam = ordered[k]!;
+      for (let later = k + 1; later < ordered.length; later++) {
+        const edge = ordered[later]!;
+        if (!stitch(edge)) {
+          expect([edge.i, edge.j]).not.toContain(seam.i);
+          expect([edge.i, edge.j]).not.toContain(seam.j);
+        }
+      }
+    }
+    expect(ordered.map(edgeKey).sort()).toEqual(edges.map(edgeKey).sort());
+    assertVertexDisjointPerColor(ordered, colorOffsets, colorCounts);
+    expect(ConstraintKind.AttachmentSeam).toBe(6);
+  });
+
   it('handles an empty constraint set', () => {
-    const { ordered, colorOffsets, colorCounts } = colorConstraints([], 0);
+    const { ordered, colorOffsets, colorCounts, phaseColorRanges } = colorConstraints([], 0);
     expect(ordered).toEqual([]);
     expect(colorOffsets).toEqual([]);
     expect(colorCounts).toEqual([]);
+    expect(phaseColorRanges).toEqual({
+      ordinary: { first: 0, count: 0 },
+      seam: { first: 0, count: 0 },
+      surfaceSeam: { first: 0, count: 0 },
+    });
   });
 });

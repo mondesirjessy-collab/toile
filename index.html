@@ -5,7 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>TOILE — moteur de simulation textile · phase 0</title>
   <style>
-    :root { color-scheme: dark; }
+    :root {
+      color-scheme: dark;
+      --appbar-h: 48px;
+      --atelier-rail-w: 232px;
+      --atelier-status-h: 40px;
+      --plan2d: 470px;
+    }
     * { margin: 0; box-sizing: border-box; }
     html, body { height: 100%; }
     body {
@@ -37,70 +43,680 @@
       margin-bottom: 4px;
     }
     #pattern { display: block; background: rgba(20, 22, 27, 0.6); border-radius: 3px; }
-    /* Atelier toolbar (freeform CAD): buttons over the 2D plan, grouped by
-       function (créer · assembler · voir/agir) — the gaps ARE the grouping. */
-    #atelier-bar { display: none; gap: 18px; margin-bottom: 6px; pointer-events: auto; }
-    #atelier-bar.on { display: flex; }
-    #atelier-bar .tgrp { display: flex; gap: 5px; }
-    #atelier-bar button {
-      font: inherit; font-size: 11px; letter-spacing: 0.04em;
-      color: rgba(237, 233, 223, 0.82); background: rgba(40, 44, 52, 0.6);
-      border: 1px solid rgba(237, 233, 223, 0.13); border-radius: 4px;
-      padding: 3px 9px; cursor: pointer;
+    /* Atelier workspace — a dedicated tool rail keeps every command visible
+       without stealing height from the 2D pattern. */
+    #atelier-bar {
+      display: none;
+      pointer-events: auto;
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
     }
-    #atelier-bar button:hover { background: rgba(60, 66, 78, 0.95); color: rgba(237, 233, 223, 1); }
-    #atelier-bar button.active { border-color: rgba(255, 159, 107, 0.9); color: rgba(255, 190, 150, 1); }
-    /* Sélecteur de taille (à côté du bouton 👕). */
-    #at-size {
-      font: inherit; font-size: 11px; letter-spacing: 0.04em;
-      color: rgba(237, 233, 223, 0.82); background: rgba(40, 44, 52, 0.6);
-      border: 1px solid rgba(237, 233, 223, 0.13); border-radius: 4px;
-      padding: 3px 6px; cursor: pointer;
+    body.atelier-active #atelier-bar.on {
+      position: fixed;
+      z-index: 18;
+      inset: var(--appbar-h) auto 0 0;
+      width: var(--atelier-rail-w);
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+      padding: 12px 10px 10px;
+      overflow-x: hidden;
+      overflow-y: auto;
+      background:
+        linear-gradient(180deg, rgba(27, 30, 37, 0.99), rgba(17, 19, 24, 0.99));
+      border-right: 1px solid rgba(237, 233, 223, 0.13);
+      box-shadow: 12px 0 35px rgba(0, 0, 0, 0.24);
     }
-    #at-size:hover { background: rgba(60, 66, 78, 0.95); color: rgba(237, 233, 223, 1); }
+    .atelier-rail-head {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: start;
+      gap: 8px;
+      padding: 0 2px 4px;
+    }
+    .atelier-eyebrow,
+    .tool-section h2,
+    .selection-kicker,
+    .pane-kicker {
+      display: block;
+      color: rgba(184, 194, 211, 0.68);
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+    }
+    .atelier-mode {
+      display: block;
+      margin-top: 3px;
+      color: #f6f3eb;
+      font-size: 15px;
+      font-weight: 720;
+      letter-spacing: -0.01em;
+    }
+    .atelier-mode-detail {
+      display: block;
+      max-width: 190px;
+      margin-top: 3px;
+      color: rgba(214, 218, 225, 0.68);
+      font-size: 10px;
+      line-height: 1.35;
+    }
+    #atelier-bar[data-mode="design"] .only-simulation,
+    #atelier-bar[data-mode="simulation"] .only-design {
+      display: none;
+    }
+    #atelier-bar[data-mode="simulation"] .tool-section,
+    #atelier-bar[data-mode="simulation"] .selection-card {
+      opacity: 0.48;
+      pointer-events: none;
+      filter: saturate(0.6);
+    }
+    .mode-chip {
+      min-width: 30px;
+      padding: 4px 6px;
+      border: 1px solid rgba(255, 179, 107, 0.36);
+      border-radius: 999px;
+      color: #ffc796;
+      background: rgba(255, 159, 107, 0.1);
+      font-size: 9px;
+      font-weight: 750;
+      letter-spacing: 0.08em;
+      text-align: center;
+    }
+    #atelier-bar[data-mode="simulation"] .mode-chip {
+      border-color: rgba(119, 226, 159, 0.4);
+      color: #a6efbe;
+      background: rgba(119, 226, 159, 0.11);
+    }
+    .tool-section {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      padding: 9px;
+      border: 1px solid rgba(237, 233, 223, 0.09);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.025);
+    }
+    .tool-section:has(button.active),
+    .tool-section:has(button[aria-pressed="true"]) {
+      border-color: rgba(255, 170, 112, 0.34);
+      background: rgba(255, 159, 107, 0.055);
+    }
+    .tool-section-head {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .tool-step {
+      display: grid;
+      flex: 0 0 22px;
+      width: 22px;
+      height: 22px;
+      place-items: center;
+      border-radius: 50%;
+      color: rgba(236, 233, 225, 0.88);
+      background: rgba(121, 132, 153, 0.2);
+      font-size: 10px;
+      font-weight: 800;
+    }
+    .tool-section h2 {
+      margin: 0;
+      color: rgba(231, 231, 229, 0.86);
+      font-size: 10px;
+      letter-spacing: 0.09em;
+    }
+    .avatar-size-card {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      padding: 9px;
+      border: 1px solid rgba(112, 184, 255, 0.2);
+      border-radius: 8px;
+      background: rgba(80, 150, 220, 0.055);
+    }
+    .avatar-size-head,
+    .avatar-size-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .avatar-size-head h2 {
+      margin: 0;
+      color: rgba(231, 236, 244, 0.9);
+      font-size: 10px;
+      font-weight: 750;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+    }
+    #atelier-bar #at-frame-avatar {
+      min-height: 26px;
+      padding: 4px 7px;
+      color: #b9dcff;
+      font-size: 9px;
+    }
+    .avatar-size-label {
+      color: rgba(217, 224, 235, 0.72);
+      font-size: 10px;
+      font-weight: 650;
+    }
+    .avatar-size-value {
+      min-width: 47px;
+      color: #f4f8ff;
+      font-variant-numeric: tabular-nums;
+      font-weight: 760;
+      text-align: right;
+    }
+    #at-avatar-stature {
+      width: 100%;
+      margin: 0;
+      accent-color: #70b8ff;
+      cursor: ew-resize;
+    }
+    #at-avatar-stature:focus-visible {
+      outline: 2px solid rgba(112, 184, 255, 0.9);
+      outline-offset: 3px;
+    }
+    .avatar-size-help {
+      margin: 0;
+      color: rgba(205, 214, 226, 0.52);
+      font-size: 9px;
+      line-height: 1.3;
+    }
+    .tool-section small {
+      display: block;
+      margin-top: 2px;
+      color: rgba(205, 210, 220, 0.48);
+      font-size: 9px;
+      line-height: 1.25;
+    }
+    #atelier-bar .tgrp {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 5px;
+    }
+    #atelier-bar .tgrp.one-column { grid-template-columns: 1fr; }
+    #atelier-bar button,
+    #atelier-view3d-tools button {
+      min-height: 34px;
+      font: 600 11px/1.15 Inter, ui-sans-serif, -apple-system,
+        BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: rgba(237, 233, 223, 0.84);
+      background: rgba(45, 50, 60, 0.72);
+      border: 1px solid rgba(237, 233, 223, 0.12);
+      border-radius: 6px;
+      padding: 6px 8px;
+      cursor: pointer;
+      transition: background 120ms ease, border-color 120ms ease,
+        color 120ms ease, transform 120ms ease;
+    }
+    #atelier-bar button:hover,
+    #atelier-view3d-tools button:hover {
+      background: rgba(67, 74, 88, 0.96);
+      color: #fffdf7;
+      border-color: rgba(237, 233, 223, 0.24);
+    }
+    #atelier-bar button:active,
+    #atelier-view3d-tools button:active { transform: translateY(1px); }
+    #atelier-bar button.active,
+    #atelier-bar button[aria-pressed="true"],
+    #atelier-view3d-tools button.active,
+    #atelier-view3d-tools button[aria-pressed="true"] {
+      border-color: rgba(255, 159, 107, 0.9);
+      color: rgba(255, 202, 166, 1);
+      background: rgba(255, 159, 107, 0.12);
+    }
+    #atelier-bar button:disabled {
+      cursor: default;
+      opacity: 0.34;
+    }
+    #atelier-bar #at-snap.active {
+      border-color: rgba(120, 220, 150, 0.9);
+      background: rgba(120, 220, 150, 0.14);
+      color: rgba(180, 245, 200, 1);
+    }
+    #atelier-bar #at-link.active {
+      border-color: rgba(107, 223, 223, 0.95);
+      background: rgba(107, 223, 223, 0.14);
+      color: rgba(180, 245, 245, 1);
+    }
+    #atelier-bar #at-zipper.active {
+      border-color: rgba(255, 211, 77, 0.95);
+      background: rgba(255, 211, 77, 0.14);
+      color: rgba(255, 232, 151, 1);
+    }
+    /* Sélecteurs de taille et de tissu par pièce. */
+    #at-size, #at-fabric, #at-gsm {
+      width: 100%;
+      min-height: 34px;
+      font: 600 11px/1.15 Inter, ui-sans-serif, -apple-system,
+        BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: rgba(237, 233, 223, 0.88);
+      background: rgba(45, 50, 60, 0.78);
+      border: 1px solid rgba(237, 233, 223, 0.13);
+      border-radius: 6px;
+      padding: 5px 7px;
+    }
+    #at-size, #at-fabric { cursor: pointer; }
+    #at-size:hover, #at-fabric:hover, #at-gsm:hover, #at-gsm:focus {
+      background: rgba(60, 66, 78, 0.95);
+      color: rgba(237, 233, 223, 1);
+    }
+    #at-gsm:focus { outline: 2px solid rgba(105, 200, 212, 0.58); outline-offset: 1px; }
+    #at-gsm[aria-invalid="true"] { border-color: rgba(255, 132, 112, 0.9); }
+    .gsm-control-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      gap: 5px;
+      align-items: center;
+    }
+    .gsm-unit {
+      color: rgba(225, 229, 235, 0.72);
+      font-size: 10px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    #at-gsm-reset {
+      width: auto;
+      min-height: 34px;
+      padding-inline: 8px;
+      white-space: nowrap;
+    }
+    #at-gsm-help {
+      color: rgba(196, 224, 228, 0.78);
+      font-size: 9px;
+      line-height: 1.35;
+    }
+    .gsm-explanation {
+      margin: 0;
+      color: rgba(211, 215, 223, 0.5);
+      font-size: 9px;
+      line-height: 1.35;
+    }
+    .field-label {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      color: rgba(211, 215, 223, 0.58);
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .selection-card {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      padding: 9px;
+      border: 1px solid rgba(105, 200, 212, 0.18);
+      border-radius: 8px;
+      background: rgba(78, 173, 187, 0.045);
+    }
+    #atelier-selection-name {
+      display: block;
+      margin-top: 3px;
+      overflow: hidden;
+      color: #eaf9fb;
+      font-size: 12px;
+      font-weight: 700;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .selection-help {
+      color: rgba(205, 213, 222, 0.48);
+      font-size: 9px;
+      line-height: 1.3;
+    }
+    #at-del {
+      border-color: rgba(235, 105, 105, 0.3) !important;
+      color: rgba(255, 178, 178, 0.9) !important;
+    }
     /* « Terminer » : contextuel (visible pendant un tracé), en accent pour dire
        « une action est en cours ». */
     #at-pen { border-color: rgba(255, 159, 107, 0.8); color: rgba(255, 190, 150, 1); }
+    #at-pen[hidden] { display: none; }
+    .atelier-rail-footer {
+      position: sticky;
+      bottom: -10px;
+      z-index: 2;
+      display: grid;
+      gap: 6px;
+      margin-top: auto;
+      padding: 10px 0 2px;
+      background: linear-gradient(180deg, rgba(17, 19, 24, 0), #111318 26%);
+    }
+    .view-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 5px;
+    }
+    #at-sim {
+      min-height: 42px !important;
+      border-color: rgba(120, 220, 150, 0.72) !important;
+      color: rgba(190, 248, 209, 1) !important;
+      background: rgba(80, 174, 113, 0.17) !important;
+      font-size: 12px !important;
+      font-weight: 780 !important;
+    }
+    #at-sim:hover { background: rgba(80, 174, 113, 0.28) !important; }
+    #at-sim.running {
+      border-color: rgba(255, 181, 107, 0.68) !important;
+      color: #ffd1a7 !important;
+      background: rgba(255, 159, 107, 0.14) !important;
+    }
+    #at-big[aria-expanded="true"] {
+      border-color: rgba(112, 184, 255, 0.55);
+      color: #b9dcff;
+      background: rgba(80, 150, 220, 0.12);
+    }
     /* Choix de placement d'une pièce tracée (contextuel, sous la barre). */
     #place-chooser {
-      display: flex; align-items: center; gap: 5px; margin-bottom: 6px;
+      position: absolute;
+      z-index: 5;
+      top: 50px;
+      left: 12px;
+      right: 12px;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      align-items: stretch;
+      gap: 7px;
+      max-height: min(480px, calc(100% - 64px));
+      margin: 0;
+      padding: 12px;
+      overflow-y: auto;
       pointer-events: auto;
+      background: rgba(20, 23, 29, 0.98);
+      border: 1px solid rgba(255, 159, 107, 0.34);
+      border-radius: 10px;
+      box-shadow: 0 18px 45px rgba(0, 0, 0, 0.42);
     }
     #place-chooser[hidden] { display: none; }
-    #place-chooser .q { font-size: 11px; color: rgba(255, 190, 150, 1); margin-right: 4px; }
+    #place-chooser .q {
+      grid-column: 1 / -1;
+      color: rgba(255, 205, 170, 1);
+      font: 720 12px/1.3 Inter, ui-sans-serif, sans-serif;
+    }
+    #place-chooser .place-help {
+      grid-column: 1 / -1;
+      color: rgba(221, 225, 232, 0.72);
+      font: 550 10px/1.4 Inter, ui-sans-serif, sans-serif;
+    }
+    #place-chooser button[data-place="auto"] {
+      grid-column: 1 / -1;
+      border-color: rgba(120, 220, 150, 0.5);
+      color: rgba(190, 248, 209, 1);
+      background: rgba(80, 174, 113, 0.13);
+    }
+    #place-chooser .place-group-label {
+      grid-column: 1 / -1;
+      margin-top: 3px;
+      color: rgba(203, 209, 220, 0.52);
+      font: 700 9px/1 Inter, ui-sans-serif, sans-serif;
+      letter-spacing: 0.11em;
+      text-transform: uppercase;
+    }
     #place-chooser button {
-      font: inherit; font-size: 11px; letter-spacing: 0.04em;
+      min-height: 34px;
+      font: 650 11px/1.2 Inter, ui-sans-serif, sans-serif;
       color: rgba(237, 233, 223, 0.9); background: rgba(40, 44, 52, 0.85);
-      border: 1px solid rgba(255, 159, 107, 0.45); border-radius: 4px;
-      padding: 3px 9px; cursor: pointer;
+      border: 1px solid rgba(255, 159, 107, 0.3); border-radius: 6px;
+      padding: 6px 9px; cursor: pointer;
     }
     #place-chooser button:hover { background: rgba(70, 58, 48, 0.95); color: rgba(255, 210, 180, 1); }
-    /* The Simulate button stands out: it's the "drape it" action. */
-    #at-sim { border-color: rgba(120, 220, 150, 0.7); color: rgba(170, 240, 195, 1); font-weight: 700; }
-    #at-sim.running { background: rgba(120, 220, 150, 0.22); }
-    /* GRAND PLAN = la moitié de l'écran (fenêtre 2D | fenêtre 3D, façon CLO).
-       La largeur se règle en tirant le séparateur central (--plan2d). */
-    :root { --plan2d: 50vw; }
+    #placement-status {
+      position: absolute;
+      z-index: 4;
+      top: 50px;
+      left: 12px;
+      right: 12px;
+      max-width: none;
+      margin: 0;
+      padding: 8px 10px;
+      border: 1px solid rgba(255, 190, 120, 0.4); border-radius: 7px;
+      color: rgba(255, 218, 170, 0.96); background: rgba(46, 35, 25, 0.88);
+      font: 600 10px/1.45 Inter, ui-sans-serif, sans-serif;
+      pointer-events: auto;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+    }
+    #placement-status[hidden] { display: none; }
+    #placement-status.ok {
+      border-color: rgba(120, 220, 150, 0.42); color: rgba(170, 240, 195, 1);
+      background: rgba(25, 46, 34, 0.86);
+    }
+    #pattern-pane-head {
+      display: none;
+      pointer-events: auto;
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+    }
+    body.atelier-active #pattern-pane-head {
+      min-height: 46px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 7px 9px;
+      border-bottom: 1px solid rgba(237, 233, 223, 0.1);
+      background: rgba(20, 23, 29, 0.96);
+    }
+    .pane-title {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+    .pane-title strong {
+      overflow: hidden;
+      color: #f3f0e8;
+      font-size: 12px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .pane-shortcut {
+      overflow: hidden;
+      color: rgba(205, 210, 220, 0.55);
+      font-size: 9px;
+      line-height: 1.15;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .zoom-tools { display: flex; gap: 4px; }
+    .zoom-tools button {
+      min-width: 34px;
+      min-height: 30px;
+      font: 650 10px/1 Inter, ui-sans-serif, sans-serif;
+      color: rgba(236, 233, 225, 0.8);
+      background: rgba(45, 50, 60, 0.72);
+      border: 1px solid rgba(237, 233, 223, 0.12);
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    #atelier-view3d-tools {
+      display: none;
+      pointer-events: auto;
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+    }
+    body.atelier-active.plan-split #atelier-view3d-tools {
+      position: fixed;
+      z-index: 9;
+      top: calc(var(--appbar-h) + 8px);
+      left: calc(var(--atelier-rail-w) + var(--plan2d) + 10px);
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 6px;
+      border: 1px solid rgba(237, 233, 223, 0.12);
+      border-radius: 8px;
+      background: rgba(20, 23, 29, 0.88);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24);
+      backdrop-filter: blur(10px);
+    }
+    .view3d-title {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 0 5px 0 2px;
+    }
+    .view3d-title strong { font-size: 11px; color: rgba(244, 242, 236, 0.9); }
+    body.atelier-advanced-open #atelier-view3d-tools .view3d-title {
+      display: none;
+    }
+    body.atelier-simulating #atelier-view3d-tools button { display: none; }
+    body.atelier-simulating #atelier-view3d-tools::after {
+      content: "Tirer le tissu · tourner la vue";
+      padding: 0 5px;
+      color: rgba(182, 236, 199, 0.82);
+      font-size: 10px;
+      font-weight: 650;
+    }
+    #atelier-statusbar {
+      display: none;
+      pointer-events: none;
+    }
+    body.atelier-active #atelier-statusbar {
+      position: fixed;
+      z-index: 17;
+      left: var(--atelier-rail-w);
+      right: 0;
+      bottom: 0;
+      min-height: var(--atelier-status-h);
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 7px 12px;
+      color: rgba(218, 222, 229, 0.72);
+      background: rgba(15, 17, 21, 0.97);
+      border-top: 1px solid rgba(237, 233, 223, 0.1);
+      font: 550 10px/1.25 Inter, ui-sans-serif, sans-serif;
+    }
+    .status-dot {
+      flex: 0 0 7px;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #ffad73;
+      box-shadow: 0 0 0 3px rgba(255, 159, 107, 0.1);
+    }
+    body.atelier-simulating .status-dot {
+      background: #7bdc9a;
+      box-shadow: 0 0 0 3px rgba(123, 220, 154, 0.1);
+    }
+    #atelier-guidance {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    body.atelier-active:not(.atelier-advanced-open) .lil-gui.lil-root {
+      display: none;
+    }
+    /* GRAND PLAN = a dedicated 2D pane beside the 3D view. The tool rail is
+       outside both panes, so neither canvas is covered by controls. */
     #patternBox.big {
-      left: 0; top: 40px; bottom: 0; right: auto; transform: none;
+      left: var(--atelier-rail-w);
+      top: var(--appbar-h);
+      bottom: var(--atelier-status-h);
+      right: auto;
+      transform: none;
       width: var(--plan2d);
-      background: rgba(8, 9, 12, 0.97); padding: 10px 12px 8px; z-index: 15;
-      border-radius: 0; border-left: none; border-top: none; border-bottom: none;
+      background: rgba(8, 9, 12, 0.985);
+      padding: 0;
+      z-index: 15;
+      border-radius: 0;
+      border-left: none;
+      border-top: none;
+      border-bottom: none;
+    }
+    body.atelier-active #patternBox:not(.big) {
+      left: calc(var(--atelier-rail-w) + 12px);
+      bottom: calc(var(--atelier-status-h) + 10px);
+      width: min(430px, calc(100vw - var(--atelier-rail-w) - 300px));
+      padding: 0;
+      overflow: hidden;
+      background: rgba(9, 11, 14, 0.92);
+    }
+    body.atelier-active #patternBox > .label { display: none; }
+    body.atelier-active #pattern {
+      width: auto;
+      max-width: 100%;
+      border-radius: 0;
+    }
+    body.atelier-simulating #pattern {
+      opacity: 0.72;
+      filter: saturate(0.72);
+    }
+    body.atelier-simulating #patternBox::after {
+      content: "Aperçu du patron · revenez en conception pour modifier";
+      position: absolute;
+      z-index: 3;
+      left: 50%;
+      top: 56px;
+      transform: translateX(-50%);
+      max-width: calc(100% - 24px);
+      padding: 5px 8px;
+      color: rgba(225, 231, 239, 0.78);
+      background: rgba(15, 18, 23, 0.82);
+      border: 1px solid rgba(237, 233, 223, 0.13);
+      border-radius: 999px;
+      font: 650 9px/1 Inter, ui-sans-serif, sans-serif;
+      text-align: center;
+      white-space: nowrap;
+      pointer-events: none;
     }
     /* La 3D se recadre dans la moitié droite (le ResizeObserver du canvas suit). */
-    body.plan-split #view,
-    body.plan-split #mirror {
-      position: fixed; top: 0; left: var(--plan2d);
-      width: calc(100vw - var(--plan2d)); height: 100vh;
+    body.atelier-active.plan-split #view,
+    body.atelier-active.plan-split #mirror {
+      position: fixed;
+      top: var(--appbar-h);
+      left: calc(var(--atelier-rail-w) + var(--plan2d));
+      width: calc(100vw - var(--atelier-rail-w) - var(--plan2d));
+      height: calc(100vh - var(--appbar-h) - var(--atelier-status-h));
     }
     /* Séparateur central : glisser pour ajuster le partage 2D / 3D. */
-    #split-divider { display: none; position: fixed; top: 40px; bottom: 0; left: calc(var(--plan2d) - 4px); width: 9px; cursor: col-resize; z-index: 16; }
-    body.plan-split #split-divider { display: block; }
+    #split-divider {
+      display: none;
+      position: fixed;
+      top: var(--appbar-h);
+      bottom: var(--atelier-status-h);
+      left: calc(var(--atelier-rail-w) + var(--plan2d) - 4px);
+      width: 9px;
+      cursor: col-resize;
+      z-index: 16;
+    }
+    body.atelier-active.plan-split #split-divider { display: block; }
     #split-divider::after {
       content: ''; position: absolute; left: 4px; top: 0; bottom: 0; width: 1px;
       background: rgba(237, 233, 223, 0.2);
     }
     #split-divider:hover::after, #split-divider.dragging::after { width: 3px; left: 3px; background: rgba(255, 159, 107, 0.7); }
+    @media (max-height: 760px) {
+      body.atelier-active #atelier-bar.on {
+        gap: 5px;
+        padding: 7px 8px 6px;
+      }
+      .atelier-rail-head { padding-bottom: 1px; }
+      .atelier-mode { font-size: 14px; }
+      .tool-section { gap: 4px; padding: 6px 7px; }
+      .tool-section small { display: none; }
+      .tool-section-head { gap: 5px; }
+      .tool-step { width: 19px; height: 19px; flex-basis: 19px; }
+      #atelier-bar button { min-height: 29px; padding-block: 3px; }
+      #at-size, #at-fabric, #at-gsm { min-height: 29px; padding-block: 3px; }
+      #at-gsm-reset { min-height: 29px; }
+      .field-label { gap: 2px; }
+      .selection-card { gap: 4px; padding: 6px 7px; }
+      .selection-help { display: none; }
+      .atelier-rail-footer { gap: 4px; padding-top: 5px; }
+      #at-sim { min-height: 36px !important; }
+      .atelier-mode-detail { display: none; }
+    }
+    @media (max-width: 1040px) {
+      :root { --atelier-rail-w: 204px; }
+      body.atelier-active #atelier-bar.on { padding-inline: 8px; }
+      #atelier-bar .tgrp { grid-template-columns: 1fr; }
+      .view-actions { grid-template-columns: 1fr; }
+      #atelier-view3d-tools .view3d-title { display: none; }
+    }
     header {
       position: fixed; top: 0; left: 0; right: 0;
       display: flex; justify-content: space-between; align-items: baseline;
@@ -131,47 +747,203 @@
   <canvas id="view"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 3 — le montage se lit : liens manches/col colorés (2D + 3D) · v135</small></span>
+    <span class="title">TOILE<small>phase 3 — coutures fermées + rubans lisses · v137</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
-      <span id="hint">glisser sur le tissu : le tirer · glisser à côté : tourner · clic droit + glisser : se déplacer · molette : zoom · R : reset</span>
+      <span id="hint">glisser sur le tissu : le tirer · glisser à côté : tourner · clic droit + glisser : se déplacer · molette : zoom visuel · R : réinitialiser le tissu</span>
     </span>
   </header>
   <div id="patternBox">
     <span class="label">PLAN DE COUPE</span>
-    <!-- Barre atelier, groupée par fonction (façon CLO) : CRÉER · ASSEMBLER ·
-         VOIR/AGIR. « Terminer » est contextuel : il n'apparaît que pendant un
-         tracé à la plume. -->
-    <div id="atelier-bar">
-      <span class="tgrp">
-        <button id="at-tshirt" title="Charger le patron BOXY FIT (devant, dos, 2 manches, col) — coupe oversize, à la taille choisie">👕 T-shirt</button>
-        <select id="at-size" title="Taille du t-shirt (tour de poitrine) — le patron se recharge à la nouvelle taille"></select>
-        <button id="at-piece" title="Tracer une pièce à la plume sur la silhouette (le gabarit grandeur nature) — à la fermeture, tu choisis où elle va : devant, dos, bras, cou… ou libre">✎ Pièce</button>
-        <button id="at-sleeves" title="Manches AUTOMATIQUES : deux tubes tout faits, posés et cousus en un clic (pour les dessiner toi-même : ✎ Pièce → Bras)">Manches auto</button>
-        <button id="at-pen" hidden title="Fermer la forme dessinée (ou cliquer le premier point)">✓ Terminer</button>
-      </span>
-      <span class="tgrp">
-        <button id="at-sew" title="Coudre deux bords : cliquez le bouton, puis le 1er bord, puis le 2e (les bords rouges apparaissent et attendent)">🪡 Coudre</button>
-        <button id="at-del" title="Supprimer la pièce active — cliquer d'abord sa colonne (manche, col, pièce libre) · Ctrl+Z pour annuler">− Pièce</button>
-      </span>
-      <span class="tgrp">
-        <button id="at-big" title="Plan 2D en demi-écran, à côté de la 3D — glisser le bord central pour ajuster le partage">⤢ Grand plan</button>
-        <button id="at-sim" title="Draper la pièce sur le mannequin (lancer la simulation)">▶ Simuler</button>
-      </span>
+    <!-- The rail is fixed beside the two work panes. IDs stay stable because
+         main.ts owns the behaviour; this markup only clarifies the workflow. -->
+    <aside id="atelier-bar" aria-label="Outils de l’atelier">
+      <div class="atelier-rail-head">
+        <div>
+          <span class="atelier-eyebrow">Espace de travail</span>
+          <strong class="atelier-mode only-design">Conception 2D</strong>
+          <strong class="atelier-mode only-simulation">Essayage 3D</strong>
+          <span class="atelier-mode-detail only-design">Dessinez, ajustez puis assemblez le patron à plat.</span>
+          <span class="atelier-mode-detail only-simulation">La physique est active. Contrôlez le tombé et les collisions.</span>
+        </div>
+        <span class="mode-chip only-design">2D</span>
+        <span class="mode-chip only-simulation">3D</span>
+      </div>
+
+      <section class="avatar-size-card" aria-labelledby="atelier-avatar-title">
+        <div class="avatar-size-head">
+          <h2 id="atelier-avatar-title">Mannequin</h2>
+          <button id="at-frame-avatar" title="Agrandir le mannequin dans la vue sans changer ses dimensions physiques">⊙ Cadrer la vue</button>
+        </div>
+        <label class="avatar-size-label" for="at-avatar-stature">
+          <span>Taille globale</span>
+          <output id="at-avatar-stature-value" class="avatar-size-value" for="at-avatar-stature">175 cm</output>
+        </label>
+        <input id="at-avatar-stature" type="range" min="140" max="210" step="1" value="175" aria-describedby="at-avatar-stature-help" aria-valuetext="175 centimètres">
+        <p id="at-avatar-stature-help" class="avatar-size-help">Redimensionne réellement le corps et ses collisions. Les patrons automatiques sont regradés.</p>
+      </section>
+
+      <section class="tool-section" aria-labelledby="atelier-patron-title">
+        <div class="tool-section-head">
+          <span class="tool-step">1</span>
+          <div>
+            <h2 id="atelier-patron-title">Choisir le patron</h2>
+            <small>Base, taille et ajouts rapides</small>
+          </div>
+        </div>
+        <div class="tgrp">
+          <button id="at-tshirt" title="Charger le patron BOXY FIT (devant, dos, 2 manches, col) — coupe oversize, à la taille choisie">👕 T-shirt</button>
+          <button id="at-pants" title="Charger le pantalon homme large (8 pièces de coupe exactes, tailles 26 à 46, marge de couture 1,25 cm incluse)">👖 Pantalon</button>
+          <button id="at-hoodie" title="Charger le Lucas Hoodie zippé : 7 pièces vectorielles exactes du patron A0, tailles XS à XXXL, marge de couture 1 cm incluse">🧥 Hoodie zippé</button>
+        </div>
+        <label class="field-label" for="at-size">
+          Taille du vêtement
+          <select id="at-size" aria-label="Taille du patron actif" title="Taille du patron actif — le patron se recharge à la nouvelle taille"></select>
+        </label>
+        <div class="tgrp one-column">
+          <button id="at-sleeves" aria-pressed="false" title="Manches AUTOMATIQUES : deux tubes tout faits, posés et cousus en un clic (pour les dessiner toi-même : Nouvelle pièce → Bras)">＋ Manches automatiques</button>
+        </div>
+      </section>
+
+      <section class="tool-section" aria-labelledby="atelier-shape-title">
+        <div class="tool-section-head">
+          <span class="tool-step">2</span>
+          <div>
+            <h2 id="atelier-shape-title">Dessiner et ajuster</h2>
+            <small>Un outil actif à la fois</small>
+          </div>
+        </div>
+        <div class="tgrp">
+          <button id="at-piece" title="Tracer une pièce à la plume sur la silhouette (le gabarit grandeur nature) — à la fermeture, choisissez où elle va : devant, dos, bras, cou… ou libre">✎ Nouvelle pièce</button>
+          <button id="at-pen" hidden title="Fermer la forme dessinée (ou cliquer le premier point)">✓ Terminer le contour</button>
+          <button id="at-length" aria-pressed="false" title="Modifier un bord sans limite. Sur une courbe jaune, tirer près d’une extrémité change la longueur totale en gardant l’autre extrémité fixe.">↔ Longueur</button>
+          <button id="at-snap" aria-pressed="false" title="Option du mode Longueur : près de la bonne valeur, ajuste exactement la longueur, le parallélisme ou l’angle droit.">🧲 Ajustement auto</button>
+        </div>
+      </section>
+
+      <section class="tool-section" aria-labelledby="atelier-assembly-title">
+        <div class="tool-section-head">
+          <span class="tool-step">3</span>
+          <div>
+            <h2 id="atelier-assembly-title">Assembler</h2>
+            <small>Lier pour éditer ou coudre pour monter</small>
+          </div>
+        </div>
+        <div class="tgrp">
+          <button id="at-link" aria-pressed="false" title="Marier deux segments : cliquez le premier bord puis le second. Leurs longueurs évolueront ensemble. Cliquez un bord déjà lié pour le dissocier.">🔗 Marier</button>
+          <button id="at-sew" aria-pressed="false" title="Coudre deux bords : cliquez le bouton, puis le premier bord et le second. Pour une poche posée, cliquez directement un côté pointillé.">🪡 Coudre</button>
+          <button id="at-zipper" aria-pressed="false" title="Ajouter une fermeture éclair : cliquez le premier bord, puis le bord opposé. Les deux rubans restent identifiables dans le patron et sont fermés au premier essayage.">⚡ Fermeture éclair</button>
+        </div>
+      </section>
+
+      <section class="selection-card" aria-labelledby="atelier-selection-title">
+        <div>
+          <span id="atelier-selection-title" class="selection-kicker">Pièce active</span>
+          <strong id="atelier-selection-name">Pièce 1</strong>
+        </div>
+        <span class="selection-help">Clic droit sur une pièce pour la sélectionner · ⌘/Ctrl + clic droit pour un groupe.</span>
+        <label class="field-label" for="at-fabric">
+          Tissu de la sélection
+          <select id="at-fabric" aria-label="Tissu de la sélection" title="Affecter un tissu visuel et physique à la pièce active ou au groupe sélectionné">
+            <option value="">🧵 Tissu global</option>
+            <option value="Jersey">Jersey</option>
+            <option value="Maille">Maille</option>
+            <option value="Popeline">Popeline</option>
+            <option value="Denim">Denim</option>
+            <option value="Lin">Lin</option>
+            <option value="Laine">Laine</option>
+            <option value="Soie">Soie</option>
+          </select>
+        </label>
+        <label class="field-label" for="at-gsm">Grammage (GSM)</label>
+        <div class="gsm-control-row">
+          <input
+            id="at-gsm"
+            type="text"
+            inputmode="decimal"
+            autocomplete="off"
+            maxlength="7"
+            aria-describedby="at-gsm-help at-gsm-explanation"
+            aria-invalid="false"
+            placeholder="ex. 240"
+            title="Masse surfacique du tissu, en grammes par mètre carré"
+          >
+          <span class="gsm-unit" aria-hidden="true">g/m²</span>
+          <button id="at-gsm-reset" type="button" disabled title="Supprimer le grammage personnalisé et reprendre celui du tissu choisi">Hériter</button>
+        </div>
+        <small id="at-gsm-help" role="status" aria-live="polite">Hérité du tissu global.</small>
+        <p id="at-gsm-explanation" class="gsm-explanation">Le GSM ajuste la masse et l’inertie. La souplesse, l’élasticité, la friction et l’épaisseur restent définies par le tissu ou un relevé KES/FAST.</p>
+        <div class="tgrp">
+          <button id="at-place" title="Choisir comment la pièce active sera placée pour l’essayage. Le mode automatique reconstruit sa pose depuis les coutures, indépendamment de sa position dans le plan.">◎ Placement</button>
+          <button id="at-reverse" title="Inverser le sens de correspondance des coutures de la pièce active si la prévisualisation montre une torsion">↔ Sens couture</button>
+          <button id="at-del" title="Supprimer la pièce active — Ctrl/Commande + Z permet d’annuler">− Supprimer</button>
+          <button id="at-undo" disabled title="Annuler la dernière modification du patron (Commande/Ctrl + Z)">↶ Annuler</button>
+        </div>
+      </section>
+
+      <div class="atelier-rail-footer">
+        <div class="view-actions">
+          <button id="at-big" aria-expanded="true" title="Afficher le plan 2D et la vue 3D côte à côte">
+            <span class="only-design">◫ Vue partagée</span>
+            <span class="only-simulation">◫ Plan + 3D</span>
+          </button>
+          <button id="at-advanced" aria-pressed="false" title="Afficher ou masquer les réglages détaillés du mannequin, du tissu et du solveur">⚙ Réglages</button>
+        </div>
+        <button id="at-sim" aria-pressed="false" title="Passer de la conception du patron à l’essayage physique 3D">
+          <span class="only-design">▶ Essayer en 3D</span>
+          <span class="only-simulation">← Revenir au patron</span>
+        </button>
+      </div>
+    </aside>
+
+    <div id="pattern-pane-head">
+      <div class="pane-title">
+        <span class="pane-kicker">Plan 2D</span>
+        <strong id="pattern-pane-title">Patron à plat · cotes réelles</strong>
+        <span class="pane-shortcut">Glisser le fond pour se déplacer · molette pour zoomer</span>
+      </div>
+      <div class="zoom-tools" aria-label="Zoom du plan de coupe">
+        <button id="at-zoom-out" title="Réduire le plan de coupe" aria-label="Réduire le plan de coupe">−</button>
+        <button id="at-zoom-reset" title="Afficher toutes les pièces du patron" aria-label="Réinitialiser le zoom du plan">100%</button>
+        <button id="at-zoom-in" title="Agrandir le plan de coupe" aria-label="Agrandir le plan de coupe">＋</button>
+      </div>
     </div>
-    <!-- Choix de PLACEMENT d'une pièce fraîchement tracée : l'utilisateur dit
-         quel endroit du corps la pièce couvrira (ou la laisse libre, posée là
-         où elle a été dessinée sur la silhouette). -->
+    <!-- Choix de PLACEMENT d'une pièce fraîchement tracée : par défaut les
+         coutures reconstruisent sa pose, les destinations anatomiques restant
+         disponibles pour les manches, le col et les superpositions. -->
     <div id="place-chooser" hidden>
-      <span class="q">Où va cette pièce ?</span>
-      <button data-place="front" title="La pièce couvre le torse, côté devant (remplace le devant actuel)">Devant</button>
-      <button data-place="back" title="La pièce couvre le torse, côté dos (remplace le dos actuel)">Dos</button>
-      <button data-place="armR" title="La pièce s'enroule autour du bras droit et se coud à l'emmanchure">Bras droit</button>
-      <button data-place="armL" title="La pièce s'enroule autour du bras gauche et se coud à l'emmanchure">Bras gauche</button>
-      <button data-place="neck" title="La pièce s'enroule autour du cou (bande d'encolure)">Cou</button>
-      <button data-place="free" title="La pièce reste posée devant le corps, là où elle a été dessinée sur la silhouette">Libre</button>
+      <span class="q">Placement de la pièce :</span>
+      <span class="place-help">La position du dessin n’influence pas l’essayage : le placement automatique reconstruit la pose depuis les coutures.</span>
+      <button data-place="auto" title="Recommandé : reconstruire automatiquement la pose finale depuis les coutures, quelle que soit la position de la pièce dans le plan 2D ou la préparation 3D.">Automatique par les coutures (recommandé)</button>
+      <span class="place-group-label">Faces du vêtement</span>
+      <button data-place="front" title="La pièce devient le torse devant et remplace le devant actuel">Torse devant</button>
+      <button data-place="back" title="La pièce devient le torse dos et remplace le dos actuel">Torse dos</button>
+      <span class="place-group-label">Autour du corps</span>
+      <button data-place="armR" title="Manche droite : placement automatique autour du bras et à l’emmanchure">Manche droite</button>
+      <button data-place="armL" title="Manche gauche : placement automatique autour du bras et à l’emmanchure">Manche gauche</button>
+      <button data-place="neck" title="Col : placement automatique autour du cou et de l’encolure">Col</button>
+      <button data-place="waist" title="Ceinture : coudre son bord au bord de taille; l’orientation sera calculée depuis cette couture">Ceinture</button>
+      <span class="place-group-label">Bas du vêtement</span>
+      <button data-place="legR" title="Jambe droite : coudre au bassin ou à une autre pièce; l’orientation sera calculée depuis la couture">Jambe droite</button>
+      <button data-place="legL" title="Jambe gauche : coudre au bassin ou à une autre pièce; l’orientation sera calculée depuis la couture">Jambe gauche</button>
+      <span class="place-group-label">Superposition ou libre</span>
+      <button data-place="pocket" title="Poche ou applique : cliquez ensuite sa position exacte sur la pièce support. Le contour est cousu segment par segment et chaque couture reste retirable.">Poche / applique</button>
+      <button data-place="free" title="La pièce reste volontairement libre et ne sera pas assemblée automatiquement">Libre</button>
     </div>
-    <canvas id="pattern" width="250" height="290"></canvas>
+    <div id="placement-status" hidden role="status"></div>
+    <canvas id="pattern" width="250" height="290" title="Navigation : glisser le fond pour déplacer le plan · bouton central : déplacer depuis n’importe où · molette : zoomer sous le pointeur · clic droit : sélectionner une pièce · Commande/Ctrl + clic droit : ajouter ou retirer du groupe · tirer un coin : redimensionner le groupe · glisser une pièce sélectionnée : l’organiser sans changer la simulation"></canvas>
+  </div>
+  <div id="atelier-view3d-tools" aria-label="Outils de la vue 3D">
+    <div class="view3d-title">
+      <span class="pane-kicker">Vue 3D</span>
+      <strong>Préparation et essayage</strong>
+    </div>
+    <button id="at-move3d" aria-pressed="true" title="Déplacer librement la pièce ou l’exemplaire saisi pour organiser la préparation 3D. Le patron et les coutures ne changent pas; l’essayage reconstruira automatiquement la pose finale.">✥ Déplacer une pièce</button>
+    <button id="at-reset3d" title="Annuler uniquement le déplacement manuel de préparation de la pièce active. Son placement final sera toujours reconstruit depuis les coutures au lancement de l’essayage.">⌖ Réinitialiser la pose</button>
+  </div>
+  <div id="atelier-statusbar" role="status">
+    <span class="status-dot" aria-hidden="true"></span>
+    <span id="atelier-guidance">Sélectionnez une pièce puis choisissez un outil.</span>
   </div>
   <div id="split-divider" title="Glisser pour ajuster le partage plan 2D / fenêtre 3D"></div>
   <div id="overlay" hidden></div>

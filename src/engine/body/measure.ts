@@ -28,10 +28,15 @@ export interface BodyMeasure {
   hip: Level;
   thigh: Level; // one leg, mid-thigh
   /** T-pose : axe du bras horizontal mesuré (hauteur, profondeur, racine) —
-   * absent sur un corps bras baissés. Le tube de manche DOIT se centrer
-   * dessus : un bras naturel s'arque en z, supposer z=0 fait naître un
-   * panneau du tube dans le bras et le SDF l'éjecte. */
-  arm?: { y: number; z: number; rootX: number };
+   * absent sur un corps bras baissés. `path` conserve la vraie courbure du
+   * scan par tranches X : réduire le bras à une seule moyenne Y/Z place une
+   * partie d'une manche droite à l'intérieur du coude ou de l'avant-bras. */
+  arm?: {
+    y: number;
+    z: number;
+    rootX: number;
+    path?: { x: number; y: number; z: number }[];
+  };
 }
 
 /** Distance from the body axis (0,y,0) to the surface along (dx,0,dz). */
@@ -59,8 +64,12 @@ function firstExit(sd: Sd, y: number, dx: number, dz: number): number {
 
 /** Outermost |x| of the body at height y (arms/deltoids included). */
 function outerX(sd: Sd, y: number): number {
-  for (let x = 0.65; x > 0; x -= 0.005) {
-    if (sd(x, y, 0) < 0 || sd(x, y, 0.04) < 0 || sd(x, y, -0.04) < 0) return x;
+  // T-pose scans reach ~0.83–0.90 m from the centre. The former 0.65 m ceiling
+  // missed the male arm entirely, so no arm axis was measured and its sleeve
+  // spawned around z=0 — inside the backward-curving arm collider.
+  const zSamples = [0, 0.04, -0.04, 0.08, -0.08, 0.12, -0.12];
+  for (let x = 1.0; x > 0; x -= 0.005) {
+    if (zSamples.some((z) => sd(x, y, z) < 0)) return x;
   }
   return 0;
 }
@@ -166,7 +175,59 @@ export function measureBody(sd: Sd, height: number): BodyMeasure {
         }
       }
     }
-    if (cnt > 0) arm = { y: sy / cnt, z: sz / cnt, rootX: shoulderHalfW };
+    if (cnt > 0) {
+      arm = { y: sy / cnt, z: sz / cnt, rootX: shoulderHalfW };
+
+      // A T-pose scan is not a straight cylinder: the upper arm, elbow and
+      // forearm sweep several centimetres in depth (and a little in height).
+      // Sample the solid cross-section beyond the shoulder and retain its
+      // centroid. The sleeve compiler interpolates this polyline so every
+      // circular row is centred on the actual limb instead of on one global
+      // average. Sampling starts outside the torso and stops after the wrist.
+      const rawPath: { x: number; y: number; z: number }[] = [];
+      let emptySections = 0;
+      const pathYMin = armBandBot - 0.12;
+      const pathYMax = armBandTop + 0.09;
+      for (let x = shoulderHalfW + 0.025; x <= 1.0; x += 0.04) {
+        let sectionY = 0;
+        let sectionZ = 0;
+        let sectionCount = 0;
+        for (let y = pathYMin; y <= pathYMax; y += 0.006) {
+          for (let z = -0.26; z <= 0.18; z += 0.006) {
+            if (sd(x, y, z) < 0) {
+              sectionY += y;
+              sectionZ += z;
+              sectionCount++;
+            }
+          }
+        }
+        if (sectionCount > 0) {
+          rawPath.push({
+            x,
+            y: sectionY / sectionCount,
+            z: sectionZ / sectionCount,
+          });
+          emptySections = 0;
+        } else if (rawPath.length > 2 && ++emptySections >= 2) {
+          break;
+        }
+      }
+
+      // A three-point filter removes the millimetric stair-step of the baked
+      // SDF without straightening the centimetric anatomical curve.
+      if (rawPath.length >= 2) {
+        arm.path = rawPath.map((point, index) => {
+          if (index === 0 || index === rawPath.length - 1) return point;
+          const previous = rawPath[index - 1]!;
+          const next = rawPath[index + 1]!;
+          return {
+            x: point.x,
+            y: (previous.y + 2 * point.y + next.y) / 4,
+            z: (previous.z + 2 * point.z + next.z) / 4,
+          };
+        });
+      }
+    }
   }
 
   // Chest/bust: fullest caliper circumference below the shoulders — capped

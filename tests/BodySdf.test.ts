@@ -7,6 +7,7 @@ import {
   BODY_MALE_ARMS,
   bodyBounds,
   bodyNormal,
+  horizontalizeArmChains,
   sdBody,
   sdRoundCone,
   smin,
@@ -144,6 +145,72 @@ describe('male figure', () => {
         sdBody(-x, y, z, BODY_MALE_ARMS, BODY_BLEND),
         6,
       );
+    }
+  });
+});
+
+describe.each([
+  ['femme', BODY_FORM_ARMS],
+  ['homme', BODY_MALE_ARMS],
+] as const)('mise en T-pose analytique — %s', (_name, source) => {
+  it('tourne rigidement chaque chaîne complète autour de son épaule', () => {
+    const before = source.map((primitive) => ({
+      ...primitive,
+      a: [...primitive.a],
+      b: [...primitive.b],
+      s: primitive.s ? [...primitive.s] : undefined,
+    }));
+    const posed = horizontalizeArmChains(source);
+    const first = source.length - 8;
+
+    expect(source).toEqual(before);
+    expect(posed).not.toBe(source);
+    expect(posed.slice(0, first)).toEqual(source.slice(0, first));
+
+    for (let i = 0; i < source.length; i++) {
+      const rest = source[i]!;
+      const next = posed[i]!;
+      expect(next).not.toBe(rest);
+      expect(Math.hypot(
+        next.b[0] - next.a[0],
+        next.b[1] - next.a[1],
+        next.b[2] - next.a[2],
+      )).toBeCloseTo(Math.hypot(
+        rest.b[0] - rest.a[0],
+        rest.b[1] - rest.a[1],
+        rest.b[2] - rest.a[2],
+      ), 12);
+      expect(next.ra).toBe(rest.ra);
+      expect(next.rb).toBe(rest.rb);
+      expect(next.s).toEqual(rest.s);
+    }
+
+    for (let side = 0; side < 2; side++) {
+      const restUpper = source[first + side]!;
+      const nextUpper = posed[first + side]!;
+      const pivot = restUpper.a;
+      expect(nextUpper.a).toEqual(pivot);
+      expect(nextUpper.b[1]).toBeCloseTo(pivot[1], 12);
+      expect(nextUpper.b[2] - pivot[2]).toBeCloseTo(
+        restUpper.b[2] - pivot[2],
+        12,
+      );
+      expect(Math.sign(nextUpper.b[0] - pivot[0])).toBe(Math.sign(pivot[0]));
+
+      for (let offset = side; offset < 8; offset += 2) {
+        const restPrimitive = source[first + offset]!;
+        const nextPrimitive = posed[first + offset]!;
+        for (const endpoint of ['a', 'b'] as const) {
+          expect(Math.hypot(
+            nextPrimitive[endpoint][0] - pivot[0],
+            nextPrimitive[endpoint][1] - pivot[1],
+          )).toBeCloseTo(Math.hypot(
+            restPrimitive[endpoint][0] - pivot[0],
+            restPrimitive[endpoint][1] - pivot[1],
+          ), 12);
+          expect(nextPrimitive[endpoint][2]).toBe(restPrimitive[endpoint][2]);
+        }
+      }
     }
   });
 });

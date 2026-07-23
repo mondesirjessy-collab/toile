@@ -18,6 +18,7 @@ import {
   colorQuads,
   ConstraintKind,
   type BendQuad,
+  type ConstraintPhaseColorRanges,
   type Edge,
 } from '../solver/ConstraintGraph';
 import { pointInPolygon, pointInTriangle, type UV } from '../pattern/Draft';
@@ -65,7 +66,9 @@ export interface ClothMeshData {
   readonly constraintCount: number;
   readonly colorOffsets: number[];
   readonly colorCounts: number[];
-  /** Packed dihedral bending hinges sorted by color: {e0,e1,w0,w1:u32, restAngle:f32, 3 pads}. */
+  /** Ordered color phases; regular seams can be replayed without pockets. */
+  readonly constraintColorPhases: ConstraintPhaseColorRanges;
+  /** Packed hinges: {e0,e1,w0,w1:u32, restAngle, softness, warpWeight, baseRestAngle:f32}. */
   readonly quadData: ArrayBuffer;
   readonly quadCount: number;
   readonly quadColorOffsets: number[];
@@ -87,6 +90,28 @@ export interface ClothMeshData {
    */
   readonly layers?: Float32Array;
   /**
+   * Per-particle fabric material. 0 inherits the live global fabric; 1…7 map
+   * to the stable preset order in FabricMaterial. Optional keeps legacy meshes
+   * and non-atelier scenes on the global material without extra authoring data.
+   */
+  readonly materialIds?: Uint32Array;
+  /**
+   * Pocket/appliqué contact membership. Low 16 bits mark support regions;
+   * high 16 bits mark their matching overlays. Only opposite roles sharing a
+   * bit receive the thin surface-contact distance in self-collision.
+   */
+  readonly surfaceMasks?: Uint32Array;
+  /**
+   * Packed one-sided pocket contacts:
+   * {support, tangentA, tangentB, overlay:u32, weights.xyz, active:f32}. The
+   * live triangle and barycentric weights rebuild the exact authored support
+   * point on the GPU. An open pocket activates a sparse physical manifold:
+   * one interior sample per support triangle plus its open boundary. Contact
+   * stays unilateral and never tethers or changes tangential motion.
+   */
+  readonly surfaceContactData?: ArrayBuffer;
+  readonly surfaceContactCount?: number;
+  /**
    * Particles stitched across garments (cross-seams) plus their first ring:
    * self-collision must not repel them — the seam legitimately holds them
    * closer than min_dist, and fighting it every substep shakes the garment
@@ -106,10 +131,59 @@ export interface ClothMeshData {
    * particle toward (x/z free). Sentinel ≤ -1e8 = not anchored. Absent = none.
    */
   readonly anchorY?: Float32Array;
+  /**
+   * Optional dressing-only anchor lifetime. When present, the waistband hold
+   * stays active for this many simulated seconds, then fades out; absent means
+   * the historical permanent hold used by strapless garments.
+   */
+  readonly anchorReleaseSeconds?: number;
+  /**
+   * Optional soft-start duration for regular assembly seams. During this
+   * dressing interval the solver tightens stitches progressively, preventing
+   * a multi-piece garment from converting its residual placement distance
+   * into a first-frame impact. Surface top-stitches are unaffected.
+   */
+  readonly seamDressingSeconds?: number;
 }
 
 const CONSTRAINT_STRIDE = 16; // bytes: 2×u32 + 2×f32
-const QUAD_STRIDE = 32; // bytes: 4×u32 + f32 + 3 pads
+const QUAD_STRIDE = 32; // bytes: 4×u32 + restAngle + softness + warpWeight + baseRestAngle
+const SURFACE_CONTACT_STRIDE = 32;
+
+/**
+ * Put an independently generated piece on the same particle-mass scale as its
+ * reference garment.
+ *
+ * Every editable piece uses the same n×n grid. Without an area correction, a
+ * 19×24 cm pocket therefore contains almost as much solver mass as a full
+ * shirt panel. Inverse mass must grow when the physical cell area shrinks.
+ * Material density is applied later by ParticleSystem, so both factors compose.
+ *
+ * Returns the applied factor for diagnostics/tests. Cut particles remain zero.
+ */
+export function scaleMeshInverseMassesToReferenceCellArea(
+  mesh: ClothMeshData,
+  referenceCellArea: number,
+): number {
+  const cellArea = mesh.spacing * mesh.spacingV;
+  if (
+    !Number.isFinite(referenceCellArea) ||
+    referenceCellArea <= 0 ||
+    !Number.isFinite(cellArea) ||
+    cellArea <= 0
+  ) {
+    return 1;
+  }
+  const factor = Math.max(
+    1 / 4096,
+    Math.min(4096, referenceCellArea / cellArea),
+  );
+  for (let i = 0; i < mesh.invMasses.length; i++) {
+    const inverseMass = mesh.invMasses[i]!;
+    if (inverseMass > 0) mesh.invMasses[i] = inverseMass * factor;
+  }
+  return factor;
+}
 
 /**
  * Dihedral bending hinges (brief §3.3, the "true" Phase-1 bending): one hinge
@@ -149,9 +223,9 @@ function buildBendQuads(
 
   for (let p = 0; p < panelCount; p++) {
     const idx = (u: number, v: number): number => p * panelSize + v * n + u;
-    const push = (e0: number, e1: number, w0: number, w1: number): void => {
+    const push = (e0: number, e1: number, w0: number, w1: number, warpWeight: number): void => {
       const angle = restAngle(e0, e1, w0, w1);
-      if (angle !== null) quads.push({ e0, e1, w0, w1, restAngle: angle, softness: 1 });
+      if (angle !== null) quads.push({ e0, e1, w0, w1, restAngle: angle, softness: 1, warpWeight });
     };
     for (let v = 0; v < n - 1; v++) {
       for (let u = 0; u < n - 1; u++) {
@@ -163,7 +237,8 @@ function buildBendQuads(
           keptLocal(p, u + 1, v + 1) &&
           keptLocal(p, u + 2, v)
         ) {
-          push(idx(u + 1, v), idx(u + 1, v + 1), idx(u, v + 1), idx(u + 2, v));
+          // Shared edge is vertical: curvature crosses the weft.
+          push(idx(u + 1, v), idx(u + 1, v + 1), idx(u, v + 1), idx(u + 2, v), 0);
         }
         // Hinge across the horizontal grid edge shared with the cell below.
         if (
@@ -173,7 +248,8 @@ function buildBendQuads(
           keptLocal(p, u + 1, v + 1) &&
           keptLocal(p, u, v + 2)
         ) {
-          push(idx(u, v + 1), idx(u + 1, v + 1), idx(u + 1, v), idx(u, v + 2));
+          // Shared edge is horizontal: curvature runs along the warp/grain.
+          push(idx(u, v + 1), idx(u + 1, v + 1), idx(u + 1, v), idx(u, v + 2), 1);
         }
       }
     }
@@ -194,6 +270,8 @@ function buildBendQuads(
     dv.setUint32(base + 12, q.w1, true);
     dv.setFloat32(base + 16, q.restAngle, true);
     dv.setFloat32(base + 20, q.softness ?? 1, true);
+    dv.setFloat32(base + 24, q.warpWeight ?? 0.5, true);
+    dv.setFloat32(base + 28, q.baseRestAngle ?? q.restAngle, true);
   }
   return {
     quadData,
@@ -266,7 +344,7 @@ export function generateClothGrid(opts: ClothMeshOptions): ClothMeshData {
   }
 
   const all = structural.concat(shear, bending);
-  const { ordered, colorOffsets, colorCounts } = colorConstraints(all, count);
+  const { ordered, colorOffsets, colorCounts, phaseColorRanges } = colorConstraints(all, count);
   const quads = buildBendQuads(positions, 1, n, () => true);
 
   // Pack color-sorted constraints for the GPU.
@@ -310,6 +388,7 @@ export function generateClothGrid(opts: ClothMeshOptions): ClothMeshData {
     constraintCount: ordered.length,
     colorOffsets,
     colorCounts,
+    constraintColorPhases: phaseColorRanges,
     ...quads,
     structuralCount: structural.length,
     shearCount: shear.length,
@@ -346,7 +425,15 @@ export interface SeamedPanelsOptions {
    */
   shape?: 'rect' | 'aline' | 'tshirt' | 'skirt' | 'setin' | 'pants' | 'freeform';
   /** Pattern measurements (grading): shape-specific, all in normalized [0,1] pattern units. */
-  shapeParams?: { hem?: number; scoop?: number; sleeve?: number; profile?: number[]; neck?: number };
+  shapeParams?: {
+    hem?: number;
+    scoop?: number;
+    sleeve?: number;
+    profile?: number[];
+    neck?: number;
+    /** Sleeveless A-line armhole depth, as a fraction of pattern height. */
+    armhole?: number;
+  };
   /**
    * Flatten ring around mirror seams (default true): a Bending spring per
    * seamed cell holding the two panels ~2·spacing apart just INSIDE the seam,
@@ -401,6 +488,12 @@ export interface SeamedPanelsOptions {
    * it sits on (elasticated waists, cuffs). 1 = no elastic.
    */
   elasticTop?: number;
+  /**
+   * Treat horizontal constraints in the top band as lockstitch-stiff. This
+   * approximates an interfaced, closed waistband whose circumference must not
+   * inherit the stretch of a jersey/soft fabric preset.
+   */
+  reinforceTop?: boolean;
   /**
    * Waistband anchor (the belt): hold the top rows at their rest HEIGHT with a
    * soft vertical spring while leaving x/z free, so the band still settles
@@ -531,7 +624,28 @@ function isOpening(shape: PatternShape, uu: number, vv: number, p: ShapeParams =
   // can land outside the zone at coarse resolutions — and the mirror seam
   // then sews the neckline shut (head-sized garment, no head hole).
   if (vv > 0.97) return true; // hem
-  if (shape === 'aline') return vv < 0.13 + step && x < (p.scoop ?? 0.1) + 0.02 + step; // neckline
+  if (shape === 'aline') {
+    if (vv < 0.13 + step && x < (p.scoop ?? 0.1) + 0.02 + step) return true; // neckline
+    // A sleeveless dress needs a real arm passage between the horizontal
+    // shoulder seam and the vertical side seam. Previously the whole outer
+    // boundary was mirror-sewn: the A-line was topologically a bag with only
+    // a neck and hem opening, so the side stitch crossed the deltoid and made
+    // adjacent cloth cells settle on opposite sides of the arm. Keep two short
+    // top rows for the shoulder join, open the outer run around the arm, then
+    // resume the side seam below the armpit. `sideHalfWidth` follows custom
+    // profiles, so this remains correct after grading/editing.
+    const armholeStart = 0.04;
+    const armholeEnd = p.armhole ?? 0.28;
+    const outerEdge = sideHalfWidth(vv, p);
+    if (
+      vv > armholeStart &&
+      vv < armholeEnd + step &&
+      x >= outerEdge - (0.025 + step)
+    ) {
+      return true;
+    }
+    return false;
+  }
   if (shape === 'tshirt') {
     if (vv < 0.1 + step && x < (p.neck ?? 0.11) + 0.02 + step) return true; // neckline
     if (x > (p.sleeve ?? 0.5) - 0.02) return true; // sleeve cuff (the arm comes out here)
@@ -642,6 +756,208 @@ export function countMaskIslands(kept: readonly boolean[], n: number): number {
     }
   }
   return comps;
+}
+
+/**
+ * Close a user-authored seam run in the render mesh.
+ *
+ * Distance constraints join particles, but two independently drawn boundary
+ * runs otherwise remain two open sheets. Between successive seam pins, each
+ * side follows the shortest local path over genuine triangle-boundary edges.
+ * A zipper triangulation then tolerates skipped vertices and gathering (a
+ * repeated endpoint becomes a fan) without adding any physical constraint.
+ * Interior stitches/darts are deliberately ignored: neither side is a render
+ * boundary there, so this helper cannot invent a surface over a pocket or a
+ * dart. The first index stays on side B, matching the automatic-cap convention
+ * that keeps these 3D-only faces out of the front-panel pattern view.
+ */
+function appendBoundarySeamRibbons(
+  triangles: number[],
+  seamPairs: readonly { i: number; j: number }[],
+  panelSize: number,
+  maxBoundaryHops = Math.max(4, Math.ceil(Math.sqrt(panelSize) / 8)),
+  onSewnVertex?: (index: number) => void,
+): number {
+  if (seamPairs.length < 2) return 0;
+  interface BoundaryEdge {
+    a: number;
+    b: number;
+    count: number;
+  }
+  const boundary = new Map<string, BoundaryEdge>();
+  const keyOf = (a: number, b: number): string =>
+    a < b ? `${a}:${b}` : `${b}:${a}`;
+  const add = (a: number, b: number): void => {
+    const key = keyOf(a, b);
+    const prior = boundary.get(key);
+    if (prior) prior.count++;
+    else boundary.set(key, { a, b, count: 1 });
+  };
+  // Ribbons already present in an input mesh span two panels. Only ordinary
+  // mono-panel triangles define cut boundaries for a new ribbon.
+  for (let t = 0; t < triangles.length; t += 3) {
+    const a = triangles[t]!;
+    const b = triangles[t + 1]!;
+    const c = triangles[t + 2]!;
+    const panel = Math.floor(a / panelSize);
+    if (
+      Math.floor(b / panelSize) !== panel ||
+      Math.floor(c / panelSize) !== panel
+    ) {
+      continue;
+    }
+    add(a, b);
+    add(b, c);
+    add(c, a);
+  }
+
+  const adjacency = new Map<number, number[]>();
+  const connect = (a: number, b: number): void => {
+    const neighbours = adjacency.get(a);
+    if (neighbours) neighbours.push(b);
+    else adjacency.set(a, [b]);
+  };
+  for (const edge of boundary.values()) {
+    if (edge.count !== 1) continue;
+    connect(edge.a, edge.b);
+    connect(edge.b, edge.a);
+  }
+
+  const shortestBoundaryPath = (start: number, end: number): number[] | null => {
+    if (
+      Math.floor(start / panelSize) !== Math.floor(end / panelSize) ||
+      !adjacency.has(start) ||
+      !adjacency.has(end)
+    ) {
+      return null;
+    }
+    if (start === end) return [start];
+    const previous = new Map<number, number>();
+    const depth = new Map<number, number>([[start, 0]]);
+    const queue = [start];
+    for (let head = 0; head < queue.length; head++) {
+      const current = queue[head]!;
+      const currentDepth = depth.get(current)!;
+      if (currentDepth >= maxBoundaryHops) continue;
+      for (const next of adjacency.get(current) ?? []) {
+        if (depth.has(next)) continue;
+        previous.set(next, current);
+        depth.set(next, currentDepth + 1);
+        if (next === end) {
+          const path = [end];
+          let cursor = end;
+          while (cursor !== start) {
+            cursor = previous.get(cursor)!;
+            path.push(cursor);
+          }
+          path.reverse();
+          return path;
+        }
+        queue.push(next);
+      }
+    }
+    return null;
+  };
+
+  // Seed with existing mixed-panel faces so a repeated/reversed seam interval
+  // cannot append the same cap twice, including across combined garments.
+  // Mono-panel cloth faces cannot equal a ribbon and dominate this array, so
+  // excluding them avoids retaining tens of thousands of unnecessary keys.
+  const triangleKey = (a: number, b: number, c: number): string =>
+    [a, b, c].sort((x, y) => x - y).join(':');
+  const emitted = new Set<string>();
+  for (let t = 0; t < triangles.length; t += 3) {
+    const a = triangles[t]!;
+    const b = triangles[t + 1]!;
+    const c = triangles[t + 2]!;
+    const panel = Math.floor(a / panelSize);
+    if (
+      Math.floor(b / panelSize) !== panel ||
+      Math.floor(c / panelSize) !== panel
+    ) {
+      emitted.add(triangleKey(a, b, c));
+    }
+  }
+  let ribbonTriangles = 0;
+  const emit = (b0: number, x: number, y: number): void => {
+    if (b0 === x || b0 === y || x === y) return;
+    const key = triangleKey(b0, x, y);
+    if (emitted.has(key)) return;
+    emitted.add(key);
+    triangles.push(b0, x, y);
+    ribbonTriangles++;
+  };
+  for (let k = 1; k < seamPairs.length; k++) {
+    const previous = seamPairs[k - 1]!;
+    const current = seamPairs[k]!;
+    if (
+      Math.floor(previous.i / panelSize) !== Math.floor(current.i / panelSize) ||
+      Math.floor(previous.j / panelSize) !== Math.floor(current.j / panelSize)
+    ) {
+      continue;
+    }
+    let pathA = shortestBoundaryPath(previous.i, current.i);
+    let pathB = shortestBoundaryPath(previous.j, current.j);
+    if (!pathA || !pathB || (pathA.length === 1 && pathB.length === 1)) {
+      continue;
+    }
+
+    // The ribbon is the continuous topological seam, even when the physical
+    // run uses sparse pins to avoid several lockstitches fighting over one
+    // particle (notably a collar band sewn with negative ease). Keep the
+    // self-collision/audit mask aligned with that exact boundary path: an
+    // unmarked intermediate vertex would otherwise be repelled from the body
+    // through the very strip that declares it sewn.
+    if (onSewnVertex) {
+      for (const index of pathA) onSewnVertex(index);
+      for (const index of pathB) onSewnVertex(index);
+    }
+
+    // Follow side A's oriented boundary. When gathering keeps A fixed, follow
+    // side B against its own boundary orientation: this is the corresponding
+    // orientation of the missing A edge. Reverse both paths together so pin
+    // correspondence is never changed merely to repair winding.
+    if (pathA.length > 1) {
+      const edgeA = boundary.get(keyOf(pathA[0]!, pathA[1]!));
+      if (!edgeA || edgeA.a !== pathA[0] || edgeA.b !== pathA[1]) {
+        pathA = [...pathA].reverse();
+        pathB = [...pathB].reverse();
+      }
+    } else if (pathB.length > 1) {
+      const edgeB = boundary.get(keyOf(pathB[0]!, pathB[1]!));
+      if (edgeB && edgeB.a === pathB[0] && edgeB.b === pathB[1]) {
+        pathA = [...pathA].reverse();
+        pathB = [...pathB].reverse();
+      }
+    }
+
+    // Zipper two boundary polylines by normalized edge progress. Advancing
+    // only A emits an A fan triangle; advancing only B emits a B fan triangle;
+    // equal progress emits the familiar two-triangle quad.
+    const edgesA = pathA.length - 1;
+    const edgesB = pathB.length - 1;
+    let ia = 0;
+    let ib = 0;
+    while (ia < edgesA || ib < edgesB) {
+      const advanceA = ia < edgesA;
+      const advanceB = ib < edgesB;
+      const nextA = advanceA ? (ia + 1) / edgesA : Number.POSITIVE_INFINITY;
+      const nextB = advanceB ? (ib + 1) / edgesB : Number.POSITIVE_INFINITY;
+      if (advanceA && advanceB && Math.abs(nextA - nextB) < 1e-9) {
+        emit(pathB[ib]!, pathA[ia + 1]!, pathA[ia]!);
+        emit(pathB[ib]!, pathB[ib + 1]!, pathA[ia + 1]!);
+        ia++;
+        ib++;
+      } else if (nextA < nextB) {
+        emit(pathB[ib]!, pathA[ia + 1]!, pathA[ia]!);
+        ia++;
+      } else {
+        emit(pathB[ib]!, pathB[ib + 1]!, pathA[ia]!);
+        ib++;
+      }
+    }
+  }
+  return ribbonTriangles;
 }
 
 export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
@@ -810,7 +1126,11 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
         }
       }
     const backIslands = countMaskIslands(keptB, n);
-    if (backIslands !== 1) console.warn(`ClothMesh: dos déconnecté — ${backIslands} îlot(s)`);
+    // An intentionally empty back mask is how a pocket/appliqué requests one
+    // physical sheet. It is not a disconnected garment and should stay silent.
+    if (mb.outline.length >= 3 && backIslands !== 1) {
+      console.warn(`ClothMesh: dos déconnecté — ${backIslands} îlot(s)`);
+    }
   }
 
   const positions = new Float32Array(count * 4);
@@ -872,6 +1192,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
   });
 
   const elasticTop = opts.elasticTop ?? 1;
+  const reinforceTop = opts.reinforceTop ?? false;
   // Elastic band height in ROWS, floored at 2 (audit M15): `v/(n-1) < 0.06`
   // alone collapses to a single row at n ≤ 17, so grip strength jumps with
   // resolution. round(0.06·(n-1)) is identical at the selectable 32/64/128
@@ -889,7 +1210,14 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
           // Elastic band: the top rows want to be SHORTER than they are cut —
           // the weave gathers and grips (elasticated waist).
           if (elasticTop < 1 && v < elasticRows) e.rest *= elasticTop;
-          structural.push(e);
+          if (reinforceTop && v < elasticRows) {
+            // An interfaced waistband is governed by its stitched length, not
+            // the stretch compliance of the selected shell fabric.
+            e.kind = ConstraintKind.Seam;
+            seams.push(e);
+          } else {
+            structural.push(e);
+          }
         }
         if (v + 1 < n && isKept(p, u, v + 1))
           structural.push(edge(index(p, u, v), index(p, u, v + 1), ConstraintKind.StructuralWarp));
@@ -917,6 +1245,11 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
   // Local cells that carry a front↔back seam — seeds for the seam-distance BFS
   // that gates the cross-panel self-collision exclusion (M3).
   const seamLocalCells = new Set<number>();
+  // Auto-sewn mirror cells are also retained for the render topology below.
+  // Constraints can pull two panel rims together physically, but without faces
+  // between them the indexed surface stays topologically open and exposes a
+  // hairline of avatar at shoulders/closed side seams.
+  const seamedLocal = new Set<number>();
   if (shape === 'rect') {
     // Plain tube: side seams only (leftmost/rightmost of each row), top open.
     for (let v = 0; v < n; v++) {
@@ -966,7 +1299,6 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
     // (2 × spacing), so the fabric behaves as if continuous through the seam —
     // a smooth ridge instead of a pinched, gaping fold.
     const flattened = new Set<number>();
-    const seamedLocal = new Set<number>();
     for (let v = 0; v < n; v++) {
       for (let u = 0; u < n; u++) {
         const cell = v * n + u;
@@ -1166,7 +1498,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
     for (let local = 0; local < panelSize; local++) seamDist[p * panelSize + local] = seamDistLocal[local]!;
 
   const all = structural.concat(shear, bending, seams);
-  const { ordered, colorOffsets, colorCounts } = colorConstraints(all, count);
+  const { ordered, colorOffsets, colorCounts, phaseColorRanges } = colorConstraints(all, count);
   const quads = buildBendQuads(positions, 2, n, (p, u, v) => (p === 0 ? kept : keptB)[v * n + u]!, pressHinges);
 
   const constraintData = new ArrayBuffer(ordered.length * CONSTRAINT_STRIDE);
@@ -1207,6 +1539,60 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
       }
     }
   }
+
+  // Visual seam ribbon: bridge only matching topological boundary edges whose
+  // TWO endpoints were auto-sewn front↔back above. This closes the rendered
+  // shell at true closed seams without changing particles, constraints, rest
+  // lengths, collision offsets or SDF contact. Necklines, hems, cuffs and other
+  // authored openings never enter `seamedLocal`, so they remain genuinely open.
+  // Manual assemblies deliberately receive no implicit faces either.
+  if (seamedLocal.size > 0) {
+    interface BoundaryEdge {
+      a: number;
+      b: number;
+      count: number;
+    }
+    const boundaryByPanel = [new Map<string, BoundaryEdge>(), new Map<string, BoundaryEdge>()];
+    const addBoundaryCandidate = (panel: number, a: number, b: number): void => {
+      const localA = a - panel * panelSize;
+      const localB = b - panel * panelSize;
+      const key = localA < localB ? `${localA}:${localB}` : `${localB}:${localA}`;
+      const previous = boundaryByPanel[panel]!.get(key);
+      if (previous) previous.count++;
+      else boundaryByPanel[panel]!.set(key, { a: localA, b: localB, count: 1 });
+    };
+    // Read the panel triangles before adding any ribbon faces. The oriented edge
+    // kept from panel 0 gives the ribbon a consistent outward winding.
+    for (let t = 0; t < tris.length; t += 3) {
+      const a = tris[t]!;
+      const b = tris[t + 1]!;
+      const c = tris[t + 2]!;
+      const panel = Math.floor(a / panelSize);
+      if (panel > 1 || Math.floor(b / panelSize) !== panel || Math.floor(c / panelSize) !== panel) continue;
+      addBoundaryCandidate(panel, a, b);
+      addBoundaryCandidate(panel, b, c);
+      addBoundaryCandidate(panel, c, a);
+    }
+    for (const [key, front] of boundaryByPanel[0]!) {
+      const back = boundaryByPanel[1]!.get(key);
+      if (front.count !== 1 || back?.count !== 1) continue;
+      if (!seamedLocal.has(front.a) || !seamedLocal.has(front.b)) continue;
+      const a0 = front.a;
+      const b0 = front.b;
+      const a1 = panelSize + front.a;
+      const b1 = panelSize + front.b;
+      // Cyclic order keeps each first index on the back panel. Pattern/PDF views
+      // intentionally filter on that index, so this 3D-only cap cannot erase a
+      // legitimate 2D cut line while preserving the same triangle winding.
+      tris.push(a1, b0, a0, a1, b1, b0);
+    }
+  }
+  if (opts.manualAssembly && opts.assemblySeams?.length) {
+    // compileAssembly flattens several authored seams into one list without a
+    // run separator. Keep its historical one-edge locality so a gap between
+    // shoulder/side runs cannot accidentally cap an armhole or neckline.
+    appendBoundarySeamRibbons(tris, opts.assemblySeams, panelSize, 1);
+  }
   const triangleIndices = new Uint32Array(tris);
 
   // Anchor corners for the P-pin toggle: outermost kept particles of the
@@ -1239,6 +1625,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
     constraintCount: ordered.length,
     colorOffsets,
     colorCounts,
+    constraintColorPhases: phaseColorRanges,
     ...quads,
     structuralCount: structural.length,
     shearCount: shear.length,
@@ -1272,6 +1659,29 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
 export interface CrossSeam {
   i: number;
   j: number;
+  /** Optional live grid neighbour one row inside endpoint i's sewn edge. */
+  inwardI?: number;
+  /** Optional live grid neighbour one row inside endpoint j's sewn edge. */
+  inwardJ?: number;
+  /**
+   * Endpoint i is an anatomically placed support rim; endpoint j belongs to a
+   * newly attached part and must absorb almost all of the dressing correction.
+   */
+  attachment?: true;
+}
+
+export interface AttachmentSeam extends CrossSeam {
+  attachment: true;
+}
+
+export interface SurfaceContact extends CrossSeam {
+  tangentA: number;
+  tangentB: number;
+  weight0: number;
+  weightA: number;
+  weightB: number;
+  /** Apply one-sided projection; false entries still define contact masks. */
+  active?: boolean;
 }
 
 export function combineClothMeshes(
@@ -1279,6 +1689,8 @@ export function combineClothMeshes(
   b: ClothMeshData,
   crossSeams: CrossSeam[] = [],
   layerB = 0,
+  surfaceContacts: SurfaceContact[] = [],
+  surfaceSeams: CrossSeam[] = [],
 ): ClothMeshData {
   if (a.resolution !== b.resolution) {
     throw new Error('combineClothMeshes: garments must share the same resolution');
@@ -1290,6 +1702,33 @@ export function combineClothMeshes(
   // would yank the garment toward it. Out-of-range indices are dropped too.
   const alive = (g: number): boolean => (g < a.count ? a.invMasses[g]! > 0 : b.invMasses[g - a.count]! > 0);
   const seams = crossSeams.filter((cs) => cs.i >= 0 && cs.i < count && cs.j >= 0 && cs.j < count && alive(cs.i) && alive(cs.j));
+  const validSurfaceSeams = surfaceSeams.filter(
+    (cs) =>
+      cs.i >= 0 &&
+      cs.i < count &&
+      cs.j >= 0 &&
+      cs.j < count &&
+      alive(cs.i) &&
+      alive(cs.j),
+  );
+  const surfaceSeamKeys = new Set(
+    validSurfaceSeams.map((cs) => `${cs.i}:${cs.j}`),
+  );
+  const contacts = surfaceContacts.filter(
+    (cs) =>
+      cs.i >= 0 &&
+      cs.i < count &&
+      cs.j >= 0 &&
+      cs.j < count &&
+      cs.tangentA >= 0 &&
+      cs.tangentA < count &&
+      cs.tangentB >= 0 &&
+      cs.tangentB < count &&
+      alive(cs.i) &&
+      alive(cs.j) &&
+      alive(cs.tangentA) &&
+      alive(cs.tangentB),
+  );
 
   const positions = new Float32Array(count * 4);
   positions.set(a.positions, 0);
@@ -1303,6 +1742,85 @@ export function combineClothMeshes(
   const layers = new Float32Array(count);
   if (a.layers) layers.set(a.layers, 0);
   for (let i = 0; i < b.count; i++) layers[a.count + i] = (b.layers ? b.layers[i]! : 0) + layerB;
+  const materialIds = a.materialIds || b.materialIds ? new Uint32Array(count) : undefined;
+  if (materialIds) {
+    if (a.materialIds) materialIds.set(a.materialIds, 0);
+    if (b.materialIds) materialIds.set(b.materialIds, a.count);
+  }
+  const surfaceMasks =
+    a.surfaceMasks || b.surfaceMasks || contacts.length
+      ? new Uint32Array(count)
+      : undefined;
+  if (surfaceMasks) {
+    if (a.surfaceMasks) surfaceMasks.set(a.surfaceMasks, 0);
+    if (b.surfaceMasks) surfaceMasks.set(b.surfaceMasks, a.count);
+    if (contacts.length) {
+      let used = 0;
+      for (const mask of surfaceMasks) used |= (mask & 0xffff) | (mask >>> 16);
+      let bit = 1;
+      while ((used & bit) !== 0 && bit < 0x8000) bit <<= 1;
+      // Sanitized drafts currently allow at most six free pieces, so sixteen
+      // independent surface groups leave ample room. Reuse the final bit only
+      // as a corruption-safe fallback instead of dropping contact protection.
+      if ((used & bit) !== 0) bit = 0x8000;
+      for (const contact of contacts) {
+        surfaceMasks[contact.i] = (surfaceMasks[contact.i]! | bit) >>> 0;
+        surfaceMasks[contact.tangentA] = (surfaceMasks[contact.tangentA]! | bit) >>> 0;
+        surfaceMasks[contact.tangentB] = (surfaceMasks[contact.tangentB]! | bit) >>> 0;
+        surfaceMasks[contact.j] = (surfaceMasks[contact.j]! | (bit << 16)) >>> 0;
+      }
+    }
+  }
+  const decodeSurfaceContacts = (
+    mesh: ClothMeshData,
+    offset: number,
+  ): SurfaceContact[] => {
+    const data = mesh.surfaceContactData;
+    const contactCount = mesh.surfaceContactCount ?? 0;
+    if (!data || contactCount <= 0) return [];
+    const view = new DataView(data);
+    const decoded: SurfaceContact[] = [];
+    for (let k = 0; k < contactCount; k++) {
+      const base = k * SURFACE_CONTACT_STRIDE;
+      decoded.push({
+        i: view.getUint32(base, true) + offset,
+        tangentA: view.getUint32(base + 4, true) + offset,
+        tangentB: view.getUint32(base + 8, true) + offset,
+        j: view.getUint32(base + 12, true) + offset,
+        weight0: view.getFloat32(base + 16, true),
+        weightA: view.getFloat32(base + 20, true),
+        weightB: view.getFloat32(base + 24, true),
+        active: view.getFloat32(base + 28, true) > 0.5,
+      });
+    }
+    return decoded;
+  };
+  const allSurfaceContacts = [
+    ...decodeSurfaceContacts(a, 0),
+    ...decodeSurfaceContacts(b, a.count),
+    ...contacts,
+  ];
+  const surfaceContactData =
+    allSurfaceContacts.length > 0
+      ? new ArrayBuffer(allSurfaceContacts.length * SURFACE_CONTACT_STRIDE)
+      : undefined;
+  if (surfaceContactData) {
+    const view = new DataView(surfaceContactData);
+    for (let k = 0; k < allSurfaceContacts.length; k++) {
+      const contact = allSurfaceContacts[k]!;
+      const base = k * SURFACE_CONTACT_STRIDE;
+      view.setUint32(base, contact.i, true);
+      view.setUint32(base + 4, contact.tangentA, true);
+      view.setUint32(base + 8, contact.tangentB, true);
+      view.setUint32(base + 12, contact.j, true);
+      view.setFloat32(base + 16, contact.weight0, true);
+      view.setFloat32(base + 20, contact.weightA, true);
+      view.setFloat32(base + 24, contact.weightB, true);
+      // Explicit false is a stitched/interior mask-only entry. Undefined stays
+      // active for backwards-compatible programmatic SurfaceContact callers.
+      view.setFloat32(base + 28, contact.active === false ? 0 : 1, true);
+    }
+  }
   // Cross-seamed particles (and one row inward on each side) are exempt from
   // self-collision: the seam holds them tighter than min_dist by design.
   const seamFree = new Uint8Array(count);
@@ -1323,7 +1841,15 @@ export function combineClothMeshes(
   }
   const na = a.resolution;
   for (const cs of seams) {
-    for (const k of [cs.i, cs.i - na, cs.j, cs.j + na]) {
+    // Waist joins historically arrive as bottom(a) -> top(b), hence the
+    // i-n/j+n defaults. Curved or inverted runs (notably body neckline ->
+    // neck-band bottom) provide their actual inward neighbours explicitly.
+    for (const k of [
+      cs.i,
+      cs.inwardI ?? cs.i - na,
+      cs.j,
+      cs.inwardJ ?? cs.j + na,
+    ]) {
       if (k >= 0 && k < count) seamFree[k] = 1;
     }
   }
@@ -1347,10 +1873,24 @@ export function combineClothMeshes(
   // a's, so a waist seam between a narrow bodice and a 1.6× skirt isn't slack
   // toward the wider piece (audit M13).
   const seamRest = Math.min(a.spacing, b.spacing) * 0.15;
+  const surfaceSeamRest = Math.max(
+    0.0025,
+    Math.min(0.005, Math.max(a.spacing, a.spacingV, b.spacing, b.spacingV) * 0.35),
+  );
   for (const cs of seams) {
-    all.push({ i: cs.i, j: cs.j, rest: seamRest, kind: ConstraintKind.Seam });
+    const surfaceSeam = surfaceSeamKeys.has(`${cs.i}:${cs.j}`);
+    all.push({
+      i: cs.i,
+      j: cs.j,
+      rest: surfaceSeam ? surfaceSeamRest : seamRest,
+      kind: surfaceSeam
+        ? ConstraintKind.SurfaceSeam
+        : cs.attachment
+          ? ConstraintKind.AttachmentSeam
+          : ConstraintKind.Seam,
+    });
   }
-  const { ordered, colorOffsets, colorCounts } = colorConstraints(all, count);
+  const { ordered, colorOffsets, colorCounts, phaseColorRanges } = colorConstraints(all, count);
 
   const constraintData = new ArrayBuffer(ordered.length * CONSTRAINT_STRIDE);
   const dv = new DataView(constraintData);
@@ -1375,6 +1915,8 @@ export function combineClothMeshes(
         w1: dv2.getUint32(base + 12, true) + offset,
         restAngle: dv2.getFloat32(base + 16, true),
         softness: dv2.getFloat32(base + 20, true),
+        warpWeight: dv2.getFloat32(base + 24, true),
+        baseRestAngle: dv2.getFloat32(base + 28, true),
       });
     }
     return out;
@@ -1392,13 +1934,29 @@ export function combineClothMeshes(
     qdv.setUint32(base + 12, q.w1, true);
     qdv.setFloat32(base + 16, q.restAngle, true);
     qdv.setFloat32(base + 20, q.softness ?? 1, true); // pressing survives the merge
+    qdv.setFloat32(base + 24, q.warpWeight ?? 0.5, true);
+    qdv.setFloat32(base + 28, q.baseRestAngle ?? q.restAngle, true);
   }
 
-  const triangleIndices = new Uint32Array(a.triangleIndices.length + b.triangleIndices.length);
-  triangleIndices.set(a.triangleIndices, 0);
+  const triangles = Array.from(a.triangleIndices);
   for (let t = 0; t < b.triangleIndices.length; t++) {
-    triangleIndices[a.triangleIndices.length + t] = b.triangleIndices[t]! + a.count;
+    triangles.push(b.triangleIndices[t]! + a.count);
   }
+  // A cross-mesh seam closes two independently rendered cut boundaries just
+  // like a manual seam inside one generated garment. Pocket/support stitches
+  // are intentionally excluded: a SurfaceSeam attaches an overlay onto the
+  // face of another panel and must never grow a side wall between both cloths.
+  const renderSeams = seams.filter(
+    (cs) => !surfaceSeamKeys.has(`${cs.i}:${cs.j}`),
+  );
+  appendBoundarySeamRibbons(
+    triangles,
+    renderSeams,
+    na * na,
+    undefined,
+    (index) => { seamFree[index] = 1; },
+  );
+  const triangleIndices = new Uint32Array(triangles);
 
   return {
     resolution: a.resolution,
@@ -1416,6 +1974,7 @@ export function combineClothMeshes(
     constraintCount: ordered.length,
     colorOffsets,
     colorCounts,
+    constraintColorPhases: phaseColorRanges,
     quadData,
     quadCount: quadColoring.ordered.length,
     quadColorOffsets: quadColoring.colorOffsets,
@@ -1430,6 +1989,10 @@ export function combineClothMeshes(
     cornerIndices: a.cornerIndices,
     triangleIndices,
     layers,
+    materialIds,
+    surfaceMasks,
+    surfaceContactData,
+    surfaceContactCount: allSurfaceContacts.length,
     seamFree,
     seamDist,
     anchorY,

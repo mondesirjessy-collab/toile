@@ -156,6 +156,55 @@ function mirrored(prims: SdfPrim[]): SdfPrim[] {
 }
 
 /**
+ * Return an analytic arms body in a true T-pose.
+ *
+ * ARMS bodies end with four interleaved primitive pairs (upper arm, elbow,
+ * forearm, hand). Each complete side is rotated rigidly around Z and around
+ * its own shoulder, so the upper arm points horizontally outwards while all
+ * segment lengths, radii, squash values and within-chain offsets are retained.
+ * The input is never mutated.
+ */
+export function horizontalizeArmChains(prims: readonly SdfPrim[]): SdfPrim[] {
+  const result = prims.map((primitive) => ({
+    ...primitive,
+    a: [...primitive.a] as V3,
+    b: [...primitive.b] as V3,
+    s: primitive.s ? ([...primitive.s] as V3) : undefined,
+  }));
+  const armCount = 8;
+  if (result.length < armCount) return result;
+
+  const first = result.length - armCount;
+  for (let sideOffset = 0; sideOffset < 2; sideOffset++) {
+    const upperArm = result[first + sideOffset]!;
+    const pivot = upperArm.a;
+    const dx = upperArm.b[0] - pivot[0];
+    const dy = upperArm.b[1] - pivot[1];
+    if (Math.hypot(dx, dy) < 1e-8) continue;
+    const side = Math.sign(pivot[0]) || Math.sign(dx) || (sideOffset === 0 ? -1 : 1);
+    const angle = (side < 0 ? Math.PI : 0) - Math.atan2(dy, dx);
+    const cosine = Math.cos(angle);
+    const sine = Math.sin(angle);
+    const rotate = (point: V3): V3 => {
+      const localX = point[0] - pivot[0];
+      const localY = point[1] - pivot[1];
+      return [
+        pivot[0] + cosine * localX - sine * localY,
+        pivot[1] + sine * localX + cosine * localY,
+        point[2],
+      ];
+    };
+
+    for (let armOffset = sideOffset; armOffset < armCount; armOffset += 2) {
+      const primitive = result[first + armOffset]!;
+      primitive.a = rotate(primitive.a);
+      primitive.b = rotate(primitive.b);
+    }
+  }
+  return result;
+}
+
+/**
  * The realistic figure, ~1.75 m. Anatomy in three ingredients the old capsule
  * body lacked: a DEPTH PROFILE in z (chest and bust forward, glutes and calves
  * back — a straight column reads as a bollard, not a person), ELLIPTICAL

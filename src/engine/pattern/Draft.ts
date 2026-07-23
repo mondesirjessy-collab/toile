@@ -15,6 +15,8 @@
  * archetypes. This module is pure (no engine/GPU imports) and unit-testable.
  */
 
+import { clampFabricGsm } from '../solver/FabricMaterial';
+
 export type UV = [number, number];
 
 /** An interior wedge, sewn shut to cup the flat piece into 3D (bust/waist dart). */
@@ -58,6 +60,55 @@ export function pieceIdOf(r: FaceRun): number {
 export interface AssemblySeam {
   a: FaceRun;
   b: FaceRun;
+  /**
+   * A missing kind is the historical, ordinary stitch. `zipper` keeps the
+   * same two-run topology while letting the editor and future garment controls
+   * present it as a removable closure rather than a permanent seam.
+   */
+  kind?: 'seam' | 'zipper';
+  /** Zippers are assembled only while closed. Irrelevant to ordinary seams. */
+  closed?: boolean;
+}
+
+/** Whether an assembly link currently contributes physical seam constraints. */
+export function assemblySeamIsClosed(seam: AssemblySeam): boolean {
+  return seam.kind !== 'zipper' || seam.closed !== false;
+}
+
+export type PiecePlacementRole =
+  | 'auto'
+  | 'front'
+  | 'back'
+  | 'armL'
+  | 'armR'
+  | 'neck'
+  | 'waist'
+  | 'legL'
+  | 'legR'
+  | 'pocket'
+  | 'free';
+
+export interface PiecePlacement {
+  /** Human/body role used by the guided pre-placement assistant. */
+  role: PiecePlacementRole;
+  /** Align the piece rigidly to its sewn edges before physics starts. */
+  autoAlign?: boolean;
+  /** Reverse the entering edge order when the preview shows a half-twist. */
+  reverseSeam?: boolean;
+  /**
+   * Patch/pocket placement on the surface of another pattern piece. The
+   * overlay keeps its own physical dimensions; `anchor` is the exact point on
+   * the support under the overlay's centre. Each entry in `stitchedEdges`
+   * represents one independently removable top-stitch.
+   */
+  surface?: SurfaceAttachment;
+}
+
+export interface SurfaceAttachment {
+  supportPieceId: number;
+  anchor: UV;
+  rotationRad?: number;
+  stitchedEdges: number[];
 }
 
 export interface DraftPiece {
@@ -65,6 +116,21 @@ export interface DraftPiece {
   darts: Dart[];
   seams: HandSeam[];
   openEdges: EdgeRun[]; // boundary runs left OPEN (not mirror-sewn) — e.g. the neckline
+  /** Human cutting-room metadata. It stays attached while the piece is edited,
+   * exported and re-imported, but does not change its geometry. */
+  name?: string;
+  cut?: number;
+  onFold?: boolean;
+  /** A construction piece shown/editable in the 2D atelier but intentionally
+   * excluded from cloth simulation (pocket bags, fly pieces, waistband…). */
+  patternOnly?: boolean;
+  /**
+   * Optional fabric assigned to this cutting piece. Absent means that the
+   * piece follows the live global fabric selected in the material panel.
+   */
+  fabricPreset?: import('../solver/FabricMaterial').FabricPresetName;
+  /** Piece-specific fabric mass in g/m². Absent means preset/global default. */
+  arealDensityGsm?: number;
   // Physical placement in meters — mirrors generateSeamedPanels.
   width: number;
   height: number;
@@ -78,6 +144,20 @@ export interface DraftPiece {
   // ring that cinches the neckline — cut shorter than the neck hole, it pulls
   // the collar in and lets a deep front drop hold). Absent → flat spawn.
   wrap?: 'armL' | 'armR' | 'neck';
+  /** Simulation placement metadata. Independent from the movable 2D layout. */
+  placement?: PiecePlacement;
+  /**
+   * Translation used only to arrange the frozen pieces in the 3D preparation
+   * view. It never changes the pattern geometry and is deliberately ignored
+   * by the final assembly/simulation spawn.
+   */
+  stagingOffset?: [number, number, number];
+  /**
+   * Preparation translations for repeated physical instances of the same
+   * cutting piece (for example the left and right trouser fronts). Each copy
+   * can be arranged independently in 3D while sharing one editable 2D pattern.
+   */
+  stagingOffsets?: Array<[number, number, number] | null>;
 }
 
 export interface DraftDoc {
@@ -91,17 +171,68 @@ export interface DraftDoc {
   // perimeter sew (back-compat with pre-manual saved drafts).
   manual?: boolean;
   seams?: AssemblySeam[]; // user-defined assembly seams (edge A ↔ edge B, cross-face)
+  // Editing-only constraints: two outline edges whose length changes stay
+  // synchronised. Same endpoint shape as AssemblySeam, but no physical stitch
+  // is generated from these links.
+  segmentLinks?: AssemblySeam[];
   // FREE pieces (multi-piece editor): extra hand-drawn pieces beyond front/back.
   // Index 0 here is pieceId 2, index 1 is pieceId 3, … Each becomes its own mesh
   // combined onto the base via combineClothMeshes (see compileCrossSeams). Absent
   // ⇒ the garment is exactly the front/back base (byte-identical to pre-N-piece).
   pieces?: DraftPiece[];
+  /** Optional built-in construction whose assembly needs more than the generic
+   * front/back tube (currently the mirrored two-leg loose-pants assembly). */
+  preset?: 'loose-pants' | 'lucas-hoodie';
+  presetSize?: string;
 }
 
 /** All pieces of a doc indexed by pieceId: [front, back, ...free]. Slots may be
  * null (no back drawn yet). Free pieces start at index 2. */
 export function docPieces(doc: DraftDoc): (DraftPiece | null)[] {
   return [doc.piece, doc.back ?? null, ...(doc.pieces ?? [])];
+}
+
+/** Every outline segment starts sewn for an appliqué; the user can open any
+ * segment afterwards (for example the top of a patch pocket). */
+export function defaultSurfaceStitches(piece: DraftPiece): number[] {
+  return piece.outline.map((_point, edge) => edge);
+}
+
+/** Exact support UV under one overlay UV, preserving metric size and allowing
+ * a future rotation without baking placement into the cutting geometry. */
+export function surfaceAttachmentUV(
+  overlay: DraftPiece,
+  support: DraftPiece,
+  surface: SurfaceAttachment,
+  overlayUV: readonly [number, number],
+): UV {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const [u, v] of overlay.outline) {
+    const x = (u - 0.5) * overlay.width;
+    const y = overlay.topY - v * overlay.height;
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y);
+    maxY = Math.max(maxY, y);
+  }
+  const cx = Number.isFinite(minX) ? (minX + maxX) / 2 : 0;
+  const cy = Number.isFinite(minY) ? (minY + maxY) / 2 : overlay.topY - overlay.height / 2;
+  const x = (overlayUV[0] - 0.5) * overlay.width - cx;
+  const y = overlay.topY - overlayUV[1] * overlay.height - cy;
+  const angle = surface.rotationRad ?? 0;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const anchorX = (surface.anchor[0] - 0.5) * support.width;
+  const anchorY = support.topY - surface.anchor[1] * support.height;
+  const targetX = anchorX + x * cos - y * sin;
+  const targetY = anchorY + x * sin + y * cos;
+  return [
+    targetX / support.width + 0.5,
+    (support.topY - targetY) / support.height,
+  ];
 }
 
 /** Ray-cast point-in-polygon (odd crossings = inside). Winding-agnostic. */
@@ -208,6 +339,48 @@ function shiftRunDelete(r: EdgeRun, at: number, nV: number): EdgeRun {
   return { from: adj(r.from), to: adj(r.to) };
 }
 
+function surfaceAfterInsert(
+  placement: PiecePlacement | undefined,
+  edge: number,
+): PiecePlacement | undefined {
+  const surface = placement?.surface;
+  if (!surface) return placement;
+  const shifted = new Set<number>();
+  for (const sewn of surface.stitchedEdges) {
+    if (sewn < edge) shifted.add(sewn);
+    else if (sewn === edge) {
+      shifted.add(edge);
+      shifted.add(edge + 1);
+    } else shifted.add(sewn + 1);
+  }
+  return {
+    ...placement,
+    surface: { ...surface, stitchedEdges: [...shifted].sort((a, b) => a - b) },
+  };
+}
+
+function surfaceAfterDelete(
+  placement: PiecePlacement | undefined,
+  at: number,
+  oldLength: number,
+): PiecePlacement | undefined {
+  const surface = placement?.surface;
+  if (!surface) return placement;
+  const previous = (at + oldLength - 1) % oldLength;
+  const nextLength = Math.max(1, oldLength - 1);
+  const merged = at === 0 ? nextLength - 1 : at - 1;
+  const shifted = new Set<number>();
+  for (const sewn of surface.stitchedEdges) {
+    if (sewn === previous || sewn === at) shifted.add(merged);
+    else if (sewn > at) shifted.add(sewn - 1);
+    else shifted.add(Math.min(sewn, nextLength - 1));
+  }
+  return {
+    ...placement,
+    surface: { ...surface, stitchedEdges: [...shifted].sort((a, b) => a - b) },
+  };
+}
+
 /**
  * Insert a new outline vertex right after edge `edge` (i.e. between vertices
  * `edge` and `edge+1`), at UV `uv`. Returns a NEW piece with openEdges/seam
@@ -221,6 +394,7 @@ export function insertOutlineVertex(piece: DraftPiece, edge: number, uv: UV): Dr
     outline,
     openEdges: piece.openEdges.map((r) => shiftRunInsert(r, at)),
     seams: piece.seams.map((s) => ({ a: shiftRunInsert(s.a, at), b: shiftRunInsert(s.b, at) })),
+    placement: surfaceAfterInsert(piece.placement, edge),
   };
 }
 
@@ -307,6 +481,44 @@ export function movePieceWorld(piece: DraftPiece, dx: number, dy: number): Draft
     outline: piece.outline.map(sh),
     darts: piece.darts.map((d) => ({ apex: sh(d.apex), legA: sh(d.legA), legB: sh(d.legB) })),
   };
+}
+
+/**
+ * Put two base faces into one shared physical frame without moving either
+ * outline. `generateSeamedPanels` rasterises front and back on the front face's
+ * frame, so an automatic frame expansion on one face must be mirrored onto the
+ * other face or the untouched side would be stretched accidentally.
+ */
+export function syncPieceFrames(front: DraftPiece, back: DraftPiece): { front: DraftPiece; back: DraftPiece } {
+  const physical = (piece: DraftPiece): { outline: [number, number][]; darts: [number, number][][] } => {
+    const world = ([u, v]: UV): [number, number] => [(u - 0.5) * piece.width, piece.topY - v * piece.height];
+    return {
+      outline: piece.outline.map(world),
+      darts: piece.darts.map((d) => [world(d.apex), world(d.legA), world(d.legB)]),
+    };
+  };
+  const f = physical(front);
+  const b = physical(back);
+  let halfWidth = Math.max(front.width, back.width) / 2;
+  let topY = Math.max(front.topY, back.topY);
+  let bottomY = Math.min(front.topY - front.height, back.topY - back.height);
+  for (const [x, y] of [...f.outline, ...b.outline, ...f.darts.flat(), ...b.darts.flat()]) {
+    halfWidth = Math.max(halfWidth, Math.abs(x));
+    topY = Math.max(topY, y);
+    bottomY = Math.min(bottomY, y);
+  }
+  const width = Math.max(1e-4, halfWidth * 2);
+  const height = Math.max(1e-4, topY - bottomY);
+  const uv = ([x, y]: [number, number]): UV => [x / width + 0.5, (topY - y) / height];
+  const remap = (piece: DraftPiece, data: { outline: [number, number][]; darts: [number, number][][] }): DraftPiece => ({
+    ...piece,
+    width,
+    height,
+    topY,
+    outline: data.outline.map(uv),
+    darts: data.darts.map((d) => ({ apex: uv(d[0]!), legA: uv(d[1]!), legB: uv(d[2]!) })),
+  });
+  return { front: remap(front, f), back: remap(back, b) };
 }
 
 /**
@@ -402,6 +614,7 @@ export function reboxPiece(piece: DraftPiece, gap: number): DraftPiece {
  */
 export function deleteOutlineVertex(piece: DraftPiece, index: number): DraftPiece {
   if (piece.outline.length <= 3) return piece;
+  const oldLength = piece.outline.length;
   const outline = piece.outline.filter((_, i) => i !== index);
   const nV = outline.length;
   return {
@@ -409,6 +622,7 @@ export function deleteOutlineVertex(piece: DraftPiece, index: number): DraftPiec
     outline,
     openEdges: piece.openEdges.map((r) => shiftRunDelete(r, index, nV)),
     seams: piece.seams.map((s) => ({ a: shiftRunDelete(s.a, index, nV), b: shiftRunDelete(s.b, index, nV) })),
+    placement: surfaceAfterDelete(piece.placement, index, oldLength),
   };
 }
 
@@ -509,18 +723,8 @@ export function compileDraft(piece: DraftPiece, n: number): { extraSeams: { i: n
   // 4. Hand-defined seams: sew two boundary runs of the piece together. Resolve
   // each run to its ordered boundary cells, pick the direction that zips them
   // together (not twisted), open them, and pair by arc-length.
-  const runCells = (run: EdgeRun): { cell: number; t: number }[] => {
-    const a = outline[run.from]!;
-    const b = outline[run.to % nV]!;
-    const res: { cell: number; t: number }[] = [];
-    for (let v = 0; v < n; v++)
-      for (let u = 0; u < n; u++) {
-        if (!isBoundary(u, v)) continue;
-        const p = uvOf(u, v);
-        if (runCoversEdge(run, nearestOutlineEdge(p, outline), nV)) res.push({ cell: v * n + u, t: projFrac(p, a, b) });
-      }
-    return res.sort((x, y) => x.t - y.t);
-  };
+  const runCells = (run: EdgeRun): { cell: number; t: number }[] =>
+    boundaryRunCells(piece, run, n);
   for (const hs of piece.seams) {
     const A = runCells(hs.a);
     const B = runCells(hs.b);
@@ -554,11 +758,11 @@ export function compileDraft(piece: DraftPiece, n: number): { extraSeams: { i: n
  * outline resolves to at grid resolution n. Shared by hand-seams and manual
  * assembly seams to pair two edges cell-by-cell. */
 function boundaryRunCells(
-  outline: readonly UV[],
-  darts: readonly Dart[],
+  piece: Pick<DraftPiece, 'outline' | 'darts' | 'width' | 'height'>,
   run: { from: number; to: number },
   n: number,
 ): { cell: number; t: number }[] {
+  const { outline, darts } = piece;
   const nV = outline.length;
   const uvOf = (u: number, v: number): UV => [u / (n - 1), v / (n - 1)];
   const kept = new Array<boolean>(n * n);
@@ -576,16 +780,209 @@ function boundaryRunCells(
       !kept[v * n + (u - 1)] || !kept[v * n + (u + 1)] || !kept[(v - 1) * n + u] || !kept[(v + 1) * n + u]
     );
   };
-  const a = outline[run.from % nV]!;
-  const b = outline[run.to % nV]!;
-  const res: { cell: number; t: number }[] = [];
-  for (let v = 0; v < n; v++)
+  const from = ((Math.round(run.from) % nV) + nV) % nV;
+  const to = ((Math.round(run.to) % nV) + nV) % nV;
+  const edgeIndices: number[] = [];
+  for (let edge = from; edge !== to && edgeIndices.length < nV; edge = (edge + 1) % nV) {
+    edgeIndices.push(edge);
+  }
+  if (!edgeIndices.length) return [];
+
+  // A run may follow a deep armhole, hood curve or sleeve cap. Ordering its
+  // raster cells by projection on the single from→to chord folds that curve
+  // back onto itself and cross-zips distant points. Parameterise the authored
+  // polyline by its real metric arc length instead.
+  const physical = (point: UV): UV => [
+    point[0] * piece.width,
+    point[1] * piece.height,
+  ];
+  const edgeSet = new Set(edgeIndices);
+  const before = new Map<number, number>();
+  const lengths = new Map<number, number>();
+  let totalLength = 0;
+  for (const edge of edgeIndices) {
+    const a = physical(outline[edge]!);
+    const b = physical(outline[(edge + 1) % nV]!);
+    before.set(edge, totalLength);
+    const length = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    lengths.set(edge, length);
+    totalLength += length;
+  }
+  totalLength = Math.max(totalLength, 1e-9);
+
+  const boundary: Array<{ cell: number; point: UV }> = [];
+  for (let v = 0; v < n; v++) {
     for (let u = 0; u < n; u++) {
-      if (!isBoundary(u, v)) continue;
-      const p = uvOf(u, v);
-      if (runCoversEdge(run, nearestOutlineEdge(p, outline), nV)) res.push({ cell: v * n + u, t: projFrac(p, a, b) });
+      if (isBoundary(u, v)) {
+        boundary.push({ cell: v * n + u, point: uvOf(u, v) });
+      }
     }
-  return res.sort((x, y) => x.t - y.t);
+  }
+
+  const nearestEdgePhysical = (point: UV): number => {
+    const p = physical(point);
+    let bestEdge = 0;
+    let bestDistance = Infinity;
+    for (let edge = 0; edge < nV; edge++) {
+      const distance = segDist2(
+        p,
+        physical(outline[edge]!),
+        physical(outline[(edge + 1) % nV]!),
+      );
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestEdge = edge;
+      }
+    }
+    return bestEdge;
+  };
+  const parameterOnEdge = (point: UV, edge: number): number => {
+    const p = physical(point);
+    const a = physical(outline[edge]!);
+    const b = physical(outline[(edge + 1) % nV]!);
+    const fraction = projFrac(p, a, b);
+    return (
+      (before.get(edge) ?? 0) + fraction * (lengths.get(edge) ?? 0)
+    ) / totalLength;
+  };
+
+  const byCell = new Map<number, number>();
+  const boundaryOwner = new Map<number, number>();
+  for (const candidate of boundary) {
+    const edge = nearestEdgePhysical(candidate.point);
+    boundaryOwner.set(candidate.cell, edge);
+    if (!edgeSet.has(edge)) continue;
+    byCell.set(candidate.cell, parameterOnEdge(candidate.point, edge));
+  }
+
+  // Adjacent sewn runs must meet on the same particle. Raster ownership alone
+  // assigns a corner to only one of its two incident edges, leaving a visible
+  // one-cell eyelet at shoulders, underarms and band junctions. Deliberately
+  // include the nearest live boundary particle at both authored endpoints.
+  const nearestBoundaryCell = (
+    vertex: UV,
+    outgoingEdge: number,
+  ): number | null => {
+    const target = physical(vertex);
+    // Use the first raster cell owned by the edge leaving this vertex. Both
+    // adjacent runs therefore choose the same junction cell. Picking the
+    // globally nearest cell can land two or three columns past the ownership
+    // transition on a sharp neckline corner, creating an unstitched raster
+    // gap immediately before the nominal endpoint.
+    const owned = boundary.filter(
+      (candidate) => boundaryOwner.get(candidate.cell) === outgoingEdge,
+    );
+    if (owned.length) {
+      const edgeA = physical(outline[outgoingEdge]!);
+      const edgeB = physical(outline[(outgoingEdge + 1) % nV]!);
+      let best = owned[0]!.cell;
+      let bestFraction = projFrac(physical(owned[0]!.point), edgeA, edgeB);
+      for (const candidate of owned.slice(1)) {
+        const fraction = projFrac(physical(candidate.point), edgeA, edgeB);
+        if (fraction < bestFraction) {
+          bestFraction = fraction;
+          best = candidate.cell;
+        }
+      }
+      return best;
+    }
+    let best: number | null = null;
+    let bestDistance = Infinity;
+    for (const candidate of boundary) {
+      const point = physical(candidate.point);
+      const distance =
+        (point[0] - target[0]) ** 2 + (point[1] - target[1]) ** 2;
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = candidate.cell;
+      }
+    }
+    return best;
+  };
+  const startCell = nearestBoundaryCell(outline[from]!, from);
+  const endCell = nearestBoundaryCell(outline[to]!, to);
+  if (startCell !== null) byCell.set(startCell, 0);
+  if (endCell !== null && endCell !== startCell) byCell.set(endCell, 1);
+
+  return [...byCell]
+    .map(([cell, t]) => ({ cell, t }))
+    .sort((a, b) => a.t - b.t || a.cell - b.cell);
+}
+
+/**
+ * Resolve the explicitly-open armhole on one side of a body piece.
+ *
+ * A pattern can have several open runs (neckline, hem, armholes). The left and
+ * right armholes are the runs whose raster cells sit furthest from the centre
+ * line. Requiring them to stay in the outer third deliberately avoids turning
+ * a neckline or hem into a sleeve opening on an arbitrary hand-drawn body.
+ *
+ * Returned cells are LOCAL grid indices, ordered top→bottom independently of
+ * polygon winding, so a right run drawn bottom→top cannot twist the sleeve.
+ */
+export function sideOpeningCells(piece: DraftPiece, side: 'L' | 'R', n: number): number[] {
+  const candidates = piece.openEdges
+    .map((run) => {
+      const cells = boundaryRunCells(piece, run, n).map((x) => x.cell);
+      const meanU = cells.length ? cells.reduce((sum, cell) => sum + (cell % n) / (n - 1), 0) / cells.length : 0.5;
+      return { cells, meanU };
+    })
+    .filter((x) => x.cells.length > 1);
+  if (!candidates.length) return [];
+  const chosen = candidates.reduce((best, x) =>
+    side === 'L' ? (x.meanU < best.meanU ? x : best) : x.meanU > best.meanU ? x : best,
+  );
+  if ((side === 'L' && chosen.meanU >= 1 / 3) || (side === 'R' && chosen.meanU <= 2 / 3)) return [];
+  return chosen.cells.sort((a, b) => Math.floor(a / n) - Math.floor(b / n) || (a % n) - (b % n));
+}
+
+/**
+ * Resolve the explicitly-open neckline of a body piece.
+ *
+ * A bodice usually exposes several open runs (neckline, two armholes and hem).
+ * The neckline is the open run centred on the fold line and living in the
+ * upper half of the pattern. Keeping this selection on the authored runs is
+ * important: scanning a hard-coded horizontal interval also catches shoulder
+ * cells whenever the real neck is narrower than that interval.
+ *
+ * Returned cells follow the neckline from pattern-left to pattern-right on
+ * both front and back, independently of polygon winding. That common direction
+ * lets a two-panel neck band meet its side seams without twisting.
+ */
+export function neckOpeningCells(piece: DraftPiece, n: number): number[] {
+  const candidates = piece.openEdges
+    .map((run) => {
+      const cells = boundaryRunCells(piece, run, n).map((entry) => entry.cell);
+      if (cells.length < 2) return null;
+      const meanU =
+        cells.reduce((sum, cell) => sum + (cell % n) / (n - 1), 0) /
+        cells.length;
+      const meanV =
+        cells.reduce(
+          (sum, cell) => sum + Math.floor(cell / n) / (n - 1),
+          0,
+        ) / cells.length;
+      return { cells, meanU, meanV };
+    })
+    .filter(
+      (
+        candidate,
+      ): candidate is { cells: number[]; meanU: number; meanV: number } =>
+        candidate !== null &&
+        candidate.meanU > 1 / 3 &&
+        candidate.meanU < 2 / 3 &&
+        candidate.meanV < 0.55,
+    );
+  if (!candidates.length) return [];
+
+  const chosen = candidates.reduce((best, candidate) => {
+    const score = candidate.meanV + Math.abs(candidate.meanU - 0.5);
+    const bestScore = best.meanV + Math.abs(best.meanU - 0.5);
+    return score < bestScore ? candidate : best;
+  });
+  const cells = chosen.cells.slice();
+  if ((cells[0]! % n) > (cells[cells.length - 1]! % n)) cells.reverse();
+  return cells;
 }
 
 /** Boundary-cell set of a piece's raster mask at resolution n: kept cells on the
@@ -629,9 +1026,10 @@ export function crossSewnOpenCells(doc: DraftDoc, pid: number, n: number): numbe
   if (!piece || piece.outline.length < 3) return [];
   const cells = new Set<number>();
   for (const s of doc.seams ?? []) {
+    if (!assemblySeamIsClosed(s)) continue;
     const run = pieceIdOf(s.a) === pid ? s.a : pieceIdOf(s.b) === pid ? s.b : null;
     if (!run) continue;
-    for (const c of boundaryRunCells(piece.outline, piece.darts, { from: run.from, to: run.to }, n)) cells.add(c.cell);
+    for (const c of boundaryRunCells(piece, { from: run.from, to: run.to }, n)) cells.add(c.cell);
   }
   return [...cells];
 }
@@ -646,11 +1044,15 @@ function pairRunCells(
   runA: { from: number; to: number },
   runB: { from: number; to: number },
   n: number,
+  reverseBOverride?: boolean,
 ): { a: number[]; b: number[] } | null {
-  const A = boundaryRunCells(pa.outline, pa.darts, runA, n);
-  const B = boundaryRunCells(pb.outline, pb.darts, runB, n);
+  const A = boundaryRunCells(pa, runA, n);
+  const B = boundaryRunCells(pb, runB, n);
   if (!A.length || !B.length) return null;
-  const cellUV = (cell: number): UV => [(cell % n) / (n - 1), Math.floor(cell / n) / (n - 1)];
+  const cellMetric = (piece: DraftPiece, cell: number): UV => [
+    ((cell % n) / (n - 1) - 0.5) * piece.width,
+    -(Math.floor(cell / n) / (n - 1)) * piece.height,
+  ];
   // Zip over the LONGER run: every cell of both edges gets sewn (the shorter
   // run's cells repeat). Equal-length edges pair 1:1 as before; a long edge on
   // a short one GATHERS onto it — the tailor's embu — instead of leaving the
@@ -660,13 +1062,13 @@ function pairRunCells(
   const cost = (reversed: boolean): number => {
     let sum = 0;
     for (let k = 0; k < m; k++) {
-      const paUV = cellUV(A[Math.floor((k * A.length) / m)]!.cell);
-      const pbUV = cellUV(bAt(k, reversed).cell);
+      const paUV = cellMetric(pa, A[Math.floor((k * A.length) / m)]!.cell);
+      const pbUV = cellMetric(pb, bAt(k, reversed).cell);
       sum += (paUV[0] - pbUV[0]) ** 2 + (paUV[1] - pbUV[1]) ** 2;
     }
     return sum;
   };
-  const reversed = cost(true) < cost(false);
+  const reversed = reverseBOverride ?? cost(true) < cost(false);
   const a: number[] = [];
   const b: number[] = [];
   for (let k = 0; k < m; k++) {
@@ -674,6 +1076,21 @@ function pairRunCells(
     b.push(bAt(k, reversed).cell);
   }
   return { a, b };
+}
+
+/** Resolve two outline runs to equally sampled local grid-cell sequences.
+ * Public for specialised assemblies (for example the two mirrored crotch
+ * seams of trousers); generic DraftDoc assembly continues through
+ * `compileAssembly` below. */
+export function pairOutlineRuns(
+  pieceA: DraftPiece,
+  pieceB: DraftPiece,
+  runA: EdgeRun,
+  runB: EdgeRun,
+  n: number,
+  reverseB?: boolean,
+): { a: number[]; b: number[] } | null {
+  return pairRunCells(pieceA, pieceB, runA, runB, n, reverseB);
 }
 
 /**
@@ -685,8 +1102,22 @@ function pairRunCells(
 export function compileAssembly(doc: DraftDoc, n: number): { i: number; j: number }[] {
   const panelSize = n * n;
   const pieces = docPieces(doc);
+  const openCells = new Map<number, Set<number>>();
+  const explicitlyOpen = (pieceId: number, piece: DraftPiece): Set<number> => {
+    const cached = openCells.get(pieceId);
+    if (cached) return cached;
+    const cells = new Set<number>();
+    for (const run of piece.openEdges) {
+      for (const candidate of boundaryRunCells(piece, run, n)) {
+        cells.add(candidate.cell);
+      }
+    }
+    openCells.set(pieceId, cells);
+    return cells;
+  };
   const out: { i: number; j: number }[] = [];
   for (const s of doc.seams ?? []) {
+    if (!assemblySeamIsClosed(s)) continue;
     const pidA = pieceIdOf(s.a);
     const pidB = pieceIdOf(s.b);
     if (pidA > 1 || pidB > 1) continue; // a free piece is involved → compileCrossSeams
@@ -697,7 +1128,15 @@ export function compileAssembly(doc: DraftDoc, n: number): { i: number; j: numbe
     if (!paired) continue;
     const offA = pidA * panelSize;
     const offB = pidB * panelSize;
+    const openA = explicitlyOpen(pidA, pa);
+    const openB = explicitlyOpen(pidB, pb);
     for (let k = 0; k < paired.a.length; k++) {
+      // A shared raster corner belongs to both adjacent authored runs. If one
+      // of them is explicitly open (armhole, neckline, etc.), the generic
+      // front↔back assembler must not reuse that particle for the side seam or
+      // it closes the opening transitively. Specialised garment assemblers can
+      // still opt into a true three-way junction through pairOutlineRuns.
+      if (openA.has(paired.a[k]!) || openB.has(paired.b[k]!)) continue;
       const gi = offA + paired.a[k]!;
       const gj = offB + paired.b[k]!;
       if (gi !== gj) out.push({ i: gi, j: gj });
@@ -749,17 +1188,12 @@ export function compileCrossSeams(
     })();
     return baseBoundary[other]!.has(local);
   };
-  // NOTE (leçon v104, chèrement acquise) : les jumelles vont TOUJOURS au
-  // panneau opposé (avant↔avant + dos↔dos) — c'est ce que faisait le
-  // armholeCrossSeams éprouvé (i = p·n² + bodyLocal : panneau p des DEUX
-  // côtés). Quand le bord du corps est lui-même soudé devant↔dos (côté,
-  // emmanchure sur ligne soudée), les quatre bords convergent TRANSITIVEMENT
-  // via cette couture du corps — la pince qui verrouille le tube autour du
-  // bras vient de là. Une variante « jumelle → même cellule AVANT du corps »
-  // a été essayée et ARRACHE le tube par-dessus l'épaule (le panneau dos de
-  // la manche se fait tirer vers le devant du corps) : ne pas y revenir.
+  // The twin always stays panel-to-panel (front↔front + back↔back). Sending a
+  // piece's back panel to the body's FRONT cell pulls the tube through the body
+  // instead of joining corresponding fabric faces.
   const out: { i: number; j: number }[] = [];
   for (const s of doc.seams ?? []) {
+    if (!assemblySeamIsClosed(s)) continue;
     const pidA = pieceIdOf(s.a);
     const pidB = pieceIdOf(s.b);
     const hi = Math.max(pidA, pidB);
@@ -776,9 +1210,10 @@ export function compileCrossSeams(
     if (!pJ || !pI || pJ.outline.length < 3 || pI.outline.length < 3) continue;
     const paired = pairRunCells(pI, pJ, { from: runI.from, to: runI.to }, { from: runJ.from, to: runJ.to }, n);
     if (!paired) continue;
+    const enteringCells = pJ.placement?.reverseSeam ? [...paired.b].reverse() : paired.b;
     for (let k = 0; k < paired.a.length; k++) {
       const li = paired.a[k]!;
-      const lj = paired.b[k]!;
+      const lj = enteringCells[k]!;
       const gi = globalOf(pidI, li);
       const gj = globalOf(pidJ, lj);
       if (gi !== gj) out.push({ i: gi, j: gj });
@@ -794,6 +1229,404 @@ export function compileCrossSeams(
       if (mi !== mj && twinOnEdge(pidI, li) && twinOnEdge(pidJ, lj)) out.push({ i: mi, j: mj });
     }
   }
+  return out;
+}
+
+/**
+ * Compile the independently removable top-stitches of a pocket/appliqué.
+ * Unlike an assembly seam, the support endpoint is allowed inside the chosen
+ * panel: every boundary cell of the overlay edge is paired with the closest
+ * alive support cell under its exact placed position.
+ */
+interface SurfaceProjection {
+  overlay: DraftPiece;
+  support: DraftPiece;
+  surface: SurfaceAttachment;
+  supportOffset: number;
+  enteringOffset: number;
+  closestSupportCell(target: UV): number | null;
+  /**
+   * Two support neighbours ordered so their live cross-product points toward
+   * the outside of the support panel. The GPU can therefore rebuild a signed
+   * contact plane after every deformation instead of assuming world +Z.
+   */
+  outwardFrame(cell: number): { tangentA: number; tangentB: number } | null;
+  /**
+   * Exact authored point on one live support triangle. Barycentric weights
+   * preserve the placement while the support stretches and bends.
+   */
+  contactFrame(target: UV): {
+    support: number;
+    tangentA: number;
+    tangentB: number;
+    weight0: number;
+    weightA: number;
+    weightB: number;
+  } | null;
+}
+
+function surfaceProjection(
+  doc: DraftDoc,
+  n: number,
+  offsets: number[],
+  enteringPid: number,
+): SurfaceProjection | null {
+  const pieces = docPieces(doc);
+  const overlay = pieces[enteringPid];
+  const surface = overlay?.placement?.surface;
+  if (
+    !overlay ||
+    overlay.placement?.role !== 'pocket' ||
+    !surface ||
+    surface.supportPieceId < 0 ||
+    surface.supportPieceId >= enteringPid
+  ) {
+    return null;
+  }
+  const support = pieces[surface.supportPieceId];
+  if (!support || support.outline.length < 3 || overlay.outline.length < 3) return null;
+
+  const panelSize = n * n;
+  const supportAlive = new Set<number>();
+  for (let v = 0; v < n; v++) {
+    for (let u = 0; u < n; u++) {
+      const uv: UV = [u / (n - 1), v / (n - 1)];
+      let alive = pointInPolygon(uv, support.outline);
+      if (alive) {
+        for (const dart of support.darts) {
+          if (pointInTriangle(uv, dart.apex, dart.legA, dart.legB)) {
+            alive = false;
+            break;
+          }
+        }
+      }
+      if (alive) supportAlive.add(v * n + u);
+    }
+  }
+  if (!supportAlive.size) return null;
+
+  const closestSupportCell = (target: UV): number | null => {
+    const cu = Math.round(target[0] * (n - 1));
+    const cv = Math.round(target[1] * (n - 1));
+    for (let radius = 0; radius < n; radius++) {
+      let best: number | null = null;
+      let bestDistance = Infinity;
+      for (let dv = -radius; dv <= radius; dv++) {
+        for (let du = -radius; du <= radius; du++) {
+          if (Math.max(Math.abs(du), Math.abs(dv)) !== radius) continue;
+          const u = cu + du;
+          const v = cv + dv;
+          if (u < 0 || u >= n || v < 0 || v >= n) continue;
+          const cell = v * n + u;
+          if (!supportAlive.has(cell)) continue;
+          const dx = (u / (n - 1) - target[0]) * support.width;
+          const dy = (v / (n - 1) - target[1]) * support.height;
+          const distance = dx * dx + dy * dy;
+          if (distance < bestDistance) {
+            best = cell;
+            bestDistance = distance;
+          }
+        }
+      }
+      if (best !== null) return best;
+    }
+    return null;
+  };
+
+  const supportOffset =
+    offsets[surface.supportPieceId] ??
+    (surface.supportPieceId <= 1 ? surface.supportPieceId * panelSize : 0);
+  const enteringOffset = offsets[enteringPid] ?? enteringPid * panelSize;
+  const outwardFrame = (cell: number): { tangentA: number; tangentB: number } | null => {
+    const u = cell % n;
+    const v = Math.floor(cell / n);
+    const axisNeighbour = (
+      du: number,
+      dv: number,
+    ): { cell: number; direction: 1 | -1 } | null => {
+      for (let radius = 1; radius < n; radius++) {
+        const positiveU = u + du * radius;
+        const positiveV = v + dv * radius;
+        if (
+          positiveU >= 0 &&
+          positiveU < n &&
+          positiveV >= 0 &&
+          positiveV < n
+        ) {
+          const positive = positiveV * n + positiveU;
+          if (supportAlive.has(positive)) return { cell: positive, direction: 1 };
+        }
+        const negativeU = u - du * radius;
+        const negativeV = v - dv * radius;
+        if (
+          negativeU >= 0 &&
+          negativeU < n &&
+          negativeV >= 0 &&
+          negativeV < n
+        ) {
+          const negative = negativeV * n + negativeU;
+          if (supportAlive.has(negative)) return { cell: negative, direction: -1 };
+        }
+      }
+      return null;
+    };
+    const tangentU = axisNeighbour(1, 0);
+    const tangentV = axisNeighbour(0, 1);
+    if (!tangentU || !tangentV) return null;
+
+    // In the generated flat frame, cross(+u,+v) points toward −Z. That is the
+    // outside of the base back panel, while front/free panels face +Z.
+    const desiredFromCanonical = surface.supportPieceId === 1 ? 1 : -1;
+    const selectedFromCanonical = tangentU.direction * tangentV.direction;
+    const ordered =
+      selectedFromCanonical === desiredFromCanonical
+        ? [tangentU.cell, tangentV.cell]
+        : [tangentV.cell, tangentU.cell];
+    return {
+      tangentA: supportOffset + ordered[0]!,
+      tangentB: supportOffset + ordered[1]!,
+    };
+  };
+  const contactFrame = (
+    target: UV,
+  ): {
+    support: number;
+    tangentA: number;
+    tangentB: number;
+    weight0: number;
+    weightA: number;
+    weightB: number;
+  } | null => {
+    const gu = Math.min(n - 1 - 1e-7, Math.max(0, target[0] * (n - 1)));
+    const gv = Math.min(n - 1 - 1e-7, Math.max(0, target[1] * (n - 1)));
+    const u0 = Math.min(n - 2, Math.floor(gu));
+    const v0 = Math.min(n - 2, Math.floor(gv));
+    const fu = gu - u0;
+    const fv = gv - v0;
+    const c00 = v0 * n + u0;
+    const c10 = c00 + 1;
+    const c01 = c00 + n;
+    const c11 = c01 + 1;
+    let cells: [number, number, number];
+    let weights: [number, number, number];
+    if (fu + fv <= 1) {
+      cells = [c00, c10, c01];
+      weights = [1 - fu - fv, fu, fv];
+    } else {
+      cells = [c11, c01, c10];
+      weights = [fu + fv - 1, 1 - fu, 1 - fv];
+    }
+    if (cells.every((cell) => supportAlive.has(cell))) {
+      // Canonical triangle winding cross(+u,+v) faces −Z. Reverse front/free
+      // supports so the stored live cross-product always faces outside.
+      if (surface.supportPieceId !== 1) {
+        [cells[1], cells[2]] = [cells[2], cells[1]];
+        [weights[1], weights[2]] = [weights[2], weights[1]];
+      }
+      return {
+        support: supportOffset + cells[0],
+        tangentA: supportOffset + cells[1],
+        tangentB: supportOffset + cells[2],
+        weight0: weights[0],
+        weightA: weights[1],
+        weightB: weights[2],
+      };
+    }
+
+    // Boundary fallback: keep the nearest alive point and an outward live
+    // frame. Weight 1 on the centre is conservative but still one-sided.
+    const nearest = closestSupportCell(target);
+    if (nearest === null) return null;
+    const frame = outwardFrame(nearest);
+    if (!frame) return null;
+    return {
+      support: supportOffset + nearest,
+      tangentA: frame.tangentA,
+      tangentB: frame.tangentB,
+      weight0: 1,
+      weightA: 0,
+      weightB: 0,
+    };
+  };
+  return {
+    overlay,
+    support,
+    surface,
+    supportOffset,
+    enteringOffset,
+    closestSupportCell,
+    outwardFrame,
+    contactFrame,
+  };
+}
+
+export function compileSurfaceSeams(
+  doc: DraftDoc,
+  n: number,
+  offsets: number[],
+  enteringPid: number,
+): { i: number; j: number }[] {
+  const projection = surfaceProjection(doc, n, offsets, enteringPid);
+  if (!projection) return [];
+  const {
+    overlay,
+    support,
+    surface,
+    supportOffset,
+    enteringOffset,
+    closestSupportCell,
+  } = projection;
+  const stitched = new Set(
+    surface.stitchedEdges
+      .filter(Number.isFinite)
+      .map((edge) => ((Math.round(edge) % overlay.outline.length) + overlay.outline.length) % overlay.outline.length),
+  );
+  const emitted = new Set<string>();
+  const out: { i: number; j: number }[] = [];
+  for (const edge of stitched) {
+    const cells = boundaryRunCells(
+      overlay,
+      { from: edge, to: (edge + 1) % overlay.outline.length },
+      n,
+    );
+    for (const { cell } of cells) {
+      const overlayUV: UV = [(cell % n) / (n - 1), Math.floor(cell / n) / (n - 1)];
+      const targetUV = surfaceAttachmentUV(overlay, support, surface, overlayUV);
+      const supportCell = closestSupportCell(targetUV);
+      if (supportCell === null) continue;
+      const key = `${supportCell}:${cell}`;
+      if (emitted.has(key)) continue;
+      emitted.add(key);
+      out.push({ i: supportOffset + supportCell, j: enteringOffset + cell });
+    }
+  }
+  return out;
+}
+
+/**
+ * Contact map over the WHOLE pocket/appliqué, not only its stitched outline.
+ * Every entry builds the thin pocket/support self-collision mask. The
+ * unilateral triangle pass always activates one representative per support
+ * triangle so a fully stitched appliqué cannot merge with its support; open
+ * outline edges add denser anti-tunnelling samples. It never pulls a free edge
+ * inward or constrains sliding.
+ */
+export function compileSurfaceContacts(
+  doc: DraftDoc,
+  n: number,
+  offsets: number[],
+  enteringPid: number,
+): {
+  i: number;
+  j: number;
+  tangentA: number;
+  tangentB: number;
+  weight0: number;
+  weightA: number;
+  weightB: number;
+  /**
+   * True for the sparse physical manifold: one representative per support
+   * triangle plus particles on deliberately unstitched boundary edges.
+   */
+  active: boolean;
+}[] {
+  const projection = surfaceProjection(doc, n, offsets, enteringPid);
+  if (!projection) return [];
+  const {
+    overlay,
+    support,
+    surface,
+    enteringOffset,
+    contactFrame,
+  } = projection;
+  const emitted = new Set<string>();
+  const out: {
+    i: number;
+    j: number;
+    tangentA: number;
+    tangentB: number;
+    weight0: number;
+    weightA: number;
+    weightB: number;
+    active: boolean;
+  }[] = [];
+  const stitched = new Set(
+    surface.stitchedEdges
+      .filter(Number.isFinite)
+      .map(
+        (edge) =>
+          ((Math.round(edge) % overlay.outline.length) +
+            overlay.outline.length) %
+          overlay.outline.length,
+      ),
+  );
+  const openEdgeCells = new Set<number>();
+  for (let edge = 0; edge < overlay.outline.length; edge++) {
+    if (stitched.has(edge)) continue;
+    for (const { cell } of boundaryRunCells(
+      overlay,
+      { from: edge, to: (edge + 1) % overlay.outline.length },
+      n,
+    )) {
+      openEdgeCells.add(cell);
+    }
+  }
+  const surfaceOpen = stitched.size < overlay.outline.length;
+  for (let v = 0; v < n; v++) {
+    for (let u = 0; u < n; u++) {
+      const overlayUV: UV = [u / (n - 1), v / (n - 1)];
+      if (!pointInPolygon(overlayUV, overlay.outline)) continue;
+      if (overlay.darts.some((dart) => pointInTriangle(overlayUV, dart.apex, dart.legA, dart.legB))) continue;
+      const targetUV = surfaceAttachmentUV(overlay, support, surface, overlayUV);
+      const frame = contactFrame(targetUV);
+      if (!frame) continue;
+      const overlayCell = v * n + u;
+      const key = `${frame.support}:${overlayCell}`;
+      if (emitted.has(key)) continue;
+      emitted.add(key);
+      out.push({
+        i: frame.support,
+        j: enteringOffset + overlayCell,
+        tangentA: frame.tangentA,
+        tangentB: frame.tangentB,
+        weight0: frame.weight0,
+        weightA: frame.weightA,
+        weightB: frame.weightB,
+        active: false,
+      });
+    }
+  }
+
+  // A pocket grid always uses n×n particles, even when the physical patch is
+  // much smaller than its support. Activating every overlay sample can create
+  // hundreds of projections against the SAME coarse shirt triangle (961 in
+  // the 19×24 cm regression), turning the pocket into a pressure plate that
+  // drags the whole garment. Build an area-correct sparse manifold instead:
+  // one interior representative nearest each support-triangle centroid for
+  // every appliqué, plus every open-boundary sample for anti-tunnelling.
+  const representative = new Map<
+    string,
+    { index: number; score: number }
+  >();
+  for (let index = 0; index < out.length; index++) {
+    const contact = out[index]!;
+    const key = `${contact.i}:${contact.tangentA}:${contact.tangentB}`;
+    const score =
+      (contact.weight0 - 1 / 3) ** 2 +
+      (contact.weightA - 1 / 3) ** 2 +
+      (contact.weightB - 1 / 3) ** 2;
+    const current = representative.get(key);
+    if (!current || score < current.score) {
+      representative.set(key, { index, score });
+    }
+    if (
+      surfaceOpen &&
+      openEdgeCells.has(contact.j - enteringOffset)
+    ) {
+      contact.active = true;
+    }
+  }
+  for (const { index } of representative.values()) out[index]!.active = true;
   return out;
 }
 
@@ -815,7 +1648,7 @@ export function reindexAssemblySeams(
     const s = kind === 'insert' ? shiftRunInsert(r, at) : shiftRunDelete(r, at, nV);
     return { ...r, from: s.from, to: s.to }; // preserve face/pieceId identity
   };
-  return seams.map((s) => ({ a: shift(s.a), b: shift(s.b) }));
+  return seams.map((s) => ({ ...s, a: shift(s.a), b: shift(s.b) }));
 }
 
 /**
@@ -831,11 +1664,30 @@ export function removeFreePiece(
   pieceId: number,
 ): { pieces: DraftPiece[]; seams: AssemblySeam[] } {
   const k = pieceId - 2;
-  const outPieces = pieces.filter((_, i) => i !== k);
+  const outPieces = pieces
+    .filter((_, i) => i !== k)
+    .map((piece) => {
+      const surface = piece.placement?.surface;
+      if (!surface) return piece;
+      if (surface.supportPieceId === pieceId) {
+        const { surface: _removed, ...placement } = piece.placement!;
+        return { ...piece, placement };
+      }
+      if (surface.supportPieceId > pieceId) {
+        return {
+          ...piece,
+          placement: {
+            ...piece.placement!,
+            surface: { ...surface, supportPieceId: surface.supportPieceId - 1 },
+          },
+        };
+      }
+      return piece;
+    });
   const shift = (r: FaceRun): FaceRun => (pieceIdOf(r) > pieceId ? { ...r, pieceId: pieceIdOf(r) - 1 } : { ...r });
   const outSeams = seams
     .filter((s) => pieceIdOf(s.a) !== pieceId && pieceIdOf(s.b) !== pieceId)
-    .map((s) => ({ a: shift(s.a), b: shift(s.b) }));
+    .map((s) => ({ ...s, a: shift(s.a), b: shift(s.b) }));
   return { pieces: outPieces, seams: outSeams };
 }
 
@@ -883,37 +1735,42 @@ export function defaultDraft(gridN: 32 | 64 | 128 = 64): DraftDoc {
 
 /**
  * A basic T-SHIRT BODY preset: front + back IDENTICAL torso outlines (shoulders,
- * a neck scoop, near-straight sides to the hem), with the shoulder + side seams
- * PRE-SEWN front↔back and the neckline + hem left open — a closed torso tube.
+ * armholes, a neck scoop, near-straight sides to the hem), with the shoulders
+ * and lower sides PRE-SEWN front↔back. Neckline, hem and both armholes stay open.
  * The ARMS go into SEPARATE placed sleeves (the atelier "+ Manches" tubes that
  * straddle each arm) added by the caller, so the arms are truly IN the sleeves —
  * a flat kimono sleeve just hangs. Front=back ⇒ the hand seams pair cell-for-cell
  * like an automatic mirror seam, so it drapes as a clean closed shell but stays
  * editable. Sized to the avatar by the caller (width ≈ 0.7·topScale, height 0.62,
- * gap 0.9, topY 1.52 + dyShoulder). The sleeves attach to the top of the sides. */
+ * gap 0.9, topY 1.52 + dyShoulder). */
 export function tshirtDraft(width: number, height: number, gap: number, topY: number, gridN: 32 | 64 | 128 = 64): DraftDoc {
   const body = (): DraftPiece => ({
     outline: [
       [0.42, 0.0], // 0 neck top left
-      [0.14, 0.02], // 1 left shoulder outer (the armhole/sleeve attaches at the top of the side)
-      [0.16, 0.98], // 2 left hem (a hair of waist taper)
-      [0.84, 0.98], // 3 right hem
-      [0.86, 0.02], // 4 right shoulder outer
-      [0.58, 0.0], // 5 neck top right
-      [0.5, 0.12], // 6 neck bottom (scoop dip)
+      [0.14, 0.02], // 1 left shoulder outer
+      [0.14, 0.28], // 2 left underarm
+      [0.16, 0.98], // 3 left hem (a hair of waist taper)
+      [0.84, 0.98], // 4 right hem
+      [0.86, 0.28], // 5 right underarm
+      [0.86, 0.02], // 6 right shoulder outer
+      [0.58, 0.0], // 7 neck top right
+      [0.5, 0.12], // 8 neck bottom (scoop dip)
     ],
     darts: [],
     seams: [],
     openEdges: [
-      { from: 2, to: 3 }, // hem
-      { from: 5, to: 0 }, // neckline (edges 5 + 6, the head hole)
+      { from: 1, to: 2 }, // left armhole
+      { from: 3, to: 4 }, // hem
+      { from: 5, to: 6 }, // right armhole
+      { from: 7, to: 0 }, // neckline (edges 7 + 8, the head hole)
     ],
     width,
     height,
     topY,
     gap,
   });
-  // One contiguous seam per side: shoulder + side, sewn front↔back.
+  // Shoulders and sides are distinct: the armhole between them remains a real
+  // two-rim opening, ready to receive the sleeve front and back separately.
   const seam = (from: number, to: number): AssemblySeam => ({ a: { face: 'front', from, to }, b: { face: 'back', from, to } });
   return {
     format: 'toile-draft',
@@ -922,7 +1779,7 @@ export function tshirtDraft(width: number, height: number, gap: number, topY: nu
     piece: body(),
     back: body(),
     manual: true,
-    seams: [seam(0, 2), seam(3, 5)],
+    seams: [seam(0, 1), seam(2, 3), seam(4, 5), seam(6, 7)],
   };
 }
 
@@ -974,8 +1831,100 @@ export function sanitizeDraft(raw: unknown): DraftDoc {
       height: num(pp.height, minDim, 2.0, DEFAULT_PIECE_DIMS.height),
       topY: num(pp.topY, 0.5, 2.2, DEFAULT_PIECE_DIMS.topY),
       gap: num(pp.gap, minGap, 1.6, DEFAULT_PIECE_DIMS.gap),
-      // Sleeve mode survives the round-trip; anything but the two arms is dropped.
+      ...(typeof pp.name === 'string' && pp.name.trim()
+        ? { name: pp.name.trim().slice(0, 64) }
+        : {}),
+      ...(typeof pp.cut === 'number' && Number.isFinite(pp.cut)
+        ? { cut: Math.min(8, Math.max(1, Math.round(pp.cut))) }
+        : {}),
+      ...(pp.onFold === true ? { onFold: true } : {}),
+      ...(pp.patternOnly === true ? { patternOnly: true } : {}),
+      ...((): Pick<DraftPiece, 'fabricPreset'> => {
+        const allowed = ['Jersey', 'Maille', 'Popeline', 'Denim', 'Lin', 'Laine', 'Soie'] as const;
+        return allowed.includes(pp.fabricPreset as (typeof allowed)[number])
+          ? { fabricPreset: pp.fabricPreset as (typeof allowed)[number] }
+          : {};
+      })(),
+      ...((): Pick<DraftPiece, 'arealDensityGsm'> => {
+        // Same stable apparel range as FabricMaterial. Keep the document in
+        // the unit used on textile labels; conversion to kg/m² happens once
+        // when the GPU material table is assembled.
+        return typeof pp.arealDensityGsm === 'number' && Number.isFinite(pp.arealDensityGsm)
+          ? { arealDensityGsm: clampFabricGsm(pp.arealDensityGsm) }
+          : {};
+      })(),
+      // Proven wrap modes survive the round-trip.
       ...(pp.wrap === 'armL' || pp.wrap === 'armR' || pp.wrap === 'neck' ? { wrap: pp.wrap } : {}),
+      ...((): { placement?: PiecePlacement } => {
+        const raw = pp.placement as Partial<PiecePlacement> | undefined;
+        const roles: PiecePlacementRole[] = ['auto', 'front', 'back', 'armL', 'armR', 'neck', 'waist', 'legL', 'legR', 'pocket', 'free'];
+        return raw && roles.includes(raw.role as PiecePlacementRole)
+          ? {
+              placement: {
+                role: raw.role as PiecePlacementRole,
+                autoAlign: raw.autoAlign !== false,
+                ...(raw.reverseSeam === true ? { reverseSeam: true } : {}),
+                ...((): { surface?: SurfaceAttachment } => {
+                  const surface = raw.surface as Partial<SurfaceAttachment> | undefined;
+                  if (
+                    raw.role !== 'pocket' ||
+                    !surface ||
+                    typeof surface.supportPieceId !== 'number' ||
+                    !Number.isFinite(surface.supportPieceId)
+                  ) {
+                    return {};
+                  }
+                  const stitchedEdges = [
+                    ...new Set(
+                      (Array.isArray(surface.stitchedEdges) ? surface.stitchedEdges : [])
+                        .slice(0, nV)
+                        .filter((edge): edge is number => typeof edge === 'number' && Number.isFinite(edge))
+                        .map((edge) => Math.min(nV - 1, Math.max(0, Math.round(edge)))),
+                    ),
+                  ].sort((a, b) => a - b);
+                  return {
+                    surface: {
+                      supportPieceId: Math.min(64, Math.max(0, Math.round(surface.supportPieceId))),
+                      anchor: uv(surface.anchor),
+                      ...(typeof surface.rotationRad === 'number' && Number.isFinite(surface.rotationRad)
+                        ? { rotationRad: Math.min(Math.PI * 2, Math.max(-Math.PI * 2, surface.rotationRad)) }
+                        : {}),
+                      stitchedEdges,
+                    },
+                  };
+                })(),
+              },
+            }
+          : {};
+      })(),
+      ...((): { stagingOffset?: [number, number, number] } => {
+        const raw = pp.stagingOffset;
+        if (
+          !Array.isArray(raw) ||
+          raw.length !== 3 ||
+          !raw.every((value) => typeof value === 'number' && Number.isFinite(value))
+        ) {
+          return {};
+        }
+        const offset: [number, number, number] = [raw[0] as number, raw[1] as number, raw[2] as number];
+        return Math.hypot(...offset) > 1e-8 ? { stagingOffset: offset } : {};
+      })(),
+      ...((): { stagingOffsets?: Array<[number, number, number] | null> } => {
+        if (!Array.isArray(pp.stagingOffsets)) return {};
+        const offsets = pp.stagingOffsets.slice(0, 8).map((raw) => {
+          if (
+            !Array.isArray(raw) ||
+            raw.length !== 3 ||
+            !raw.every((value) => typeof value === 'number' && Number.isFinite(value))
+          ) {
+            return null;
+          }
+          return [raw[0], raw[1], raw[2]] as [number, number, number];
+        });
+        return offsets.some((offset) => offset && Math.hypot(...offset) > 1e-8)
+          ? { stagingOffsets: offsets }
+          : {};
+      })(),
     };
   };
   const front = parsePiece(d.piece);
@@ -998,6 +1947,27 @@ export function sanitizeDraft(raw: unknown): DraftDoc {
     }
   });
   const hasBack = !!back;
+  freePieces.forEach((piece, k) => {
+    const surface = piece.placement?.surface;
+    if (!surface) return;
+    const supportPieceId =
+      surface.supportPieceId < 2
+        ? surface.supportPieceId
+        : remap.get(surface.supportPieceId);
+    const ownPieceId = 2 + k;
+    const supportExists =
+      supportPieceId === 0 ||
+      (supportPieceId === 1 ? hasBack : supportPieceId !== undefined && supportPieceId < ownPieceId);
+    if (!supportExists || supportPieceId === ownPieceId) {
+      const { surface: _discarded, ...placement } = piece.placement!;
+      piece.placement = placement;
+      return;
+    }
+    piece.placement = {
+      ...piece.placement!,
+      surface: { ...surface, supportPieceId: supportPieceId! },
+    };
+  });
   // Assembly seams (manual mode): validate face/pieceId + edge indices. Runs are
   // taken modulo the outline length at compile time, so a loose cap is enough.
   const faceRun = (r: unknown): FaceRun => {
@@ -1019,13 +1989,21 @@ export function sanitizeDraft(raw: unknown): DraftDoc {
     if (pid < 0) return false; // a dropped free piece (remap miss)
     return pid === 0 || (pid === 1 ? hasBack : pid < 2 + freePieces.length);
   };
-  const seams = (Array.isArray(d.seams) ? d.seams : [])
-    .slice(0, 128)
-    .map((x) => {
-      const s = x as AssemblySeam;
-      return { a: faceRun(s?.a), b: faceRun(s?.b) };
-    })
-    .filter((s) => pieceExists(s.a) && pieceExists(s.b));
+  const parseEdgePairs = (value: unknown): AssemblySeam[] =>
+    (Array.isArray(value) ? value : [])
+      .slice(0, 128)
+      .map((x) => {
+        const s = x as AssemblySeam;
+        return {
+          a: faceRun(s?.a),
+          b: faceRun(s?.b),
+          ...(s?.kind === 'seam' || s?.kind === 'zipper' ? { kind: s.kind } : {}),
+          ...(typeof s?.closed === 'boolean' ? { closed: s.closed } : {}),
+        };
+      })
+      .filter((s) => pieceExists(s.a) && pieceExists(s.b));
+  const seams = parseEdgePairs(d.seams);
+  const segmentLinks = parseEdgePairs(d.segmentLinks);
   return {
     format: 'toile-draft',
     version: 1,
@@ -1035,5 +2013,13 @@ export function sanitizeDraft(raw: unknown): DraftDoc {
     ...(freePieces.length ? { pieces: freePieces } : {}),
     manual: d.manual === true,
     seams,
+    ...(segmentLinks.length ? { segmentLinks } : {}),
+    ...(d.preset === 'loose-pants' || d.preset === 'lucas-hoodie'
+      ? { preset: d.preset }
+      : {}),
+    ...((d.preset === 'loose-pants' || d.preset === 'lucas-hoodie') &&
+    typeof d.presetSize === 'string'
+      ? { presetSize: d.presetSize.slice(0, 8) }
+      : {}),
   };
 }

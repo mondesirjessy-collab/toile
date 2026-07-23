@@ -7,6 +7,20 @@
  */
 import GUI from 'lil-gui';
 import type { FabricStyle } from './ClothRenderer';
+import {
+  FABRIC_PHYSICS,
+  MAX_FABRIC_GSM,
+  MIN_FABRIC_GSM,
+  makeFabricProfile,
+  sanitizeFabricProfile,
+  type FabricCompliance,
+  type FabricDynamics,
+  type FabricPhysics,
+} from '../engine/solver/FabricMaterial';
+import {
+  makeFabricMeasurementTemplate,
+  parseFabricMeasurementText,
+} from '../engine/solver/FabricMeasurement';
 
 export type SceneMode =
   | 'drapé'
@@ -27,18 +41,32 @@ export interface PatternParams {
   neck: number; // neckline half-width, pattern units
 }
 
+/** Public range shared by the simple atelier control and the advanced panel. */
+export const AVATAR_STATURE_MIN_CM = 140;
+export const AVATAR_STATURE_MAX_CM = 210;
+
+export interface BodyMeasurementsCm {
+  stature: number;
+  carrure: number;
+  poitrine: number;
+  taille: number;
+  hanches: number;
+  cuisse: number;
+}
+
 export interface PanelCallbacks {
   onScene(mode: SceneMode): void;
   onResolution(resolution: number): void;
-  onCompliance(c: { stretch: number; stretchWarp: number; shear: number; bend: number }): void;
-  onFriction(mu: number): void;
+  onCompliance(c: FabricCompliance): void;
+  onFriction(staticMu: number, dynamicMu: number): void;
+  onDynamics(dynamics: FabricDynamics): void;
   onStyle(style: FabricStyle): void;
   onSelfCollision(enabled: boolean): void;
   onWind(strength: number): void;
   onPodium(rpm: number): void;
   onAnimate(on: boolean): void;
   onBody(kind: BodyKind): void;
-  onMorph(cm: { stature: number; carrure: number; poitrine: number; taille: number; hanches: number; cuisse: number }): void;
+  onMorph(cm: BodyMeasurementsCm): void;
   onPattern(p: PatternParams): void;
   onProfile(kind: 'robe' | 'chemise' | 'jupe', profile: number[]): void;
   onShirtPattern(p: { sleeve: number }): void;
@@ -89,10 +117,22 @@ interface Settings {
   stretchWarpExp: number;
   shearExp: number;
   bendExp: number;
+  bendWarpExp: number;
+  stretchLimitPct: number;
+  shearLimitPct: number;
   friction: number;
+  frictionDynamic: number;
+  densityGsm: number;
+  thicknessMm: number;
+  damping: number;
+  airDrag: number;
+  creaseYieldDeg: number;
+  creaseMemory: number;
+  creaseRecovery: number;
   pinCorners: boolean;
   fitMap: boolean;
   preset: string;
+  fabricReport: string;
   motif: string;
   motifCm: number;
   motifCouleur: [number, number, number];
@@ -102,12 +142,7 @@ interface Settings {
 // Fabric presets (brief §4: Jersey/Denim/Soie — the seed of the fabric library).
 // Physics: compliance (stretch/shear/bend) + Coulomb friction. Look: face/back
 // colors + shading response, so switching presets is instantly recognizable.
-interface FabricPreset {
-  stretch: number; // weft (trame)
-  stretchWarp: number; // warp (chaîne, le droit-fil)
-  shear: number; // bias (biais)
-  bend: number;
-  friction: number;
+interface FabricPreset extends FabricPhysics {
   style: FabricStyle;
 }
 
@@ -117,66 +152,38 @@ interface FabricPreset {
 const PRESETS: Record<string, FabricPreset> = {
   // Knit: very stretchy across (courses), less along the wales; floppy.
   Jersey: {
-    stretch: 3e-6,
-    stretchWarp: 8e-7,
-    shear: 1e-5,
-    bend: 2e-4,
-    friction: 0.55,
+    ...FABRIC_PHYSICS.Jersey!,
     style: { face: [0.87, 0.82, 0.72], back: [0.66, 0.55, 0.47], exponent: 2.0, ambient: 0.22 },
   },
   // Rib knit: the stretchiest thing on the rail, hugs everything.
   Maille: {
-    stretch: 8e-6,
-    stretchWarp: 2e-6,
-    shear: 1.2e-5,
-    bend: 2e-4,
-    friction: 0.6,
+    ...FABRIC_PHYSICS.Maille!,
     style: { face: [0.72, 0.45, 0.42], back: [0.55, 0.33, 0.31], exponent: 1.8, ambient: 0.24 },
   },
   // Crisp shirting cotton: barely stretches, crisp folds.
   Popeline: {
-    stretch: 5e-8,
-    stretchWarp: 2e-8,
-    shear: 1.5e-6,
-    bend: 3e-5,
-    friction: 0.5,
+    ...FABRIC_PHYSICS.Popeline!,
     style: { face: [0.93, 0.93, 0.9], back: [0.82, 0.82, 0.78], exponent: 2.4, ambient: 0.2 },
   },
   // Stiff heavy twill: inextensible, holds big folds, grippy.
   Denim: {
-    stretch: 1e-8,
-    stretchWarp: 8e-9,
-    shear: 1e-7,
-    bend: 5e-6,
-    friction: 0.7,
+    ...FABRIC_PHYSICS.Denim!,
     style: { face: [0.23, 0.29, 0.45], back: [0.52, 0.58, 0.7], exponent: 1.4, ambient: 0.3 },
   },
   // Linen: dry hand, holds creases, matte texture.
   Lin: {
-    stretch: 3e-8,
-    stretchWarp: 3e-8,
-    shear: 2e-6,
-    bend: 8e-5,
-    friction: 0.6,
+    ...FABRIC_PHYSICS.Lin!,
     style: { face: [0.85, 0.8, 0.68], back: [0.74, 0.69, 0.57], exponent: 1.6, ambient: 0.26 },
   },
   // Wool flannel: soft, heavy drape, warm grey.
   Laine: {
-    stretch: 8e-8,
-    stretchWarp: 5e-8,
-    shear: 3e-6,
-    bend: 1.5e-4,
-    friction: 0.65,
+    ...FABRIC_PHYSICS.Laine!,
     style: { face: [0.52, 0.5, 0.52], back: [0.4, 0.38, 0.4], exponent: 1.5, ambient: 0.28 },
   },
   // Silk satin: inextensible threads but a LOOSE bias — this is where the
   // slink comes from — extremely floppy, slippery, sheeny.
   Soie: {
-    stretch: 1e-8,
-    stretchWarp: 1e-8,
-    shear: 1.5e-5,
-    bend: 5e-4,
-    friction: 0.25,
+    ...FABRIC_PHYSICS.Soie!,
     style: { face: [0.93, 0.87, 0.78], back: [0.8, 0.68, 0.58], exponent: 3.5, ambient: 0.12 },
   },
 };
@@ -187,6 +194,10 @@ export class ControlPanel {
   private readonly settings: Settings;
   private readonly controllers: { updateDisplay(): void }[] = [];
   private morphControllers: Record<string, { updateDisplay(): void }> = {};
+  private fabricProfileName = 'Tissu mesuré';
+  private fabricProfileSource: string | undefined;
+  private fabricDiagnosticTitle = 'Profil tissu';
+  private fabricDiagnosticLines: string[] = [];
 
   constructor(cb: PanelCallbacks, initial: { resolution: number; substeps: number }) {
     this.cb = cb;
@@ -215,10 +226,22 @@ export class ControlPanel {
       stretchWarpExp: -8,
       shearExp: -8,
       bendExp: Math.log10(2e-6),
+      bendWarpExp: Math.log10(2e-6),
+      stretchLimitPct: 20,
+      shearLimitPct: 30,
       friction: 0.5,
+      frictionDynamic: 0.35,
+      densityGsm: 200,
+      thicknessMm: 5,
+      damping: 0.5,
+      airDrag: 1,
+      creaseYieldDeg: 45,
+      creaseMemory: 0.2,
+      creaseRecovery: 0.3,
       pinCorners: false,
       fitMap: false,
       preset: 'Jersey',
+      fabricReport: 'preset Jersey · calibré',
       motif: 'uni',
       motifCm: 5,
       motifCouleur: [1, 1, 1] as [number, number, number],
@@ -229,9 +252,17 @@ export class ControlPanel {
     // Accès de test en dev : piloter les contrôleurs sans dépendre de clics pixel.
     // __toileImport rejoue un .toile.json sans passer par le dialogue de fichier.
     if (import.meta.env.DEV) {
-      const w = window as unknown as { __toileGui?: GUI; __toileImport?: (doc: unknown) => void };
+      const w = window as unknown as {
+        __toileGui?: GUI;
+        __toileImport?: (doc: unknown) => void;
+        __toileFabricImport?: (doc: unknown) => boolean;
+        __toileFabricMeasurementImport?: (text: string, filename?: string) => boolean;
+      };
       w.__toileGui = this.gui;
       w.__toileImport = (doc: unknown) => this.applyGarment(doc);
+      w.__toileFabricImport = (doc: unknown) => this.applyFabricProfile(doc);
+      w.__toileFabricMeasurementImport = (text: string, filename?: string) =>
+        this.applyFabricMeasurement(text, filename ?? 'mesure-labo.json');
     }
 
     this.controllers.push(
@@ -249,17 +280,12 @@ export class ControlPanel {
     // Prêt-à-porter measurements, in centimeters. The sliders open on the
     // selected mannequin's OWN measured values (syncMorphCm).
     const morphFolder = this.gui.addFolder('mannequin · mensurations (cm)');
-    const pushMorph = (): void =>
-      this.cb.onMorph({
-        stature: this.settings.stature,
-        carrure: this.settings.carrure,
-        poitrine: this.settings.poitrine,
-        taille: this.settings.taille,
-        hanches: this.settings.hanches,
-        cuisse: this.settings.cuisse,
-      });
+    const pushMorph = (): void => this.emitMorph();
     this.morphControllers = {
-      stature: morphFolder.add(this.settings, 'stature', 145, 195, 0.5).name('stature').onFinishChange(pushMorph),
+      stature: morphFolder
+        .add(this.settings, 'stature', AVATAR_STATURE_MIN_CM, AVATAR_STATURE_MAX_CM, 0.5)
+        .name('taille globale')
+        .onFinishChange(pushMorph),
       carrure: morphFolder.add(this.settings, 'carrure', 34, 60, 0.5).name('carrure (épaules)').onFinishChange(pushMorph),
       poitrine: morphFolder.add(this.settings, 'poitrine', 65, 130, 0.5).name('tour de poitrine').onFinishChange(pushMorph),
       taille: morphFolder.add(this.settings, 'taille', 55, 125, 0.5).name('tour de taille').onFinishChange(pushMorph),
@@ -310,19 +336,60 @@ export class ControlPanel {
         stretchWarp: 10 ** this.settings.stretchWarpExp,
         shear: 10 ** this.settings.shearExp,
         bend: 10 ** this.settings.bendExp,
+        bendWarp: 10 ** this.settings.bendWarpExp,
+        stretchLimit: this.settings.stretchLimitPct / 100,
+        shearLimit: this.settings.shearLimitPct / 100,
+      });
+    const pushFriction = (): void => {
+      const s = this.settings;
+      if (s.frictionDynamic > s.friction) {
+        s.frictionDynamic = s.friction;
+        for (const c of this.controllers) c.updateDisplay();
+      }
+      this.cb.onFriction(s.friction, s.frictionDynamic);
+    };
+    const pushDynamics = (): void =>
+      this.cb.onDynamics({
+        arealDensity: this.settings.densityGsm / 1000,
+        collisionThickness: this.settings.thicknessMm / 1000,
+        damping: this.settings.damping,
+        airDrag: this.settings.airDrag,
+        frictionStatic: this.settings.friction,
+        frictionDynamic: this.settings.frictionDynamic,
+        creaseYieldDeg: this.settings.creaseYieldDeg,
+        creaseMemory: this.settings.creaseMemory,
+        creaseRecovery: this.settings.creaseRecovery,
       });
     this.controllers.push(
-      fabric.add(this.settings, 'stretchExp', -8, -3, 0.1).name('étirement trame (log)').onChange(pushCompliance),
-      fabric.add(this.settings, 'stretchWarpExp', -8, -3, 0.1).name('étirement chaîne (log)').onChange(pushCompliance),
-      fabric.add(this.settings, 'shearExp', -8, -3, 0.1).name('biais / cisaillement (log)').onChange(pushCompliance),
-      fabric.add(this.settings, 'bendExp', -8, -3, 0.1).name('compliance flexion (log)').onChange(pushCompliance),
-      fabric.add(this.settings, 'friction', 0, 1, 0.01).name('friction μ').onChange((v: number) => this.cb.onFriction(v)),
-      fabric.add(this.settings, 'preset', ['Jersey', 'Maille', 'Popeline', 'Denim', 'Lin', 'Laine', 'Soie']).name('preset').onChange((name: string) => this.applyPreset(name)),
+      fabric.add(this.settings, 'stretchExp', -9, -3, 0.1).name('étirement trame (log)').onChange(pushCompliance),
+      fabric.add(this.settings, 'stretchWarpExp', -9, -3, 0.1).name('étirement chaîne (log)').onChange(pushCompliance),
+      fabric.add(this.settings, 'shearExp', -9, -3, 0.1).name('biais / cisaillement (log)').onChange(pushCompliance),
+      fabric.add(this.settings, 'bendExp', -9, -3, 0.1).name('flexion trame (log)').onChange(pushCompliance),
+      fabric.add(this.settings, 'bendWarpExp', -9, -3, 0.1).name('flexion chaîne (log)').onChange(pushCompliance),
+      fabric.add(this.settings, 'stretchLimitPct', 1, 70, 1).name('verrouillage tension (%)').onChange(pushCompliance),
+      fabric.add(this.settings, 'shearLimitPct', 3, 70, 1).name('verrouillage biais (%)').onChange(pushCompliance),
+      fabric.add(this.settings, 'densityGsm', MIN_FABRIC_GSM, MAX_FABRIC_GSM, 5).name('grammage (g/m²)').onChange(pushDynamics),
+      fabric.add(this.settings, 'thicknessMm', 2, 10, 0.1).name('épaisseur effective (mm)').onChange(pushDynamics),
+      fabric.add(this.settings, 'damping', 0.1, 2, 0.05).name('amortissement').onChange(pushDynamics),
+      fabric.add(this.settings, 'airDrag', 0.2, 2, 0.05).name('prise au vent').onChange(pushDynamics),
+      fabric.add(this.settings, 'creaseYieldDeg', 5, 85, 1).name('seuil de pli (°)').onChange(pushDynamics),
+      fabric.add(this.settings, 'creaseMemory', 0, 2, 0.05).name('mémoire du pli').onChange(pushDynamics),
+      fabric.add(this.settings, 'creaseRecovery', 0, 2, 0.05).name('récupération du pli').onChange(pushDynamics),
+      fabric.add(this.settings, 'friction', 0, 1, 0.01).name('friction statique μs').onChange(pushFriction),
+      fabric.add(this.settings, 'frictionDynamic', 0, 1, 0.01).name('friction dynamique μd').onChange(pushFriction),
+      fabric.add(this.settings, 'preset', ['Jersey', 'Maille', 'Popeline', 'Denim', 'Lin', 'Laine', 'Soie', 'Mesuré']).name('preset').onChange((name: string) => this.applyPreset(name)),
       fabric
         .add(this.settings, 'fitMap')
         .name('carte de tension')
         .onChange((v: boolean) => this.cb.onFitMap(v)),
     );
+    this.controllers.push(
+      fabric.add(this.settings, 'fabricReport').name('qualité du profil').disable(),
+    );
+    fabric.add({ exporter: () => this.exportFabricProfile() }, 'exporter').name('exporter le profil tissu');
+    fabric.add({ importer: () => this.importFabricProfile() }, 'importer').name('importer KES / FAST / profil');
+    fabric.add({ modele: () => this.exportFabricMeasurementTemplate() }, 'modele').name('modèle de relevé labo');
+    fabric.add({ diagnostic: () => this.showFabricDiagnostic() }, 'diagnostic').name('voir le diagnostic');
 
     // Prints: procedural, crisp at any zoom, scaled in real centimeters.
     const MOTIFS = ['uni', 'rayures', 'vichy', 'pois'];
@@ -404,16 +471,57 @@ export class ControlPanel {
     for (const c of this.controllers) c.updateDisplay();
   }
 
+  /** Keep the arm-animation checkbox in sync with programmatic audit setup. */
+  syncAnimate(on: boolean): void {
+    this.settings.animate = on;
+    for (const c of this.controllers) c.updateDisplay();
+  }
+
   /** Keep the scene select in sync when the scene changes elsewhere. */
   syncScene(mode: SceneMode): void {
     this.settings.scene = mode;
     for (const c of this.controllers) c.updateDisplay();
   }
 
+  private morphCm(): BodyMeasurementsCm {
+    return {
+      stature: this.settings.stature,
+      carrure: this.settings.carrure,
+      poitrine: this.settings.poitrine,
+      taille: this.settings.taille,
+      hanches: this.settings.hanches,
+      cuisse: this.settings.cuisse,
+    };
+  }
+
+  private emitMorph(): void {
+    this.cb.onMorph(this.morphCm());
+  }
+
+  /**
+   * Change the physical mannequin scale from the simple atelier control.
+   * The advanced field and exported .toile state share this exact setting.
+   */
+  setStatureCm(cm: number): void {
+    if (!Number.isFinite(cm)) return;
+    const clamped = Math.min(AVATAR_STATURE_MAX_CM, Math.max(AVATAR_STATURE_MIN_CM, cm));
+    this.settings.stature = Math.round(clamped * 2) / 2;
+    this.morphControllers.stature?.updateDisplay();
+    this.emitMorph();
+  }
+
   /** Open the measurement sliders on the selected body's own values (cm). */
-  syncMorphCm(cm: Record<string, number>): void {
+  syncMorphCm(cm: Partial<BodyMeasurementsCm>): void {
     const s = this.settings as unknown as Record<string, number>;
-    for (const k of ['stature', 'carrure', 'poitrine', 'taille', 'hanches', 'cuisse']) {
+    const keys: Array<keyof BodyMeasurementsCm> = [
+      'stature',
+      'carrure',
+      'poitrine',
+      'taille',
+      'hanches',
+      'cuisse',
+    ];
+    for (const k of keys) {
       if (typeof cm[k] === 'number') s[k] = Math.round(cm[k]! * 2) / 2;
     }
     for (const c of Object.values(this.morphControllers)) c.updateDisplay();
@@ -436,10 +544,199 @@ export class ControlPanel {
     for (const c of this.controllers) c.updateDisplay();
   }
 
-  /** Serialize the current garment to the open TOILE format and download it. */
-  private exportGarment(): void {
+  /** Snapshot the live controls in the portable material-profile units. */
+  private currentFabricPhysics(): FabricPhysics {
     const s = this.settings;
-    const doc = {
+    return {
+      stretch: 10 ** s.stretchExp,
+      stretchWarp: 10 ** s.stretchWarpExp,
+      shear: 10 ** s.shearExp,
+      bend: 10 ** s.bendExp,
+      bendWarp: 10 ** s.bendWarpExp,
+      stretchLimit: s.stretchLimitPct / 100,
+      shearLimit: s.shearLimitPct / 100,
+      arealDensity: s.densityGsm / 1000,
+      collisionThickness: s.thicknessMm / 1000,
+      damping: s.damping,
+      airDrag: s.airDrag,
+      frictionStatic: s.friction,
+      frictionDynamic: Math.min(s.friction, s.frictionDynamic),
+      creaseYieldDeg: s.creaseYieldDeg,
+      creaseMemory: s.creaseMemory,
+      creaseRecovery: s.creaseRecovery,
+    };
+  }
+
+  /** Validate and apply a calibrated .toile-fabric.json profile live. */
+  private applyFabricProfile(raw: unknown): boolean {
+    const doc = sanitizeFabricProfile(raw);
+    if (!doc) return false;
+    const p = doc.physics;
+    const s = this.settings;
+    s.preset = 'Mesuré';
+    s.stretchExp = Math.log10(p.stretch);
+    s.stretchWarpExp = Math.log10(p.stretchWarp);
+    s.shearExp = Math.log10(p.shear);
+    s.bendExp = Math.log10(p.bend);
+    s.bendWarpExp = Math.log10(p.bendWarp);
+    s.stretchLimitPct = p.stretchLimit * 100;
+    s.shearLimitPct = p.shearLimit * 100;
+    s.densityGsm = p.arealDensity * 1000;
+    s.thicknessMm = p.collisionThickness * 1000;
+    s.damping = p.damping;
+    s.airDrag = p.airDrag;
+    s.friction = p.frictionStatic;
+    s.frictionDynamic = p.frictionDynamic;
+    s.creaseYieldDeg = p.creaseYieldDeg;
+    s.creaseMemory = p.creaseMemory;
+    s.creaseRecovery = p.creaseRecovery;
+    this.fabricProfileName = doc.name;
+    this.fabricProfileSource = doc.source;
+    s.fabricReport = 'profil solveur · validé';
+    this.fabricDiagnosticTitle = doc.name;
+    this.fabricDiagnosticLines = [
+      `Source : ${doc.source ?? 'profil TOILE'}`,
+      'Paramètres : déjà calibrés pour le solveur',
+      'Validation : complète',
+    ];
+    for (const c of this.controllers) c.updateDisplay();
+    this.cb.onCompliance(p);
+    this.cb.onFriction(p.frictionStatic, p.frictionDynamic);
+    this.cb.onDynamics(p);
+    return true;
+  }
+
+  /** Convert and apply raw KES/FAST laboratory measurements. */
+  private applyFabricMeasurement(text: string, filename: string): boolean {
+    const result = parseFabricMeasurementText(text, filename);
+    if (!result.ok) {
+      this.settings.fabricReport = 'relevé refusé · incomplet';
+      this.fabricDiagnosticTitle = 'Import KES / FAST impossible';
+      this.fabricDiagnosticLines = [result.error];
+      for (const c of this.controllers) c.updateDisplay();
+      this.showFabricDiagnostic(false);
+      return false;
+    }
+    const conversion = result.conversion;
+    if (!this.applyFabricProfile(conversion.profile)) return false;
+    this.settings.fabricReport =
+      `${conversion.system} · confiance ${conversion.confidence} · ${conversion.estimated.length} estimés`;
+    this.fabricDiagnosticTitle = `${conversion.profile.name} · ${conversion.system}`;
+    this.fabricDiagnosticLines = [
+      `Confiance : ${conversion.confidence}`,
+      `Mesuré : ${conversion.measured.join(', ')}`,
+      `Estimé : ${conversion.estimated.join(', ') || 'aucun'}`,
+      ...conversion.warnings.map((warning) => `Attention : ${warning}`),
+    ];
+    for (const c of this.controllers) c.updateDisplay();
+    this.showFabricDiagnostic(true);
+    return true;
+  }
+
+  /** Download the current physics as a reusable, versioned fabric profile. */
+  private exportFabricProfile(): void {
+    const s = this.settings;
+    const name = s.preset === 'Mesuré' ? this.fabricProfileName : s.preset;
+    const source = s.preset === 'Mesuré' ? this.fabricProfileSource : undefined;
+    const doc = makeFabricProfile(name, this.currentFabricPhysics(), source);
+    const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    const safeName = doc.name
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9_-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .toLowerCase();
+    a.download = `${safeName || 'tissu-mesure'}.toile-fabric.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+    this.toast('profil tissu exporté');
+  }
+
+  /** Download the documented neutral JSON form a laboratory can fill. */
+  private exportFabricMeasurementTemplate(): void {
+    const blob = new Blob([JSON.stringify(makeFabricMeasurementTemplate(), null, 2)], {
+      type: 'application/json',
+    });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'modele.toile-fabric-measurement.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+    this.toast('modèle de relevé KES/FAST exporté');
+  }
+
+  /** Open a solver profile or convert a raw KES/FAST JSON/CSV report. */
+  private importFabricProfile(): void {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,.csv,.tsv,.txt,.toile-fabric.json,application/json,text/csv,text/tab-separated-values';
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      void file.text().then((text) => {
+        let ok = false;
+        try {
+          if (file.name.toLowerCase().endsWith('.json')) {
+            ok = this.applyFabricProfile(JSON.parse(text));
+          }
+        } catch {
+          ok = false;
+        }
+        if (!ok) ok = this.applyFabricMeasurement(text, file.name);
+        this.toast(ok ? 'profil KES/FAST converti et appliqué' : 'relevé KES/FAST non reconnu', ok);
+      });
+    };
+    input.click();
+  }
+
+  /** Persistent, readable distinction between measured and estimated fields. */
+  private showFabricDiagnostic(ok = true): void {
+    let el = document.getElementById('toile-fabric-diagnostic');
+    if (!el) {
+      el = document.createElement('section');
+      el.id = 'toile-fabric-diagnostic';
+      el.style.cssText =
+        'position:fixed;left:18px;bottom:18px;z-index:21;width:min(470px,calc(100vw - 36px));' +
+        'padding:14px 16px;border-radius:8px;font:12px/1.5 ui-monospace,Menlo,monospace;' +
+        'color:#ede9df;background:rgba(10,11,14,0.96);border:1px solid rgba(127,178,255,.55);' +
+        'box-shadow:0 12px 40px rgba(0,0,0,.35)';
+      document.body.appendChild(el);
+    }
+    el.replaceChildren();
+    el.style.borderColor = ok ? 'rgba(127,178,255,.55)' : 'rgba(255,120,120,.7)';
+    const title = document.createElement('strong');
+    title.textContent = this.fabricDiagnosticTitle;
+    title.style.cssText = 'display:block;margin-right:28px;margin-bottom:8px;font-size:13px';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = '×';
+    close.setAttribute('aria-label', 'fermer le diagnostic tissu');
+    close.style.cssText =
+      'position:absolute;right:10px;top:7px;border:0;background:transparent;color:#ede9df;' +
+      'font:22px sans-serif;cursor:pointer';
+    close.onclick = () => el!.remove();
+    el.append(title, close);
+    for (const line of this.fabricDiagnosticLines) {
+      const p = document.createElement('div');
+      p.textContent = line;
+      p.style.marginTop = '4px';
+      el.appendChild(p);
+    }
+  }
+
+  /**
+   * Snapshot the current garment in the same open format used by manual export.
+   * Keeping this public gives autosave and recovery one canonical serializer.
+   */
+  snapshotGarment(): Record<string, unknown> {
+    const s = this.settings;
+    return {
       format: 'toile-garment',
       version: 1,
       scene: s.scene,
@@ -472,7 +769,18 @@ export class ControlPanel {
         stretchWarpExp: s.stretchWarpExp,
         shearExp: s.shearExp,
         bendExp: s.bendExp,
+        bendWarpExp: s.bendWarpExp,
+        stretchLimitPct: s.stretchLimitPct,
+        shearLimitPct: s.shearLimitPct,
         friction: s.friction,
+        frictionDynamic: s.frictionDynamic,
+        densityGsm: s.densityGsm,
+        thicknessMm: s.thicknessMm,
+        damping: s.damping,
+        airDrag: s.airDrag,
+        creaseYieldDeg: s.creaseYieldDeg,
+        creaseMemory: s.creaseMemory,
+        creaseRecovery: s.creaseRecovery,
       },
       sim: { resolution: s.resolution, substeps: s.substeps, selfCollision: s.selfCollision, wind: s.wind },
       seamAllowance: s.seamAllowance,
@@ -483,6 +791,11 @@ export class ControlPanel {
         return draft ? { draft } : {};
       })(),
     };
+  }
+
+  /** Serialize the current garment to the open TOILE format and download it. */
+  private exportGarment(): void {
+    const doc = this.snapshotGarment();
     const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -514,9 +827,11 @@ export class ControlPanel {
     input.click();
   }
 
-  private applyGarment(doc: unknown): boolean {
+  /** Apply a serialized garment through the same validation path as file import. */
+  applyGarment(doc: unknown): boolean {
     const d = doc as {
       format?: string;
+      version?: number;
       scene?: SceneMode;
       body?: BodyKind;
       morph?: Record<string, number>;
@@ -534,7 +849,18 @@ export class ControlPanel {
         stretchWarpExp?: number;
         shearExp?: number;
         bendExp?: number;
+        bendWarpExp?: number;
+        stretchLimitPct?: number;
+        shearLimitPct?: number;
         friction?: number;
+        frictionDynamic?: number;
+        densityGsm?: number;
+        thicknessMm?: number;
+        damping?: number;
+        airDrag?: number;
+        creaseYieldDeg?: number;
+        creaseMemory?: number;
+        creaseRecovery?: number;
         motif?: string;
         motifCm?: number;
         motifCouleur?: [number, number, number];
@@ -543,7 +869,7 @@ export class ControlPanel {
       seamAllowance?: number;
       draft?: unknown;
     };
-    if (d?.format !== 'toile-garment') return false;
+    if (d?.format !== 'toile-garment' || (d.version !== undefined && d.version !== 1)) return false;
     const s = this.settings;
     // A .toile.json is USER INPUT: every scalar is clamped to its slider's
     // range and rejected unless finite — JSON happily parses 1e999 (Infinity)
@@ -558,7 +884,12 @@ export class ControlPanel {
     }
     s.seamAllowance = num(d.seamAllowance, 0, 4, s.seamAllowance);
     if (d.fabric) {
-      if (d.fabric.preset && PRESETS[d.fabric.preset]) s.preset = d.fabric.preset;
+      if (d.fabric.preset && (PRESETS[d.fabric.preset] || d.fabric.preset === 'Mesuré')) s.preset = d.fabric.preset;
+      const preset = PRESETS[s.preset] ?? PRESETS.Jersey!;
+      if (s.preset === 'Mesuré') {
+        this.fabricProfileName = 'Tissu mesuré importé';
+        this.fabricProfileSource = undefined;
+      }
       if (typeof d.fabric.motif === 'string' && ['uni', 'rayures', 'vichy', 'pois'].includes(d.fabric.motif)) s.motif = d.fabric.motif;
       if (typeof d.fabric.motifCm === 'number' && d.fabric.motifCm >= 1 && d.fabric.motifCm <= 30) s.motifCm = d.fabric.motifCm;
       // Validate each element finite ∈ [0,1] (audit M30 residual): a raw array
@@ -571,11 +902,30 @@ export class ControlPanel {
       ) {
         s.motifCouleur = d.fabric.motifCouleur.map((v) => Math.min(1, Math.max(0, v))) as [number, number, number];
       }
-      s.stretchExp = num(d.fabric.stretchExp, -8, -3, s.stretchExp);
-      s.stretchWarpExp = num(d.fabric.stretchWarpExp ?? d.fabric.stretchExp, -8, -3, s.stretchWarpExp);
-      s.shearExp = num(d.fabric.shearExp, -8, -3, s.shearExp);
-      s.bendExp = num(d.fabric.bendExp, -8, -3, s.bendExp);
+      s.stretchExp = num(d.fabric.stretchExp, -9, -3, s.stretchExp);
+      s.stretchWarpExp = num(d.fabric.stretchWarpExp ?? d.fabric.stretchExp, -9, -3, s.stretchWarpExp);
+      s.shearExp = num(d.fabric.shearExp, -9, -3, s.shearExp);
+      s.bendExp = num(d.fabric.bendExp, -9, -3, s.bendExp);
+      s.bendWarpExp = num(d.fabric.bendWarpExp ?? d.fabric.bendExp, -9, -3, Math.log10(preset.bendWarp));
+      s.stretchLimitPct = num(d.fabric.stretchLimitPct, 1, 70, preset.stretchLimit * 100);
+      s.shearLimitPct = num(d.fabric.shearLimitPct, 3, 70, preset.shearLimit * 100);
       s.friction = num(d.fabric.friction, 0, 1, s.friction);
+      s.frictionDynamic = Math.min(
+        s.friction,
+        num(d.fabric.frictionDynamic, 0, 1, Math.min(preset.frictionDynamic, s.friction)),
+      );
+      s.densityGsm = num(
+        d.fabric.densityGsm,
+        MIN_FABRIC_GSM,
+        MAX_FABRIC_GSM,
+        preset.arealDensity * 1000,
+      );
+      s.thicknessMm = num(d.fabric.thicknessMm, 2, 10, preset.collisionThickness * 1000);
+      s.damping = num(d.fabric.damping, 0.1, 2, preset.damping);
+      s.airDrag = num(d.fabric.airDrag, 0.2, 2, preset.airDrag);
+      s.creaseYieldDeg = num(d.fabric.creaseYieldDeg, 5, 85, preset.creaseYieldDeg);
+      s.creaseMemory = num(d.fabric.creaseMemory, 0, 2, preset.creaseMemory);
+      s.creaseRecovery = num(d.fabric.creaseRecovery, 0, 2, preset.creaseRecovery);
     }
     if (d.pattern) {
       s.dressLength = num(d.pattern.length, 0.9, 1.55, s.dressLength);
@@ -605,12 +955,18 @@ export class ControlPanel {
     // build() ~8-9 times (each a full ParticleSystem + renderer teardown). Defer
     // them so only the final onScene rebuilds — same end state, one rebuild.
     this.cb.onImportBegin?.();
-    this.cb.onBody(s.body);
+    try {
+      this.cb.onBody(s.body);
     // onBody resets the measurements to the new body's baseline, so the saved
     // ones must be restored AFTER it — otherwise the import silently drops the
     // figure it was cut for and reverts to the default body.
     if (d.morph) {
-      s.stature = num(d.morph.stature, 145, 195, s.stature);
+      s.stature = num(
+        d.morph.stature,
+        AVATAR_STATURE_MIN_CM,
+        AVATAR_STATURE_MAX_CM,
+        s.stature,
+      );
       s.carrure = num(d.morph.carrure, 34, 60, s.carrure);
       s.poitrine = num(d.morph.poitrine, 65, 130, s.poitrine);
       s.taille = num(d.morph.taille, 55, 125, s.taille);
@@ -632,8 +988,22 @@ export class ControlPanel {
       stretchWarp: 10 ** s.stretchWarpExp,
       shear: 10 ** s.shearExp,
       bend: 10 ** s.bendExp,
+      bendWarp: 10 ** s.bendWarpExp,
+      stretchLimit: s.stretchLimitPct / 100,
+      shearLimit: s.shearLimitPct / 100,
     });
-    this.cb.onFriction(s.friction);
+    this.cb.onFriction(s.friction, s.frictionDynamic);
+    this.cb.onDynamics({
+      arealDensity: s.densityGsm / 1000,
+      collisionThickness: s.thicknessMm / 1000,
+      damping: s.damping,
+      airDrag: s.airDrag,
+      frictionStatic: s.friction,
+      frictionDynamic: s.frictionDynamic,
+      creaseYieldDeg: s.creaseYieldDeg,
+      creaseMemory: s.creaseMemory,
+      creaseRecovery: s.creaseRecovery,
+    });
     this.cb.onSelfCollision(s.selfCollision);
     this.cb.onWind(s.wind);
     this.cb.onSeamAllowance(s.seamAllowance);
@@ -667,9 +1037,13 @@ export class ControlPanel {
     this.cb.onResolution(s.resolution);
     s.scene = targetScene;
     for (const c of this.controllers) c.updateDisplay();
-    this.cb.onScene(targetScene); // sets sceneMode (its build is still deferred)
-    this.cb.onImportEnd?.(); // release the batch → exactly one rebuild
-    return true;
+      this.cb.onScene(targetScene); // sets sceneMode (its build is still deferred)
+      return true;
+    } finally {
+      // Always release import batching: a malformed extension callback must not
+      // leave every later rebuild and autosave permanently suspended.
+      this.cb.onImportEnd?.();
+    }
   }
 
   private toastTimer = 0;
@@ -715,11 +1089,48 @@ export class ControlPanel {
     this.settings.stretchWarpExp = Math.log10(p.stretchWarp);
     this.settings.shearExp = Math.log10(p.shear);
     this.settings.bendExp = Math.log10(p.bend);
-    this.settings.friction = p.friction;
+    this.settings.bendWarpExp = Math.log10(p.bendWarp);
+    this.settings.stretchLimitPct = p.stretchLimit * 100;
+    this.settings.shearLimitPct = p.shearLimit * 100;
+    this.settings.friction = p.frictionStatic;
+    this.settings.frictionDynamic = p.frictionDynamic;
+    this.settings.densityGsm = p.arealDensity * 1000;
+    this.settings.thicknessMm = p.collisionThickness * 1000;
+    this.settings.damping = p.damping;
+    this.settings.airDrag = p.airDrag;
+    this.settings.creaseYieldDeg = p.creaseYieldDeg;
+    this.settings.creaseMemory = p.creaseMemory;
+    this.settings.creaseRecovery = p.creaseRecovery;
     this.settings.preset = name;
+    this.settings.fabricReport = `preset ${name} · calibré`;
+    this.fabricDiagnosticTitle = `Preset ${name}`;
+    this.fabricDiagnosticLines = [
+      'Source : calibration qualitative TOILE',
+      'Mesures de laboratoire : aucune',
+      'Utilisez « importer KES / FAST / profil » pour un échantillon réel.',
+    ];
     for (const c of this.controllers) c.updateDisplay();
-    this.cb.onCompliance({ stretch: p.stretch, stretchWarp: p.stretchWarp, shear: p.shear, bend: p.bend });
-    this.cb.onFriction(p.friction);
+    this.cb.onCompliance({
+      stretch: p.stretch,
+      stretchWarp: p.stretchWarp,
+      shear: p.shear,
+      bend: p.bend,
+      bendWarp: p.bendWarp,
+      stretchLimit: p.stretchLimit,
+      shearLimit: p.shearLimit,
+    });
+    this.cb.onFriction(p.frictionStatic, p.frictionDynamic);
+    this.cb.onDynamics({
+      arealDensity: p.arealDensity,
+      collisionThickness: p.collisionThickness,
+      damping: p.damping,
+      airDrag: p.airDrag,
+      frictionStatic: p.frictionStatic,
+      frictionDynamic: p.frictionDynamic,
+      creaseYieldDeg: p.creaseYieldDeg,
+      creaseMemory: p.creaseMemory,
+      creaseRecovery: p.creaseRecovery,
+    });
     this.pushStyle();
   }
 }

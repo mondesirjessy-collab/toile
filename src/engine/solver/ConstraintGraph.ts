@@ -19,6 +19,19 @@ export enum ConstraintKind {
   Seam = 3,
   /** Warp: the vertical weave (v direction, the grain line) — anisotropy. */
   StructuralWarp = 4,
+  /**
+   * Top-stitch between an overlay (pocket/appliqué) and a supporting panel.
+   * Endpoint i is always the support, endpoint j the overlay. It stays firm on
+   * the pocket but has a deliberately small reaction on the much larger base
+   * panel, preventing an open pocket from levering the garment forward.
+   */
+  SurfaceSeam = 5,
+  /**
+   * Anatomical attachment from an already body-safe support rim (i) to a
+   * separately spawned part (j). The attached part absorbs 98% of projection,
+   * preventing a collar born inside the neck from dragging the torso inward.
+   */
+  AttachmentSeam = 6,
 }
 
 export interface Edge {
@@ -36,6 +49,23 @@ export interface ColoringResult {
   colorOffsets: number[];
   /** Number of edges in each color block. */
   colorCounts: number[];
+  /**
+   * Explicit color ranges for the three ordered solver phases. `first` is an
+   * index into colorOffsets/colorCounts (not an edge offset). Empty phases keep
+   * a zero count, so ParticleSystem never has to infer kinds from packed data.
+   */
+  phaseColorRanges: ConstraintPhaseColorRanges;
+}
+
+export interface ColorRange {
+  first: number;
+  count: number;
+}
+
+export interface ConstraintPhaseColorRanges {
+  ordinary: ColorRange;
+  seam: ColorRange;
+  surfaceSeam: ColorRange;
 }
 
 /** Dihedral bending element: shared edge (e0,e1) + the two wing vertices. */
@@ -48,6 +78,10 @@ export interface BendQuad {
   restAngle: number;
   /** Compliance multiplier: 1 = fabric bending, >1 = softer (seam pressing). */
   softness?: number;
+  /** 0 = curvature across weft, 1 = curvature along warp, intermediate = blend. */
+  warpWeight?: number;
+  /** Immutable rest angle used when crease recovery relaxes the material. */
+  baseRestAngle?: number;
 }
 
 export interface QuadColoringResult {
@@ -86,36 +120,125 @@ export function colorQuads(quads: BendQuad[], particleCount: number): QuadColori
 }
 
 export function colorConstraints(edges: Edge[], particleCount: number): ColoringResult {
-  // Per-particle set of colors already used by an incident edge.
-  const used: Set<number>[] = Array.from({ length: particleCount }, () => new Set<number>());
-  const colorOf = new Int32Array(edges.length).fill(-1);
-  let numColors = 0;
+  /** Color one ordered solver phase. Colors are local to that phase: distinct
+   * phases execute in sequence and may therefore reuse the same particles. */
+  const colorPhase = (
+    phaseEdges: Edge[],
+    sparse = false,
+  ): Pick<ColoringResult, 'ordered' | 'colorOffsets' | 'colorCounts'> => {
+    // Per-particle set of colors already used by an incident edge.
+    // The ordinary weave touches almost every particle, while a stitch phase
+    // touches only its rims. Keep that second palette sparse: multi-piece
+    // hoodies are repeatedly combined and should not allocate one empty Set
+    // per particle merely to color a few hundred seams.
+    const denseUsed: Set<number>[] | null = sparse
+      ? null
+      : Array.from({ length: particleCount }, () => new Set<number>());
+    const sparseUsed = sparse ? new Map<number, Set<number>>() : null;
+    const colorsAt = (particle: number): Set<number> => {
+      if (denseUsed) return denseUsed[particle]!;
+      let colors = sparseUsed!.get(particle);
+      if (!colors) {
+        colors = new Set<number>();
+        sparseUsed!.set(particle, colors);
+      }
+      return colors;
+    };
+    const colorOf = new Int32Array(phaseEdges.length).fill(-1);
+    let numColors = 0;
 
-  for (let e = 0; e < edges.length; e++) {
-    const edge = edges[e]!;
-    const ui = used[edge.i]!;
-    const uj = used[edge.j]!;
-    let c = 0;
-    while (ui.has(c) || uj.has(c)) c++;
-    colorOf[e] = c;
-    ui.add(c);
-    uj.add(c);
-    if (c + 1 > numColors) numColors = c + 1;
+    for (let e = 0; e < phaseEdges.length; e++) {
+      const edge = phaseEdges[e]!;
+      const ui = colorsAt(edge.i);
+      const uj = colorsAt(edge.j);
+      let c = 0;
+      while (ui.has(c) || uj.has(c)) c++;
+      colorOf[e] = c;
+      ui.add(c);
+      uj.add(c);
+      if (c + 1 > numColors) numColors = c + 1;
+    }
+
+    const colorCounts = new Array<number>(numColors).fill(0);
+    for (let e = 0; e < phaseEdges.length; e++) {
+      colorCounts[colorOf[e]!]!++;
+    }
+    const colorOffsets = new Array<number>(numColors).fill(0);
+    for (let c = 1; c < numColors; c++) {
+      colorOffsets[c] = colorOffsets[c - 1]! + colorCounts[c - 1]!;
+    }
+
+    const cursor = colorOffsets.slice();
+    const ordered = new Array<Edge>(phaseEdges.length);
+    for (let e = 0; e < phaseEdges.length; e++) {
+      const c = colorOf[e]!;
+      ordered[cursor[c]!++] = phaseEdges[e]!;
+    }
+    return { ordered, colorOffsets, colorCounts };
+  };
+
+  // A seam is a terminal positional invariant, not another yarn spring.
+  // Solving it in the same color palette as structural/shear edges allowed a
+  // later color touching the same boundary particle to pull the stitch open
+  // again. This was intermittent because the final residual depended on the
+  // garment topology and collision pose (robe/flancs were the clearest case).
+  // Keep assembly/attachment and one-sided SurfaceSeam stitches in separately
+  // colored terminal phases. SurfaceSeam's asymmetric support response remains
+  // entirely in the shader; this also lets ParticleSystem replay only regular
+  // seams after self-collision without strengthening pocket top-stitches.
+  const ordinary: Edge[] = [];
+  const stitches: Edge[] = [];
+  for (const edge of edges) {
+    if (
+      edge.kind === ConstraintKind.Seam ||
+      edge.kind === ConstraintKind.AttachmentSeam ||
+      edge.kind === ConstraintKind.SurfaceSeam
+    ) {
+      stitches.push(edge);
+    } else {
+      ordinary.push(edge);
+    }
   }
 
-  // Bucket edges by color into a contiguous array.
-  const colorCounts = new Array<number>(numColors).fill(0);
-  for (let e = 0; e < edges.length; e++) colorCounts[colorOf[e]!]!++;
-
-  const colorOffsets = new Array<number>(numColors).fill(0);
-  for (let c = 1; c < numColors; c++) colorOffsets[c] = colorOffsets[c - 1]! + colorCounts[c - 1]!;
-
-  const cursor = colorOffsets.slice();
-  const ordered = new Array<Edge>(edges.length);
-  for (let e = 0; e < edges.length; e++) {
-    const c = colorOf[e]!;
-    ordered[cursor[c]!++] = edges[e]!;
+  const seams: Edge[] = [];
+  const surfaceSeams: Edge[] = [];
+  for (const edge of stitches) {
+    if (edge.kind === ConstraintKind.SurfaceSeam) surfaceSeams.push(edge);
+    else seams.push(edge);
   }
 
-  return { ordered, colorOffsets, colorCounts };
+  // Keep support/overlay top-stitches in their own final phase. The solver may
+  // safely replay regular assembly seams after self-collision without also
+  // increasing the asymmetric reaction of pockets and appliqués.
+  const phases = [
+    colorPhase(ordinary),
+    colorPhase(seams, true),
+    colorPhase(surfaceSeams, true),
+  ];
+  const ordered: Edge[] = [];
+  const colorOffsets: number[] = [];
+  const colorCounts: number[] = [];
+  const phaseRanges: ColorRange[] = [];
+  for (const phase of phases) {
+    const phaseOffset = ordered.length;
+    const first = colorOffsets.length;
+    // Large hoodie/outfit meshes carry hundreds of thousands of constraints;
+    // spreading that array exceeds JavaScript's argument-stack limit.
+    for (const edge of phase.ordered) ordered.push(edge);
+    for (let c = 0; c < phase.colorOffsets.length; c++) {
+      colorOffsets.push(phaseOffset + phase.colorOffsets[c]!);
+      colorCounts.push(phase.colorCounts[c]!);
+    }
+    phaseRanges.push({ first, count: phase.colorOffsets.length });
+  }
+  return {
+    ordered,
+    colorOffsets,
+    colorCounts,
+    phaseColorRanges: {
+      ordinary: phaseRanges[0]!,
+      seam: phaseRanges[1]!,
+      surfaceSeam: phaseRanges[2]!,
+    },
+  };
 }

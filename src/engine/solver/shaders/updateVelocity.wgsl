@@ -27,6 +27,22 @@ struct SimParams {
   damping: f32,
   max_speed: f32,
   drag_index: u32,
+  body_min: vec3f,
+  blend_k: f32,
+  body_max: vec3f,
+  use_grid: u32,
+  spin_cos: f32,
+  spin_sin: f32,
+  spin_dtheta: f32,
+  compliance_stretch_warp: f32,
+  layer_gap: f32,
+  anchor_stiffness: f32,
+  max_layer: f32,
+  compliance_bend_warp: f32,
+  friction_dynamic: f32,
+  air_drag: f32,
+  stretch_limit: f32,
+  shear_limit: f32,
 };
 
 @group(0) @binding(0) var<uniform> params: SimParams;
@@ -34,6 +50,15 @@ struct SimParams {
 @group(0) @binding(2) var<storage, read> prev_positions: array<vec4f>;
 @group(0) @binding(3) var<storage, read_write> velocities: array<vec4f>;
 @group(0) @binding(4) var<storage, read> inv_masses: array<f32>;
+
+struct FabricMaterial {
+  in_plane: vec4f,
+  limits_mass: vec4f,
+  contact_motion: vec4f,
+  friction_crease: vec4f,
+};
+@group(0) @binding(5) var<storage, read> material_ids: array<u32>;
+@group(0) @binding(6) var<storage, read> materials: array<FabricMaterial>;
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
@@ -46,6 +71,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   var v = (positions[i].xyz - prev_positions[i].xyz) / params.dt;
+  let material = materials[material_ids[i]];
 
   // Linear damping + quadratic aerodynamic drag (audit — realism): fast motion
   // (a falling hem, a gust-caught panel) is braked harder than a slow settle, so
@@ -54,7 +80,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // unchanged — this only enriches motion (wind, podium, dragging). Then the
   // hard speed clamp for stability.
   let speed0 = length(v);
-  v *= max(0.0, 1.0 - params.damping * params.dt - 0.1 * speed0 * params.dt);
+  v *= max(0.0, 1.0 - material.contact_motion.y * params.dt - 0.1 * material.contact_motion.z * speed0 * params.dt);
   let speed = length(v);
   if (speed > params.max_speed) { v *= params.max_speed / speed; }
 

@@ -4,6 +4,7 @@ import {
   generateSeamedPanels,
   combineClothMeshes,
   countMaskIslands,
+  scaleMeshInverseMassesToReferenceCellArea,
   type ClothMeshData,
 } from '../src/engine/cloth/ClothMesh';
 
@@ -75,9 +76,27 @@ describe('generateClothGrid topology', () => {
           expect(p).toBeLessThan(mesh.count);
         }
         // Flat rest pose → rest angle π.
-        expect(dv.getFloat32(k * 32 + 16, true)).toBeCloseTo(Math.PI, 4);
+        const restAngle = dv.getFloat32(k * 32 + 16, true);
+        expect(restAngle).toBeCloseTo(Math.PI, 4);
+        // A separate immutable baseline lets the GPU remember a crease while
+        // reset/recovery still know the originally cut and pressed geometry.
+        expect(dv.getFloat32(k * 32 + 28, true)).toBeCloseTo(restAngle, 6);
       }
     }
+  });
+
+  it('classe les charnières de flexion entre trame et chaîne', () => {
+    const dv = new DataView(mesh.quadData);
+    let weft = 0;
+    let warp = 0;
+    for (let k = 0; k < mesh.quadCount; k++) {
+      const weight = dv.getFloat32(k * 32 + 24, true);
+      if (weight === 0) weft++;
+      else if (weight === 1) warp++;
+      else throw new Error(`poids de flexion inattendu: ${weight}`);
+    }
+    expect(weft).toBe((n - 1) * (n - 2));
+    expect(warp).toBe((n - 1) * (n - 2));
   });
 
   it('classifies rest lengths as structural or shear', () => {
@@ -319,6 +338,177 @@ describe("generateSeamedPanels shape 'aline' (pattern cutting)", () => {
     expect(kept(mesh.cornerIndices[0])).toBe(true);
     expect(kept(mesh.cornerIndices[1])).toBe(true);
   });
+
+  it.each([32, 64, 128])(
+    'caps only authored closed seams at resolution %i, leaving neckline, armholes and hem open',
+    (resolution) => {
+      const detailed = generateSeamedPanels({
+        resolution,
+        width: 0.95,
+        height: 1.3,
+        gap: 0.8,
+        topY: 1.8,
+        shape: 'aline',
+      });
+      const panelSize = resolution * resolution;
+      const autoSeamed = new Set<number>();
+      const constraints = new DataView(detailed.constraintData);
+      for (let k = 0; k < detailed.constraintCount; k++) {
+        if (constraints.getUint32(k * 16 + 12, true) !== 3) continue;
+        const i = constraints.getUint32(k * 16, true);
+        const j = constraints.getUint32(k * 16 + 4, true);
+        if (i < panelSize && j >= panelSize && i % panelSize === j % panelSize) {
+          autoSeamed.add(i % panelSize);
+        }
+      }
+      const capEdges = new Map<string, [number, number]>();
+      let capTriangles = 0;
+      for (let t = 0; t < detailed.triangleIndices.length; t += 3) {
+        const triangle = [
+          detailed.triangleIndices[t]!,
+          detailed.triangleIndices[t + 1]!,
+          detailed.triangleIndices[t + 2]!,
+        ];
+        const crossesPanels = triangle.some((i) => i < panelSize) && triangle.some((i) => i >= panelSize);
+        if (!crossesPanels) continue;
+        capTriangles++;
+        // 2D pattern/PDF consumers select front triangles by their first index;
+        // a visual cap must therefore remain invisible to the cut-line topology.
+        expect(triangle[0]).toBeGreaterThanOrEqual(panelSize);
+        const local = [...new Set(triangle.map((i) => i % panelSize))];
+        expect(local).toHaveLength(2);
+        local.sort((a, b) => a - b);
+        capEdges.set(`${local[0]}:${local[1]}`, [local[0]!, local[1]!]);
+      }
+
+      expect(capEdges.size).toBeGreaterThan(0);
+      expect(capTriangles).toBe(capEdges.size * 2); // two faces per closed boundary edge
+      const step = 1 / (resolution - 1);
+      let shoulderEdges = 0;
+      let armholeEdges = 0;
+      let sideEdges = 0;
+      for (const [a, b] of capEdges.values()) {
+        expect(autoSeamed.has(a)).toBe(true);
+        expect(autoSeamed.has(b)).toBe(true);
+        const points = [a, b].map((local) => ({
+          u: (local % resolution) / (resolution - 1),
+          v: Math.floor(local / resolution) / (resolution - 1),
+        }));
+        for (const point of points) {
+          expect(point.v).toBeLessThanOrEqual(0.97); // hem remains open
+          const inNeckline =
+            point.v < 0.13 + step && Math.abs(point.u - 0.5) < 0.1 + 0.02 + step;
+          expect(inNeckline).toBe(false);
+        }
+        const onOuterArmhole = points.every((point) => {
+          const x = Math.abs(point.u - 0.5);
+          const edge = 0.21 + (0.5 - 0.21) * point.v;
+          return (
+            point.v > 0.04 &&
+            point.v < 0.28 + step &&
+            x >= edge - (0.025 + step)
+          );
+        });
+        if (onOuterArmhole) armholeEdges++;
+        if (points.every((point) => point.v <= 0.04 + step)) shoulderEdges++;
+        if (points.every((point) => point.v > 0.28 + 2 * step && point.v < 0.95)) sideEdges++;
+      }
+      expect(armholeEdges).toBe(0);
+      expect(shoulderEdges).toBeGreaterThan(0);
+      expect(sideEdges).toBeGreaterThan(0);
+
+      // The physical seam graph, not only its render caps, must leave both arm
+      // passages open while still closing the shoulder and the lower side.
+      let armholeSeams = 0;
+      let shoulderSeams = 0;
+      let lowerSideSeams = 0;
+      for (const local of autoSeamed) {
+        const u = (local % resolution) / (resolution - 1);
+        const v = Math.floor(local / resolution) / (resolution - 1);
+        const x = Math.abs(u - 0.5);
+        const edge = 0.21 + (0.5 - 0.21) * v;
+        const onOuter = x >= edge - (0.025 + step);
+        if (onOuter && v > 0.04 && v < 0.28 + step) armholeSeams++;
+        if (v <= 0.04 + step && x > 0.1 + 0.02 + step) shoulderSeams++;
+        if (onOuter && v > 0.28 + 2 * step && v < 0.95) lowerSideSeams++;
+      }
+      expect(armholeSeams).toBe(0);
+      expect(shoulderSeams).toBeGreaterThan(0);
+      expect(lowerSideSeams).toBeGreaterThan(0);
+    },
+  );
+
+  it('does not invent render seams for manual assembly', () => {
+    const manual = generateSeamedPanels({
+      resolution: 64,
+      width: 0.95,
+      height: 1.3,
+      gap: 0.8,
+      topY: 1.8,
+      shape: 'aline',
+      manualAssembly: true,
+    });
+    const panelSize = manual.resolution * manual.resolution;
+    for (let t = 0; t < manual.triangleIndices.length; t += 3) {
+      const a = manual.triangleIndices[t]!;
+      const b = manual.triangleIndices[t + 1]!;
+      const c = manual.triangleIndices[t + 2]!;
+      const crossesPanels =
+        (a < panelSize || b < panelSize || c < panelSize) &&
+        (a >= panelSize || b >= panelSize || c >= panelSize);
+      expect(crossesPanels).toBe(false);
+    }
+  });
+
+  it('closes only consecutive user-sewn boundary runs in the render mesh', () => {
+    const resolution = 16;
+    const panelSize = resolution * resolution;
+    const outline = [
+      [0, 0],
+      [1, 0],
+      [1, 1],
+      [0, 1],
+    ] as [number, number][];
+    const run = Array.from({ length: resolution - 4 }, (_, index) => index + 2)
+      .map((u) => ({ i: u, j: panelSize + u }));
+    // An isolated interior stitch is physical but must never create a face.
+    run.push({
+      i: 8 * resolution + 8,
+      j: panelSize + 8 * resolution + 8,
+    });
+    const sewn = generateSeamedPanels({
+      resolution,
+      width: 1,
+      height: 1,
+      gap: 0.4,
+      topY: 1.5,
+      shape: 'freeform',
+      mask: { outline, darts: [] },
+      maskBack: { outline, darts: [] },
+      manualAssembly: true,
+      assemblySeams: run,
+    });
+    const mixed: number[][] = [];
+    for (let t = 0; t < sewn.triangleIndices.length; t += 3) {
+      const triangle = [
+        sewn.triangleIndices[t]!,
+        sewn.triangleIndices[t + 1]!,
+        sewn.triangleIndices[t + 2]!,
+      ];
+      if (
+        triangle.some((index) => index < panelSize) &&
+        triangle.some((index) => index >= panelSize)
+      ) {
+        mixed.push(triangle);
+      }
+    }
+    expect(mixed).toHaveLength((resolution - 5) * 2);
+    for (const triangle of mixed) {
+      expect(triangle[0]).toBeGreaterThanOrEqual(panelSize);
+      expect(triangle).not.toContain(8 * resolution + 8);
+      expect(triangle).not.toContain(panelSize + 8 * resolution + 8);
+    }
+  });
 });
 
 describe("generateSeamedPanels shape 'tshirt' (kimono tee)", () => {
@@ -494,6 +684,166 @@ describe('combineClothMeshes (outfits)', () => {
     }
   });
 
+  it('closes a contiguous cross-mesh boundary seam with mixed render ribbons', () => {
+    const upper = generateSeamedPanels({
+      resolution: n,
+      width: 1,
+      height: 0.5,
+      gap: 0.8,
+      topY: 1.5,
+    });
+    const lower = generateSeamedPanels({
+      resolution: n,
+      width: 1,
+      height: 0.5,
+      gap: 0.8,
+      topY: 1,
+    });
+    const boundaryRun = Array.from({ length: n }, (_, u) => ({
+      i: (n - 1) * n + u,
+      j: upper.count + u,
+    }));
+    const sewn = combineClothMeshes(upper, lower, boundaryRun);
+    const inputIndexCount =
+      upper.triangleIndices.length + lower.triangleIndices.length;
+
+    // Each adjacent pair in the run closes one quad (two triangles).
+    expect(sewn.triangleIndices.length - inputIndexCount).toBe(6 * (n - 1));
+    for (let t = inputIndexCount; t < sewn.triangleIndices.length; t += 3) {
+      const tri = sewn.triangleIndices.slice(t, t + 3);
+      expect([...tri].some((index) => index < upper.count)).toBe(true);
+      expect([...tri].some((index) => index >= upper.count)).toBe(true);
+    }
+  });
+
+  it('zippers gathered cross seams when either side repeats a boundary pin', () => {
+    const upper = generateSeamedPanels({
+      resolution: n,
+      width: 1,
+      height: 0.5,
+      gap: 0.8,
+      topY: 1.5,
+    });
+    const lower = generateSeamedPanels({
+      resolution: n,
+      width: 1,
+      height: 0.5,
+      gap: 0.8,
+      topY: 1,
+    });
+    const bottom = (u: number): number => (n - 1) * n + u;
+    const top = (u: number): number => upper.count + u;
+    const gathered = [
+      { i: bottom(3), j: top(3) },
+      { i: bottom(3), j: top(4) }, // A is fixed: one-triangle B fan
+      { i: bottom(4), j: top(5) }, // both advance: ordinary quad
+      { i: bottom(5), j: top(5) }, // B is fixed: one-triangle A fan
+    ];
+    const sewn = combineClothMeshes(upper, lower, gathered);
+    const inputIndexCount =
+      upper.triangleIndices.length + lower.triangleIndices.length;
+    const ribbon = sewn.triangleIndices.slice(inputIndexCount);
+
+    // 1 fan + 2 quad triangles + 1 opposite fan.
+    expect(ribbon).toHaveLength(4 * 3);
+    const faces = new Set<string>();
+    for (let t = 0; t < ribbon.length; t += 3) {
+      const tri = [...ribbon.slice(t, t + 3)];
+      expect(new Set(tri).size).toBe(3);
+      expect(tri[0]).toBeGreaterThanOrEqual(upper.count);
+      faces.add([...tri].sort((a, b) => a - b).join(':'));
+    }
+    expect(faces.size).toBe(4); // repeated pins did not duplicate a face
+  });
+
+  it('fills skipped boundary vertices with a shortest-path zipper strip', () => {
+    const upper = generateSeamedPanels({
+      resolution: n,
+      width: 1,
+      height: 0.5,
+      gap: 0.8,
+      topY: 1.5,
+    });
+    const lower = generateSeamedPanels({
+      resolution: n,
+      width: 1,
+      height: 0.5,
+      gap: 0.8,
+      topY: 1,
+    });
+    const bottom = (u: number): number => (n - 1) * n + u;
+    const top = (u: number): number => upper.count + u;
+    const sparse = [
+      { i: bottom(3), j: top(4) },
+      { i: bottom(7), j: top(6) },
+    ];
+    const sewn = combineClothMeshes(upper, lower, sparse);
+    const inputIndexCount =
+      upper.triangleIndices.length + lower.triangleIndices.length;
+    const ribbon = sewn.triangleIndices.slice(inputIndexCount);
+
+    // Shortest boundary paths contain 4 A edges and 2 B edges. A zipper strip
+    // triangulates their six-edge polygon without changing the physical pins.
+    expect(ribbon).toHaveLength((4 + 2) * 3);
+    const used = new Set(ribbon);
+    for (let u = 3; u <= 7; u++) {
+      expect(used.has(bottom(u))).toBe(true);
+      expect(sewn.seamFree![bottom(u)]).toBe(1);
+    }
+    for (let u = 4; u <= 6; u++) {
+      expect(used.has(top(u))).toBe(true);
+      expect(sewn.seamFree![top(u)]).toBe(1);
+    }
+    // Only the zipper path is classified as the sewn band. Neighbouring open
+    // cut edges keep their ordinary self-collision response.
+    expect(sewn.seamFree![bottom(2)]).toBe(0);
+    expect(sewn.seamFree![bottom(8)]).toBe(0);
+    expect(sewn.seamFree![top(3)]).toBe(0);
+    expect(sewn.seamFree![top(7)]).toBe(0);
+  });
+
+  it('never creates render ribbons for surface seams', () => {
+    const support = generateSeamedPanels({
+      resolution: n,
+      width: 1,
+      height: 0.5,
+      gap: 0.8,
+      topY: 1.5,
+    });
+    const overlay = generateSeamedPanels({
+      resolution: n,
+      width: 1,
+      height: 0.5,
+      gap: 0.8,
+      topY: 1,
+    });
+    const surfaceRun = Array.from({ length: n }, (_, u) => ({
+      i: (n - 1) * n + u,
+      j: support.count + u,
+    }));
+    const patched = combineClothMeshes(
+      support,
+      overlay,
+      surfaceRun,
+      1,
+      [],
+      surfaceRun,
+    );
+
+    expect(patched.triangleIndices.length).toBe(
+      support.triangleIndices.length + overlay.triangleIndices.length,
+    );
+    const constraints = decodeConstraints(
+      patched.constraintData,
+      patched.constraintCount,
+    );
+    for (const seam of surfaceRun) {
+      expect(
+        constraints.find((edge) => edge.i === seam.i && edge.j === seam.j)?.kind,
+      ).toBe(5);
+    }
+  });
+
   it('re-colors the union: every color block stays vertex-disjoint', () => {
     const dv = new DataView(outfit.constraintData);
     expect(outfit.colorCounts.reduce((a, b) => a + b, 0)).toBe(outfit.constraintCount);
@@ -517,6 +867,34 @@ describe('combineClothMeshes (outfits)', () => {
   it('rejects mismatched resolutions', () => {
     const other = generateSeamedPanels({ resolution: 8, shape: 'skirt' });
     expect(() => combineClothMeshes(tee, other)).toThrow();
+  });
+
+  it('gives a small editable piece mass proportional to its physical area', () => {
+    const support = generateSeamedPanels({
+      resolution: n,
+      width: 1,
+      height: 1,
+      gap: 0.9,
+      topY: 1.5,
+    });
+    const patch = generateSeamedPanels({
+      resolution: n,
+      width: 0.25,
+      height: 0.5,
+      gap: 0.1,
+      topY: 1.2,
+    });
+    const factor = scaleMeshInverseMassesToReferenceCellArea(
+      patch,
+      support.spacing * support.spacingV,
+    );
+    expect(factor).toBeCloseTo(8);
+    const totalMass = (mesh: ClothMeshData): number =>
+      mesh.invMasses.reduce(
+        (sum, invMass) => sum + (invMass > 0 ? 1 / invMass : 0),
+        0,
+      );
+    expect(totalMass(patch) / totalMass(support)).toBeCloseTo(0.125);
   });
 
   it('carries per-axis rest lengths (anisotropic grids)', () => {
@@ -549,6 +927,93 @@ describe('combineClothMeshes (outfits)', () => {
     const third = combineClothMeshes(layered, skirt, [], 2);
     expect(third.layers![third.count - 1]).toBe(2);
     expect(third.layers![tee.count]).toBe(1);
+  });
+
+  it('marks only matching pocket/support regions for thin surface contact', () => {
+    let support = -1;
+    for (let v = 1; v < n - 1 && support < 0; v++) {
+      for (let u = 1; u < n - 1; u++) {
+        const candidate = v * n + u;
+        if (
+          tee.invMasses[candidate]! > 0 &&
+          tee.invMasses[candidate + 1]! > 0 &&
+          tee.invMasses[candidate + n]! > 0
+        ) {
+          support = candidate;
+          break;
+        }
+      }
+    }
+    expect(support).toBeGreaterThanOrEqual(0);
+    const overlayLocal = skirt.invMasses.findIndex((mass) => mass > 0);
+    const overlay = tee.count + overlayLocal;
+    const topStitch = { i: support, j: overlay };
+    const patch = combineClothMeshes(
+      tee,
+      skirt,
+      [topStitch],
+      1,
+      [{
+        i: support,
+        // Front panel frame: cross(+v,+u) points toward outside +Z.
+        tangentA: support + n,
+        tangentB: support + 1,
+        weight0: 0.2,
+        weightA: 0.3,
+        weightB: 0.5,
+        j: overlay,
+      }],
+      [topStitch],
+    );
+    expect(patch.surfaceMasks).toBeDefined();
+    expect(patch.surfaceMasks![support]! & 0xffff).toBe(1);
+    expect(patch.surfaceMasks![overlay]! >>> 16).toBe(1);
+    expect(patch.surfaceMasks![support]! >>> 16).toBe(0);
+    expect(patch.surfaceMasks![overlay]! & 0xffff).toBe(0);
+    expect(patch.layers![overlay]).toBe(1);
+    expect(patch.surfaceContactCount).toBe(1);
+    expect(patch.surfaceContactData?.byteLength).toBe(32);
+    const contact = new DataView(patch.surfaceContactData!);
+    expect(contact.getUint32(0, true)).toBe(support);
+    expect(contact.getUint32(4, true)).toBe(support + n);
+    expect(contact.getUint32(8, true)).toBe(support + 1);
+    expect(contact.getUint32(12, true)).toBe(overlay);
+    expect(contact.getFloat32(16, true)).toBeCloseTo(0.2, 6);
+    expect(contact.getFloat32(20, true)).toBeCloseTo(0.3, 6);
+    expect(contact.getFloat32(24, true)).toBeCloseTo(0.5, 6);
+    expect(contact.getFloat32(28, true)).toBe(1);
+    const stitchedConstraint = decodeConstraints(
+      patch.constraintData,
+      patch.constraintCount,
+    ).find((edge) => edge.i === support && edge.j === overlay);
+    expect(stitchedConstraint?.kind).toBe(5); // SurfaceSeam, not assembly Seam
+
+    // A geometrically identical ordinary cross-seam stays fully two-way.
+    const ordinary = combineClothMeshes(
+      tee,
+      skirt,
+      [topStitch],
+      1,
+      [{
+        i: support,
+        tangentA: support + n,
+        tangentB: support + 1,
+        weight0: 0.2,
+        weightA: 0.3,
+        weightB: 0.5,
+        j: overlay,
+      }],
+    );
+    const ordinaryConstraint = decodeConstraints(
+      ordinary.constraintData,
+      ordinary.constraintCount,
+    ).find((edge) => edge.i === support && edge.j === overlay);
+    expect(ordinaryConstraint?.kind).toBe(3);
+
+    // Later garment merges must preserve existing contact indices unchanged.
+    const carried = combineClothMeshes(patch, skirt);
+    expect(carried.surfaceContactCount).toBe(1);
+    expect(new DataView(carried.surfaceContactData!).getUint32(12, true)).toBe(overlay);
   });
 
   it('flattenSeams:false drops the flatten rings (a WRAP tube must fold freely)', () => {
@@ -645,6 +1110,87 @@ describe('combineClothMeshes (outfits)', () => {
     expect(merged).toEqual(source);
     expect(Math.min(...merged)).toBeGreaterThanOrEqual(1); // never the 0 that an old merge wrote
   });
+});
+
+describe('phase terminale des coutures — scènes solveur R1', () => {
+  const n = 16;
+  const ps = n * n;
+  const rect = (): ClothMeshData =>
+    generateSeamedPanels({
+      resolution: n,
+      width: 1.2,
+      height: 1.2,
+      gap: 1.3,
+      topY: 1.9,
+    });
+  const tee = (): ClothMeshData =>
+    generateSeamedPanels({
+      resolution: n,
+      width: 1.15,
+      height: 0.75,
+      gap: 0.4,
+      topY: 1.52,
+      shape: 'tshirt',
+    });
+  const aline = (): ClothMeshData =>
+    generateSeamedPanels({
+      resolution: n,
+      width: 0.95,
+      height: 1.3,
+      gap: 0.4,
+      topY: 1.6,
+      shape: 'aline',
+      shapeParams: {
+        scoop: 0.1,
+        profile: [0.21, 0.27, 0.34, 0.42, 0.5],
+      },
+    });
+  const skirt = (): ClothMeshData =>
+    generateSeamedPanels({
+      resolution: n,
+      width: 0.85,
+      height: 0.55,
+      gap: 0.75,
+      topY: 1.14,
+      shape: 'skirt',
+      elasticTop: 0.75,
+      anchorTop: true,
+    });
+  const gathered = (): ClothMeshData => {
+    const bodice = rect();
+    const lower = rect();
+    const waist = [];
+    for (let panel = 0; panel < 2; panel++) {
+      for (let u = 0; u < n; u++) {
+        waist.push({
+          i: panel * ps + (n - 1) * n + u,
+          j: bodice.count + panel * ps + u,
+        });
+      }
+    }
+    return combineClothMeshes(bodice, lower, waist);
+  };
+
+  for (const [scene, build] of [
+    ['couture', rect],
+    ['robe', aline],
+    ['robe froncée', gathered],
+    ['ensemble', () => combineClothMeshes(tee(), skirt(), [], 1)],
+    ['tenue', () => combineClothMeshes(tee(), aline(), [], 1)],
+  ] as const) {
+    it(`${scene}: aucune arête de tissage ne suit une couture déclarée`, () => {
+      const mesh = build();
+      const edges = decodeConstraints(mesh.constraintData, mesh.constraintCount);
+      const isStitch = (edge: DecodedEdge): boolean =>
+        edge.kind === 3 || edge.kind === 5 || edge.kind === 6;
+      const firstStitch = edges.findIndex(isStitch);
+
+      expect(firstStitch).toBeGreaterThan(0);
+      expect(edges.slice(0, firstStitch).every((edge) => !isStitch(edge))).toBe(true);
+      expect(edges.slice(firstStitch).every(isStitch)).toBe(true);
+      expect(edges.filter(isStitch)).toHaveLength(mesh.seamCount);
+    });
+  }
 });
 
 describe('necklines stay open at EVERY resolution', () => {

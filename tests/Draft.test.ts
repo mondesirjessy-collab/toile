@@ -10,7 +10,10 @@ import {
   compileDraft,
   compileAssembly,
   compileCrossSeams,
+  compileSurfaceContacts,
+  compileSurfaceSeams,
   crossSewnOpenCells,
+  assemblySeamIsClosed,
   removeFreePiece,
   tshirtDraft,
   reindexAssemblySeams,
@@ -20,6 +23,7 @@ import {
   movePieceWorld,
   moveFaceWorld,
   shiftOutlineUV,
+  surfaceAttachmentUV,
   type UV,
   type DraftPiece,
 } from '../src/engine/pattern/Draft';
@@ -280,6 +284,26 @@ describe('compileAssembly (manual seams)', () => {
     expect(out[0]!.a).toEqual({ face: 'front', from: 4, to: 5 }); // front run followed its edge
     expect(out[0]!.b).toEqual({ face: 'back', from: 0, to: 1 }); // back face untouched
   });
+
+  it('préserve une fermeture éclair et ne la compile physiquement que fermée', () => {
+    const doc = defaultDraft(32);
+    doc.seams = [{
+      a: { face: 'front', from: 0, to: 1 },
+      b: { face: 'back', from: 0, to: 1 },
+      kind: 'zipper',
+      closed: false,
+    }];
+    expect(assemblySeamIsClosed(doc.seams[0]!)).toBe(false);
+    expect(compileAssembly(doc, 32)).toHaveLength(0);
+
+    doc.seams[0]!.closed = true;
+    expect(compileAssembly(doc, 32).length).toBeGreaterThan(0);
+    const round = sanitizeDraft(JSON.parse(JSON.stringify(doc)));
+    expect(round.seams![0]).toMatchObject({ kind: 'zipper', closed: true });
+
+    const reindexed = reindexAssemblySeams(round.seams!, 'front', 'insert', 1, 8);
+    expect(reindexed[0]).toMatchObject({ kind: 'zipper', closed: true });
+  });
 });
 
 describe('multi-piece free editor (pieceId / cross-seams)', () => {
@@ -338,6 +362,173 @@ describe('multi-piece free editor (pieceId / cross-seams)', () => {
     }
   });
 
+  it('compileSurfaceSeams pique le contour au milieu de la pièce support choisie', () => {
+    const n = 32;
+    const panelSize = n * n;
+    const doc = defaultDraft(n);
+    const pocket = {
+      ...square(),
+      width: 0.2,
+      height: 0.18,
+      topY: 0.18,
+      placement: {
+        role: 'pocket' as const,
+        autoAlign: true,
+        surface: {
+          supportPieceId: 0,
+          anchor: [0.5, 0.55] as UV,
+          stitchedEdges: [0, 1, 2, 3],
+        },
+      },
+    };
+    doc.pieces = [pocket];
+    const baseCount = panelSize * 2;
+    const stitches = compileSurfaceSeams(doc, n, [0, panelSize, baseCount], 2);
+    expect(stitches.length).toBeGreaterThan(0);
+    expect(stitches.every((stitch) => stitch.i < panelSize)).toBe(true);
+    expect(stitches.every((stitch) => stitch.j >= baseCount && stitch.j < baseCount + panelSize)).toBe(true);
+
+    pocket.placement.surface.stitchedEdges = [0];
+    const oneSide = compileSurfaceSeams(doc, n, [0, panelSize, baseCount], 2);
+    expect(oneSide.length).toBeGreaterThan(0);
+    expect(oneSide.length).toBeLessThan(stitches.length);
+
+    const contacts = compileSurfaceContacts(doc, n, [0, panelSize, baseCount], 2);
+    expect(contacts.length).toBeGreaterThan(oneSide.length);
+    expect(contacts.every((contact) => contact.i < panelSize)).toBe(true);
+    expect(contacts.every((contact) => contact.j >= baseCount && contact.j < baseCount + panelSize)).toBe(true);
+    expect(contacts.every((contact) => contact.tangentA < panelSize)).toBe(true);
+    expect(contacts.every((contact) => contact.tangentB < panelSize)).toBe(true);
+    // The active manifold is sparse: every support triangle gets one interior
+    // representative, while the open boundary adds its anti-tunnel samples.
+    expect(contacts.some((contact) => contact.active)).toBe(true);
+    expect(contacts.some((contact) => !contact.active)).toBe(true);
+    const everyFrame = new Set(
+      contacts.map(
+        (contact) =>
+          `${contact.i}:${contact.tangentA}:${contact.tangentB}`,
+      ),
+    );
+    const activeFrames = new Set(
+      contacts
+        .filter((contact) => contact.active)
+        .map(
+          (contact) =>
+            `${contact.i}:${contact.tangentA}:${contact.tangentB}`,
+        ),
+    );
+    expect(activeFrames).toEqual(everyFrame);
+    for (const contact of contacts) {
+      expect(contact.tangentA).not.toBe(contact.i);
+      expect(contact.tangentB).not.toBe(contact.i);
+      expect(contact.weight0 + contact.weightA + contact.weightB).toBeCloseTo(1, 8);
+      expect(contact.weight0).toBeGreaterThanOrEqual(0);
+      expect(contact.weightA).toBeGreaterThanOrEqual(0);
+      expect(contact.weightB).toBeGreaterThanOrEqual(0);
+      const point = (cell: number): [number, number] => [
+        cell % n,
+        -Math.floor(cell / n),
+      ];
+      const supportPoint = point(contact.i);
+      const tangentA = point(contact.tangentA);
+      const tangentB = point(contact.tangentB);
+      const ax = tangentA[0] - supportPoint[0];
+      const ay = tangentA[1] - supportPoint[1];
+      const bx = tangentB[0] - supportPoint[0];
+      const by = tangentB[1] - supportPoint[1];
+      // Front support: the ordered live frame must point toward +Z.
+      expect(ax * by - ay * bx).toBeGreaterThan(0);
+    }
+    // Retirer les autres surpiqûres conserve la géométrie de contact et ajoute
+    // seulement les nouveaux échantillons de bord ouvert.
+    pocket.placement.surface.stitchedEdges = [];
+    const allOpenContacts = compileSurfaceContacts(
+      doc,
+      n,
+      [0, panelSize, baseCount],
+      2,
+    );
+    expect(
+      allOpenContacts.map(({ active: _active, ...contact }) => contact),
+    ).toEqual(contacts.map(({ active: _active, ...contact }) => contact));
+    expect(
+      allOpenContacts.filter((contact) => contact.active).length,
+    ).toBeGreaterThanOrEqual(
+      contacts.filter((contact) => contact.active).length,
+    );
+
+    // A fully stitched appliqué keeps the sparse interior manifold: otherwise
+    // its mask disables generic self-collision while nothing prevents the two
+    // surfaces from merging. It has no extra open-boundary samples.
+    pocket.placement.surface.stitchedEdges = [0, 1, 2, 3];
+    const closedContacts = compileSurfaceContacts(
+      doc,
+      n,
+      [0, panelSize, baseCount],
+      2,
+    );
+    expect(closedContacts.some((contact) => contact.active)).toBe(true);
+    expect(closedContacts.some((contact) => !contact.active)).toBe(true);
+    const closedActiveFrames = new Set(
+      closedContacts
+        .filter((contact) => contact.active)
+        .map(
+          (contact) =>
+            `${contact.i}:${contact.tangentA}:${contact.tangentB}`,
+        ),
+    );
+    expect(closedActiveFrames).toEqual(everyFrame);
+    expect(
+      closedContacts.filter((contact) => contact.active),
+    ).toHaveLength(everyFrame.size);
+    expect(
+      closedContacts.filter((contact) => contact.active).length,
+    ).toBeLessThanOrEqual(
+      contacts.filter((contact) => contact.active).length,
+    );
+    expect(
+      closedContacts.map(({ active: _active, ...contact }) => contact),
+    ).toEqual(contacts.map(({ active: _active, ...contact }) => contact));
+  });
+
+  it('surfaceAttachmentUV conserve la taille métrique autour du point cliqué', () => {
+    const support = { ...square(), width: 1, height: 1, topY: 1 };
+    const pocket = {
+      ...square(),
+      outline: [[0, 0], [1, 0], [1, 1], [0, 1]] as UV[],
+      width: 0.2,
+      height: 0.1,
+      topY: 0.1,
+    };
+    const surface = {
+      supportPieceId: 0,
+      anchor: [0.25, 0.4] as UV,
+      stitchedEdges: [0, 1, 2, 3],
+    };
+    expect(surfaceAttachmentUV(pocket, support, surface, [0.5, 0.5])).toEqual([0.25, 0.4]);
+    const right = surfaceAttachmentUV(pocket, support, surface, [1, 0.5]);
+    expect(right[0]).toBeCloseTo(0.35, 8);
+    expect(right[1]).toBeCloseTo(0.4, 8);
+  });
+
+  it('une insertion ou suppression garde les coutures de surface sur les mêmes côtés', () => {
+    const pocket = {
+      ...square(),
+      placement: {
+        role: 'pocket' as const,
+        surface: {
+          supportPieceId: 0,
+          anchor: [0.5, 0.5] as UV,
+          stitchedEdges: [0, 2],
+        },
+      },
+    };
+    const inserted = insertOutlineVertex(pocket, 0, [0.5, 0.2]);
+    expect(inserted.placement!.surface!.stitchedEdges).toEqual([0, 1, 3]);
+    const restored = deleteOutlineVertex(inserted, 1);
+    expect(restored.placement!.surface!.stitchedEdges).toEqual([0, 2]);
+  });
+
   it('compileCrossSeams sews BOTH faces: each drawn pair has a back-panel twin', () => {
     const n = 32;
     const panelSize = n * n;
@@ -377,12 +568,8 @@ describe('multi-piece free editor (pieceId / cross-seams)', () => {
   });
 
   it('a piece sewn onto a WELDED base run still pins panel-to-panel (the v104 lesson)', () => {
-    // The proven armholeCrossSeams pins sleeve.front↔body.front AND
-    // sleeve.back↔body.BACK (i = p·n² + local): the four rims converge
-    // TRANSITIVELY through the body's own front↔back seam. Pinning the
-    // piece's back panel to the body's FRONT cell instead (a "direct cinch"
-    // variant) yanks the tube over the shoulder and ejects the arm — so a
-    // welded run must behave exactly like any other run: opposite panels.
+    // A generic free piece still mirrors front↔front and back↔back, even when
+    // its selected base run also happens to be welded front↔back.
     const n = 32;
     const panelSize = n * n;
     const doc = defaultDraft(n);
@@ -458,6 +645,22 @@ describe('multi-piece free editor (pieceId / cross-seams)', () => {
     expect(compileCrossSeams(defaultDraft(n), n, offsets, 2).length).toBe(0); // no free-piece seams at all
   });
 
+  it('compileCrossSeams peut inverser le sens de la couture entrante', () => {
+    const n = 32;
+    const panelSize = n * n;
+    const offset = 2 * panelSize;
+    const doc = defaultDraft(n);
+    doc.pieces = [{ ...square(), placement: { role: 'pocket', autoAlign: true } }];
+    doc.seams = [{ a: { face: 'front', from: 5, to: 6 }, b: { pieceId: 2, from: 0, to: 1 } }];
+    const frontJ = (): number[] =>
+      compileCrossSeams(doc, n, [0, panelSize, offset], 2)
+        .filter((pair) => pair.j < offset + panelSize)
+        .map((pair) => pair.j);
+    const normal = frontJ();
+    doc.pieces[0]!.placement!.reverseSeam = true;
+    expect(frontJ()).toEqual([...normal].reverse());
+  });
+
   it('reindexAssemblySeams shifts a numeric pieceId run and preserves its identity', () => {
     const seams = [{ a: { pieceId: 2, from: 3, to: 4 }, b: { face: 'front' as const, from: 0, to: 1 } }];
     const out = reindexAssemblySeams(seams, 2, 'insert', 1, 8);
@@ -483,6 +686,23 @@ describe('multi-piece free editor (pieceId / cross-seams)', () => {
     expect(s.pieces![0]!.gap).toBe(0.12); // a thin free piece round-trips (not clamped to 0.3)
   });
 
+  it('sanitizeDraft conserve les mariages valides et retire ceux vers une pièce absente', () => {
+    const s = sanitizeDraft({
+      format: 'toile-draft',
+      version: 1,
+      gridN: 32,
+      piece: { outline: [[0.2, 0.1], [0.8, 0.1], [0.5, 0.9]], darts: [], seams: [], openEdges: [], width: 0.9, height: 1, topY: 1.5, gap: 1 },
+      pieces: [square()],
+      segmentLinks: [
+        { a: { face: 'front', from: 0, to: 1 }, b: { pieceId: 2, from: 0, to: 1 } },
+        { a: { face: 'front', from: 1, to: 2 }, b: { pieceId: 8, from: 0, to: 1 } },
+      ],
+    });
+    expect(s.segmentLinks).toHaveLength(1);
+    expect(pieceIdOf(s.segmentLinks![0]!.a)).toBe(0);
+    expect(pieceIdOf(s.segmentLinks![0]!.b)).toBe(2);
+  });
+
   it('sanitizeDraft remaps free-piece pieceIds when a middle piece is dropped', () => {
     const degenerate = { outline: [[0.2, 0.2], [0.8, 0.2]], darts: [], seams: [], openEdges: [], width: 0.5, height: 0.5, topY: 1.2, gap: 0.12 };
     const s = sanitizeDraft({
@@ -503,18 +723,79 @@ describe('multi-piece free editor (pieceId / cross-seams)', () => {
 
   it('sanitizeDraft keeps a free piece\'s sleeve mode (wrap) and its true small size', () => {
     const doc = defaultDraft(32);
-    doc.pieces = [{ ...square(), width: 0.16, height: 0.42, gap: 0.18, wrap: 'armL' }];
+    doc.pieces = [{
+      ...square(),
+      width: 0.16,
+      height: 0.42,
+      gap: 0.18,
+      wrap: 'armL',
+      placement: { role: 'armL', autoAlign: true },
+      stagingOffset: [4.5, -2.25, 1.75],
+      stagingOffsets: [
+        [-0.4, 0.2, 0],
+        [0.6, -0.1, 0.3],
+      ],
+    }];
     const round = sanitizeDraft(JSON.parse(JSON.stringify(doc)));
     expect(round.pieces![0]!.wrap).toBe('armL');
+    expect(round.pieces![0]!.placement).toEqual({ role: 'armL', autoAlign: true });
+    expect(round.pieces![0]!.stagingOffset).toEqual([4.5, -2.25, 1.75]);
+    expect(round.pieces![0]!.stagingOffsets).toEqual([
+      [-0.4, 0.2, 0],
+      [0.6, -0.1, 0.3],
+    ]);
     expect(round.pieces![0]!.width).toBeCloseTo(0.16); // free pieces keep sizes below the body floor (0.3)
     expect(round.pieces![0]!.gap).toBeCloseTo(0.18);
+    doc.pieces = [{ ...square(), placement: { role: 'auto', autoAlign: true } }];
+    expect(
+      sanitizeDraft(JSON.parse(JSON.stringify(doc))).pieces![0]!.placement,
+    ).toEqual({ role: 'auto', autoAlign: true });
     // A bogus wrap value is dropped, not passed through.
     doc.pieces = [{ ...square(), wrap: 'tête' as 'armL' }];
     expect(sanitizeDraft(JSON.parse(JSON.stringify(doc))).pieces![0]!.wrap).toBeUndefined();
+    doc.pieces = [{ ...square(), placement: { role: 'tête' as 'armL' } }];
+    expect(sanitizeDraft(JSON.parse(JSON.stringify(doc))).pieces![0]!.placement).toBeUndefined();
+    doc.pieces = [{ ...square(), stagingOffset: [1, Number.NaN, 3] }];
+    expect(sanitizeDraft(doc).pieces![0]!.stagingOffset).toBeUndefined();
+    doc.pieces = [{
+      ...square(),
+      stagingOffsets: [[1, Number.NaN, 3], [0.2, 0.1, -0.3]],
+    }];
+    expect(sanitizeDraft(doc).pieces![0]!.stagingOffsets).toEqual([
+      null,
+      [0.2, 0.1, -0.3],
+    ]);
     // The BODY keeps its 0.3 floor (a garment can't shrink to doll size by typo).
     const tiny = defaultDraft(32);
     tiny.piece.width = 0.05;
     expect(sanitizeDraft(JSON.parse(JSON.stringify(tiny))).piece.width).toBeCloseTo(0.3);
+  });
+
+  it('sanitizeDraft conserve une pose de poche sûre et ses coutures indépendantes', () => {
+    const doc = defaultDraft(32);
+    doc.pieces = [{
+      ...square(),
+      placement: {
+        role: 'pocket',
+        autoAlign: true,
+        surface: {
+          supportPieceId: 0,
+          anchor: [0.35, 0.48],
+          rotationRad: 0.2,
+          stitchedEdges: [0, 2, 2, 99],
+        },
+      },
+    }];
+    const round = sanitizeDraft(JSON.parse(JSON.stringify(doc)));
+    expect(round.pieces![0]!.placement!.surface).toEqual({
+      supportPieceId: 0,
+      anchor: [0.35, 0.48],
+      rotationRad: 0.2,
+      stitchedEdges: [0, 2, 3],
+    });
+
+    doc.pieces[0]!.placement!.surface!.supportPieceId = 8;
+    expect(sanitizeDraft(JSON.parse(JSON.stringify(doc))).pieces![0]!.placement!.surface).toBeUndefined();
   });
 
   it('sanitizeDraft omits `pieces` when there are none (back-compat invariant)', () => {
@@ -526,7 +807,7 @@ describe('multi-piece free editor (pieceId / cross-seams)', () => {
     const doc = tshirtDraft(0.7, 0.62, 0.9, 1.52, 32);
     expect(isSelfIntersecting(doc.piece.outline)).toBe(false);
     expect(doc.manual).toBe(true);
-    expect(doc.seams!.length).toBe(2); // left shoulder+side, right shoulder+side
+    expect(doc.seams!.length).toBe(4); // shoulders ×2 + lower sides ×2; armholes stay open
     // Pre-sewn seams pair front↔back → cross-panel cell pairs (front panel 0, back panel 1).
     const cross = compileAssembly(doc, 32);
     expect(cross.length).toBeGreaterThan(0);
@@ -547,13 +828,14 @@ describe('multi-piece free editor (pieceId / cross-seams)', () => {
     const pieces = [square(), square()]; // pieceId 2 and 3
     const seams = [
       { a: { pieceId: 2, from: 0, to: 1 }, b: { face: 'front' as const, from: 0, to: 1 } }, // touches removed → dropped
-      { a: { pieceId: 3, from: 0, to: 1 }, b: { face: 'front' as const, from: 0, to: 1 } }, // survives → shifts 3→2
+      { a: { pieceId: 3, from: 0, to: 1 }, b: { face: 'front' as const, from: 0, to: 1 }, kind: 'zipper' as const, closed: false }, // survives → shifts 3→2
       { a: { face: 'front' as const, from: 0, to: 1 }, b: { face: 'back' as const, from: 0, to: 1 } }, // base → untouched
     ];
     const out = removeFreePiece(pieces, seams, 2);
     expect(out.pieces.length).toBe(1);
     expect(out.seams.length).toBe(2); // the seam touching piece 2 is dropped
     expect(pieceIdOf(out.seams[0]!.a)).toBe(2); // former piece 3 re-pointed to 2
+    expect(out.seams[0]).toMatchObject({ kind: 'zipper', closed: false });
     expect(out.seams[1]!.a).toEqual({ face: 'front', from: 0, to: 1 }); // base run untouched
     expect(out.seams[1]!.b).toEqual({ face: 'back', from: 0, to: 1 });
   });
@@ -565,6 +847,34 @@ describe('multi-piece free editor (pieceId / cross-seams)', () => {
     expect(out.pieces.length).toBe(1);
     expect(out.seams.length).toBe(1); // seam to piece 2 doesn't touch 3 → survives
     expect(pieceIdOf(out.seams[0]!.a)).toBe(2); // 2 < 3 → unchanged
+  });
+
+  it('removeFreePiece décale ou retire aussi le support d’une applique', () => {
+    const support = square();
+    const pocket = {
+      ...square(),
+      placement: {
+        role: 'pocket' as const,
+        surface: {
+          supportPieceId: 2,
+          anchor: [0.5, 0.5] as UV,
+          stitchedEdges: [0, 1, 2],
+        },
+      },
+    };
+    const removedSupport = removeFreePiece([support, pocket], [], 2);
+    expect(removedSupport.pieces[0]!.placement!.surface).toBeUndefined();
+
+    const laterSupport = square();
+    const laterPocket = {
+      ...pocket,
+      placement: {
+        ...pocket.placement,
+        surface: { ...pocket.placement.surface, supportPieceId: 3 },
+      },
+    };
+    const shifted = removeFreePiece([square(), laterSupport, laterPocket], [], 2);
+    expect(shifted.pieces[1]!.placement!.surface!.supportPieceId).toBe(2);
   });
 });
 
@@ -679,5 +989,33 @@ describe('déplacement 3D illimité (movePieceWorld / moveFaceWorld)', () => {
       expect(v).toBeGreaterThanOrEqual(0);
       expect(v).toBeLessThanOrEqual(1);
     }
+  });
+
+  it('conserve un tissu et un grammage différents par pièce, puis assainit les imports', () => {
+    const doc = defaultDraft(64);
+    doc.piece.fabricPreset = 'Popeline';
+    doc.piece.arealDensityGsm = 135.5;
+    doc.back!.fabricPreset = 'Denim';
+    doc.back!.arealDensityGsm = 420;
+    doc.pieces = [{ ...structuredClone(doc.piece), fabricPreset: 'Soie', arealDensityGsm: 72, name: 'Poche' }];
+    const round = sanitizeDraft(JSON.parse(JSON.stringify(doc)));
+    expect(round.piece.fabricPreset).toBe('Popeline');
+    expect(round.piece.arealDensityGsm).toBe(135.5);
+    expect(round.back?.fabricPreset).toBe('Denim');
+    expect(round.back?.arealDensityGsm).toBe(420);
+    expect(round.pieces?.[0]?.fabricPreset).toBe('Soie');
+    expect(round.pieces?.[0]?.arealDensityGsm).toBe(72);
+
+    const unsafe = structuredClone(doc) as unknown as {
+      piece: { fabricPreset: string; arealDensityGsm: unknown };
+      back: { arealDensityGsm: number };
+    };
+    unsafe.piece.fabricPreset = 'Tissu inventé';
+    unsafe.piece.arealDensityGsm = '400';
+    unsafe.back.arealDensityGsm = 5000;
+    const sanitized = sanitizeDraft(unsafe);
+    expect(sanitized.piece.fabricPreset).toBeUndefined();
+    expect(sanitized.piece.arealDensityGsm).toBeUndefined();
+    expect(sanitized.back?.arealDensityGsm).toBe(1000);
   });
 });

@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { draftTee, oversizeTee, boxyTee, boxyChestCm, BOXY_SIZES, type BoxySize } from '../src/engine/pattern/draftTee';
 import { BOXY_IDX } from '../src/engine/pattern/boxyData';
-import { pointInPolygon, sanitizeDraft } from '../src/engine/pattern/Draft';
-import { countMaskIslands } from '../src/engine/cloth/ClothMesh';
+import { compileAssembly, compileDraft, pointInPolygon, sanitizeDraft, sideOpeningCells, tshirtDraft } from '../src/engine/pattern/Draft';
+import { countMaskIslands, generateSeamedPanels } from '../src/engine/cloth/ClothMesh';
+import { sleeveCrossSeams } from '../src/engine/pattern/SleeveAssembly';
 import type { BodyMeasure } from '../src/engine/body/measure';
 
 const level = (halfW: number, circ: number, y: number) => ({ y, halfW, halfD: halfW * 0.9, circ });
@@ -46,6 +47,86 @@ describe('draftTee (measurement-drafted t-shirt)', () => {
   });
 });
 
+describe('assemblage manifold des manches', () => {
+  const ref = mkMeasure(0.78);
+
+  it('le corps t-shirt système possède deux vraies emmanchures non soudées', () => {
+    const doc = tshirtDraft(0.7, 0.62, 0.9, 1.52, 64);
+    const assembly = compileAssembly(doc, 64);
+    const ps = 64 * 64;
+    for (const side of ['L', 'R'] as const) {
+      const front = new Set(sideOpeningCells(doc.piece, side, 64));
+      const back = new Set(sideOpeningCells(doc.back!, side, 64));
+      expect(front.size).toBeGreaterThan(8);
+      expect(back.size).toBeGreaterThan(8);
+      // No body front↔back constraint may close either armhole.
+      expect(assembly.filter((s) => front.has(s.i) || back.has(s.j - ps))).toEqual([]);
+    }
+  });
+
+  it('chaque taille BOXY laisse les emmanchures hors des coutures de côté', () => {
+    const m = mkMeasure(0.9);
+    const n = 64;
+    const ps = n * n;
+    for (const size of BOXY_SIZES) {
+      const doc = boxyTee(size, m, ref);
+      const assembly = compileAssembly(doc, n);
+      for (const side of ['L', 'R'] as const) {
+        const front = new Set(sideOpeningCells(doc.piece, side, n));
+        const back = new Set(sideOpeningCells(doc.back!, side, n));
+        expect(front.size).toBeGreaterThan(8);
+        expect(back.size).toBeGreaterThan(8);
+        expect(assembly.filter((s) => front.has(s.i) || back.has(s.j - ps))).toEqual([]);
+      }
+    }
+  });
+
+  it('coud devant→devant et dos→dos sur leurs arcs propres, sans ligne à quatre rims', () => {
+    const doc = boxyTee('M', mkMeasure(0.9), ref);
+    const n = 64;
+    const ps = n * n;
+    const frontCompiled = compileDraft(doc.piece, n);
+    const backCompiled = compileDraft(doc.back!, n);
+    const body = generateSeamedPanels({
+      resolution: n,
+      width: doc.piece.width,
+      height: doc.piece.height,
+      gap: doc.piece.gap,
+      topY: doc.piece.topY,
+      shape: 'freeform',
+      mask: { outline: doc.piece.outline, darts: doc.piece.darts },
+      extraSeams: frontCompiled.extraSeams,
+      maskBack: { outline: doc.back!.outline, darts: doc.back!.darts },
+      extraSeamsBack: backCompiled.extraSeams,
+      manualAssembly: true,
+      assemblySeams: compileAssembly(doc, n),
+    });
+    const sleevePiece = doc.pieces![0]!;
+    const sleeveCompiled = compileDraft(sleevePiece, n);
+    const sleeve = generateSeamedPanels({
+      resolution: n,
+      width: sleevePiece.width,
+      height: sleevePiece.height,
+      gap: sleevePiece.gap,
+      topY: sleevePiece.topY,
+      shape: 'freeform',
+      mask: { outline: sleevePiece.outline, darts: sleevePiece.darts },
+      extraSeams: sleeveCompiled.extraSeams,
+      maskBack: { outline: sleevePiece.outline, darts: sleevePiece.darts },
+      extraSeamsBack: sleeveCompiled.extraSeams,
+      flattenSeams: false,
+    });
+    const pins = sleeveCrossSeams(body, sleeve, doc.piece, doc.back!, 'R', n, true);
+    const frontOpening = new Set(sideOpeningCells(doc.piece, 'R', n));
+    const backOpening = new Set(sideOpeningCells(doc.back!, 'R', n));
+    const pinnedFront = new Set(pins.filter((p) => p.i < ps).map((p) => p.i));
+    const pinnedBack = new Set(pins.filter((p) => p.i >= ps && p.i < 2 * ps).map((p) => p.i - ps));
+    expect(pinnedFront).toEqual(frontOpening);
+    expect(pinnedBack).toEqual(backOpening);
+    expect(pins.every((p) => (p.i < ps ? p.j < body.count + ps : p.j >= body.count + ps))).toBe(true);
+  });
+});
+
 describe('oversizeTee (le patron K.Kose 4 pièces, gradé)', () => {
   const ref = mkMeasure(0.78);
 
@@ -54,7 +135,7 @@ describe('oversizeTee (le patron K.Kose 4 pièces, gradé)', () => {
     expect(doc.back).toBeTruthy();
     expect(doc.pieces!.length).toBe(3);
     expect(doc.pieces!.map((p) => p.wrap).sort()).toEqual(['armL', 'armR', 'neck']);
-    expect(doc.seams!.length).toBe(4); // épaules ×2 + côtés pleine hauteur ×2
+    expect(doc.seams!.length).toBe(4); // épaules ×2 + côtés sous emmanchure ×2
     // La bande resserre : plus courte que l'encolure (aisance négative).
     const bandPiece = doc.pieces!.find((p) => p.wrap === 'neck')!;
     expect(bandPiece.width).toBeLessThan(0.2);
@@ -165,10 +246,9 @@ describe('boxyTee (patron BOXY FIT reproduit — 6 tailles)', () => {
     const f = d.piece, b = d.back!;
     expect(edgeLen(f, 0, BOXY_IDX.tipL)).toBeCloseTo(edgeLen(b, 0, BOXY_IDX.tipL), 3);
     expect(edgeLen(f, BOXY_IDX.tipR, BOXY_IDX.neckR)).toBeCloseTo(edgeLen(b, BOXY_IDX.tipR, BOXY_IDX.neckR), 3);
-    // côté pleine hauteur (emmanchure comprise) : les emmanchures F/B du patron
-    // diffèrent de < 5 mm — le zip m=max absorbe.
-    expect(Math.abs(edgeLen(f, BOXY_IDX.tipL, BOXY_IDX.hemL) - edgeLen(b, BOXY_IDX.tipL, BOXY_IDX.hemL))).toBeLessThan(0.005);
-    expect(Math.abs(edgeLen(f, BOXY_IDX.hemR, BOXY_IDX.tipR) - edgeLen(b, BOXY_IDX.hemR, BOXY_IDX.tipR))).toBeLessThan(0.005);
+    // Les côtés cousus commencent sous les emmanchures.
+    expect(Math.abs(edgeLen(f, BOXY_IDX.uaL, BOXY_IDX.hemL) - edgeLen(b, BOXY_IDX.uaL, BOXY_IDX.hemL))).toBeLessThan(0.005);
+    expect(Math.abs(edgeLen(f, BOXY_IDX.hemR, BOXY_IDX.uaR) - edgeLen(b, BOXY_IDX.hemR, BOXY_IDX.uaR))).toBeLessThan(0.005);
   });
 
   it('IMBRICATION : tête de manche ≈ 98 % des deux emmanchures (l aisance du jersey)', () => {
