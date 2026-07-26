@@ -334,3 +334,59 @@ export function gridSd(grid: {
     return (c00 * (1 - fy) + c10 * fy) * (1 - fz) + (c01 * (1 - fy) + c11 * fy) * fz;
   };
 }
+
+/* ------------------------------------------------------------------------- *
+ * POINTS D'ARRANGEMENT — le concept Clo, dérivé des mensurations RÉELLES.
+ *
+ * Des ancres prédéfinies autour du corps mesuré : cliquer une pièce puis une
+ * pastille la range à cet endroit de la préparation 3D (translation de
+ * staging pure — le patron, les coutures et la pose d'essayage reconstruite
+ * ne changent jamais). Les positions sortent du mètre-ruban, pas de
+ * constantes : elles suivent la stature, la corpulence et la T-pose du scan.
+ * ------------------------------------------------------------------------- */
+
+export interface ArrangementPoint {
+  id: string;
+  labelFr: string;
+  /** Position monde de l'ancre (le corps est centré en x=0/z=0, devant = +z). */
+  pos: [number, number, number];
+}
+
+/** Dégagement devant/derrière le torse pour qu'une pièce à plat ne spawne pas
+ * dans le corps : demi-profondeur mesurée + marge tissu. */
+const ARRANGE_CLEAR = 0.16;
+
+export function arrangementPoints(m: BodyMeasure): ArrangementPoint[] {
+  const torsoY = (m.chest.y + m.waist.y) / 2;
+  const frontZ = m.chest.halfD + ARRANGE_CLEAR;
+  const hipZ = m.hip.halfD + ARRANGE_CLEAR;
+  const sideX = m.shoulderHalfW + ARRANGE_CLEAR + 0.04;
+  const points: ArrangementPoint[] = [
+    { id: 'torso-front', labelFr: 'Devant', pos: [0, torsoY, frontZ] },
+    { id: 'torso-back', labelFr: 'Dos', pos: [0, torsoY, -frontZ] },
+    { id: 'side-right', labelFr: 'Côté droit', pos: [sideX, torsoY, 0] },
+    { id: 'side-left', labelFr: 'Côté gauche', pos: [-sideX, torsoY, 0] },
+    { id: 'hip-front', labelFr: 'Bassin devant', pos: [0, m.hip.y, hipZ] },
+    { id: 'hip-back', labelFr: 'Bassin dos', pos: [0, m.hip.y, -hipZ] },
+    {
+      id: 'leg-right',
+      labelFr: 'Jambe droite',
+      pos: [Math.max(0.09, m.hip.halfW * 0.55), m.thigh.y, m.thigh.halfD + ARRANGE_CLEAR],
+    },
+    {
+      id: 'leg-left',
+      labelFr: 'Jambe gauche',
+      pos: [-Math.max(0.09, m.hip.halfW * 0.55), m.thigh.y, m.thigh.halfD + ARRANGE_CLEAR],
+    },
+  ];
+  if (m.arm) {
+    // Au-dessus de l'axe mesuré du bras (T-pose) : la pièce plane à côté du
+    // bras sans traverser son collider.
+    const armX = m.arm.rootX + 0.12;
+    points.push(
+      { id: 'arm-right', labelFr: 'Bras droit', pos: [armX, m.arm.y + 0.15, m.arm.z] },
+      { id: 'arm-left', labelFr: 'Bras gauche', pos: [-armX, m.arm.y + 0.15, m.arm.z] },
+    );
+  }
+  return points;
+}

@@ -10,8 +10,14 @@ export interface Pick {
   depth: number; // distance along the ray to the grabbed particle
 }
 
-/** Generous world-space tolerance used while arranging whole pattern pieces. */
-export const STAGING_PICK_RADIUS = 0.18;
+/**
+ * Small world-space floor for coarse pattern grids. At ordinary working
+ * distances the 10 CSS-pixel cone below remains authoritative, so a visually
+ * empty gap is not magnetised to a piece several dozen pixels away.
+ */
+export const STAGING_PICK_RADIUS = 0.04;
+/** Minimum visual tolerance promised by C4-2, expressed in CSS pixels. */
+export const STAGING_PICK_RADIUS_PX = 10;
 
 /** A contiguous particle span carrying the identity needed by its caller. */
 export interface TaggedParticleRange<Tag> {
@@ -32,7 +38,11 @@ export interface TaggedPick<Tag> extends Pick {
  * lies inside the pick cylinder. That makes overlapping flat pieces behave
  * like what the user sees: the front piece wins. Iterating the supplied ranges
  * directly also prevents unrelated cloth or system-generated geometry from
- * masking an otherwise valid pattern piece.
+ * masking an otherwise valid pattern piece. `minPickSlope` is the world-space
+ * radius gained per unit of ray depth for a screen-space tolerance. Combining
+ * it with `maxPickDist` keeps nearby/coarse grids easy to grab while ensuring
+ * that zooming the camera out never shrinks the target below the promised
+ * number of CSS pixels.
  */
 export function pickFrontmostInRanges<Tag>(
   positions: Float32Array,
@@ -42,6 +52,7 @@ export function pickFrontmostInRanges<Tag>(
   dir: readonly [number, number, number],
   maxPickDist = STAGING_PICK_RADIUS,
   movable?: (i: number) => boolean,
+  minPickSlope = 0,
 ): TaggedPick<Tag> | null {
   const available = Math.floor(positions.length / 4);
   const limit = Math.min(
@@ -52,7 +63,8 @@ export function pickFrontmostInRanges<Tag>(
     return null;
   }
 
-  const maxPerp2 = maxPickDist * maxPickDist;
+  const safePickSlope =
+    Number.isFinite(minPickSlope) && minPickSlope > 0 ? minPickSlope : 0;
   let best: TaggedPick<Tag> | null = null;
   let bestPerp2 = Number.POSITIVE_INFINITY;
 
@@ -80,7 +92,14 @@ export function pickFrontmostInRanges<Tag>(
         0,
         vx * vx + vy * vy + vz * vz - depth * depth,
       );
-      if (!Number.isFinite(perp2) || perp2 > maxPerp2) continue;
+      const screenRadius = depth * safePickSlope;
+      const allowedRadius = Math.max(maxPickDist, screenRadius);
+      if (
+        !Number.isFinite(perp2) ||
+        perp2 > allowedRadius * allowedRadius
+      ) {
+        continue;
+      }
 
       if (
         !best ||

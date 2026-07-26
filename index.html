@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TOILE — conception manuelle guidée · v139</title>
+  <title>TOILE — du brief au patron · v145</title>
   <style>
     :root {
       color-scheme: dark;
@@ -26,7 +26,7 @@
     }
     #view { width: 100vw; height: 100vh; display: block; touch-action: none; cursor: grab; }
     #view:active { cursor: grabbing; }
-    #view.piece-hover { cursor: move; }
+    #view.piece-hover { cursor: grab; }
     #view.piece-dragging,
     #view.piece-dragging:active { cursor: grabbing; }
     /* 2D mirror of the WebGPU canvas: some systems fail to present WebGPU
@@ -501,6 +501,61 @@
       padding: 6px 9px; cursor: pointer;
     }
     #place-chooser button:hover { background: rgba(70, 58, 48, 0.95); color: rgba(255, 210, 180, 1); }
+    /* 〰 Fronces : même langage visuel que le choix de placement. */
+    #gather-chooser {
+      position: absolute;
+      z-index: 5;
+      top: 50px;
+      left: 12px;
+      right: 12px;
+      display: grid;
+      gap: 7px;
+      margin: 0;
+      padding: 12px;
+      pointer-events: auto;
+      background: rgba(20, 23, 29, 0.98);
+      border: 1px solid rgba(255, 159, 107, 0.34);
+      border-radius: 10px;
+      box-shadow: 0 18px 45px rgba(0, 0, 0, 0.42);
+    }
+    #gather-chooser[hidden] { display: none; }
+    #gather-chooser .q {
+      color: rgba(255, 205, 170, 1);
+      font: 720 12px/1.3 Inter, ui-sans-serif, sans-serif;
+    }
+    #gather-chooser .place-help {
+      color: rgba(221, 225, 232, 0.72);
+      font: 550 10px/1.4 Inter, ui-sans-serif, sans-serif;
+    }
+    #gather-chooser .place-group-label {
+      margin-top: 3px;
+      color: rgba(203, 209, 220, 0.52);
+      font: 700 9px/1 Inter, ui-sans-serif, sans-serif;
+      letter-spacing: 0.11em;
+      text-transform: uppercase;
+    }
+    #gather-chooser .gather-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1.4fr) repeat(4, minmax(0, 1fr));
+      align-items: center;
+      gap: 6px;
+    }
+    #gather-chooser .gather-row span {
+      overflow: hidden;
+      color: rgba(237, 233, 223, 0.92);
+      font: 680 11px/1.2 Inter, ui-sans-serif, sans-serif;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #gather-chooser button {
+      min-height: 32px;
+      font: 650 11px/1.2 Inter, ui-sans-serif, sans-serif;
+      color: rgba(237, 233, 223, 0.9); background: rgba(40, 44, 52, 0.85);
+      border: 1px solid rgba(255, 159, 107, 0.3); border-radius: 6px;
+      padding: 6px 8px; cursor: pointer;
+    }
+    #gather-chooser button:hover { background: rgba(70, 58, 48, 0.95); color: rgba(255, 210, 180, 1); }
+    #gather-chooser #gather-cancel { justify-self: end; min-width: 110px; }
     #placement-status {
       position: absolute;
       z-index: 4;
@@ -764,6 +819,31 @@
       text-align: center;
     }
     #atelier-empty-state[hidden] { display: none; }
+    #at-brief-section textarea {
+      width: 100%;
+      box-sizing: border-box;
+      resize: vertical;
+      min-height: 44px;
+      background: rgba(255, 255, 255, 0.06);
+      color: inherit;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 6px;
+      padding: 7px 9px;
+      font: inherit;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    #at-brief-section textarea:focus-visible {
+      outline: 1px solid rgba(120, 180, 255, 0.7);
+      outline-offset: 1px;
+    }
+    .brief-status {
+      margin: 6px 0 0;
+      font-size: 11px;
+      line-height: 1.5;
+      color: #9fd49f;
+    }
+    .brief-status.brief-status-err { color: #e0b36a; }
     #atelier-empty-state h2 {
       display: block;
       margin: 0;
@@ -960,7 +1040,7 @@
   <canvas id="view" tabindex="-1" aria-label="Vue 3D du vêtement et du mannequin"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 4 — conception manuelle guidée · v139</small></span>
+    <span class="title">TOILE<small>phase 5 — du brief au patron · v145</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
       <span id="resolution-rebuild-status" role="status" aria-live="polite" hidden></span>
@@ -985,7 +1065,6 @@
           <span class="mode-chip only-design">2D</span>
           <span class="mode-chip only-simulation">3D</span>
           <button id="at-help" type="button" aria-label="Afficher l’aide des gestes et raccourcis" aria-expanded="false" aria-controls="atelier-cheatsheet" title="Afficher la fiche des gestes et raccourcis de l’atelier">?</button>
-          <button id="at-exit" type="button" title="Quitter l’atelier et revenir aux scènes de démonstration" aria-label="Quitter l’atelier">↩</button>
         </div>
       </div>
 
@@ -1000,6 +1079,21 @@
         </label>
         <input id="at-avatar-stature" type="range" min="140" max="210" step="1" value="175" aria-describedby="at-avatar-stature-help" aria-valuetext="175 centimètres">
         <p id="at-avatar-stature-help" class="avatar-size-help">Redimensionne le mannequin et ses collisions. Le vêtement garde sa taille choisie ; utilisez « Taille du vêtement » pour le regrader.</p>
+      </section>
+
+      <section class="tool-section" id="at-brief-section" aria-labelledby="atelier-brief-title">
+        <div class="tool-section-head">
+          <span class="tool-step">0</span>
+          <div>
+            <h2 id="atelier-brief-title">Brief</h2>
+            <small>Décris le vêtement, TOILE le prépare</small>
+          </div>
+        </div>
+        <textarea id="at-brief-input" rows="2" aria-label="Brief du vêtement" placeholder="« hoodie en maille, taille L, mannequin homme »"></textarea>
+        <div class="tgrp one-column">
+          <button id="at-brief-go" title="Interpréter le brief puis préparer le vêtement : patron, taille, tissu, mannequin — et lancer l’essayage 3D">✨ Créer depuis le brief</button>
+        </div>
+        <p id="at-brief-status" class="brief-status" aria-live="polite" hidden></p>
       </section>
 
       <section class="tool-section" aria-labelledby="atelier-patron-title">
@@ -1033,10 +1127,12 @@
           </div>
         </div>
         <div class="tgrp">
-          <button id="at-piece" data-first-tip="Posez les points du contour sur la silhouette, puis cliquez le premier point pour fermer la pièce." title="Tracer une pièce à la plume sur la silhouette (le gabarit grandeur nature) — à la fermeture, choisissez où elle va : devant, dos, bras, cou… ou libre">✎ Nouvelle pièce</button>
+          <button id="at-piece" data-first-tip aria-pressed="false" title="Tracer une pièce à la plume sur la silhouette (le gabarit grandeur nature) — à la fermeture, choisissez où elle va : devant, dos, bras, cou… ou libre">✎ Nouvelle pièce</button>
           <button id="at-pen" hidden title="Fermer la forme dessinée (ou cliquer le premier point)">✓ Terminer le contour</button>
-          <button id="at-length" data-first-tip="Tirez dans le sens du bord. Le fantôme montre votre main et les flèches indiquent la direction réellement efficace." aria-pressed="false" title="Modifier un bord sans limite. Sur une courbe jaune, tirer près d’une extrémité change la longueur totale en gardant l’autre extrémité fixe.">↔ Longueur</button>
-          <button id="at-snap" data-first-tip="Approchez la valeur recherchée : TOILE verrouille alors couture, même longueur, parallèle ou angle droit." aria-pressed="false" title="Option du mode Longueur : près de la bonne valeur, ajuste exactement la longueur, le parallélisme ou l’angle droit.">🧲 Ajustement auto</button>
+          <button id="at-length" data-first-tip aria-pressed="false" title="Modifier un bord sans limite. Sur une courbe jaune, tirer près d’une extrémité change la longueur totale en gardant l’autre extrémité fixe.">↔ Longueur</button>
+          <button id="at-snap" data-first-tip aria-pressed="false" title="Option du mode Longueur : près de la bonne valeur, ajuste exactement la longueur, le parallélisme ou l’angle droit.">🧲 Ajustement auto</button>
+          <button id="at-cut" data-first-tip aria-pressed="false" title="Couper & Coudre : cliquez deux points sur le contour d’une pièce — elle se scinde le long de la ligne et la couture se pose toute seule. Idéal pour un empiècement ou un colorblock.">✂ Découper</button>
+          <button id="at-gather" data-first-tip aria-pressed="false" title="Fronces : cliquez une couture, choisissez le côté qui fronce et le ratio — le bord est recoupé plus long, l’essayage fronce le tissu.">〰 Fronces</button>
         </div>
       </section>
 
@@ -1049,9 +1145,9 @@
           </div>
         </div>
         <div class="tgrp">
-          <button id="at-link" data-first-tip="Cliquez les deux bords à marier : leurs longueurs évolueront ensuite ensemble, sans créer de couture." aria-pressed="false" title="Marier deux segments : cliquez le premier bord puis le second. Leurs longueurs évolueront ensemble. Cliquez un bord déjà lié pour le dissocier.">🔗 Marier</button>
-          <button id="at-sew" data-first-tip="Cliquez le premier bord, puis son bord partenaire. Les couleurs vous permettent de suivre la couture en 2D et en 3D." aria-pressed="false" title="Coudre deux bords : cliquez le bouton, puis le premier bord et le second. Pour une poche posée, cliquez directement un côté pointillé.">🪡 Coudre</button>
-          <button id="at-zipper" data-first-tip="Sélectionnez les deux rubans du bas vers le haut. La fermeture sera fermée au premier essayage." aria-pressed="false" title="Ajouter une fermeture éclair : cliquez le premier bord, puis le bord opposé. Les deux rubans restent identifiables dans le patron et sont fermés au premier essayage.">⚡ Fermeture éclair</button>
+          <button id="at-link" data-first-tip aria-pressed="false" title="Marier deux segments : cliquez le premier bord puis le second. Leurs longueurs évolueront ensemble. Cliquez un bord déjà lié pour le dissocier.">🔗 Marier</button>
+          <button id="at-sew" data-first-tip aria-pressed="false" title="Coudre deux bords : cliquez le bouton, puis le premier bord et le second. Pour une poche posée, cliquez directement un côté pointillé.">🪡 Coudre</button>
+          <button id="at-zipper" data-first-tip aria-pressed="false" title="Ajouter une fermeture éclair : cliquez le premier bord, puis le bord opposé. Les deux rubans restent identifiables dans le patron et sont fermés au premier essayage.">⚡ Fermeture éclair</button>
         </div>
       </section>
 
@@ -1093,8 +1189,8 @@
         <small id="at-gsm-help" role="status" aria-live="polite">Hérité du tissu global.</small>
         <p id="at-gsm-explanation" class="gsm-explanation">Le GSM ajuste la masse et l’inertie. La souplesse, l’élasticité, la friction et l’épaisseur restent définies par le tissu ou un relevé KES/FAST.</p>
         <div class="tgrp">
-          <button id="at-place" title="Choisir comment la pièce active sera placée pour l’essayage. Le mode automatique reconstruit sa pose depuis les coutures, indépendamment de sa position dans le plan.">◎ Placement</button>
-          <button id="at-reverse" title="Inverser le sens de correspondance des coutures de la pièce active si la prévisualisation montre une torsion">↔ Sens couture</button>
+          <button id="at-place" data-first-tip aria-pressed="false" title="Choisir comment la pièce active sera placée pour l’essayage. Le mode automatique reconstruit sa pose depuis les coutures, indépendamment de sa position dans le plan.">◎ Placement</button>
+          <button id="at-reverse" data-first-tip title="Inverser le sens de correspondance des coutures de la pièce active si la prévisualisation montre une torsion">↔ Sens couture</button>
           <button id="at-del" title="Supprimer la pièce active — Ctrl/Commande + Z permet d’annuler">− Supprimer</button>
           <button id="at-undo" disabled title="Annuler la dernière modification du patron (Commande/Ctrl + Z)">↶ Annuler</button>
         </div>
@@ -1135,10 +1231,15 @@
       <dl class="cheatsheet-gestures">
         <dt>Fond 2D + glisser</dt><dd>Déplacer le plan sans modifier les pièces.</dd>
         <dt>Molette</dt><dd>Zoomer précisément sous le pointeur.</dd>
+        <dt>Point + glisser</dt><dd>Déplacer un sommet du patron et ajuster directement sa forme.</dd>
         <dt>Clic droit</dt><dd>Sélectionner toute une pièce ; avec ⌘/Ctrl, former un groupe.</dd>
         <dt>Coin + glisser</dt><dd>Redimensionner la pièce ou tout le groupe sélectionné.</dd>
         <dt>Alt + glisser un bord</dt><dd>Créer une pince ; un glisser simple bombe le bord.</dd>
+        <dt>✂ Découper</dt><dd>Deux clics sur le contour d’une pièce : elle se scinde, la couture se pose seule — empiècement ou colorblock en un geste.</dd>
+        <dt>〰 Fronces</dt><dd>Cliquez une couture puis le côté qui fronce (×1,25 à ×2,5) : le bord est recoupé plus long, l’essayage fronce le tissu.</dd>
         <dt>Survol 3D + glisser</dt><dd>Déplacer l’exemplaire surligné pour préparer la vue, sans changer l’assemblage final.</dd>
+        <dt>⊹ Arranger</dt><dd>Cliquez une pièce en 3D puis une pastille autour du corps (Devant, Dos, Bras…) : elle s’y range en deux clics, sans drag.</dd>
+        <dt>R</dt><dd>Réinitialiser le tissu dans sa pose de départ.</dd>
         <dt>Échap</dt><dd>Annuler le geste ou désarmer l’outil actif.</dd>
         <dt>⌘/Ctrl + Z</dt><dd>Annuler la dernière modification validée.</dd>
       </dl>
@@ -1183,11 +1284,32 @@
       <span id="placement-status-message"></span>
       <button id="at-sim-without-piece" type="button" hidden>Simuler sans cette pièce</button>
     </div>
+    <!-- 〰 FRONCES : après le clic sur une couture, choisir le côté qui fronce
+         et le ratio. Le bord choisi est recoupé plus long (l'embu du tailleur),
+         l'essayage fronce naturellement le tissu le long de la couture. -->
+    <div id="gather-chooser" hidden>
+      <span class="q">Fronces sur cette couture :</span>
+      <span class="place-help">Le côté choisi est recoupé plus long — à l’essayage, le tissu fronce le long de la couture.</span>
+      <span class="place-group-label">Quel côté fronce, et de combien ?</span>
+      <div class="gather-row"><span id="gather-side-a-label">Pièce A</span>
+        <button data-gather-side="a" data-gather-ratio="1.25">×1,25</button>
+        <button data-gather-side="a" data-gather-ratio="1.5">×1,5</button>
+        <button data-gather-side="a" data-gather-ratio="2">×2</button>
+        <button data-gather-side="a" data-gather-ratio="2.5">×2,5</button>
+      </div>
+      <div class="gather-row"><span id="gather-side-b-label">Pièce B</span>
+        <button data-gather-side="b" data-gather-ratio="1.25">×1,25</button>
+        <button data-gather-side="b" data-gather-ratio="1.5">×1,5</button>
+        <button data-gather-side="b" data-gather-ratio="2">×2</button>
+        <button data-gather-side="b" data-gather-ratio="2.5">×2,5</button>
+      </div>
+      <button id="gather-cancel" type="button">Annuler</button>
+    </div>
     <section id="atelier-empty-state" aria-labelledby="atelier-empty-state-title" aria-live="polite" aria-atomic="true" hidden>
       <h2 id="atelier-empty-state-title">Commencez votre patron</h2>
       <p>Partez d’un modèle prêt à ajuster ou tracez votre première pièce dans le plan 2D, puis choisissez son placement sur le mannequin.</p>
       <div class="empty-state-actions">
-        <button id="at-empty-tshirt" type="button">1️⃣ Charger un T-shirt</button>
+        <button id="at-empty-tshirt" type="button">Choisir un modèle</button>
         <button id="at-empty-piece" type="button">✎ Tracer une pièce</button>
       </div>
     </section>
@@ -1198,8 +1320,9 @@
       <span class="pane-kicker">Vue 3D</span>
       <strong>Préparation et essayage</strong>
     </div>
-    <button id="at-move3d" data-first-tip="Survolez jusqu’au contour bleu, puis glissez : seul cet exemplaire bouge et l’assemblage final reste inchangé." aria-pressed="true" title="Déplacer librement la pièce ou l’exemplaire saisi pour organiser la préparation 3D. Le patron et les coutures ne changent pas; l’essayage reconstruira automatiquement la pose finale.">✥ Déplacer une pièce</button>
-    <button id="at-reset3d" title="Annuler uniquement le déplacement manuel de préparation de la pièce active. Son placement final sera toujours reconstruit depuis les coutures au lancement de l’essayage.">⌖ Réinitialiser la pose</button>
+    <button id="at-move3d" data-first-tip aria-pressed="true" title="Déplacer librement la pièce ou l’exemplaire saisi pour organiser la préparation 3D. Le patron et les coutures ne changent pas; l’essayage reconstruira automatiquement la pose finale.">✥ Déplacer une pièce</button>
+    <button id="at-arrange" data-first-tip aria-pressed="false" title="Points d’arrangement : cliquez une pièce puis une pastille autour du mannequin (Devant, Dos, Côtés, Bras, Bassin, Jambes) — la pièce s’y range en deux clics. Préparation seulement : patron, coutures et essayage inchangés.">⊹ Arranger sur le corps</button>
+    <button id="at-reset3d" title="Annuler uniquement le déplacement manuel de préparation de la pièce active. Son placement final sera toujours reconstruit depuis les coutures au lancement de l’essayage.">⌖ Annuler le déplacement manuel</button>
   </div>
   <div id="atelier-statusbar" role="status">
     <span class="status-dot" aria-hidden="true"></span>

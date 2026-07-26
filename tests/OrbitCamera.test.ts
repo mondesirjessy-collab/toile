@@ -5,6 +5,15 @@ const distance = (a: readonly number[], b: readonly number[]): number =>
   Math.hypot(a[0]! - b[0]!, a[1]! - b[1]!, a[2]! - b[2]!);
 
 describe('OrbitCamera mannequin framing', () => {
+  it('convertit exactement une tolérance CSS en cône de picking', () => {
+    const camera = new OrbitCamera();
+    const slope = camera.pickSlopeForPixels(10, 720);
+
+    expect(slope).toBeCloseTo((2 * Math.tan(Math.PI / 8) * 10) / 720);
+    expect(camera.pickSlopeForPixels(10, 0)).toBe(0);
+    expect(camera.pickSlopeForPixels(Number.NaN, 720)).toBe(0);
+  });
+
   it('centres a standing avatar and brings it closer than the default view', () => {
     const camera = new OrbitCamera();
     camera.frameAvatar(1.75, 1);
@@ -96,6 +105,30 @@ describe('OrbitCamera gesture cancellation', () => {
     };
     return { canvas, captures, releases, dispatch };
   };
+
+  it('réserve le drag à la pièce sur un hit et orbite seulement sur le vide', () => {
+    const pieceCamera = new OrbitCamera();
+    const pieceHarness = harness();
+    pieceCamera.attach(pieceHarness.canvas, () => false);
+    const pieceView = pieceCamera.pickRay(0, 0, 1).origin;
+
+    pieceHarness.dispatch('pointerdown', pointer(3, 100, 100));
+    pieceHarness.dispatch('pointermove', pointer(3, 170, 130));
+
+    expect(pieceCamera.pickRay(0, 0, 1).origin).toEqual(pieceView);
+    expect(pieceHarness.captures.size).toBe(0);
+
+    const emptyCamera = new OrbitCamera();
+    const emptyHarness = harness();
+    emptyCamera.attach(emptyHarness.canvas, () => true);
+    const emptyView = emptyCamera.pickRay(0, 0, 1).origin;
+
+    emptyHarness.dispatch('pointerdown', pointer(4, 100, 100));
+    emptyHarness.dispatch('pointermove', pointer(4, 170, 130));
+
+    expect(distance(emptyCamera.pickRay(0, 0, 1).origin, emptyView)).toBeGreaterThan(0.01);
+    expect(emptyHarness.captures.has(4)).toBe(true);
+  });
 
   it('arrête un orbit en cours et ignore les événements physiques tardifs', () => {
     const camera = new OrbitCamera();

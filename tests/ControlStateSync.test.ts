@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { FABRIC_PHYSICS, type FabricPhysics } from '../src/engine/solver/FabricMaterial';
 import {
   fabricProfileReport,
+  fixedGarmentSizeMessage,
   GLOBAL_FABRIC_INHERIT_VALUE,
   inheritedFabricLabel,
   normalizeResolution,
@@ -139,6 +140,14 @@ describe('synchronisation de la résolution', () => {
   });
 });
 
+describe('libellé de regradation', () => {
+  it('dit explicitement qu’un patron chargé conserve sa taille fixe', () => {
+    expect(fixedGarmentSizeMessage('S')).toBe(
+      'Le vêtement garde sa taille (S) — changez la taille du vêtement pour le regrader.',
+    );
+  });
+});
+
 describe('fabric profile calibration state', () => {
   beforeEach(() => {
     fakeControllers.length = 0;
@@ -160,7 +169,7 @@ describe('fabric profile calibration state', () => {
         changed,
         jersey,
         'Jersey',
-        'preset Jersey · calibré',
+        'preset Jersey · calibration TOILE',
       ),
     ).toBe('modifié (base Jersey)');
     expect(
@@ -168,9 +177,9 @@ describe('fabric profile calibration state', () => {
         { ...jersey },
         jersey,
         'Jersey',
-        'preset Jersey · calibré',
+        'preset Jersey · calibration TOILE',
       ),
-    ).toBe('preset Jersey · calibré');
+    ).toBe('preset Jersey · calibration TOILE');
   });
 
   it('marque immédiatement un réglage manuel comme modification du preset', async () => {
@@ -207,7 +216,7 @@ describe('fabric profile calibration state', () => {
     (panel as unknown as { toast: () => void }).toast = vi.fn();
     reapply.invoke();
 
-    expect(report.object.fabricReport).toBe('preset Jersey · calibré');
+    expect(report.object.fabricReport).toBe('preset Jersey · calibration TOILE');
     expect(panel.snapshotGarment().fabric).toMatchObject({
       preset: 'Jersey',
       stretchExp: Math.log10(FABRIC_PHYSICS.Jersey!.stretch),
@@ -269,7 +278,7 @@ describe('resynchronisation des sélecteurs', () => {
     }
   });
 
-  it('masque seulement la navigation procédurale dans l’atelier puis la restaure', async () => {
+  it('garde le sélecteur de scène visible dans l’atelier mais masque les patrons procéduraux', async () => {
     const { ControlPanel } = await import('../src/app/ControlPanel');
     const callbacks = makeCallbacks();
     const panel = new ControlPanel(callbacks, { resolution: 64, substeps: 20 });
@@ -291,7 +300,10 @@ describe('resynchronisation des sélecteurs', () => {
       fabricPreset: 'Jersey',
     });
 
-    expect(scene.hidden).toBe(true);
+    // L'atelier étant le visage du logiciel, le sélecteur de scène reste
+    // visible (c'est la porte vers les scènes moteur via Réglages) ; seuls les
+    // patrons procéduraux propres aux démos sont masqués.
+    expect(scene.hidden).toBe(false);
     expect(proceduralFolders.every((folder) => folder.hidden)).toBe(true);
     expect(
       fakeFolders.find((folder) => folder.folderName === 'tissu')?.hidden,
@@ -299,6 +311,9 @@ describe('resynchronisation des sélecteurs', () => {
     expect(
       fakeFolders.find((folder) => folder.folderName === 'fichier')?.hidden,
     ).toBe(false);
+    expect(
+      fakeFolders.find((folder) => folder.folderName === 'épingles')?.hidden,
+    ).toBe(true);
 
     panel.syncEngineSelects({
       scene: 'robe',
@@ -309,6 +324,9 @@ describe('resynchronisation des sélecteurs', () => {
 
     expect(scene.hidden).toBe(false);
     expect(proceduralFolders.every((folder) => !folder.hidden)).toBe(true);
+    expect(
+      fakeFolders.find((folder) => folder.folderName === 'épingles')?.hidden,
+    ).toBe(false);
     expect(
       fakeControllers.filter((controller) => controller.property === 'scene'),
     ).toHaveLength(1);
@@ -335,7 +353,8 @@ describe('resynchronisation des sélecteurs', () => {
     };
     expect(panel.applyGarment(imported)).toBe(true);
 
-    expect(scene.hidden).toBe(true);
+    // Sélecteur de scène visible dans l'atelier ; patrons procéduraux masqués.
+    expect(scene.hidden).toBe(false);
     expect(proceduralFolders.every((folder) => folder.hidden)).toBe(true);
     expect(callbacks.onScene).toHaveBeenLastCalledWith('atelier');
   });
@@ -397,7 +416,7 @@ describe('retour utilisateur des exports', () => {
     );
   });
 
-  it('reste silencieux lorsqu’aucun SVG n’a pu être produit', async () => {
+  it('signale une erreur lorsqu’aucun SVG n’a pu être produit', async () => {
     const { ControlPanel } = await import('../src/app/ControlPanel');
     const callbacks = makeCallbacks();
     callbacks.onPatternSvg.mockReturnValue(null);
@@ -414,7 +433,79 @@ describe('retour utilisateur des exports', () => {
 
     svg.invoke();
 
-    expect(toast).not.toHaveBeenCalled();
+    expect(toast).toHaveBeenCalledWith('Échec de l’export SVG.', false);
+  });
+
+  it('signale aussi une exception levée pendant l’export SVG', async () => {
+    const { ControlPanel } = await import('../src/app/ControlPanel');
+    const callbacks = makeCallbacks();
+    callbacks.onPatternSvg.mockImplementation(() => {
+      throw new Error('SVG indisponible');
+    });
+    const panel = new ControlPanel(callbacks, {
+      resolution: 64,
+      substeps: 20,
+    });
+    const toast = vi.fn();
+    (panel as unknown as { toast: typeof toast }).toast = toast;
+    const svg = fakeControllers.find(
+      (controller) =>
+        controller.folderName === 'fichier' && controller.property === 'svg',
+    )!;
+
+    svg.invoke();
+
+    expect(toast).toHaveBeenCalledWith('Échec de l’export SVG.', false);
+  });
+
+  it('attend le snapshot 3D puis annonce le nom GLB téléchargé', async () => {
+    const { ControlPanel } = await import('../src/app/ControlPanel');
+    const callbacks = makeCallbacks();
+    callbacks.onGltf.mockResolvedValue('toile-atelier.glb');
+    const panel = new ControlPanel(callbacks, {
+      resolution: 64,
+      substeps: 20,
+    });
+    const toast = vi.fn();
+    (panel as unknown as { toast: typeof toast }).toast = toast;
+    const glb = fakeControllers.find(
+      (controller) =>
+        controller.folderName === 'fichier' && controller.property === 'glb',
+    )!;
+
+    glb.invoke();
+
+    await vi.waitFor(() =>
+      expect(toast).toHaveBeenCalledWith(
+        'Modèle 3D exporté — toile-atelier.glb',
+      ),
+    );
+  });
+
+  it('signale un GLB absent ou une erreur asynchrone', async () => {
+    const { ControlPanel } = await import('../src/app/ControlPanel');
+    const callbacks = makeCallbacks();
+    callbacks.onGltf.mockResolvedValueOnce(null);
+    const panel = new ControlPanel(callbacks, {
+      resolution: 64,
+      substeps: 20,
+    });
+    const toast = vi.fn();
+    (panel as unknown as { toast: typeof toast }).toast = toast;
+    const glb = fakeControllers.find(
+      (controller) =>
+        controller.folderName === 'fichier' && controller.property === 'glb',
+    )!;
+
+    glb.invoke();
+    await vi.waitFor(() =>
+      expect(toast).toHaveBeenCalledWith('Échec de l’export GLB.', false),
+    );
+
+    callbacks.onGltf.mockRejectedValueOnce(new Error('lecture GPU impossible'));
+    glb.invoke();
+    await vi.waitFor(() => expect(toast).toHaveBeenCalledTimes(2));
+    expect(toast).toHaveBeenLastCalledWith('Échec de l’export GLB.', false);
   });
 
   it('annonce le nom du vêtement JSON téléchargé', async () => {
@@ -465,5 +556,40 @@ describe('retour utilisateur des exports', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('signale une erreur si le téléchargement JSON ne peut pas démarrer', async () => {
+    const { ControlPanel } = await import('../src/app/ControlPanel');
+    const callbacks = makeCallbacks();
+    const panel = new ControlPanel(callbacks, {
+      resolution: 64,
+      substeps: 20,
+    });
+    const toast = vi.fn();
+    (panel as unknown as { toast: typeof toast }).toast = toast;
+    vi.stubGlobal('document', {
+      createElement: vi.fn(() => ({
+        href: '',
+        download: '',
+        click: vi.fn(),
+        remove: vi.fn(),
+      })),
+      body: { appendChild: vi.fn() },
+    });
+    vi.stubGlobal('URL', {
+      createObjectURL: vi.fn(() => {
+        throw new Error('quota navigateur');
+      }),
+      revokeObjectURL: vi.fn(),
+    });
+    const exporter = fakeControllers.find(
+      (controller) =>
+        controller.folderName === 'fichier' &&
+        controller.property === 'exporter',
+    )!;
+
+    exporter.invoke();
+
+    expect(toast).toHaveBeenCalledWith('Échec de l’export JSON.', false);
   });
 });

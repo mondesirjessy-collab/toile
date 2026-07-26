@@ -4,6 +4,8 @@ import {
   SceneBuildSupersededError,
   SceneLifecycle,
   SceneTeardownTimeoutError,
+  SceneTransitionChurnError,
+  SceneTransitionStallError,
   type SceneLifecycleState,
 } from '../src/app/SceneLifecycle';
 
@@ -326,5 +328,124 @@ describe('SceneLifecycle', () => {
     expect(completed).toEqual(['nouvelle']);
     expect(lifecycle.state).toBe('idle');
     expect(errors).toHaveLength(1);
+  });
+
+  it('watchdog : signale un blocage hors des gardes de phase, puis escalade une seule fois', async () => {
+    vi.useFakeTimers();
+    const reports: Array<{ error: unknown; phase: string; target: string }> = [];
+    const lifecycle = new SceneLifecycle<string>({
+      buildTimeoutMs: 0, // garde de phase désactivée : le build peut pendre sans borne
+      watchdogTimeoutMs: 120,
+      teardown: () => undefined,
+      build: () => new Promise<void>(() => {}),
+      onError: (error, context) => reports.push({
+        error,
+        phase: context.phase,
+        target: context.target,
+      }),
+    });
+
+    lifecycle.request('tenue');
+    await flushMicrotasks();
+    expect(lifecycle.state).toBe('building');
+
+    await vi.advanceTimersByTimeAsync(119);
+    expect(reports).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({ phase: 'watchdog', target: 'tenue' });
+    expect(reports[0]!.error).toBeInstanceOf(SceneTransitionStallError);
+    expect((reports[0]!.error as SceneTransitionStallError).stuckState).toBe('building');
+
+    // Un plein délai plus tard sans progrès : 2ᵉ signalement (l'hôte passe en
+    // fatal), puis PLUS RIEN — le watchdog ne spamme pas un moteur mort.
+    await vi.advanceTimersByTimeAsync(120);
+    expect(reports).toHaveLength(2);
+    expect((reports[1]!.error as SceneTransitionStallError).elapsedMs).toBe(240);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(reports).toHaveLength(2);
+  });
+
+  it('watchdog : ne se déclenche jamais sur des transitions saines', async () => {
+    vi.useFakeTimers();
+    const reports: unknown[] = [];
+    const lifecycle = new SceneLifecycle<string>({
+      teardown: () => undefined,
+      build: () => undefined,
+      onError: (error) => reports.push(error),
+    });
+
+    lifecycle.request('drapé');
+    await lifecycle.whenIdle();
+    lifecycle.request('atelier');
+    await lifecycle.whenIdle();
+    expect(lifecycle.state).toBe('idle');
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(reports).toEqual([]);
+  });
+
+  it('churn : des requêtes ré-entrantes qui avortent chaque build finissent signalées', async () => {
+    const reports: Array<{ error: unknown; phase: string }> = [];
+    const built: string[] = [];
+    let reentries = 0;
+    let lifecycleRef!: SceneLifecycle<string>;
+    const lifecycle = new SceneLifecycle<string>({
+      watchdogTimeoutMs: 0, // isole le détecteur structurel du timer
+      teardown: () => undefined,
+      build: (target) => {
+        built.push(target);
+      },
+      onStateChange: (state) => {
+        // Simule un hôte pathologique : un observateur relance une transition
+        // depuis l'intérieur du callback « building », avortant le contrôleur
+        // tout neuf — le build est sauté sans erreur, à l'infini (forme
+        // machine du wedge TOILE-22).
+        if (state === 'building' && reentries < 8) {
+          reentries++;
+          lifecycleRef.request(`cible-${reentries}`);
+        }
+      },
+      onError: (error, context) => reports.push({ error, phase: context.phase }),
+    });
+    lifecycleRef = lifecycle;
+
+    lifecycle.request('cible-0');
+    await lifecycle.whenIdle();
+
+    expect(built).toEqual(['cible-8']); // seule la dernière cible est construite
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({ phase: 'watchdog' });
+    expect(reports[0]!.error).toBeInstanceOf(SceneTransitionChurnError);
+    expect((reports[0]!.error as SceneTransitionChurnError).skippedBuilds).toBe(8);
+    expect(lifecycle.state).toBe('idle');
+  });
+
+  it('borne la métrique GPU : un getLiveBufferCount qui pend coûte la métrique, jamais la machine', async () => {
+    vi.useFakeTimers();
+    const reports: Array<{ error: unknown; phase: string }> = [];
+    const built: string[] = [];
+    const lifecycle = new SceneLifecycle<string>({
+      liveBufferTimeoutMs: 40,
+      teardown: () => undefined,
+      build: (target) => {
+        built.push(target);
+      },
+      getLiveBufferCount: () => new Promise<number>(() => {}),
+      onError: (error, context) => reports.push({ error, phase: context.phase }),
+    });
+
+    lifecycle.request('ensemble');
+    const idle = lifecycle.whenIdle();
+    await vi.advanceTimersByTimeAsync(40);
+    await idle;
+
+    expect(built).toEqual(['ensemble']);
+    expect(lifecycle.state).toBe('idle');
+    expect(lifecycle.metrics.liveBuffersAfterEach).toEqual([]);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({ phase: 'liveBuffers' });
+    expect(String((reports[0]!.error as Error).message)).toContain('getLiveBufferCount');
   });
 });

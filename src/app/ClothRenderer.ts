@@ -241,9 +241,16 @@ fn vsRibbon(@builtin(vertex_index) drawVertex: u32) -> VSOut {
 }
 
 fn shade_fabric(in: VSOut, n: vec3f, visualFront: bool, minimumShade: f32) -> vec4f {
+  // Studio à deux sources : key avant-haut-droite + fill arrière-haut-gauche.
+  // Le fill (écran, pondéré) éclaire dos et flancs sans écraser le modelé des
+  // plis que le key sculpte — fini le vêtement noir dès que la caméra passe
+  // derrière le mannequin.
   let L = normalize(vec3f(0.4, 0.9, 0.35));
+  let F = normalize(vec3f(-0.45, 0.4, -0.8));
   // Wrap ("half-lambert") diffuse keeps folds readable in the shadowed side.
-  let wrap = clamp(dot(n, L) * 0.5 + 0.5, 0.0, 1.0);
+  let wrapKey = clamp(dot(n, L) * 0.5 + 0.5, 0.0, 1.0);
+  let wrapFill = clamp(dot(n, F) * 0.5 + 0.5, 0.0, 1.0);
+  let wrap = clamp(wrapKey + 0.4 * wrapFill * (1.0 - wrapKey), 0.0, 1.0);
   var base = select(fabric.back.rgb, fabric.face.rgb, visualFront);
   var exponent = fabric.face.a;
   var ambient = fabric.back.a;
@@ -282,7 +289,9 @@ fn fsRibbon(in: VSOut) -> @location(0) vec4f {
   // A closed seam allowance is narrower than one cloth cell. The shared,
   // continuously interpolated normal keeps it readable without revealing the
   // internal cap triangulation.
-  return shade_fabric(in, n, true, 0.45);
+  // 0.32 : la bande de surplus reste lisible en inspection rapprochée mais ne
+  // « flashe » plus en éclats clairs au col et aux épaules. (backlog TOILE-21)
+  return shade_fabric(in, n, true, 0.32);
 }
 `;
 
@@ -313,9 +322,14 @@ fn vs(@location(0) pos: vec3f, @location(1) normal: vec3f, @location(2) color: v
 
 @fragment
 fn fs(in: VSOut) -> @location(0) vec4f {
+  // Key + fill assortis au tissu : le dos du mannequin reste lisible quand la
+  // caméra tourne, sans aplatir le relief du corps.
   let L = normalize(vec3f(0.4, 0.9, 0.35));
-  let diff = max(dot(normalize(in.normal), L), 0.0);
-  let shade = 0.3 + 0.7 * diff;
+  let F = normalize(vec3f(-0.45, 0.4, -0.8));
+  let n = normalize(in.normal);
+  let diff = max(dot(n, L), 0.0);
+  let fill = max(dot(n, F), 0.0);
+  let shade = min(0.24 + 0.62 * diff + 0.3 * fill, 1.0);
   return vec4f(in.color * shade, 1.0);
 }
 `;
@@ -843,7 +857,7 @@ export class ClothRenderer {
       colorAttachments: [
         {
           view: this.context.getCurrentTexture().createView(),
-          clearValue: { r: 0.075, g: 0.08, b: 0.095, a: 1 },
+          clearValue: { r: 0.11, g: 0.118, b: 0.138, a: 1 },
           loadOp: 'clear',
           storeOp: 'store',
         },

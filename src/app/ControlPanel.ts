@@ -101,9 +101,9 @@ export interface PanelCallbacks {
   onShirtPattern(p: { sleeve: number }): void;
   onSkirtPattern(p: { length: number; flare: number }): void;
   onPatternPdf(): void;
-  onPatternSvg(): string | null | void;
+  onPatternSvg(): string | null;
   onSeamAllowance(cm: number): void;
-  onGltf(): void;
+  onGltf(): string | null | Promise<string | null>;
   onPins(held: boolean): void;
   onFitMap(on: boolean): void;
   onReset(): void;
@@ -245,7 +245,7 @@ export class ControlPanel {
   private fabricDiagnosticLines: string[] = [];
   private fabricBaseline: FabricPhysics = { ...FABRIC_PHYSICS.Jersey! };
   private fabricBaselineName = 'Jersey';
-  private fabricCalibratedReport = 'preset Jersey · calibré';
+  private fabricCalibratedReport = 'preset Jersey · calibration TOILE';
 
   constructor(cb: PanelCallbacks, initial: { resolution: number; substeps: number }) {
     this.cb = cb;
@@ -289,7 +289,7 @@ export class ControlPanel {
       pinCorners: false,
       fitMap: false,
       preset: 'Jersey',
-      fabricReport: 'preset Jersey · calibré',
+      fabricReport: 'preset Jersey · calibration TOILE',
       motif: 'uni',
       motifCm: 5,
       motifCouleur: [1, 1, 1] as [number, number, number],
@@ -321,7 +321,12 @@ export class ControlPanel {
         this.cb.onScene(m);
       });
     this.controllers.push(this.selectControllers.scene);
-    this.nonAtelierControls.push(this.selectControllers.scene);
+    // Le sélecteur de scène reste visible DANS l'atelier : l'atelier étant le
+    // visage du logiciel, c'est par Réglages qu'on rejoint les scènes moteur
+    // (drapé, couture, robe…). Il n'est donc PAS dans nonAtelierControls — seuls
+    // les contrôles procéduraux propres aux scènes de démo y restent masqués.
+    // (Le wedge historique de bascule depuis l'atelier — TOILE-22 — est corrigé,
+    // donc ré-exposer ce sélecteur est sûr.)
     this.selectControllers.body = this.gui
       .add(this.settings, 'body', [...SELECTABLE_BODY_OPTIONS])
       .name('mannequin')
@@ -511,7 +516,7 @@ export class ControlPanel {
         .name('marge de couture (cm)')
         .onChange((v: number) => this.cb.onSeamAllowance(v)),
     );
-    file.add({ glb: () => this.cb.onGltf() }, 'glb').name('exporter en 3D (.glb)');
+    file.add({ glb: () => void this.exportGltf() }, 'glb').name('exporter en 3D (.glb)');
     file.add({ exporter: () => this.exportGarment() }, 'exporter').name('exporter le vêtement (.json)');
     file.add({ importer: () => this.importGarment() }, 'importer').name('importer un vêtement');
 
@@ -520,6 +525,9 @@ export class ControlPanel {
       pins.add(this.settings, 'pinCorners').name('coins épinglés').onChange((v: boolean) => this.cb.onPins(v)),
     );
     pins.add({ reset: () => this.cb.onReset() }, 'reset').name('reset (relâcher)');
+    // The atelier already exposes contextual reset and direct pin gestures.
+    // Keep this procedural/demo folder out of the reduced creation workspace.
+    this.nonAtelierControls.push(pins);
 
     // Apply the initial preset so the sim starts in a defined fabric state.
     this.applyPreset(this.settings.preset);
@@ -955,24 +963,62 @@ export class ControlPanel {
 
   /** Serialize the current garment to the open TOILE format and download it. */
   private exportGarment(): void {
-    const doc = this.snapshotGarment();
-    const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'vetement.toile.json';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    const objectUrl = a.href;
-    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 30_000);
-    this.toast(`Vêtement exporté — ${a.download}`);
+    let anchor: HTMLAnchorElement | null = null;
+    let objectUrl: string | null = null;
+    try {
+      const doc = this.snapshotGarment();
+      const blob = new Blob([JSON.stringify(doc, null, 2)], {
+        type: 'application/json',
+      });
+      anchor = document.createElement('a');
+      objectUrl = URL.createObjectURL(blob);
+      anchor.href = objectUrl;
+      anchor.download = 'vetement.toile.json';
+      document.body.appendChild(anchor);
+      anchor.click();
+      const filename = anchor.download;
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl!), 30_000);
+      this.toast(`Vêtement exporté — ${filename}`);
+    } catch {
+      if (objectUrl) {
+        try {
+          URL.revokeObjectURL(objectUrl);
+        } catch {
+          // The failure toast remains more useful than a second URL error.
+        }
+      }
+      this.toast('Échec de l’export JSON.', false);
+    } finally {
+      anchor?.remove();
+    }
   }
 
   /** Report the exact file selected by whichever SVG exporter the host uses. */
   private exportPatternSvg(): void {
-    const returnedFilename = this.cb.onPatternSvg();
-    const filename = typeof returnedFilename === 'string' ? returnedFilename : null;
-    if (filename) this.toast(`Patron exporté — ${filename}`);
+    try {
+      const filename = this.cb.onPatternSvg();
+      if (filename) {
+        this.toast(`Patron exporté — ${filename}`);
+      } else {
+        this.toast('Échec de l’export SVG.', false);
+      }
+    } catch {
+      this.toast('Échec de l’export SVG.', false);
+    }
+  }
+
+  /** Await the GPU snapshot so success means a .glb was actually downloaded. */
+  private async exportGltf(): Promise<void> {
+    try {
+      const filename = await this.cb.onGltf();
+      if (filename) {
+        this.toast(`Modèle 3D exporté — ${filename}`);
+      } else {
+        this.toast('Échec de l’export GLB.', false);
+      }
+    } catch {
+      this.toast('Échec de l’export GLB.', false);
+    }
   }
 
   /** Load a garment file and apply it end-to-end (pattern, fabric, sim). */
@@ -1104,13 +1150,13 @@ export class ControlPanel {
         this.setFabricBaseline(
           s.preset,
           namedPreset,
-          `preset ${s.preset} · calibré`,
+          `preset ${s.preset} · calibration TOILE`,
         );
       } else {
         this.setFabricBaseline(
           this.fabricProfileName,
           this.currentFabricPhysics(),
-          'profil importé · calibré',
+          'profil importé · mesuré',
         );
       }
     }
@@ -1268,7 +1314,7 @@ export class ControlPanel {
     }
     this.writeFabricPhysics(p);
     this.settings.preset = name;
-    this.setFabricBaseline(name, p, `preset ${name} · calibré`);
+    this.setFabricBaseline(name, p, `preset ${name} · calibration TOILE`);
     this.cb.onFabricPreset(name);
     this.fabricDiagnosticTitle = `Preset ${name}`;
     this.fabricDiagnosticLines = [

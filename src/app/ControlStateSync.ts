@@ -19,6 +19,11 @@ export function resolutionRebuildMessage(resolution: SupportedResolution): strin
   return `Reconstruction ${resolution} × ${resolution} en cours…`;
 }
 
+/** Honest copy for a mannequin resize while the loaded pattern stays fixed. */
+export function fixedGarmentSizeMessage(size: string): string {
+  return `Le vêtement garde sa taille (${size}) — changez la taille du vêtement pour le regrader.`;
+}
+
 export function normalizeSelectValue<T extends string>(
   value: unknown,
   options: readonly T[],

@@ -1,6 +1,10 @@
 export type SceneLifecycleState = 'idle' | 'tearingDown' | 'building';
 
-export type SceneLifecycleErrorPhase = 'teardown' | 'build' | 'liveBuffers';
+export type SceneLifecycleErrorPhase =
+  | 'teardown'
+  | 'build'
+  | 'liveBuffers'
+  | 'watchdog';
 
 export interface SceneTransitionRequestOptions {
   /**
@@ -47,6 +51,22 @@ export interface SceneLifecycleOptions<TTarget> {
    * guard. Defaults to 15 seconds. Timing out aborts the build context.
    */
   buildTimeoutMs?: number;
+  /**
+   * Ultimate backstop against SILENT wedges (TOILE-22) : if one drain
+   * iteration has not settled after this delay, a `SceneTransitionStallError`
+   * is reported through `onError` (phase `watchdog`) so the host can roll
+   * back; a second firing one delay later signals that even the rollback
+   * cannot be drained. Defaults to teardown + build timeouts + 10 s; derived
+   * default is disabled when either phase guard is disabled. Non-positive
+   * disables it.
+   */
+  watchdogTimeoutMs?: number;
+  /**
+   * Maximum time allowed for `getLiveBufferCount` before the metric is
+   * abandoned (reported as phase `liveBuffers`, never fatal). This was the
+   * only unbounded await of the drain loop. Defaults to 5 seconds.
+   */
+  liveBufferTimeoutMs?: number;
   getLiveBufferCount?: () => number | Promise<number>;
   onStateChange?: (
     state: SceneLifecycleState,
@@ -93,7 +113,40 @@ export class SceneBuildTimeoutError extends Error {
   }
 }
 
+/**
+ * The transition watchdog: one drain iteration failed to settle within its
+ * deadline through a path the phase timeouts do not cover. Reported via
+ * `onError` (phase `watchdog`) so the host recovery ladder stays in charge.
+ */
+export class SceneTransitionStallError extends Error {
+  constructor(
+    readonly elapsedMs: number,
+    readonly stuckState: SceneLifecycleState,
+  ) {
+    super(`Scene transition stalled for ${elapsedMs} ms (state: ${stuckState})`);
+    this.name = 'SceneTransitionStallError';
+  }
+}
+
+/**
+ * Re-entrant requests (fired from inside lifecycle callbacks) aborted several
+ * consecutive builds before they could start: the machine is spinning without
+ * ever committing a scene. Detected structurally — no timer involved.
+ */
+export class SceneTransitionChurnError extends Error {
+  constructor(readonly skippedBuilds: number) {
+    super(
+      `Scene transitions are churning: ${skippedBuilds} consecutive builds `
+      + 'were aborted before they could start',
+    );
+    this.name = 'SceneTransitionChurnError';
+  }
+}
+
 const DEFAULT_PHASE_TIMEOUT_MS = 15_000;
+const DEFAULT_LIVE_BUFFER_TIMEOUT_MS = 5_000;
+const WATCHDOG_DEFAULT_MARGIN_MS = 10_000;
+const MAX_CONSECUTIVE_SKIPPED_BUILDS = 8;
 
 const defaultNow = (): number => {
   if (typeof performance !== 'undefined') return performance.now();
@@ -126,6 +179,8 @@ export class SceneLifecycle<TTarget> {
   private debounceTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
   private activeBuild: AbortController | null = null;
   private idleWaiters = new Set<() => void>();
+  private stallTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+  private consecutiveSkippedBuilds = 0;
 
   constructor(private readonly options: SceneLifecycleOptions<TTarget>) {}
 
@@ -214,6 +269,8 @@ export class SceneLifecycle<TTarget> {
 
     this.running = true;
     void this.drain().finally(() => {
+      this.clearStallWatchdog();
+      this.consecutiveSkippedBuilds = 0;
       this.activeBuild = null;
       this.running = false;
       this.setState('idle');
@@ -225,6 +282,9 @@ export class SceneLifecycle<TTarget> {
   private async drain(): Promise<void> {
     while (this.pending !== null) {
       let request = this.takePending();
+      // Armed BEFORE any callback can run: even a hang inside an observer or
+      // an unforeseen await path is converted into a visible watchdog report.
+      this.armStallWatchdog(request);
       this.setState('tearingDown');
 
       let teardownSucceeded = false;
@@ -244,6 +304,7 @@ export class SceneLifecycle<TTarget> {
       await this.captureLiveBufferCount(request);
 
       if (!teardownSucceeded) {
+        this.clearStallWatchdog();
         this.setState('idle');
         continue;
       }
@@ -260,6 +321,7 @@ export class SceneLifecycle<TTarget> {
       const startedAt = (this.options.now ?? defaultNow)();
       try {
         if (!controller.signal.aborted) {
+          this.consecutiveSkippedBuilds = 0;
           const timeoutMs = this.resolvePhaseTimeout(this.options.buildTimeoutMs);
           const build = this.options.build(request.target, context);
           await this.withTimeout(
@@ -271,6 +333,13 @@ export class SceneLifecycle<TTarget> {
               return error;
             },
           );
+        } else {
+          // Aborted between controller creation and here: only a re-entrant
+          // request fired from inside a lifecycle callback can do that. One
+          // occurrence is legal; a streak means the machine spins forever
+          // without ever committing a scene (the silent-wedge shape of
+          // TOILE-22) — surface it through the host's failure ladder.
+          this.noteSkippedBuild(request);
         }
       } catch (error) {
         if (
@@ -285,8 +354,61 @@ export class SceneLifecycle<TTarget> {
         if (this.activeBuild === controller) this.activeBuild = null;
       }
 
+      this.clearStallWatchdog();
       this.setState('idle');
     }
+  }
+
+  private armStallWatchdog(request: PendingRequest<TTarget>): void {
+    this.clearStallWatchdog();
+    const timeoutMs = this.resolveStallTimeout();
+    if (timeoutMs <= 0) return;
+    let fires = 0;
+    const fire = (): void => {
+      this.stallTimer = null;
+      fires++;
+      this.reportError(
+        new SceneTransitionStallError(timeoutMs * fires, this.currentState),
+        'watchdog',
+        request,
+      );
+      // One re-arm: the first report lets the host roll back (its request
+      // aborts a stuck build, which often unsticks the drain). If a full
+      // deadline later NOTHING has moved, the second report tells the host
+      // that even recovery cannot be drained — its ladder must go fatal
+      // rather than leave a silent hybrid scene on screen.
+      if (fires < 2) this.stallTimer = globalThis.setTimeout(fire, timeoutMs);
+    };
+    this.stallTimer = globalThis.setTimeout(fire, timeoutMs);
+  }
+
+  private clearStallWatchdog(): void {
+    if (this.stallTimer === null) return;
+    globalThis.clearTimeout(this.stallTimer);
+    this.stallTimer = null;
+  }
+
+  private resolveStallTimeout(): number {
+    const explicit = this.options.watchdogTimeoutMs;
+    if (explicit !== undefined) {
+      return Number.isFinite(explicit) ? Math.max(0, explicit) : 0;
+    }
+    const teardown = this.resolvePhaseTimeout(this.options.teardownTimeoutMs);
+    const build = this.resolvePhaseTimeout(this.options.buildTimeoutMs);
+    // A host that explicitly disabled a phase guard accepts unbounded phases;
+    // deriving a watchdog there would fire during legitimate long work.
+    if (teardown <= 0 || build <= 0) return 0;
+    return teardown + build
+      + Math.max(0, this.options.liveBufferTimeoutMs ?? DEFAULT_LIVE_BUFFER_TIMEOUT_MS)
+      + WATCHDOG_DEFAULT_MARGIN_MS;
+  }
+
+  private noteSkippedBuild(request: PendingRequest<TTarget>): void {
+    this.consecutiveSkippedBuilds++;
+    if (this.consecutiveSkippedBuilds < MAX_CONSECUTIVE_SKIPPED_BUILDS) return;
+    const skipped = this.consecutiveSkippedBuilds;
+    this.consecutiveSkippedBuilds = 0; // reset so a persistent churn escalates again
+    this.reportError(new SceneTransitionChurnError(skipped), 'watchdog', request);
   }
 
   private takePending(): PendingRequest<TTarget> {
@@ -352,7 +474,17 @@ export class SceneLifecycle<TTarget> {
   ): Promise<void> {
     if (!this.options.getLiveBufferCount) return;
     try {
-      const count = await this.options.getLiveBufferCount();
+      const raw = this.options.liveBufferTimeoutMs;
+      const timeoutMs = raw !== undefined && Number.isFinite(raw)
+        ? Math.max(0, raw)
+        : DEFAULT_LIVE_BUFFER_TIMEOUT_MS;
+      // Bounded: this await was the drain's only unbounded suspension point.
+      // A hung diagnostic must cost a metric, never the scene machine.
+      const count = await this.withTimeout(
+        Promise.resolve(this.options.getLiveBufferCount()),
+        timeoutMs,
+        () => new Error(`getLiveBufferCount n'a pas répondu en ${timeoutMs} ms`),
+      );
       if (Number.isFinite(count)) this.metrics.liveBuffersAfterEach.push(count);
     } catch (error) {
       this.reportError(error, 'liveBuffers', request);

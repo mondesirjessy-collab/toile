@@ -25,7 +25,7 @@ import {
   type FabricDynamics,
 } from './engine/solver/FabricMaterial';
 import { generateClothGrid, generateSeamedPanels, combineClothMeshes, scaleMeshInverseMassesToReferenceCellArea, type CrossSeam, type ClothMeshData } from './engine/cloth/ClothMesh';
-import { defaultDraft, tshirtDraft, compileDraft, compileAssembly, compileCrossSeams, compileSurfaceContacts, compileSurfaceSeams, crossSewnOpenCells, draftPieceLabel, neckOpeningCells, removeFreePiece, reboxPiece, pieceIdOf, nearestOutlineEdgeInfo, syncPieceFrames, sanitizeDraft, pointInPolygon, pointInTriangle, surfaceAttachmentUV, type DraftDoc, type AssemblySeam, type DraftPiece } from './engine/pattern/Draft';
+import { defaultDraft, tshirtDraft, compileDraft, compileAssembly, compileCrossSeams, compileSurfaceContacts, compileSurfaceSeams, crossSewnOpenCells, cutPieceAlongChord, docPieces, draftPieceLabel, gatherSeamSide, neckOpeningCells, removeFreePiece, reboxPiece, pieceIdOf, nearestOutlineEdgeInfo, syncPieceFrames, sanitizeDraft, pointInPolygon, pointInTriangle, surfaceAttachmentUV, type DraftDoc, type AssemblySeam, type DraftPiece } from './engine/pattern/Draft';
 import {
   applyStagingOffset,
   autoPlaceMeshFromCrossSeams,
@@ -83,6 +83,7 @@ import {
   type SceneMode,
 } from './app/ControlPanel';
 import {
+  fixedGarmentSizeMessage,
   GLOBAL_FABRIC_INHERIT_VALUE,
   inheritedFabricLabel,
   normalizeResolution,
@@ -91,12 +92,16 @@ import {
   type SupportedResolution,
 } from './app/ControlStateSync';
 import { showToast, undoToastMessage } from './app/ToastQueue';
+import { claimFirstUseTip } from './app/FirstUseTip';
+import { selectBriefBackend } from './app/brief/BriefBackend';
+import { executeBrief, type BriefHooks } from './app/brief/BriefExecutor';
 import { PatternView, SEAM_COLORS, type PatternHandleSpec, type SystemLink } from './app/PatternView';
 import { exportDraftPatternPdf, exportDraftPatternSvg } from './app/draftPatternExport';
 import { exportPatternPdf } from './app/patternPdf';
 import { exportPatternSvg } from './app/patternSvg';
 import {
   STAGING_PICK_RADIUS,
+  STAGING_PICK_RADIUS_PX,
   pickFrontmostInRanges,
   pickParticle,
   type TaggedParticleRange,
@@ -105,6 +110,8 @@ import {
   SceneBuildTimeoutError,
   SceneLifecycle,
   SceneTeardownTimeoutError,
+  SceneTransitionChurnError,
+  SceneTransitionStallError,
   type SceneBuildContext,
 } from './app/SceneLifecycle';
 import {
@@ -125,7 +132,7 @@ import {
   type SdfPrim,
 } from './engine/body/BodySdf';
 import { loadScanAvatar, type ScanAvatar } from './engine/body/ScanAvatar';
-import { gridSd, measureBody, type BodyMeasure, type Sd } from './engine/body/measure';
+import { arrangementPoints, gridSd, measureBody, type ArrangementPoint, type BodyMeasure, type Sd } from './engine/body/measure';
 import { isNeutral, morphGrid, morphMesh, morphPrims, NO_MORPH, type MorphMarks, type Morphs } from './engine/body/morph';
 import { applySkin, buildSkin, poseIdle, type Skin } from './engine/body/pose';
 import { bodyRestVertices } from './app/SceneGeometry';
@@ -369,6 +376,12 @@ async function main(): Promise<void> {
   const overlay = document.getElementById('overlay') as HTMLElement;
   // 2D mirror of the WebGPU canvas — some systems never present WebGPU frames
   // to screen even though the content is rendered; a 2D canvas always shows.
+  // (TOILE-18 : le plafond « 30-44 fps » constaté en QA était un artefact
+  // d'onglet MASQUÉ — Chrome throttle requestAnimationFrame quand l'onglet
+  // n'est pas au premier plan ; l'app tombe alors sur son watchdog 50 ms.
+  // Onglet visible = fps au rythme de l'écran. Cette copie n'est donc pas le
+  // goulot, et elle reste le filet de sécurité des machines sans présentation
+  // WebGPU directe — on la garde.)
   const mirrorCtx = mirror.getContext('2d');
   const blit = (): void => {
     if (!mirrorCtx || canvas.width === 0) return;
@@ -494,6 +507,7 @@ async function main(): Promise<void> {
       build();
       const surface = piece.placement?.role === 'pocket' ? piece.placement.surface : null;
       if (surface) {
+        pocketPlacementPid = null; // ancrage réussi : la poche n'est plus révocable comme « en attente »
         const support =
           surface.supportPieceId === 0
             ? draft.piece
@@ -512,6 +526,7 @@ async function main(): Promise<void> {
           surface.stitchedEdges.length > 0,
         );
       }
+      syncAtelierControls();
     },
     // Manual assembly: the user sewed edge A ↔ edge B (Shift+click).
     (seam: AssemblySeam) => {
@@ -578,6 +593,9 @@ async function main(): Promise<void> {
     (drawing: boolean) => {
       const b = document.getElementById('at-pen');
       if (b) (b as HTMLButtonElement).hidden = !drawing;
+      const pieceButton = document.getElementById('at-piece');
+      pieceButton?.classList.toggle('active', drawing);
+      pieceButton?.setAttribute('aria-pressed', String(drawing));
       // Tracé refermé SANS pièce (abandon) : ne pas redemander un placement
       // plus tard. Le commit d'un tracé réussi est SYNCHRONE (onDraftChange
       // juste après), donc il consomme penPlacement avant ce timeout.
@@ -665,30 +683,33 @@ async function main(): Promise<void> {
   });
   atelierHelpClose.addEventListener('click', () => setAtelierHelpOpen(false));
   document.getElementById('at-empty-tshirt')?.addEventListener('click', () => {
-    document.getElementById('at-tshirt')?.click();
+    const modelChoice = document.getElementById('at-tshirt');
+    modelChoice?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    modelChoice?.focus({ preventScroll: true });
   });
   document.getElementById('at-empty-piece')?.addEventListener('click', () => {
     document.getElementById('at-piece')?.click();
   });
   const firstUseTipsSeen = new Set<string>();
+  let firstUseTipStorage: Storage | null = null;
+  try {
+    firstUseTipStorage = window.localStorage;
+  } catch {
+    // An opaque/private webview can block even access to the storage object.
+  }
   document.addEventListener('click', (event) => {
     if (sceneMode !== 'atelier') return;
     const button =
       event.target instanceof Element
         ? event.target.closest<HTMLButtonElement>('button[data-first-tip]')
         : null;
-    const tip = button?.dataset.firstTip;
-    if (!button?.id || !tip) return;
-    const key = `toile:first-use:v139:${button.id}`;
-    if (firstUseTipsSeen.has(key)) return;
-    try {
-      if (sessionStorage.getItem(key)) return;
-      sessionStorage.setItem(key, '1');
-    } catch {
-      // Storage may be unavailable in a private webview; the in-memory set
-      // below still keeps the tip one-shot for this session.
-    }
-    firstUseTipsSeen.add(key);
+    if (!button) return;
+    const tip = claimFirstUseTip(
+      button,
+      firstUseTipsSeen,
+      firstUseTipStorage,
+    );
+    if (!tip) return;
     window.setTimeout(() => showToast(`Astuce · ${tip}`), 0);
   });
   window.addEventListener('keydown', (event) => {
@@ -730,6 +751,12 @@ async function main(): Promise<void> {
   // offsets so the sewn topology always starts from its canonical placement.
   let move3DEnabled = true;
   let activeStagingInstance: { pid: number; instance: number } | null = null;
+  // ⊹ POINTS D'ARRANGEMENT (concept Clo) : des ancres autour du corps mesuré.
+  // Cliquer une pièce en 3D puis une pastille la RANGE là — translation de
+  // staging pure, deux clics au lieu d'un drag 3D en profondeur.
+  let arrangeMode = false;
+  let arrangePick: { pid: number; instance: number } | null = null;
+  let arrangeHoverId: string | null = null;
   let atelierSleeves = location.hash.startsWith('#v96'); // multi-piece stage 1: add system sleeves to the atelier garment (debug hash: #v96 = proven rect tubes, #v96b = same via the freeform generator)
   let atelierSleeveLen = 0.5; // sleeve length (shoulder→cuff, m): 0.5 long, ~0.22 short (t-shirt)
   let atelierCollar = false; // multi-piece: add a system collar band at the neckline
@@ -738,6 +765,12 @@ async function main(): Promise<void> {
   // tracé, le choix de placement (#place-chooser) s'ouvre pour CETTE pièce.
   let penPlacement = false; // la prochaine pièce fermée demandera son placement
   let placePending: number | null = null; // pieceId en attente de placement
+  // pieceId d'une poche COMMITTÉE dans le patron mais qui attend encore son
+  // clic d'ancrage (support + centre). Suivi côté main — pas via patternView,
+  // dont la synchro des pièces passe par un build() asynchrone : l'annulation
+  // (Échap, changement de scène) doit pouvoir révoquer le commit de façon
+  // fiable dès l'instant où la poche est posée.
+  let pocketPlacementPid: number | null = null;
   const placeChooser = document.getElementById('place-chooser') as HTMLElement;
   const placementStatus = document.getElementById('placement-status') as HTMLElement;
   const placementStatusMessage = document.getElementById(
@@ -751,6 +784,9 @@ async function main(): Promise<void> {
   let simulationExcludedPieceIds = new Set<number>();
   const showChooser = (on: boolean): void => {
     placeChooser.hidden = !on;
+    const placementButton = document.getElementById('at-place');
+    placementButton?.classList.toggle('active', on);
+    placementButton?.setAttribute('aria-pressed', String(on));
     if (bigPanel) requestAnimationFrame(applySplit);
   };
   const showPlacementStatus = (messages: string[], ok = false): void => {
@@ -768,6 +804,7 @@ async function main(): Promise<void> {
   const resetPlacement = (): void => {
     penPlacement = false;
     placePending = null;
+    pocketPlacementPid = null;
     simulationExcludedPieceIds.clear();
     showChooser(false);
     showPlacementStatus([]);
@@ -800,9 +837,7 @@ async function main(): Promise<void> {
     else if (pid === 1) draft.back = piece;
     else if (draft.pieces?.[pid - 2]) draft.pieces[pid - 2] = piece;
   };
-  const undoDraft = (): void => {
-    const h = draftHistory.pop();
-    if (!h) return;
+  const applyHistorySnapshot = (h: (typeof draftHistory)[number]): void => {
     draft = h.draft;
     draftTouched = h.touched;
     hoodieFitPristine = h.hoodieFitPristine;
@@ -816,8 +851,33 @@ async function main(): Promise<void> {
     resetPlacement(); // un placement en attente ne survit pas à l'annulation
     document.getElementById('at-sim')?.classList.remove('running');
     syncUndoButton();
+  };
+  const undoDraft = (): void => {
+    const h = draftHistory.pop();
+    if (!h) return;
+    applyHistorySnapshot(h);
     build();
     showToast(undoToastMessage());
+  };
+  // Une poche/applique est COMMITTÉE dans le patron dès le choix « Poche /
+  // applique » (avant tout clic de support), puis attend son point d'ancrage.
+  // L'abandonner (Échap, changement de scène) doit donc annuler ce commit —
+  // sinon une colonne « poche » orpheline, sans surface, reste dans le patron.
+  // placePiece('pocket') a empilé un cran juste avant le commit : le dépiler
+  // restaure l'état d'avant la poche. `rebuild:false` pour le teardown, qui ne
+  // doit pas ré-entrer dans le cycle de scènes.
+  const revertPendingPocket = (opts: { rebuild: boolean }): boolean => {
+    if (pocketPlacementPid === null) return false;
+    pocketPlacementPid = null;
+    patternView.cancelInteractions(); // désarme le fantôme cyan de placement
+    const h = draftHistory.pop();
+    if (!h) {
+      resetPlacement();
+      return false;
+    }
+    applyHistorySnapshot(h);
+    if (opts.rebuild) build();
+    return true;
   };
   undoButton.addEventListener('click', undoDraft);
   syncUndoButton();
@@ -835,6 +895,7 @@ async function main(): Promise<void> {
     element?.setAttribute('aria-pressed', String(on));
   };
   const syncAtelierControls = (): void => {
+    setPressed('at-piece', patternView.drawing);
     setPressed('at-length', patternView.lengthEditing);
     setPressed('at-snap', patternView.lengthSnapping);
     setPressed('at-link', patternView.linkingSegments);
@@ -843,8 +904,17 @@ async function main(): Promise<void> {
       'at-zipper',
       patternView.zippering || !!patternView.zipperPick,
     );
+    setPressed('at-cut', patternView.cutting);
+    setPressed('at-gather', patternView.gathering);
     setPressed('at-move3d', move3DEnabled);
+    setPressed('at-arrange', arrangeMode);
     setPressed('at-sleeves', atelierSleeves);
+    setPressed(
+      'at-place',
+      !placeChooser.hidden ||
+        placePending !== null ||
+        patternView.placingSurfacePiece,
+    );
   };
   const deactivateEditingTools = (): void => {
     if (patternView.lengthEditing) patternView.toggleLength();
@@ -853,9 +923,16 @@ async function main(): Promise<void> {
     if (patternView.zippering || patternView.zipperPick) {
       patternView.toggleZipper();
     }
+    if (patternView.cutting) patternView.toggleCut();
+    if (patternView.gathering) patternView.toggleGather();
     syncAtelierControls();
   };
   const syncAtelierPhase = (): void => {
+    if (!atelierDesign) {
+      arrangeMode = false;
+      arrangePick = null;
+      arrangeHoverId = null;
+    }
     const mode = atelierDesign ? 'design' : 'simulation';
     atelierBar.dataset.mode = mode;
     patternBox.dataset.mode = mode;
@@ -1208,7 +1285,13 @@ async function main(): Promise<void> {
     }
     pieceHoverDirty = true;
     if (!move3DEnabled) setPieceHover(null);
+    if (move3DEnabled) {
+      arrangeMode = false;
+      arrangePick = null;
+      arrangeHoverId = null;
+    }
     setPressed('at-move3d', move3DEnabled);
+    setPressed('at-arrange', arrangeMode);
     showPlacementStatus(
       move3DEnabled
         ? [
@@ -1217,6 +1300,121 @@ async function main(): Promise<void> {
             '▶ Simuler la recalera automatiquement avant de libérer la physique.',
           ]
         : ['Déplacement 3D désactivé : glissez dans la vue pour tourner la caméra.'],
+      true,
+    );
+    refreshHint();
+  });
+  // ⊹ POINTS D'ARRANGEMENT : pastilles autour du corps (mensurations réelles).
+  // Deux clics : la pièce, puis l'ancre — elle s'y range (staging pur, undo ✓).
+  const currentArrangePoints = (): ArrangementPoint[] => arrangementPoints(lastMeasure);
+  /** NDC du point monde avec la matrice caméra courante (même math que
+   * l'overlay atelier) ; null derrière la caméra. */
+  const arrangeNdcOf = (pos: readonly [number, number, number]): [number, number] | null => {
+    const m = camera.matrix(canvas.width / Math.max(1, canvas.height));
+    const cw = m[3]! * pos[0] + m[7]! * pos[1] + m[11]! * pos[2] + m[15]!;
+    if (cw <= 1e-6) return null;
+    const cx = (m[0]! * pos[0] + m[4]! * pos[1] + m[8]! * pos[2] + m[12]!) / cw;
+    const cy = (m[1]! * pos[0] + m[5]! * pos[1] + m[9]! * pos[2] + m[13]!) / cw;
+    return [cx, cy];
+  };
+  /** L'ancre sous (ndcX, ndcY), tolérance en pixels écran. */
+  const arrangePointNear = (ndcX: number, ndcY: number, tolPx = 22): ArrangementPoint | null => {
+    let best: ArrangementPoint | null = null;
+    let bestPx = tolPx;
+    for (const point of currentArrangePoints()) {
+      const ndc = arrangeNdcOf(point.pos);
+      if (!ndc) continue;
+      const dxPx = ((ndc[0] - ndcX) * canvas.clientWidth) / 2;
+      const dyPx = ((ndc[1] - ndcY) * canvas.clientHeight) / 2;
+      const d = Math.hypot(dxPx, dyPx);
+      if (d < bestPx) {
+        bestPx = d;
+        best = point;
+      }
+    }
+    return best;
+  };
+  /** Centre (monde) de l'exemplaire d'une pièce, depuis le cache de positions. */
+  const stagingInstanceCentroid = (
+    pid: number,
+    instance: number,
+  ): [number, number, number] | null => {
+    if (!posCache) return null;
+    const ranges = (pieceParticleRanges.get(pid) ?? []).filter(
+      (range) => range.instance === instance,
+    );
+    let n = 0;
+    let cx = 0;
+    let cy = 0;
+    let cz = 0;
+    for (const range of ranges) {
+      for (let i = range.first; i < range.first + range.count; i++) {
+        if (!system.isMovable(i)) continue;
+        cx += posCache[i * 4]!;
+        cy += posCache[i * 4 + 1]!;
+        cz += posCache[i * 4 + 2]!;
+        n++;
+      }
+    }
+    if (!n) return null;
+    return [cx / n, cy / n, cz / n];
+  };
+  const applyArrangement = (
+    pick: { pid: number; instance: number },
+    point: ArrangementPoint,
+  ): void => {
+    if (!draft) return;
+    const centroid = stagingInstanceCentroid(pick.pid, pick.instance);
+    if (!centroid) {
+      showToast('Pièce introuvable dans la préparation — re-cliquez-la.');
+      arrangePick = null;
+      return;
+    }
+    const delta: [number, number, number] = [
+      point.pos[0] - centroid[0],
+      point.pos[1] - centroid[1],
+      point.pos[2] - centroid[2],
+    ];
+    pushHistory();
+    let piece = draftPieceOf(pick.pid);
+    if (!piece) {
+      draftHistory.pop();
+      syncUndoButton();
+      return;
+    }
+    // Même contrat que le drag 3D : matérialiser un dos indépendant avant de
+    // lui donner sa propre translation de préparation.
+    if (pick.pid === 1 && !draft.back) piece = structuredClone(draft.piece);
+    replaceDraftPiece(pick.pid, movePieceInstanceInStaging(piece, pick.instance, delta));
+    draftTouched = true;
+    atelierDesign = true;
+    build();
+    const label = draftPieceLabel(draftPieceOf(pick.pid), pick.pid);
+    showToast(`« ${label} » rangée : ${point.labelFr}.`);
+  };
+  (document.getElementById('at-arrange') as HTMLElement).addEventListener('click', () => {
+    if (!atelierDesign) {
+      arrangeMode = true;
+      enterDesign();
+    } else {
+      arrangeMode = !arrangeMode;
+    }
+    arrangePick = null;
+    arrangeHoverId = null;
+    if (arrangeMode) {
+      move3DEnabled = false;
+      pieceHoverDirty = true;
+      setPieceHover(null);
+    }
+    setPressed('at-move3d', move3DEnabled);
+    setPressed('at-arrange', arrangeMode);
+    showPlacementStatus(
+      arrangeMode
+        ? [
+            'Points d’arrangement actifs : cliquez une pièce dans la vue 3D, puis une pastille autour du corps — elle s’y range.',
+            'Organisation de la préparation uniquement : patron, coutures et pose d’essayage restent inchangés.',
+          ]
+        : ['Points d’arrangement désactivés.'],
       true,
     );
     refreshHint();
@@ -1331,10 +1529,23 @@ async function main(): Promise<void> {
     simBtn().classList.remove('running');
     build();
     if (place === 'pocket') {
-      patternView.startSurfacePlacement(pid);
+      pocketPlacementPid = pid; // committée, en attente d'ancrage → révocable
+      // Le patternView ne reçoit la pièce (avec son rôle « pocket ») que via le
+      // setDraft du build, qui est ASYNCHRONE. Armer le geste de surface tout de
+      // suite lirait un patternView encore périmé : startSurfacePlacement
+      // refuserait (rôle ≠ pocket) et le fantôme cyan n'apparaîtrait jamais.
+      // On arme donc une fois la scène stabilisée ; le garde pocketPlacementPid
+      // empêche d'armer si l'utilisateur a annulé entre-temps (Échap).
+      void lifecycle.whenIdle().then(() => {
+        if (pocketPlacementPid !== pid) return;
+        patternView.startSurfacePlacement(pid);
+        syncAtelierControls();
+      });
+      syncAtelierControls();
       showPlacementStatus([
         'Poche / applique : survolez la pièce support de votre choix dans le plan.',
         'Le fantôme cyan suit la souris; cliquez au centre de la position exacte. Tous les côtés seront cousus, puis retirables séparément.',
+        'Échap pour annuler la pose.',
       ]);
       return;
     }
@@ -1433,7 +1644,7 @@ async function main(): Promise<void> {
           ? hoodieSize
           : boxySize;
     avatarStatureHelp.textContent =
-      `Redimensionne le mannequin et ses collisions. Le vêtement garde sa taille (${selectedSize}) — changez « Taille du vêtement » pour le regrader.`;
+      `Redimensionne le mannequin et ses collisions. ${fixedGarmentSizeMessage(selectedSize)}`;
   };
   const showSizes = (kind: 'boxy' | 'pants' | 'hoodie'): void => {
     if (!sizeSel) return;
@@ -1505,7 +1716,7 @@ async function main(): Promise<void> {
       return true;
     }
     const legacyBoxy = isLegacyBoxyDraft(source);
-    if (source.preset === 'boxy-tee' || legacyBoxy) {
+    if (legacyBoxy) {
       const savedSize = source.presetSize;
       boxySize =
         savedSize && BOXY_SIZES.includes(savedSize as BoxySize)
@@ -1719,6 +1930,125 @@ async function main(): Promise<void> {
     syncAtelierControls();
     refreshHint();
   });
+  // ✂ COUPER & COUDRE : deux clics sur le contour d'une pièce — elle se scinde
+  // le long de la corde et la couture d'assemblage se pose toute seule. Les
+  // coutures traversées reçoivent un point d'accord sur leur bord partenaire.
+  (document.getElementById('at-cut') as HTMLElement).addEventListener('click', (e) => {
+    const on = patternView.toggleCut();
+    (e.currentTarget as HTMLElement).classList.toggle('active', on);
+    syncAtelierControls();
+    refreshHint();
+  });
+  patternView.onCutPiece = (pid, a, b) => {
+    if (!draft) return;
+    pushHistory();
+    const res = cutPieceAlongChord(draft, pid, a, b);
+    if (!res.ok) {
+      draftHistory.pop(); // rien n'a changé : pas de cran d'annulation fantôme
+      syncUndoButton();
+      showToast(res.reason);
+      syncAtelierControls();
+      refreshHint();
+      return;
+    }
+    draft = res.doc;
+    draftTouched = true;
+    teePreset = false;
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    build();
+    const cutLabel = draftPieceLabel(docPieces(draft)[res.newPieceId] ?? null, res.newPieceId);
+    const notes: string[] = [
+      `Pièce scindée — la couture est posée le long de la découpe (« ${cutLabel} »).`,
+      'Chaque moitié a maintenant son propre tissu : clic droit sur une moitié, puis « Tissu de la sélection ».',
+    ];
+    if (res.splitSeams) notes.push(`${res.splitSeams} couture(s) traversée(s) : point d'accord posé sur le bord partenaire.`);
+    if (res.droppedLinks) notes.push(`${res.droppedLinks} lien(s)/couture(s) non transposables ont été défaits — recousez si besoin.`);
+    showPlacementStatus(notes, true);
+    syncAtelierControls();
+    refreshHint();
+  };
+  // 〰 FRONCES : cliquer une couture ouvre le choix du côté + ratio ; le bord
+  // choisi est recoupé plus long (l'embu), l'essayage fronce naturellement.
+  const gatherChooser = document.getElementById('gather-chooser') as HTMLElement;
+  let gatherSeamIndex: number | null = null;
+  const closeGatherChooser = (): void => {
+    gatherChooser.hidden = true;
+    gatherSeamIndex = null;
+  };
+  (document.getElementById('at-gather') as HTMLElement).addEventListener('click', (e) => {
+    const on = patternView.toggleGather();
+    (e.currentTarget as HTMLElement).classList.toggle('active', on);
+    if (!on) closeGatherChooser();
+    syncAtelierControls();
+    refreshHint();
+  });
+  patternView.onGatherSeam = (seamIndex) => {
+    if (!draft?.seams?.[seamIndex]) return;
+    const seam = draft.seams[seamIndex]!;
+    if (seam.kind === 'zipper') {
+      showToast('On ne fronce pas une fermeture éclair.');
+      return;
+    }
+    gatherSeamIndex = seamIndex;
+    const pieces = docPieces(draft);
+    const labelOf = (run: { pieceId?: number; face?: 'front' | 'back' }): string => {
+      const pid = pieceIdOf(run as Parameters<typeof pieceIdOf>[0]);
+      return draftPieceLabel(pieces[pid] ?? null, pid);
+    };
+    (document.getElementById('gather-side-a-label') as HTMLElement).textContent = labelOf(seam.a);
+    (document.getElementById('gather-side-b-label') as HTMLElement).textContent = labelOf(seam.b);
+    gatherChooser.hidden = false;
+  };
+  gatherChooser.querySelectorAll<HTMLButtonElement>('button[data-gather-side]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (gatherSeamIndex === null || !draft) return;
+      const side = btn.dataset.gatherSide === 'b' ? 'b' : 'a';
+      const ratio = Number(btn.dataset.gatherRatio) || 1.5;
+      const seamIndex = gatherSeamIndex;
+      closeGatherChooser();
+      if (patternView.gathering) patternView.toggleGather();
+      pushHistory();
+      const res = gatherSeamSide(draft, seamIndex, side, ratio);
+      if (import.meta.env.DEV) {
+        console.debug('[toile] fronces', { seamIndex, side, ratio, ok: res.ok, achieved: res.achievedRatio, reason: res.reason });
+      }
+      if (!res.ok || !res.doc) {
+        draftHistory.pop();
+        syncUndoButton();
+        showToast(res.reason ?? 'Fronces impossibles ici.');
+        syncAtelierControls();
+        refreshHint();
+        return;
+      }
+      draft = res.doc;
+      draftTouched = true;
+      teePreset = false;
+      atelierDesign = true;
+      simBtn().classList.remove('running');
+      build();
+      const shown = (res.achievedRatio ?? ratio).toFixed(2).replace('.', ',');
+      // Le build est asynchrone et repeint le statut à sa fin — poser le
+      // message APRÈS la stabilisation pour qu'il reste lisible.
+      void lifecycle.whenIdle().then(() => {
+        showPlacementStatus(
+          [
+            `Fronces ×${shown} posées — le bord a été recoupé plus long (l’embu du tailleur).`,
+            'Lancez ▶ l’essayage : le tissu fronce le long de cette couture.',
+          ],
+          true,
+        );
+      });
+      syncAtelierControls();
+      refreshHint();
+    });
+  });
+  (document.getElementById('gather-cancel') as HTMLElement).addEventListener('click', () => {
+    closeGatherChooser();
+    if (patternView.gathering) patternView.toggleGather();
+    syncAtelierControls();
+    refreshHint();
+  });
   // − PIÈCE : supprime la pièce active (cliquer d'abord sa colonne) — Ctrl+Z annule.
   (document.getElementById('at-del') as HTMLElement).addEventListener('click', () => {
     atelierDesign = true;
@@ -1762,7 +2092,11 @@ async function main(): Promise<void> {
   let fabricStyle = DEFAULT_FABRIC;
   let globalFabricPreset: GlobalFabricPreset = 'Jersey';
   let fitMap = false; // tension view: survives rebuilds so it isn't lost on a slider (M29)
-  let sceneMode: SceneMode = 'drapé';
+  // L'ATELIER est le visage du logiciel : TOILE ouvre directement sur l'espace
+  // de conception (Conception 2D), pas sur une démo physique. Les scènes moteur
+  // (drapé, couture, robe…) restent joignables via le sélecteur de scène du
+  // panneau Réglages. Boot atelier câblé plus bas (setBig avant buildNow).
+  let sceneMode: SceneMode = 'atelier';
   let resolution: SupportedResolution = DEFAULT_RESOLUTION;
   let selfCollision = true;
   let wind = 0;
@@ -2205,6 +2539,32 @@ async function main(): Promise<void> {
       // The browser can release capture itself during pointercancel/teardown.
     }
   };
+  /**
+   * A native cancellation (lost focus, OS gesture, pointercancel) is not a
+   * pointerup: restore the immutable grab snapshot and never persist the
+   * partial staging delta.
+   */
+  const cancelPieceDrag = (pointerId?: number): boolean => {
+    const cancelled = pieceDrag;
+    if (
+      !cancelled ||
+      (pointerId !== undefined && cancelled.pointerId !== pointerId)
+    ) {
+      return false;
+    }
+    for (const range of cancelled.ranges) {
+      system.translateRange(range.first, range.count, [0, 0, 0]);
+    }
+    releasePiecePointer(cancelled.pointerId);
+    pieceDrag = null;
+    posCache = cancelled.positions;
+    pointerInside3D = false;
+    pointerButtons3D = 0;
+    pieceHoverDirty = true;
+    setPieceHover(null);
+    canvas.classList.remove('piece-dragging');
+    return true;
+  };
   canvas.addEventListener('pointerenter', (event) => {
     pointerInside3D = true;
     pointerButtons3D = event.buttons;
@@ -2231,10 +2591,18 @@ async function main(): Promise<void> {
     pointerButtons3D = event.buttons;
     pieceHoverDirty = true;
   };
+  const cancelPointerState = (event: PointerEvent): void => {
+    finishPointerState(event);
+    cancelPieceDrag(event.pointerId);
+  };
   canvas.addEventListener('pointerup', finishPointerState);
-  canvas.addEventListener('pointercancel', finishPointerState);
+  canvas.addEventListener('pointercancel', cancelPointerState);
   window.addEventListener('pointerup', finishPointerState);
-  window.addEventListener('pointercancel', finishPointerState);
+  window.addEventListener('pointercancel', cancelPointerState);
+  window.addEventListener('blur', () => {
+    pointerButtons3D = 0;
+    cancelPieceDrag();
+  });
   canvas.addEventListener('lostpointercapture', () => {
     pieceHoverDirty = true;
   });
@@ -3152,7 +3520,7 @@ async function main(): Promise<void> {
   let transitionFailureCount = 0;
   let transitionRecoveryCount = 0;
   type TransitionFailure = {
-    phase: 'teardown' | 'build';
+    phase: 'teardown' | 'build' | 'watchdog';
     target: SceneMode;
     message: string;
   };
@@ -3163,6 +3531,21 @@ async function main(): Promise<void> {
     teardownTimeoutMs: 15_000,
     buildTimeoutMs: 15_000,
     teardown: async () => {
+      // TOILE-22 : quitter l'atelier annule toute interaction en cours —
+      // tracé de pièce, dialogue de placement, fantôme « poche / applique ».
+      // Sans cette purge, bannière et gestes armés survivaient sur une scène
+      // détruite (état hybride visible dans toutes les autres scènes) et
+      // gardaient des références vers un patternView à reconstruire. Les
+      // rebuilds atelier→atelier, eux, doivent préserver l'outil actif :
+      // le flux normal « poche » enchaîne build() puis startSurfacePlacement.
+      if (sceneMode !== 'atelier') {
+        // Révertir un commit de poche avant de désarmer (sans rebuild : on est
+        // déjà dans le teardown), sinon une colonne « poche » orpheline
+        // survivrait au changement de scène.
+        revertPendingPocket({ rebuild: false });
+        patternView.cancelInteractions();
+        resetPlacement();
+      }
       // Stop every producer before waiting for submitted work. In particular,
       // retire() makes a delayed GLTF/pick retry fail closed before it can encode.
       system.retire();
@@ -3231,8 +3614,11 @@ async function main(): Promise<void> {
         target: context.target,
         message: error instanceof Error ? error.message : String(error),
       };
+      const phaseLabel = context.phase === 'watchdog'
+        ? 'bloquée (watchdog)'
+        : `${context.phase} interrompue`;
       console.error(
-        `[toile] transition ${context.phase} interrompue pour ${context.target} :`,
+        `[toile] transition ${phaseLabel} pour ${context.target} :`,
         error,
       );
 
@@ -3253,7 +3639,10 @@ async function main(): Promise<void> {
       }
 
       const timeout =
-        error instanceof SceneTeardownTimeoutError || error instanceof SceneBuildTimeoutError;
+        error instanceof SceneTeardownTimeoutError
+        || error instanceof SceneBuildTimeoutError
+        || error instanceof SceneTransitionStallError
+        || error instanceof SceneTransitionChurnError;
       showFatal(
         timeout ? 'Le moteur 3D ne répond plus' : 'La scène 3D n’a pas pu être restaurée',
         `${detail}\n\nLa restauration automatique de « ${committedSceneMode} » a également échoué.`,
@@ -3310,6 +3699,13 @@ async function main(): Promise<void> {
       message = patternView.seamPick
         ? '🪡 1er bord retenu (en orange) — cliquez maintenant le 2e bord, celui à assembler · re-cliquer le même bord = annuler'
         : '🪡 couture : cliquez près d’un bord de pièce — en 3D sur l’avatar (contours allumés) ou dans le plan 2D';
+    } else if (patternView.cutting) {
+      message = patternView.cutPickArmed
+        ? '✂ 1er point posé (en orange) — cliquez le 2e point sur le contour de la MÊME pièce : elle se scinde et la couture se pose seule · Échap annule'
+        : '✂ découper : cliquez un 1er point sur le contour d’une pièce, puis un 2e — la ligne doit traverser la pièce · Échap annule';
+    } else if (patternView.gathering) {
+      message =
+        '〰 fronces : cliquez le lien d’une couture (le trait entre deux bords cousus), puis choisissez le côté qui fronce et le ratio · Échap annule';
     } else if (patternView.lengthEditing) {
       message = patternView.lengthSnapping
         ? '🧲 ajustement auto : glissez près de la bonne valeur — priorité à la couture, puis même longueur/parallèle et angle droit · hors de la zone proche, le bord reste libre · Ctrl+Z annule'
@@ -3317,6 +3713,10 @@ async function main(): Promise<void> {
     } else if (!atelierDesign) {
       message =
         'Essayage 3D actif : tournez la vue dans le vide, tirez le tissu pour tester son retour et utilisez ← Revenir au patron pour modifier les pièces.';
+    } else if (arrangeMode) {
+      message = arrangePick
+        ? '⊹ pièce saisie — cliquez une pastille autour du corps pour l’y ranger · re-cliquer une autre pièce change la saisie · Échap annule'
+        : '⊹ arrangement : cliquez une pièce dans la vue 3D, puis une pastille (Devant, Dos, Bras…) — préparation seulement, coutures inchangées · Échap annule';
     } else if (move3DEnabled) {
       message =
         '✥ déplacement 3D : glissez l’exemplaire voulu sans entraîner sa jumelle · plan 2D : Cmd/Ctrl + clic droit = sélection multiple · patron et coutures inchangés · ▶ Simuler recale automatiquement';
@@ -3421,6 +3821,10 @@ async function main(): Promise<void> {
   // The first scene has nothing to tear down. Build it synchronously from the
   // caller's perspective before constructing controls whose preset callbacks
   // write into the live system.
+  // Boot atelier : l'atelier ouvre en espace partagé 2D/3D. buildNow lève déjà
+  // `atelier-active` (via updateAtelierBar) et l'état vide, mais pas la scission
+  // du panneau — on l'arme ici pour que la Conception 2D s'affiche d'emblée.
+  if (sceneMode === 'atelier') setBig(true);
   await buildNow(sceneMode);
 
   // DEV: inject a dart into the current atelier piece (test the cup before the
@@ -3477,6 +3881,10 @@ async function main(): Promise<void> {
       ray.dir,
       STAGING_PICK_RADIUS,
       (index) => system.isMovable(index),
+      camera.pickSlopeForPixels(
+        STAGING_PICK_RADIUS_PX,
+        canvas.clientHeight,
+      ),
     );
     if (!hit) return null;
     const ranges = (pieceParticleRanges.get(hit.tag.pid) ?? []).filter(
@@ -3628,7 +4036,7 @@ async function main(): Promise<void> {
           local >= 0 &&
           local < count &&
           first + local < system.count &&
-          system.isPatternParticle(first + local);
+          (currentMesh?.invMasses[first + local] ?? 0) !== 0;
         const boundary: number[] = [];
         for (let local = 0; local < count; local++) {
           if (!live(local)) continue;
@@ -3695,7 +4103,54 @@ async function main(): Promise<void> {
   // les pièces s'allument (voilà ce qui se clique) ; le 1er bord retenu =
   // trait ORANGE épais ; une pièce saisie = contour orange qui suit la main.
   const drawAtelierOverlay = (): void => {
-    if (!mirrorCtx || sceneMode !== 'atelier' || !draft || teePreset) return;
+    if (!mirrorCtx) return;
+    // ⊹ Pastilles d'arrangement — dessinées même sur un modèle intégré tout
+    // frais (le gate teePreset ne concerne que le surlignage patronnage).
+    if (arrangeMode && sceneMode === 'atelier' && atelierDesign) {
+      const W = mirror.width;
+      const H = mirror.height;
+      const toScreen = (pos: readonly [number, number, number]): [number, number] | null => {
+        const ndc = arrangeNdcOf(pos);
+        if (!ndc) return null;
+        return [(ndc[0] * 0.5 + 0.5) * W, (1 - (ndc[1] * 0.5 + 0.5)) * H];
+      };
+      mirrorCtx.font = '600 11px Inter, ui-sans-serif, sans-serif';
+      mirrorCtx.textAlign = 'center';
+      for (const point of currentArrangePoints()) {
+        const sp = toScreen(point.pos);
+        if (!sp) continue;
+        const hovered = arrangeHoverId === point.id;
+        mirrorCtx.beginPath();
+        mirrorCtx.arc(sp[0], sp[1], hovered ? 11 : 8, 0, Math.PI * 2);
+        mirrorCtx.fillStyle = hovered ? 'rgba(255, 159, 107, 0.95)' : 'rgba(112, 184, 255, 0.85)';
+        mirrorCtx.fill();
+        mirrorCtx.lineWidth = 2;
+        mirrorCtx.strokeStyle = 'rgba(14, 15, 18, 0.9)';
+        mirrorCtx.stroke();
+        mirrorCtx.beginPath();
+        mirrorCtx.arc(sp[0], sp[1], 2.6, 0, Math.PI * 2);
+        mirrorCtx.fillStyle = 'rgba(14, 15, 18, 0.95)';
+        mirrorCtx.fill();
+        if (hovered || arrangePick) {
+          mirrorCtx.fillStyle = hovered ? 'rgba(255, 214, 184, 1)' : 'rgba(203, 224, 244, 0.85)';
+          mirrorCtx.fillText(point.labelFr, sp[0], sp[1] - 14);
+        }
+      }
+      // La pièce saisie : anneau orange sur son centre + rappel du geste.
+      if (arrangePick) {
+        const centroid = stagingInstanceCentroid(arrangePick.pid, arrangePick.instance);
+        const sp = centroid ? toScreen(centroid) : null;
+        if (sp) {
+          mirrorCtx.beginPath();
+          mirrorCtx.arc(sp[0], sp[1], 14, 0, Math.PI * 2);
+          mirrorCtx.lineWidth = 2.5;
+          mirrorCtx.strokeStyle = 'rgba(255, 159, 107, 0.95)';
+          mirrorCtx.stroke();
+        }
+      }
+      mirrorCtx.textAlign = 'start';
+    }
+    if (sceneMode !== 'atelier' || !draft || teePreset) return;
     const sewing = patternView.sewing;
     const zippering = patternView.zippering;
     const pick = patternView.zipperPick ?? patternView.seamPick;
@@ -4087,6 +4542,29 @@ async function main(): Promise<void> {
     const ndcY = 1 - ((e.clientY - rect.top) / rect.height) * 2;
     const ray = camera.pickRay(ndcX, ndcY, canvas.width / canvas.height);
     const count = Math.min(system.count, posCache.length / 4);
+    // ⊹ Points d'arrangement : 1er clic = la pièce, 2e clic = l'ancre. Un clic
+    // dans le vide (ni pièce ni pastille) rend la main à l'orbite caméra.
+    if (sceneMode === 'atelier' && atelierDesign && arrangeMode) {
+      const anchor = arrangePointNear(ndcX, ndcY);
+      if (anchor && arrangePick) {
+        applyArrangement(arrangePick, anchor);
+        return false;
+      }
+      const target = pickStagingPiece(ray);
+      if (target) {
+        arrangePick = { pid: target.pid, instance: target.instance };
+        activeStagingInstance = { pid: target.pid, instance: target.instance };
+        patternView.selectPiece(target.pid);
+        const label = draftPieceLabel(draftPieceOf(target.pid), target.pid);
+        showToast(`Pièce saisie : « ${label} » — cliquez une pastille pour la ranger.`);
+        return false;
+      }
+      if (anchor) {
+        showToast('Cliquez d’abord la pièce à ranger, puis la pastille.');
+        return false;
+      }
+      return true; // vide → orbite
+    }
     // En préparation, ne lancer la recherche que dans les plages de pièces
     // enregistrées. C'est le même picker que le survol : ce qui s'allume est
     // exactement ce qui sera saisi, avec une zone généreuse près du contour.
@@ -4163,28 +4641,22 @@ async function main(): Promise<void> {
   camera.attach(canvas, tryOrbit);
   window.addEventListener('keydown', (event) => {
     if (sceneMode !== 'atelier' || event.key !== 'Escape') return;
-    if (!atelierHelpPanel.hidden) {
-      event.preventDefault();
-      setAtelierHelpOpen(false);
-      return;
-    }
+    const helpWasOpen = !atelierHelpPanel.hidden;
+    if (helpWasOpen) setAtelierHelpOpen(false);
 
     const chooserWasOpen = !placeChooser.hidden;
-    const placementWasPending = placePending !== null || penPlacement;
+    const gatherWasOpen = !gatherChooser.hidden;
+    if (gatherWasOpen) closeGatherChooser();
+    // Une poche en cours de placement doit être RÉVERTIE (commit annulé), pas
+    // seulement désarmée — avant que cancelInteractions ne nettoie l'état.
+    const pocketReverted = revertPendingPocket({ rebuild: true });
+    const placementWasPending =
+      placePending !== null ||
+      penPlacement ||
+      patternView.placingSurfacePiece;
     const patternCancel = patternView.cancelInteractions();
     let cancelled3D = false;
-    if (pieceDrag) {
-      const cancelledDrag = pieceDrag;
-      for (const range of cancelledDrag.ranges) {
-        system.translateRange(range.first, range.count, [0, 0, 0]);
-      }
-      releasePiecePointer(cancelledDrag.pointerId);
-      pieceDrag = null;
-      pointerButtons3D = 0;
-      pieceHoverDirty = true;
-      canvas.classList.remove('piece-dragging');
-      cancelled3D = true;
-    }
+    if (cancelPieceDrag()) cancelled3D = true;
     if (dragIndex !== null) {
       system.setDrag(null, [0, 0, 0]);
       dragIndex = null;
@@ -4197,12 +4669,16 @@ async function main(): Promise<void> {
       move3DEnabled = false;
       cancelled3D = true;
     }
+    if (arrangeMode || arrangePick) {
+      arrangeMode = false;
+      arrangePick = null;
+      arrangeHoverId = null;
+      cancelled3D = true;
+    }
     setPieceHover(null);
     activeStagingInstance = null;
     if (chooserWasOpen || placementWasPending) {
-      showChooser(false);
-      placePending = null;
-      penPlacement = false;
+      resetPlacement();
     }
 
     const cancelled =
@@ -4210,8 +4686,13 @@ async function main(): Promise<void> {
       patternCancel.cancelledGesture ||
       cancelled3D ||
       chooserWasOpen ||
-      placementWasPending;
-    if (!cancelled) return;
+      gatherWasOpen ||
+      placementWasPending ||
+      pocketReverted;
+    if (!cancelled) {
+      if (helpWasOpen) event.preventDefault();
+      return;
+    }
     event.preventDefault();
     syncAtelierControls();
     refreshHint();
@@ -4251,10 +4732,9 @@ async function main(): Promise<void> {
     }
     build(options.selector ?? false);
   };
-  document.getElementById('at-exit')?.addEventListener('click', () => {
-    setAtelierHelpOpen(false, false);
-    requestScene('drapé', { syncPanel: true });
-  });
+  // (Le bouton « ↩ Quitter l'atelier → démo tissu » a été retiré : l'atelier est
+  // désormais la maison. Les scènes moteur se rejoignent via Réglages ⚙ →
+  // sélecteur de scène. Plus de bascule surprise vers la démo physique.)
 
   panel = new ControlPanel(
     {
@@ -4516,13 +4996,13 @@ async function main(): Promise<void> {
         }
       },
       onGltf: () => {
-        if (sceneTransitionBusy()) return;
+        if (sceneTransitionBusy()) return null;
         // Snapshot the CURRENT drape: garment positions read back from the
         // GPU, mannequin in its current pose and podium angle — what you see
         // is what Blender gets.
         const mesh = currentMesh;
         const scene = currentScene;
-        if (!mesh || !scene) return;
+        if (!mesh || !scene) return null;
         // Freeze pose and podium angle to match the CLOTH copy, not the click:
         // readPositions() encodes its GPU copy synchronously before its first
         // await, so sampling the pose on the SAME tick as the attempt that wins
@@ -4549,8 +5029,15 @@ async function main(): Promise<void> {
           }
           return null;
         };
-        void read().then((raw) => {
-          if (sceneTransitionBusy() || sys !== system || !raw || raw.length < mesh.count * 4) return;
+        return read().then((raw) => {
+          if (
+            sceneTransitionBusy() ||
+            sys !== system ||
+            !raw ||
+            raw.length < mesh.count * 4
+          ) {
+            return null;
+          }
           const pieces: GltfPiece[] = [];
           // Our UI colors are sRGB values; glTF baseColorFactor is linear.
           const lin = (c: [number, number, number]): [number, number, number] =>
@@ -4627,7 +5114,7 @@ async function main(): Promise<void> {
               roughness: 0.95,
             });
           }
-          downloadGlb(pieces, sceneMode);
+          return downloadGlb(pieces, sceneMode);
         });
       },
       onPins: (held) => {
@@ -5299,6 +5786,107 @@ async function main(): Promise<void> {
     guidanceEl.textContent = 'Vue cadrée sur le mannequin · ses dimensions physiques restent inchangées.';
   });
 
+  // ---- Brief (étape 0) : du texte au vêtement préparé -----------------------
+  // L'interpréteur (règles locales, ou endpoint distant via
+  // localStorage['toile.brief.endpoint']) produit un BriefResult validé ;
+  // l'exécuteur le rejoue par les MÊMES chemins que les gestes utilisateur
+  // (boutons et sélecteurs de l'atelier), donc tout reste annulable (Cmd+Z).
+  {
+    const briefBackend = selectBriefBackend();
+    const briefInput = document.getElementById('at-brief-input') as HTMLTextAreaElement | null;
+    const briefGo = document.getElementById('at-brief-go') as HTMLButtonElement | null;
+    const briefStatus = document.getElementById('at-brief-status') as HTMLElement | null;
+    const briefSay = (message: string, ok: boolean): void => {
+      if (briefStatus) {
+        briefStatus.hidden = false;
+        briefStatus.textContent = message;
+        briefStatus.classList.toggle('brief-status-err', !ok);
+      }
+      showToast(message, ok);
+    };
+    const setSelectValue = (sel: HTMLSelectElement | null, value: string): boolean => {
+      if (!sel) return false;
+      if (![...sel.options].some((o) => o.value === value)) return false;
+      sel.value = value;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    };
+    /** Sélecteurs du panneau (lil) retrouvés par leur vocabulaire, jamais par index. */
+    const panelSelect = (probeValue: string, exclude?: (sel: HTMLSelectElement) => boolean): HTMLSelectElement | null => {
+      const all = [...document.querySelectorAll<HTMLSelectElement>('select')].filter(
+        (sel) => [...sel.options].some((o) => o.value === probeValue) && !(exclude?.(sel) ?? false),
+      );
+      return all.length ? all[all.length - 1]! : null;
+    };
+    const briefHooks: BriefHooks = {
+      loadArchetype: (archetype) => {
+        const id =
+          archetype === 'tshirt_boxy' ? 'at-tshirt' : archetype === 'pantalon' ? 'at-pants' : 'at-hoodie';
+        const btn = document.getElementById(id);
+        if (!(btn instanceof HTMLElement)) return false;
+        btn.click();
+        return true;
+      },
+      setSize: (size) => setSelectValue(sizeSel, size),
+      setFabric: (preset) =>
+        setSelectValue(
+          // Le preset GLOBAL du panneau — pas at-fabric (tissu de la pièce active),
+          // qu'on exclut via son option d'héritage « Tissu global ».
+          panelSelect('Soie', (sel) => [...sel.options].some((o) => /Tissu global/.test(o.textContent ?? ''))),
+          preset,
+        ),
+      setMotif: (motif) => setSelectValue(panelSelect('vichy'), motif),
+      setBody: (kind) => setSelectValue(panelSelect('scan homme'), kind),
+      setStature: (cm) => {
+        avatarStatureInput.value = String(cm);
+        avatarStatureInput.dispatchEvent(new Event('input', { bubbles: true }));
+        avatarStatureInput.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      },
+      setSleeves: (on) => {
+        const btn = document.getElementById('at-sleeves');
+        if (!(btn instanceof HTMLElement)) return false;
+        const pressed = btn.getAttribute('aria-pressed') === 'true';
+        if (pressed !== on) btn.click();
+        return true;
+      },
+      tryOn: () => {
+        // Essayage déjà actif : les retouches s'appliquent en direct, recliquer
+        // at-sim basculerait l'état à l'aveugle — on ne fait rien. (TOILE-24)
+        // Signal fiable = la classe `atelier-simulating` (posée depuis
+        // !atelierDesign), au lieu de la visibilité d'un bouton.
+        if (document.body.classList.contains('atelier-simulating')) return true;
+        const btn = document.getElementById('at-sim');
+        if (!(btn instanceof HTMLElement)) return false;
+        btn.click();
+        return true;
+      },
+      say: briefSay,
+    };
+    const runBrief = async (): Promise<void> => {
+      const text = briefInput?.value ?? '';
+      if (!text.trim()) {
+        briefSay('Décris d’abord le vêtement — par exemple « hoodie en maille, taille L ».', false);
+        return;
+      }
+      if (briefGo) briefGo.disabled = true;
+      try {
+        const result = await briefBackend.interpret(text);
+        executeBrief(result, briefHooks);
+      } finally {
+        if (briefGo) briefGo.disabled = false;
+      }
+    };
+    briefGo?.addEventListener('click', () => void runBrief());
+    // Entrée lance le brief ; Maj+Entrée garde le retour à la ligne.
+    briefInput?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        void runBrief();
+      }
+    });
+  }
+
   // Keyboard shortcuts mirror the panel (brief §3.3 release flow). Each must
   // wake() like its panel button — otherwise pressing R or P on a settled
   // (asleep) garment does nothing visible: the reset/pin lands but the solver
@@ -5328,6 +5916,12 @@ async function main(): Promise<void> {
     canvas.height = Math.min(maxDim, Math.floor(canvas.clientHeight * dpr));
     mirror.width = canvas.width;
     mirror.height = canvas.height;
+    // The saved NDC was computed against the old CSS rectangle. Until the
+    // pointer moves again, showing that old target would make hover and click
+    // disagree because pointerdown recomputes its ray from the new rectangle.
+    pointerInside3D = false;
+    pieceHoverDirty = true;
+    setPieceHover(null);
     if (!sceneTransitionBusy()) renderer.resize(canvas.width, canvas.height);
   };
   window.addEventListener('resize', resize);
@@ -5371,6 +5965,12 @@ async function main(): Promise<void> {
 
     const aspect = canvas.width / canvas.height;
     const ray = camera.pickRay(mouse.ndcX, mouse.ndcY, aspect);
+    // ⊹ pastille survolée (10 points max : négligeable par frame).
+    if (arrangeMode && sceneMode === 'atelier' && atelierDesign && pointerInside3D) {
+      arrangeHoverId = arrangePointNear(mouse.ndcX, mouse.ndcY)?.id ?? null;
+    } else if (arrangeHoverId !== null) {
+      arrangeHoverId = null;
+    }
     const canHoverPiece =
       pointerInside3D &&
       pointerButtons3D === 0 &&

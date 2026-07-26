@@ -258,8 +258,6 @@ export function boxyTee(size: BoxySize, m: BodyMeasure, ref: BodyMeasure): Draft
       seam(BOXY_IDX.uaL, BOXY_IDX.hemL), // côté G sous l'emmanchure
       seam(BOXY_IDX.hemR, BOXY_IDX.uaR), // côté D sous l'emmanchure
     ],
-    preset: 'boxy-tee',
-    presetSize: size,
   };
 }
 

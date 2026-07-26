@@ -8,6 +8,7 @@
  */
 import { frontOutline } from './patternPdf';
 import type { ClothMeshData } from '../engine/cloth/ClothMesh';
+import { downloadBrowserBlob } from './browserDownload';
 
 const escapeXml = (s: string): string =>
   s.replace(/[<>&'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' })[c]!);
@@ -83,14 +84,6 @@ export function exportPatternSvg(
     `</svg>`;
 
   const blob = new Blob([svg], { type: 'image/svg+xml' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
   const filename = patternSvgFilename(garmentName);
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  // Defer the revoke: revoking immediately after click() can abort the download.
-  setTimeout(() => URL.revokeObjectURL(a.href), 30000);
-  return filename;
+  return downloadBrowserBlob(blob, filename);
 }

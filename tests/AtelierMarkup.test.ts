@@ -28,6 +28,9 @@ describe('atelier workspace markup', () => {
       'at-piece',
       'at-length',
       'at-snap',
+      'at-cut',
+      'at-gather',
+      'gather-chooser',
       'at-sleeves',
       'at-pen',
       'at-link',
@@ -41,6 +44,7 @@ describe('atelier workspace markup', () => {
       'at-gsm-explanation',
       'at-reverse',
       'at-move3d',
+      'at-arrange',
       'at-reset3d',
       'at-del',
       'at-undo',
@@ -51,7 +55,6 @@ describe('atelier workspace markup', () => {
       'at-advanced',
       'at-help',
       'at-help-close',
-      'at-exit',
       'at-sim',
       'atelier-cheatsheet',
       'atelier-empty-state',
@@ -106,7 +109,9 @@ describe('atelier workspace markup', () => {
     );
     expect(html).toContain('Revenir au patron');
     expect(html).toContain('◎ Placement');
-    expect(html).toContain('⌖ Réinitialiser la pose');
+    expect(html).toMatch(/id="at-piece"[^>]+aria-pressed="false"/);
+    expect(html).toMatch(/id="at-place"[^>]+aria-pressed="false"/);
+    expect(html).toContain('⌖ Annuler le déplacement manuel');
     expect(html).toContain('La position du dessin n’influence pas l’essayage');
     expect(html).toContain('Automatique par les coutures (recommandé)');
     expect(html).toContain('Les gestes essentiels');
@@ -123,6 +128,12 @@ describe('atelier workspace markup', () => {
     );
     expect(html).toContain(
       '<h2 id="atelier-empty-state-title">Commencez votre patron</h2>',
+    );
+    expect(html).toContain(
+      '<button id="at-empty-tshirt" type="button">Choisir un modèle</button>',
+    );
+    expect(html).toContain(
+      '<button id="at-empty-piece" type="button">✎ Tracer une pièce</button>',
     );
     expect(html).toContain('aria-label="Premier T-shirt en six étapes"');
     expect(html).toContain(
@@ -149,8 +160,14 @@ describe('atelier workspace markup', () => {
     expect(html).toMatch(
       /@media \(max-width: 520px\)[\s\S]*\.cheatsheet-flow,[\s\S]*\.empty-state-actions\s*\{\s*grid-template-columns:\s*1fr;/,
     );
-    expect(html).toContain('data-first-tip=');
-    expect(html).toContain('#view.piece-hover { cursor: move; }');
+    expect(html).toContain('data-first-tip');
+    expect(html).toContain(
+      '<dt>Point + glisser</dt><dd>Déplacer un sommet du patron',
+    );
+    expect(html).toContain(
+      '<dt>R</dt><dd>Réinitialiser le tissu dans sa pose de départ.</dd>',
+    );
+    expect(html).toContain('#view.piece-hover { cursor: grab; }');
   });
 
   it('keeps the scrollable tools separate from the non-overlapping footer', () => {

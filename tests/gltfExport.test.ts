@@ -1,5 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { buildGlb, computeNormals, type GltfPiece } from '../src/app/gltfExport';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  buildGlb,
+  computeNormals,
+  downloadGlb,
+  type GltfPiece,
+} from '../src/app/gltfExport';
 
 // A unit quad in the XY plane: 4 vertices, 2 CCW triangles facing +Z.
 const quad = (): GltfPiece => ({
@@ -98,5 +103,76 @@ describe('computeNormals', () => {
       expect(n[v * 3 + 1]).toBeCloseTo(0);
       expect(n[v * 3 + 2]).toBeCloseTo(1);
     }
+  });
+});
+
+describe('downloadGlb', () => {
+  it('retourne le nom exact du fichier dont le téléchargement a démarré', () => {
+    const anchor = {
+      href: '',
+      download: '',
+      click: vi.fn(),
+      remove: vi.fn(),
+    };
+    const appendChild = vi.fn();
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal('document', {
+      createElement: vi.fn(() => anchor),
+      body: { appendChild },
+    });
+    vi.stubGlobal('URL', {
+      createObjectURL: vi.fn(() => 'blob:glb'),
+      revokeObjectURL,
+    });
+
+    vi.useFakeTimers();
+    try {
+      expect(downloadGlb([quad()], 'Lucas hoodie')).toBe(
+        'toile-Lucas-hoodie.glb',
+      );
+      expect(anchor.download).toBe('toile-Lucas-hoodie.glb');
+      expect(anchor.click).toHaveBeenCalledOnce();
+      expect(appendChild).toHaveBeenCalledWith(anchor);
+      expect(anchor.remove).toHaveBeenCalledOnce();
+      expect(revokeObjectURL).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(30_000);
+      expect(revokeObjectURL).toHaveBeenCalledWith('blob:glb');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retourne null sans fabriquer de faux succès si aucune pièce n’existe', () => {
+    expect(downloadGlb([], 'atelier')).toBeNull();
+  });
+
+  it('retire l’ancre et révoque immédiatement le Blob si le clic échoue', () => {
+    const failure = new Error('navigation bloquée');
+    const anchor = {
+      href: '',
+      download: '',
+      click: vi.fn(() => {
+        throw failure;
+      }),
+      remove: vi.fn(),
+    };
+    const appendChild = vi.fn();
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal('document', {
+      createElement: vi.fn(() => anchor),
+      body: { appendChild },
+    });
+    vi.stubGlobal('URL', {
+      createObjectURL: vi.fn(() => 'blob:glb-failed'),
+      revokeObjectURL,
+    });
+
+    expect(() => downloadGlb([quad()], 'Lucas hoodie')).toThrow(failure);
+    expect(anchor.download).toBe('toile-Lucas-hoodie.glb');
+    expect(appendChild).toHaveBeenCalledWith(anchor);
+    expect(anchor.remove).toHaveBeenCalledOnce();
+    expect(revokeObjectURL).toHaveBeenCalledOnce();
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:glb-failed');
   });
 });

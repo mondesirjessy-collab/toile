@@ -11,6 +11,8 @@
  * arrays are 4-byte typed, so sequential packing keeps every view aligned.
  */
 
+import { downloadBrowserBlob } from './browserDownload';
+
 export interface GltfPiece {
   name: string;
   /** Tightly packed vec3, world space, meters. */
@@ -242,14 +244,9 @@ export function computeNormals(positions: Float32Array, indices: Uint32Array): F
 }
 
 /** Build the .glb and hand it to the browser as a download. */
-export function downloadGlb(pieces: GltfPiece[], name: string): void {
-  if (!pieces.length) return;
+export function downloadGlb(pieces: GltfPiece[], name: string): string | null {
+  if (!pieces.length) return null;
   const blob = new Blob([buildGlb(pieces)], { type: 'model/gltf-binary' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `toile-${name.replace(/[^a-z0-9]/gi, '-')}.glb`;
-  a.click();
-  // The download starts asynchronously — revoking right away aborts it.
-  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  const filename = `toile-${name.replace(/[^a-z0-9]/gi, '-')}.glb`;
+  return downloadBrowserBlob(blob, filename);
 }

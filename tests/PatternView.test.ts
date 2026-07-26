@@ -530,6 +530,32 @@ describe('annulation atomique des outils 2D', () => {
       // Le pointerup physique qui arrive après Escape ne doit rien valider.
       listeners.get('pointerup')!(eventAt(down[0], down[1] + 70));
 
+      // Même geste, cette fois dans l’axe : le contour plein prévisualise la
+      // nouvelle cote et le pointerup la valide réellement.
+      view.setDraft(piece, structuredClone(piece));
+      view.setAssembly([]);
+      expect(view.toggleLength()).toBe(true);
+      const [axisA, axisB] = view.debugVertexScreens();
+      const axisDown: [number, number] = [
+        axisA![0] + (axisB![0] - axisA![0]) * 0.75,
+        axisA![1] + (axisB![1] - axisA![1]) * 0.75,
+      ];
+      const axisBefore = view.debugEdgeLengthsCm()[0]!;
+      listeners.get('pointerdown')!(eventAt(...axisDown));
+      listeners.get('pointermove')!(
+        eventAt(axisDown[0] + 70, axisDown[1]),
+      );
+      expect(view.debugEdgeLengthsCm()[0]).toBeGreaterThan(axisBefore);
+      listeners.get('pointerup')!(
+        eventAt(axisDown[0] + 70, axisDown[1]),
+      );
+      expect(changes).toHaveLength(1);
+      expect(outlineEdgeLengthCm(changes[0]!, changes[0]!.outline, 0)).toBeGreaterThan(
+        axisBefore,
+      );
+      changes.length = 0;
+      expect(view.toggleLength()).toBe(false);
+
       const curved: DraftPiece = {
         ...structuredClone(piece),
         outline: [[0.1, 0.5], [0.3, 0.38], [0.5, 0.34], [0.7, 0.38], [0.9, 0.5], [0.9, 0.9], [0.1, 0.9]],

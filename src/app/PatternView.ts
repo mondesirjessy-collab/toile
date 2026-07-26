@@ -1174,8 +1174,11 @@ export function patternDrawingZonePrompt(pieceId: number): string {
   return `Dessinez dans la zone PIÈCE ${pieceId + 1}`;
 }
 
-const HIT_RADIUS = 12;
-const EDGE_HIT = 8; // click within this many px of an outline edge → add point / bend
+// TOILE-20 : tolérances de saisie élargies (trackpad-friendly). Les cibles
+// denses restent sûres : pickVertex prend désormais le plus PROCHE dans le
+// rayon, et nearestEdge était déjà un plus-proche.
+const HIT_RADIUS = 14;
+const EDGE_HIT = 10; // click within this many px of an outline edge → add point / bend
 const DART_DRAG = 7; // drag farther than this from an edge → it's a bend (Alt: dart), not an add
 const PEN_FEEDBACK_MS = 2200;
 
@@ -1519,6 +1522,21 @@ export class PatternView {
   // deux choix de couture (plus besoin de connaître Maj+clic) ; le mode se
   // referme après la couture. Maj+clic reste disponible en raccourci expert.
   private sewMode = false;
+  // Mode COUPER & COUDRE (bouton ✂) : deux clics sur le contour d'une pièce,
+  // la corde la scinde et la couture se pose seule (géométrie dans Draft.ts).
+  private cutMode = false;
+  private cutPick: { pieceId: number; edge: number; t: number } | null = null;
+  private cutHover: [number, number] | null = null; // curseur, pour l'aperçu de corde
+  // Mode FRONCES (bouton 〰) : cliquer un lien de couture ouvre le choix du
+  // côté à froncer et du ratio — l'application vit dans main (gatherSeamSide).
+  private gatherMode = false;
+  /** Câblés par l'atelier (main.ts), après construction. */
+  onCutPiece: (
+    pieceId: number,
+    a: { edge: number; t: number },
+    b: { edge: number; t: number },
+  ) => void = () => {};
+  onGatherSeam: (seamIndex: number) => void = () => {};
   // Pen tool: drawing a new piece from scratch (click to place points, close it).
   private penMode = false;
   /** Écrit penMode ET prévient la barre d'outils quand l'état change. */
@@ -1747,10 +1765,13 @@ export class PatternView {
       this.linkMode ||
       this.sewMode ||
       this.zipperMode ||
+      this.cutMode ||
+      this.gatherMode ||
       this.surfacePlacementPieceId !== null ||
       this.seamPickA !== null ||
       this.linkPickA !== null ||
       this.zipperPickA !== null ||
+      this.cutPick !== null ||
       this.selectedPiece !== null ||
       this.selectedPieces.size > 0;
     const cancelledGesture =
@@ -1794,6 +1815,10 @@ export class PatternView {
     this.linkNotice = null;
     this.sewMode = false;
     this.zipperMode = false;
+    this.cutMode = false;
+    this.cutPick = null;
+    this.cutHover = null;
+    this.gatherMode = false;
     this.surfacePlacementPieceId = null;
     this.surfacePlacementHover = null;
     this.selectedPiece = null;
@@ -1972,11 +1997,77 @@ export class PatternView {
       this.lengthSnapEnabled = false;
       this.lengthSnap = null;
       this.draftPreview = null;
+      this.cutMode = false;
+      this.cutPick = null;
+      this.gatherMode = false;
     }
     this.seamPickA = null;
     document.body.style.cursor = '';
     this.render();
     return this.sewMode;
+  }
+
+  /** Un seul outil actif à la fois — coupe les autres modes avant d'armer. */
+  private disarmToolsForExclusive(): void {
+    this.sewMode = false;
+    this.seamPickA = null;
+    this.zipperMode = false;
+    this.zipperPickA = null;
+    this.zipperHover = null;
+    this.linkMode = false;
+    this.linkPickA = null;
+    this.linkHover = null;
+    this.lengthMode = false;
+    this.lengthHover = null;
+    this.lengthDrag = null;
+    this.lengthSnapEnabled = false;
+    this.lengthSnap = null;
+    this.draftPreview = null;
+    this.surfacePlacementPieceId = null;
+    this.surfacePlacementHover = null;
+    this.setPen(false);
+    this.penPoints = [];
+    // Le mode sélection de pièce intercepte les clics gauches (déplacement) :
+    // armer un outil doit donc TOUJOURS en sortir, sinon l'outil ne reçoit rien.
+    this.selectedPiece = null;
+    this.selectedPieces.clear();
+  }
+
+  toggleCut(): boolean {
+    const next = !this.cutMode;
+    if (next) this.disarmToolsForExclusive();
+    this.cutMode = next;
+    this.cutPick = null;
+    this.cutHover = null;
+    if (!next) this.gatherMode = false;
+    document.body.style.cursor = next ? 'crosshair' : '';
+    this.render();
+    return this.cutMode;
+  }
+
+  get cutting(): boolean {
+    return this.cutMode;
+  }
+
+  get cutPickArmed(): boolean {
+    return this.cutPick !== null;
+  }
+
+  toggleGather(): boolean {
+    const next = !this.gatherMode;
+    if (next) this.disarmToolsForExclusive();
+    this.gatherMode = next;
+    if (next) {
+      this.cutMode = false;
+      this.cutPick = null;
+    }
+    document.body.style.cursor = next ? 'pointer' : '';
+    this.render();
+    return this.gatherMode;
+  }
+
+  get gathering(): boolean {
+    return this.gatherMode;
   }
 
   /**
@@ -2567,12 +2658,22 @@ export class PatternView {
     const piece = this.draftPiece;
     if (!out || !piece) return null;
     const hidden = logicalCurveInteriorIndices(logicalCurveRuns(piece, out));
+    // Le plus PROCHE dans le rayon — pas le premier trouvé : sur un contour
+    // dense, « premier trouvé » pouvait saisir le voisin du point visé, et un
+    // rayon élargi (TOILE-20) aggraverait ce biais sans ce tri.
+    let best: number | null = null;
+    let bestD = HIT_RADIUS * HIT_RADIUS;
     for (let i = 0; i < out.length; i++) {
       if (hidden.has(i)) continue;
       const s = this.vertexScreen(out[i]!);
-      if (s && (px - s[0]) ** 2 + (py - s[1]) ** 2 <= HIT_RADIUS * HIT_RADIUS) return i;
+      if (!s) continue;
+      const d = (px - s[0]) ** 2 + (py - s[1]) ** 2;
+      if (d <= bestD) {
+        bestD = d;
+        best = i;
+      }
     }
-    return null;
+    return best;
   }
 
   private pickCurveHandle(px: number, py: number): number | null {
@@ -2830,10 +2931,13 @@ export class PatternView {
   }
 
   /** Nearest outline edge to a screen point + the closest point on it. */
-  private nearestEdge(px: number, py: number): { edge: number; sx: number; sy: number; dist: number } | null {
+  private nearestEdge(
+    px: number,
+    py: number,
+  ): { edge: number; sx: number; sy: number; dist: number; t: number } | null {
     const out = this.draftPreview ?? this.draftPiece?.outline;
     if (!out || !this.tf) return null;
-    let best = { edge: -1, sx: 0, sy: 0, dist: Infinity };
+    let best = { edge: -1, sx: 0, sy: 0, dist: Infinity, t: 0 };
     for (let k = 0; k < out.length; k++) {
       const a = this.vertexScreen(out[k]!);
       const b = this.vertexScreen(out[(k + 1) % out.length]!);
@@ -2841,11 +2945,12 @@ export class PatternView {
       const abx = b[0] - a[0];
       const aby = b[1] - a[1];
       const len2 = abx * abx + aby * aby || 1e-6;
+      // La transformation vue est affine : le t écran est aussi le t UV.
       const t = Math.min(1, Math.max(0, ((px - a[0]) * abx + (py - a[1]) * aby) / len2));
       const sx = a[0] + t * abx;
       const sy = a[1] + t * aby;
       const d = Math.hypot(px - sx, py - sy);
-      if (d < best.dist) best = { edge: k, sx, sy, dist: d };
+      if (d < best.dist) best = { edge: k, sx, sy, dist: d, t };
     }
     return best.edge >= 0 ? best : null;
   }
@@ -3028,6 +3133,43 @@ export class PatternView {
       const resizeTarget = this.pickPieceResizeHandle(p[0], p[1]);
       if (resizeTarget) {
         this.beginPieceResize(e, p, resizeTarget);
+        return;
+      }
+      // ✂ COUPER & COUDRE : deux clics sur le contour de la MÊME pièce. AVANT
+      // le mode sélection, qui intercepterait le clic pour déplacer la pièce.
+      if (this.cutMode) {
+        this.routePieceGesture(p[0], p[1]); // la colonne cliquée devient active
+        const ne = this.nearestEdge(p[0], p[1]);
+        if (ne && ne.dist <= EDGE_HIT * 2) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (this.cutPick && this.cutPick.pieceId === this.activePiece) {
+            const a = { edge: this.cutPick.edge, t: this.cutPick.t };
+            const b = { edge: ne.edge, t: ne.t };
+            const pid = this.cutPick.pieceId;
+            this.cutMode = false;
+            this.cutPick = null;
+            this.cutHover = null;
+            document.body.style.cursor = '';
+            this.render();
+            this.onCutPiece(pid, a, b);
+          } else {
+            // 1er point (ou changement de pièce : on repart de celle-ci).
+            this.cutPick = { pieceId: this.activePiece, edge: ne.edge, t: ne.t };
+            this.cutHover = [p[0], p[1]];
+            this.render();
+          }
+        }
+        return;
+      }
+      // 〰 FRONCES : cliquer le lien d'une couture ouvre le choix côté/ratio.
+      if (this.gatherMode) {
+        const idx = this.pickSeam(p[0], p[1]);
+        if (idx !== null) {
+          e.preventDefault();
+          e.stopPropagation();
+          this.onGatherSeam(idx);
+        }
         return;
       }
       // Whole-piece mode: a left drag inside translates the complete pattern;
@@ -3249,6 +3391,14 @@ export class PatternView {
   };
 
   private readonly onMove = (e: PointerEvent): void => {
+    if (this.cutMode && this.cutPick) {
+      const p = this.canvasPoint(e);
+      if (p) {
+        this.cutHover = [p[0], p[1]];
+        this.render(); // aperçu de la corde de découpe qui suit le curseur
+      }
+      return;
+    }
     if (this.surfacePlacementPieceId !== null && !this.penMode) {
       const p = this.canvasPoint(e);
       const supportPieceId = p ? this.pickPiece(p[0], p[1]) : null;
@@ -4468,6 +4618,28 @@ export class PatternView {
     const pts = out.map((uv) => this.vertexScreen(uv)).filter((s): s is [number, number] => s !== null);
     if (pts.length !== out.length) return;
     const wholeSelected = this.selectedPieces.has(this.activePiece);
+
+    // ✂ Aperçu de la corde de découpe : du 1er point posé au curseur.
+    if (this.cutMode && this.cutPick && this.cutPick.pieceId === this.activePiece) {
+      const a = pts[this.cutPick.edge % pts.length]!;
+      const b = pts[(this.cutPick.edge + 1) % pts.length]!;
+      const px = a[0] + (b[0] - a[0]) * this.cutPick.t;
+      const py = a[1] + (b[1] - a[1]) * this.cutPick.t;
+      if (this.cutHover) {
+        ctx.strokeStyle = 'rgba(255, 159, 107, 0.95)';
+        ctx.lineWidth = 1.6;
+        ctx.setLineDash([7, 5]);
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(this.cutHover[0], this.cutHover[1]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      ctx.beginPath();
+      ctx.arc(px, py, 5, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255, 159, 107, 0.95)';
+      ctx.fill();
+    }
 
     // The piece outline: a filled shape with its cut edges (vector, CAD-style).
     if (pts.length >= 3) {

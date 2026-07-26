@@ -13,6 +13,7 @@ import {
   type DraftDoc,
   type DraftPiece,
 } from '../engine/pattern/Draft';
+import { downloadBrowserBlob } from './browserDownload';
 
 const PAGE_W = 210;
 const PAGE_H = 297;
@@ -210,15 +211,8 @@ export function exportDraftPatternSvg(
   const svg = draftPatternSvg(doc, garmentName, seamAllowanceCm);
   if (!svg) return null;
   const blob = new Blob([svg], { type: 'image/svg+xml' });
-  const anchor = document.createElement('a');
-  anchor.href = URL.createObjectURL(blob);
   const filename = draftPatternSvgFilename(garmentName);
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  setTimeout(() => URL.revokeObjectURL(anchor.href), 30000);
-  return filename;
+  return downloadBrowserBlob(blob, filename);
 }
 
 export function exportDraftPatternPdf(

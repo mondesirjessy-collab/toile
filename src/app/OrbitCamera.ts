@@ -269,6 +269,26 @@ export class OrbitCamera {
     return { origin: eye, dir: [dir[0]!, dir[1]!, dir[2]!] };
   }
 
+  /**
+   * Convert one CSS-pixel radius into the cone slope used by ray picking.
+   * Multiplying the result by a hit's depth gives its world-space tolerance,
+   * so the apparent target stays the same size when the camera zooms.
+   */
+  pickSlopeForPixels(pixelRadius: number, viewportHeight: number): number {
+    if (
+      !Number.isFinite(pixelRadius) ||
+      pixelRadius <= 0 ||
+      !Number.isFinite(viewportHeight) ||
+      viewportHeight <= 0
+    ) {
+      return 0;
+    }
+    return (
+      (2 * Math.tan(this.fov / 2) * pixelRadius) /
+      viewportHeight
+    );
+  }
+
   /** Returns the combined view-projection matrix for the current state. */
   matrix(aspect: number): Float32Array {
     const eye = this.computeEye();
