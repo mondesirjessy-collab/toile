@@ -25,7 +25,7 @@ import {
   type FabricDynamics,
 } from './engine/solver/FabricMaterial';
 import { generateClothGrid, generateSeamedPanels, combineClothMeshes, scaleMeshInverseMassesToReferenceCellArea, type CrossSeam, type ClothMeshData } from './engine/cloth/ClothMesh';
-import { defaultDraft, tshirtDraft, compileDraft, compileAssembly, compileCrossSeams, compileSurfaceContacts, compileSurfaceSeams, crossSewnOpenCells, cutPieceAlongChord, docPieces, draftPieceLabel, gatherSeamSide, neckOpeningCells, removeFreePiece, reboxPiece, pieceIdOf, nearestOutlineEdgeInfo, syncPieceFrames, sanitizeDraft, pointInPolygon, pointInTriangle, surfaceAttachmentUV, type DraftDoc, type AssemblySeam, type DraftPiece } from './engine/pattern/Draft';
+import { defaultDraft, blankBaseDraft, tshirtDraft, compileDraft, compileAssembly, compileCrossSeams, compileSurfaceContacts, compileSurfaceSeams, crossSewnOpenCells, cutPieceAlongChord, docPieces, freeSeamBetween, mirrorDuplicatePiece, graphicLocalUV, GRAPHIC_IMAGE_MAX_CHARS, INTERNAL_LINES_MAX, offsetPieceOutline, generateFittedSleeves, addFisheyeDart, roundOutlineCorner, cutPieceAlongInternalLine, toggleNotchAt, addSeamNotches, slashSpreadFullness, fitCapWidthToArmhole, draftPieceLabel, gatherSeamSide, neckOpeningCells, removeFreePiece, reboxPiece, pieceIdOf, nearestOutlineEdgeInfo, syncPieceFrames, sanitizeDraft, pointInPolygon, pointInTriangle, surfaceAttachmentUV, type DraftDoc, type AssemblySeam, type DraftPiece, type PieceGraphic, type UV } from './engine/pattern/Draft';
 import {
   applyStagingOffset,
   autoPlaceMeshFromCrossSeams,
@@ -69,7 +69,7 @@ import {
 import { preWrapTwoPanelTube } from './engine/pattern/TubePlacement';
 import { preWrapKimonoSleeves } from './engine/pattern/KimonoSleevePlacement';
 import { preCloseBodySafeMirrorSeams } from './engine/pattern/SeamPlacement';
-import { ClothRenderer, DEFAULT_FABRIC } from './app/ClothRenderer';
+import { ClothRenderer, DEFAULT_FABRIC, packVisualMaterial } from './app/ClothRenderer';
 import { OrbitCamera, type CameraBounds } from './app/OrbitCamera';
 import { MouseForce } from './app/MouseForce';
 import { buildSceneMesh, SCENE_VERTEX_FLOATS, type SceneMesh } from './app/SceneGeometry';
@@ -517,7 +517,7 @@ async function main(): Promise<void> {
         showPlacementStatus(
           surface.stitchedEdges.length
             ? [
-                `${piece.name ?? 'Poche'} posée sur ${support?.name ?? `pièce ${surface.supportPieceId + 1}`} · ${surface.stitchedEdges.length}/${piece.outline.length} segments cousus.`,
+                `${piece.name ?? 'Poche'} ${surface.side === 'under' ? 'glissée sous' : 'posée sur'} ${support?.name ?? `pièce ${surface.supportPieceId + 1}`} · ${surface.stitchedEdges.length}/${piece.outline.length} segments cousus.`,
                 'Cliquez un × orange pour retirer cette couture · 🪡 Coudre puis un bord pointillé pour la remettre.',
               ]
             : [
@@ -689,6 +689,12 @@ async function main(): Promise<void> {
   });
   document.getElementById('at-empty-piece')?.addEventListener('click', () => {
     document.getElementById('at-piece')?.click();
+  });
+  document.getElementById('at-empty-femme')?.addEventListener('click', () => {
+    if (!bodyKind.includes('femme')) applyBody('scan femme');
+  });
+  document.getElementById('at-empty-homme')?.addEventListener('click', () => {
+    if (!bodyKind.includes('homme')) applyBody('scan homme');
   });
   const firstUseTipsSeen = new Set<string>();
   let firstUseTipStorage: Storage | null = null;
@@ -896,6 +902,7 @@ async function main(): Promise<void> {
   };
   const syncAtelierControls = (): void => {
     setPressed('at-piece', patternView.drawing);
+    setPressed('at-mirror-draw', patternView.penMirroring);
     setPressed('at-length', patternView.lengthEditing);
     setPressed('at-snap', patternView.lengthSnapping);
     setPressed('at-link', patternView.linkingSegments);
@@ -904,10 +911,18 @@ async function main(): Promise<void> {
       'at-zipper',
       patternView.zippering || !!patternView.zipperPick,
     );
+    setPressed('at-sew-free', patternView.freeSewing);
     setPressed('at-cut', patternView.cutting);
+    setPressed('at-internal', patternView.internalDrawing);
+    setPressed('at-dart', patternView.fisheyeDrawing);
+    setPressed('at-curvepoint', patternView.curvePointing);
+    setPressed('at-notch', patternView.notching);
+    setPressed('at-fullness', patternView.fullnessing);
+    setPressed('at-mirror', patternView.mirroring);
     setPressed('at-gather', patternView.gathering);
     setPressed('at-move3d', move3DEnabled);
     setPressed('at-arrange', arrangeMode);
+    setPressed('at-draw3d', draw3dMode);
     setPressed('at-sleeves', atelierSleeves);
     setPressed(
       'at-place',
@@ -923,7 +938,14 @@ async function main(): Promise<void> {
     if (patternView.zippering || patternView.zipperPick) {
       patternView.toggleZipper();
     }
+    if (patternView.freeSewing) patternView.toggleFreeSew();
     if (patternView.cutting) patternView.toggleCut();
+    if (patternView.internalDrawing) patternView.toggleInternalLine();
+    if (patternView.fisheyeDrawing) patternView.toggleFisheyeDart();
+    if (patternView.curvePointing) patternView.toggleCurvePoint();
+    if (patternView.notching) patternView.toggleNotch();
+    if (patternView.fullnessing) patternView.toggleFullness();
+    if (patternView.mirroring) patternView.toggleMirror();
     if (patternView.gathering) patternView.toggleGather();
     syncAtelierControls();
   };
@@ -1223,6 +1245,17 @@ async function main(): Promise<void> {
     simBtn().classList.remove('running');
     resetPlacement();
     penPlacement = true;
+    // PAGE BLANCHE : tracer ne doit révéler AUCUNE robe socle — le doc devient
+    // le SOCLE VIDE (faces sentinelles sans cellules) et la pièce dessinée
+    // sera le premier vrai contenu du patron.
+    if (!atelierEmptyState.hidden) {
+      draft = blankBaseDraft(resolution as 32 | 64 | 128);
+      // Le plan reflète le socle vide immédiatement (sans build : le tissu 3D
+      // reste caché tant que le doc n'a aucun contenu réel — voir refreshHint).
+      patternView.setDraft(draft.piece, draft.back ?? null, []);
+      patternView.setAssembly([]);
+      patternView.setSegmentLinks([]);
+    }
     // Boîte de tracé = la boîte du corps (grandeur nature, posée sur la
     // silhouette) : la position du dessin SUR la silhouette est sa position
     // sur le corps. Les placements bras/cou re-boîtent ensuite sur l'emprise.
@@ -1284,7 +1317,15 @@ async function main(): Promise<void> {
       move3DEnabled = !move3DEnabled;
     }
     pieceHoverDirty = true;
-    if (!move3DEnabled) setPieceHover(null);
+    if (move3DEnabled) {
+      draw3dMode = false;
+      clearDraw3d();
+      setPressed('at-draw3d', false);
+    }
+    if (!move3DEnabled) {
+      setPieceHover(null);
+      gizmoPick = null; // ✥ rangé → trièdre rangé
+    }
     if (move3DEnabled) {
       arrangeMode = false;
       arrangePick = null;
@@ -1295,7 +1336,7 @@ async function main(): Promise<void> {
     showPlacementStatus(
       move3DEnabled
         ? [
-            'Déplacement 3D actif : glissez une pièce ou l’un de ses exemplaires sans entraîner sa jumelle.',
+            'Déplacement 3D actif : glissez une pièce, ou cliquez-la — un trièdre X·Y·Z apparaît, tirez une flèche pour un déplacement précis sur cet axe (cm en direct).',
             'Le patron 2D, les tailles communes et les coutures restent inchangés.',
             '▶ Simuler la recalera automatiquement avant de libérer la physique.',
           ]
@@ -1405,6 +1446,10 @@ async function main(): Promise<void> {
       move3DEnabled = false;
       pieceHoverDirty = true;
       setPieceHover(null);
+      gizmoPick = null;
+      draw3dMode = false;
+      clearDraw3d();
+      setPressed('at-draw3d', false);
     }
     setPressed('at-move3d', move3DEnabled);
     setPressed('at-arrange', arrangeMode);
@@ -1474,6 +1519,7 @@ async function main(): Promise<void> {
     const piece = draft.pieces[idx];
     if (!piece) return;
     pushHistory();
+    let armFitCapM: number | null = null;
     if (place === 'auto') {
       const placed = structuredClone(piece);
       delete placed.wrap;
@@ -1499,19 +1545,35 @@ async function main(): Promise<void> {
       // Bras / cou : la pièce est re-boîtée sur l'emprise de son tracé (contour
       // plein bord — la famille éprouvée pour les tubes), puis le placement
       // wrap l'enroule et l'épingle (emmanchure / encolure).
-      const wrapped = reboxPiece(piece, place === 'neck' ? 0.15 : 0.18);
+      let wrapped = reboxPiece(piece, place === 'neck' ? 0.15 : 0.18);
       wrapped.wrap = place;
       wrapped.placement = { role: place, autoAlign: true };
       if (!wrapped.name) wrapped.name = placementRoleLabel(place);
+      // Manche dessinée à la main : sa tête s'adapte à l'emmanchure MESURÉE
+      // (largeur = tour du run ouvert, moyenne devant/dos) — v160.
+      if (place === 'armR' || place === 'armL') {
+        const fit = fitCapWidthToArmhole(
+          draft.piece,
+          draft.back ?? null,
+          place === 'armR' ? 'R' : 'L',
+          wrapped,
+        );
+        if (fit) {
+          wrapped = fit.piece;
+          armFitCapM = fit.capM;
+        } else {
+          armFitCapM = null;
+        }
+      }
       draft.pieces[idx] = wrapped;
-    } else if (place === 'pocket') {
-      // A pocket/appliqué is a single, tightly boxed layer. Its cutting shape
-      // stays in its own column; the next click chooses the support and exact
-      // centre point without baking that placement into the patron.
+    } else if (place === 'pocket' || place === 'under') {
+      // Une couche unique, boîtée serrée : par-dessus (poche, empiècement) ou
+      // par-dessous (doublure, fond). Le clic suivant choisit le support et le
+      // centre exact, sans figer ce placement dans le patron.
       const placed = reboxPiece(piece, 0.02);
       delete placed.wrap;
       placed.placement = { role: 'pocket', autoAlign: true };
-      if (!placed.name) placed.name = placementRoleLabel('pocket');
+      if (!placed.name) placed.name = place === 'under' ? 'Doublure' : placementRoleLabel('pocket');
       draft.pieces[idx] = placed;
     } else {
       const role =
@@ -1528,7 +1590,8 @@ async function main(): Promise<void> {
     atelierDesign = true;
     simBtn().classList.remove('running');
     build();
-    if (place === 'pocket') {
+    if (place === 'pocket' || place === 'under') {
+      const side = place === 'under' ? ('under' as const) : ('over' as const);
       pocketPlacementPid = pid; // committée, en attente d'ancrage → révocable
       // Le patternView ne reçoit la pièce (avec son rôle « pocket ») que via le
       // setDraft du build, qui est ASYNCHRONE. Armer le geste de surface tout de
@@ -1538,12 +1601,14 @@ async function main(): Promise<void> {
       // empêche d'armer si l'utilisateur a annulé entre-temps (Échap).
       void lifecycle.whenIdle().then(() => {
         if (pocketPlacementPid !== pid) return;
-        patternView.startSurfacePlacement(pid);
+        patternView.startSurfacePlacement(pid, side);
         syncAtelierControls();
       });
       syncAtelierControls();
       showPlacementStatus([
-        'Poche / applique : survolez la pièce support de votre choix dans le plan.',
+        side === 'under'
+          ? 'Par-dessous : survolez la pièce support — la vôtre glissera ENTRE le corps et elle (doublure, fond).'
+          : 'Par-dessus : survolez la pièce support de votre choix dans le plan (poche, empiècement).',
         'Le fantôme cyan suit la souris; cliquez au centre de la position exacte. Tous les côtés seront cousus, puis retirables séparément.',
         'Échap pour annuler la pose.',
       ]);
@@ -1565,7 +1630,19 @@ async function main(): Promise<void> {
         sewn,
       );
     } else if (role === 'armL' || role === 'armR' || role === 'neck') {
-      showPlacementStatus([`${placementRoleLabel(role)} : pré-placement corporel automatique prêt.`], true);
+      showPlacementStatus(
+        armFitCapM !== null && role !== 'neck'
+          ? [
+              `${placementRoleLabel(role)} : tête de manche AJUSTÉE à l'emmanchure mesurée — ${(armFitCapM * 100).toFixed(1).replace('.', ',')} cm.`,
+              'Pré-placement corporel automatique prêt · ↔ Longueur règle la longueur de manche.',
+            ]
+          : role === 'neck'
+            ? [`${placementRoleLabel(role)} : pré-placement corporel automatique prêt.`]
+            : [
+                `${placementRoleLabel(role)} : pré-placement prêt — aucune emmanchure ouverte mesurable, la pièce garde sa taille dessinée.`,
+              ],
+        true,
+      );
     } else if (role === 'free') {
       showPlacementStatus(['Pièce laissée libre : elle ne sera pas assemblée automatiquement.']);
     } else if (role) {
@@ -1872,6 +1949,277 @@ async function main(): Promise<void> {
     syncAtelierControls();
     build();
   });
+  // ▱ LIGNE INTERNE : polylignes et polygones DANS une pièce — style, pliure,
+  // surpiqûre, repère. Géométrie de patron pure : AUCUNE reconstruction du
+  // solveur (setDraft direct), l'essayage n'y touche pas.
+  (document.getElementById('at-internal') as HTMLElement | null)?.addEventListener('click', (e) => {
+    const on = patternView.toggleInternalLine();
+    (e.currentTarget as HTMLElement).classList.toggle('active', on);
+    syncAtelierControls();
+    refreshHint();
+  });
+  const refreshPatternDoc = (): void => {
+    if (!draft) return;
+    patternView.setDraft(draft.piece, draft.back ?? null, draft.pieces ?? []);
+    patternView.setAssembly(draft.seams ?? []);
+    patternView.setSegmentLinks(draft.segmentLinks ?? []);
+  };
+  patternView.onInternalLine = (pid, line) => {
+    if (!draft) return;
+    const piece = draftPieceAt(pid);
+    if (!piece) return;
+    if ((piece.internalLines?.length ?? 0) >= INTERNAL_LINES_MAX) {
+      showToast(`Plafond atteint : ${INTERNAL_LINES_MAX} lignes internes par pièce.`);
+      return;
+    }
+    pushHistory();
+    const next = structuredClone(piece);
+    next.internalLines = [...(next.internalLines ?? []), line];
+    replaceDraftPiece(pid, next);
+    draftTouched = true;
+    refreshPatternDoc();
+    showPlacementStatus(
+      [
+        `Ligne interne ${line.closed ? 'FERMÉE (polygone)' : 'posée'} — ${line.points.length} points, sur « ${draftPieceLabel(next, pid)} ».`,
+        'Style, pliure ou repère : visible au plan, sur la préparation 3D et dans les exports PDF/SVG · re-cliquez une ligne (outil armé) pour la supprimer · Ctrl+Z annule.',
+      ],
+      true,
+    );
+  };
+  // ◆ PINCE LOSANGE : trois clics = un losange cousu (2 pinces dos à dos).
+  (document.getElementById('at-dart') as HTMLElement | null)?.addEventListener('click', (e) => {
+    const on = patternView.toggleFisheyeDart();
+    (e.currentTarget as HTMLElement).classList.toggle('active', on);
+    syncAtelierControls();
+    refreshHint();
+  });
+  // ∿ POINT COURBE : un sommet saisi + un rayon = le coin s'arrondit en arc.
+  (document.getElementById('at-curvepoint') as HTMLElement | null)?.addEventListener('click', (e) => {
+    const on = patternView.toggleCurvePoint();
+    (e.currentTarget as HTMLElement).classList.toggle('active', on);
+    syncAtelierControls();
+    refreshHint();
+  });
+  // ⌵ CRANS DE MONTAGE : repères d'alignement — géométrie de patron pure,
+  // AUCUNE reconstruction du solveur (setDraft direct, comme les lignes ▱).
+  (document.getElementById('at-notch') as HTMLElement | null)?.addEventListener('click', (e) => {
+    const on = patternView.toggleNotch();
+    (e.currentTarget as HTMLElement).classList.toggle('active', on);
+    syncAtelierControls();
+    refreshHint();
+  });
+  // ⧢ ÉVASEMENT : deux clics (pivot, ouverture) → choix des cm → couper-pivoter.
+  const fullnessChooser = document.getElementById('fullness-chooser') as HTMLElement | null;
+  let fullnessPending: { pid: number; pivot: { edge: number; t: number }; opening: { edge: number; t: number } } | null = null;
+  const closeFullnessChooser = (): void => {
+    if (fullnessChooser) fullnessChooser.hidden = true;
+    fullnessPending = null;
+    document.getElementById('at-fullness')?.classList.remove('active');
+  };
+  (document.getElementById('at-fullness') as HTMLElement | null)?.addEventListener('click', (e) => {
+    if (fullnessChooser && !fullnessChooser.hidden) {
+      closeFullnessChooser();
+      return;
+    }
+    const on = patternView.toggleFullness();
+    (e.currentTarget as HTMLElement).classList.toggle('active', on);
+    syncAtelierControls();
+    refreshHint();
+  });
+  patternView.onFullnessPicked = (pid, pivot, opening) => {
+    if (!draft || !fullnessChooser) return;
+    fullnessPending = { pid, pivot, opening };
+    fullnessChooser.hidden = false;
+    syncAtelierControls();
+    refreshHint();
+  };
+  fullnessChooser?.addEventListener('click', (event) => {
+    const btn = (event.target as Element | null)?.closest<HTMLButtonElement>('button[data-open-cm]');
+    if (btn) {
+      const cm = Number(btn.dataset.openCm) || 0;
+      const pending = fullnessPending;
+      closeFullnessChooser();
+      if (!cm || !pending || !draft) return;
+      const res = slashSpreadFullness(draft, pending.pid, pending.pivot, pending.opening, cm / 100);
+      if (!res.ok || !res.doc) {
+        showToast(res.reason ?? 'Évasement impossible ici.');
+        syncAtelierControls();
+        refreshHint();
+        return;
+      }
+      pushHistory();
+      draft = res.doc;
+      draftTouched = true;
+      teePreset = false;
+      atelierDesign = true;
+      simBtn().classList.remove('running');
+      build();
+      const label = draftPieceLabel(draftPieceAt(pending.pid), pending.pid);
+      void lifecycle.whenIdle().then(() => {
+        showPlacementStatus(
+          [
+            `Évasement posé sur « ${label} » — ${(res.openedM! * 100).toFixed(1).replace('.', ',')} cm d'ampleur ajoutés au bord d'ouverture (couper-pivoter autour du point vert).`,
+            'La pièce reste UNE pièce : l’entaille est devenue du tissu · les coutures recousent aux nouvelles longueurs · Ctrl+Z annule.',
+          ],
+          true,
+        );
+      });
+      return;
+    }
+    if ((event.target as Element | null)?.closest('#fullness-cancel')) closeFullnessChooser();
+  });
+  /** ✎3D : le tracé posé sur le tissu devient une ligne interne du patron. */
+  const commitDraw3d = (closed: boolean): void => {
+    const pid = draw3dTarget;
+    const points = draw3dPoints.map((pt) => [pt[0], pt[1]] as UV);
+    clearDraw3d();
+    draw3dMode = true; // le mode reste armé pour enchaîner les tracés
+    if (pid === null || points.length < 2 || !draft) return;
+    const piece = draftPieceAt(pid);
+    if (!piece) return;
+    if ((piece.internalLines?.length ?? 0) >= INTERNAL_LINES_MAX) {
+      showToast(`Plafond atteint : ${INTERNAL_LINES_MAX} lignes internes par pièce.`);
+      return;
+    }
+    pushHistory();
+    const next = structuredClone(piece);
+    next.internalLines = [...(next.internalLines ?? []), { points, ...(closed ? { closed: true } : {}) }];
+    replaceDraftPiece(pid, next);
+    draftTouched = true;
+    refreshPatternDoc();
+    showPlacementStatus(
+      [
+        `Tracé posé SUR LE TISSU — retombé au patron de « ${draftPieceLabel(next, pid)} » (${points.length} points${closed ? ', polygone fermé' : ''}).`,
+        'La boucle Clo complète : ✂ Découper + clic sur cette ligne (au plan) = la pièce se scinde le long · visible aussi aux exports · Ctrl+Z retire.',
+      ],
+      true,
+    );
+  };
+  patternView.onNotchToggle = (pid, at) => {
+    if (!draft) return;
+    const res = toggleNotchAt(draft, pid, at);
+    if (!res.ok || !res.doc) {
+      showToast(res.reason ?? 'Cran impossible ici.');
+      return;
+    }
+    pushHistory();
+    draft = res.doc;
+    draftTouched = true;
+    refreshPatternDoc();
+    showToast(res.action === 'removed' ? 'Cran retiré · Ctrl+Z le rend.' : 'Cran posé sur le bord · re-cliquez-le pour le retirer.');
+  };
+  patternView.onNotchSeam = (seamIndex) => {
+    if (!draft) return;
+    const res = addSeamNotches(draft, seamIndex);
+    if (!res.ok || !res.doc) {
+      showToast(res.reason ?? 'Crans impossibles sur cette couture.');
+      return;
+    }
+    pushHistory();
+    draft = res.doc;
+    draftTouched = true;
+    refreshPatternDoc();
+    showPlacementStatus(
+      [
+        `Crans d'accord posés : ${res.added} repères appariés sur les deux côtés de la couture (sens de fermeture respecté).`,
+        'Le cran d’une pièce tombe exactement sur celui de sa partenaire · imprimés sur les exports PDF/SVG · Ctrl+Z retire.',
+      ],
+      true,
+    );
+  };
+  patternView.onCutAlongInternalLine = (pid, lineIndex) => {
+    if (!draft) return;
+    const res = cutPieceAlongInternalLine(draft, pid, lineIndex);
+    if (!res.ok) {
+      showToast(res.reason);
+      syncAtelierControls();
+      refreshHint();
+      return;
+    }
+    pushHistory();
+    draft = res.doc;
+    draftTouched = true;
+    teePreset = false;
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    build();
+    void lifecycle.whenIdle().then(() => {
+      showPlacementStatus(
+        [
+          'Pièce SCINDÉE le long de la ligne interne — extrémités prolongées jusqu’au contour, la couture suit tout le tracé.',
+          'Empiècement courbe en un geste : les deux moitiés recousent exactement le long du chemin · Ctrl+Z annule.',
+        ],
+        true,
+      );
+    });
+  };
+  patternView.onRoundCorner = (pid, vertex, radiusM) => {
+    if (!draft) return;
+    const res = roundOutlineCorner(draft, pid, vertex, radiusM);
+    if (!res.ok || !res.doc) {
+      showToast(res.reason ?? 'Arrondi impossible sur ce sommet.');
+      syncAtelierControls();
+      refreshHint();
+      return;
+    }
+    pushHistory();
+    draft = res.doc;
+    draftTouched = true;
+    teePreset = false;
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    build();
+    const label = draftPieceLabel(draftPieceAt(pid), pid);
+    void lifecycle.whenIdle().then(() => {
+      showPlacementStatus(
+        [
+          `Sommet ARRONDI sur « ${label} » — rayon ${(res.radiusM! * 100).toFixed(1).replace('.', ',')} cm.`,
+          'Le coin est devenu un arc à vrais sommets : coutures ré-indexées, points réglables un à un · Ctrl+Z rend le coin.',
+        ],
+        true,
+      );
+    });
+  };
+  patternView.onFisheyeDart = (pid, top, bottom, halfWidthM) => {
+    if (!draft) return;
+    const res = addFisheyeDart(draft, pid, top, bottom, halfWidthM);
+    if (!res.ok || !res.doc) {
+      showToast(res.reason ?? 'Pince losange impossible ici.');
+      syncAtelierControls();
+      refreshHint();
+      return;
+    }
+    pushHistory();
+    draft = res.doc;
+    draftTouched = true;
+    teePreset = false;
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    build();
+    const label = draftPieceLabel(draftPieceAt(pid), pid);
+    void lifecycle.whenIdle().then(() => {
+      showPlacementStatus(
+        [
+          `Pince LOSANGE posée sur « ${label} » — ${(res.widthM! * 100).toFixed(1).replace('.', ',')} cm de taille × ${(res.heightM! * 100).toFixed(1).replace('.', ',')} cm pointe à pointe.`,
+          'Lancez ▶ l’essayage : le losange se coud fermé et cintre le tissu · les 6 poignées restent réglables · Ctrl+Z retire.',
+        ],
+        true,
+      );
+    });
+  };
+  patternView.onInternalLineDelete = (pid, index) => {
+    if (!draft) return;
+    const piece = draftPieceAt(pid);
+    if (!piece?.internalLines?.[index]) return;
+    pushHistory();
+    const next = structuredClone(piece);
+    next.internalLines = next.internalLines!.filter((_, i) => i !== index);
+    if (!next.internalLines.length) delete next.internalLines;
+    replaceDraftPiece(pid, next);
+    draftTouched = true;
+    refreshPatternDoc();
+    showToast('Ligne interne supprimée · Ctrl+Z la rend.');
+  };
   // 🪡 COUDRE guidé : bascule le mode « deux clics = une couture ». Les deux
   // clics marchent en 2D (le pied du plan guide) ET en 3D (près des bords,
   // directement sur les pièces autour de l'avatar) — le grand plan ne s'ouvre
@@ -1930,6 +2278,50 @@ async function main(): Promise<void> {
     syncAtelierControls();
     refreshHint();
   });
+  // 🧵 COUTURE LIBRE (façon Clo « Free Sewing ») : tracer un run QUELCONQUE du
+  // contour (départ/fin mi-bord permis, coins passés), puis le run partenaire —
+  // les points d'accord s'insèrent tout seuls, la couture se pose (Draft.ts).
+  (document.getElementById('at-sew-free') as HTMLElement).addEventListener('click', (e) => {
+    const on = patternView.toggleFreeSew();
+    (e.currentTarget as HTMLElement).classList.toggle('active', on);
+    syncAtelierControls();
+    refreshHint();
+  });
+  patternView.onFreeSeam = (a, b) => {
+    if (!draft) return;
+    const res = freeSeamBetween(draft, a, b);
+    if (import.meta.env.DEV) {
+      console.debug('[toile] couture libre', { a, b, ok: res.ok, reason: res.ok ? undefined : res.reason });
+    }
+    if (!res.ok) {
+      showToast(res.reason);
+      syncAtelierControls();
+      refreshHint();
+      return;
+    }
+    pushHistory();
+    draft = res.doc;
+    draftTouched = true;
+    teePreset = false;
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    build();
+    const cmA = Math.round(res.lengthAM * 100);
+    const cmB = Math.round(res.lengthBM * 100);
+    const ratio = Math.max(res.lengthAM, res.lengthBM) / (Math.min(res.lengthAM, res.lengthBM) || 1);
+    const notes = [`Couture libre posée — ${cmA} cm ↔ ${cmB} cm.`];
+    if (ratio >= 1.12) {
+      notes.push(`Embu ×${ratio.toFixed(2).replace('.', ',')} : le bord long froncera sur le court à l'essayage.`);
+    } else {
+      notes.push('Lancez ▶ l’essayage pour voir l’assemblage.');
+    }
+    // Le build asynchrone repeint le statut à sa fin — poser le message APRÈS.
+    void lifecycle.whenIdle().then(() => {
+      showPlacementStatus(notes, true);
+    });
+    syncAtelierControls();
+    refreshHint();
+  };
   // ✂ COUPER & COUDRE : deux clics sur le contour d'une pièce — elle se scinde
   // le long de la corde et la couture d'assemblage se pose toute seule. Les
   // coutures traversées reçoivent un point d'accord sur leur bord partenaire.
@@ -1968,6 +2360,160 @@ async function main(): Promise<void> {
     syncAtelierControls();
     refreshHint();
   };
+  // ⧎ MIROIR COUSU : un clic sur le bord-axe d'une pièce — la jumelle
+  // symétrique apparaît, cousue le long de l'axe (mirrorDuplicatePiece).
+  (document.getElementById('at-mirror') as HTMLElement | null)?.addEventListener('click', (e) => {
+    const on = patternView.toggleMirror();
+    (e.currentTarget as HTMLElement).classList.toggle('active', on);
+    syncAtelierControls();
+    refreshHint();
+  });
+  // ⌒ MANCHE ADAPTÉE : mesurer chaque emmanchure LIBRE du corps et générer la
+  // manche à la cote (tête = tour du run ouvert, naissance à sa hauteur
+  // réelle). Les côtés déjà pourvus sont laissés ; moteur d'abord, refus doux.
+  (document.getElementById('at-sleeve-fit') as HTMLElement | null)?.addEventListener('click', () => {
+    if (!draft) {
+      showToast('Chargez un modèle ou dessinez un corps d’abord.');
+      return;
+    }
+    const res = generateFittedSleeves(draft);
+    if (!res.ok || !res.doc) {
+      showToast(res.reason ?? 'Manche adaptée impossible ici.');
+      return;
+    }
+    pushHistory();
+    draft = res.doc;
+    draftTouched = true;
+    teePreset = false;
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    build();
+    const parts = (res.created ?? []).map(
+      (c) => `${c.side === 'R' ? 'droite' : 'gauche'} ${(c.capM * 100).toFixed(1).replace('.', ',')} cm`,
+    );
+    void lifecycle.whenIdle().then(() => {
+      showPlacementStatus(
+        [
+          `Manche${parts.length > 1 ? 's' : ''} générée${parts.length > 1 ? 's' : ''} À LA COTE de l'emmanchure : ${parts.join(' · ')}.`,
+          'Tube posé et épinglé automatiquement · ↔ Longueur règle la longueur · Ctrl+Z retire.',
+        ],
+        true,
+      );
+    });
+  });
+  patternView.onMirrorPiece = (pid, axisEdge) => {
+    if (!draft) return;
+    const res = mirrorDuplicatePiece(draft, pid, axisEdge);
+    if (import.meta.env.DEV) {
+      console.debug('[toile] miroir cousu', { pid, axisEdge, ok: res.ok });
+    }
+    if (!res.ok) {
+      showToast(res.reason);
+      syncAtelierControls();
+      refreshHint();
+      return;
+    }
+    pushHistory();
+    draft = res.doc;
+    draftTouched = true;
+    teePreset = false;
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    build();
+    const pieces = docPieces(draft);
+    const twinLabel = draftPieceLabel(pieces[res.newPieceId] ?? null, res.newPieceId);
+    void lifecycle.whenIdle().then(() => {
+      showPlacementStatus(
+        [
+          `Pièce dupliquée en MIROIR (« ${twinLabel} ») — cousue le long de l'axe cliqué.`,
+          'Lancez ▶ l’essayage : la paire se déplie le long de la couture. Ctrl+Z retire la jumelle.',
+        ],
+        true,
+      );
+    });
+    syncAtelierControls();
+    refreshHint();
+  };
+  // ⇱ OFFSET DU CONTOUR : décaler toute la pièce d'une distance uniforme —
+  // aisance vers l'extérieur, doublure vers l'intérieur (offsetPieceOutline).
+  const offsetChooser = document.getElementById('offset-chooser') as HTMLElement;
+  const offsetTargetLabel = document.getElementById('offset-target-label') as HTMLElement;
+  const closeOffsetChooser = (): void => {
+    offsetChooser.hidden = true;
+    document.getElementById('at-offset')?.classList.remove('active');
+  };
+  (document.getElementById('at-offset') as HTMLElement).addEventListener('click', (e) => {
+    if (!offsetChooser.hidden) {
+      closeOffsetChooser();
+      refreshHint();
+      return;
+    }
+    const ids = selectedFabricPieceIds();
+    if (!draft || !ids.length) {
+      showToast('Sélectionnez d’abord une pièce (clic droit).');
+      return;
+    }
+    deactivateEditingTools();
+    const pieces = docPieces(draft);
+    offsetTargetLabel.textContent =
+      ids.length > 1
+        ? `${ids.length} pièces sélectionnées`
+        : `« ${draftPieceLabel(pieces[ids[0]!] ?? null, ids[0]!)} »`;
+    offsetChooser.hidden = false;
+    (e.currentTarget as HTMLElement).classList.add('active');
+    refreshHint();
+  });
+  offsetChooser.querySelectorAll<HTMLButtonElement>('button[data-offset-cm]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (!draft) return;
+      const cm = Number(btn.dataset.offsetCm) || 0;
+      const ids = selectedFabricPieceIds();
+      closeOffsetChooser();
+      if (!cm || !ids.length) return;
+      pushHistory();
+      let applied = 0;
+      let firstRefusal: string | null = null;
+      for (const pid of ids) {
+        const res = offsetPieceOutline(draft, pid, cm / 100);
+        if (res.ok && res.doc) {
+          draft = res.doc;
+          applied++;
+        } else if (!firstRefusal) {
+          firstRefusal = res.reason ?? 'Offset impossible sur une pièce.';
+        }
+      }
+      if (!applied) {
+        draftHistory.pop();
+        syncUndoButton();
+        showToast(firstRefusal ?? 'Offset impossible ici.');
+        syncAtelierControls();
+        refreshHint();
+        return;
+      }
+      draftTouched = true;
+      teePreset = false;
+      atelierDesign = true;
+      simBtn().classList.remove('running');
+      build();
+      const shown = `${cm > 0 ? '+' : '−'}${String(Math.abs(cm)).replace('.', ',')} cm`;
+      const notes = [
+        `Contour décalé de ${shown} sur ${applied} pièce${applied > 1 ? 's' : ''} — coutures et repères préservés.`,
+        cm > 0
+          ? 'L’aisance ajoutée se voit à l’essayage ; l’embu des coutures suit les nouvelles longueurs.'
+          : 'La pièce rétrécie loge sous l’originale — le geste doublure.',
+      ];
+      if (firstRefusal) notes.push(`Certaines pièces ont refusé : ${firstRefusal}`);
+      void lifecycle.whenIdle().then(() => {
+        showPlacementStatus(notes, true);
+      });
+      syncAtelierControls();
+      refreshHint();
+    });
+  });
+  (document.getElementById('offset-cancel') as HTMLElement).addEventListener('click', () => {
+    closeOffsetChooser();
+    refreshHint();
+  });
   // 〰 FRONCES : cliquer une couture ouvre le choix du côté + ratio ; le bord
   // choisi est recoupé plus long (l'embu), l'essayage fronce naturellement.
   const gatherChooser = document.getElementById('gather-chooser') as HTMLElement;
@@ -2049,6 +2595,10 @@ async function main(): Promise<void> {
     syncAtelierControls();
     refreshHint();
   });
+  // ⌁ DISTANCE ENTRE PARTICULES : le pas du maillage d'essayage, en mm réels.
+  (document.getElementById('at-particles') as HTMLSelectElement).addEventListener('change', (e) => {
+    applyResolution(Number((e.currentTarget as HTMLSelectElement).value));
+  });
   // − PIÈCE : supprime la pièce active (cliquer d'abord sa colonne) — Ctrl+Z annule.
   (document.getElementById('at-del') as HTMLElement).addEventListener('click', () => {
     atelierDesign = true;
@@ -2057,8 +2607,67 @@ async function main(): Promise<void> {
     patternView.deleteActiveFreePiece();
   });
   (document.getElementById('at-pen') as HTMLElement).addEventListener('click', () => patternView.finishPen());
+  // ⋈ MIROIR AU TRACÉ : préférence collante de la plume — le 1er point pose
+  // l'axe vertical, la moitié dessinée s'échoit en direct, la fermeture donne
+  // la pièce symétrique ENTIÈRE. L'armer hors tracé arme aussi la plume.
+  // ✎3D : bouton du panneau VUE 3D — exclusif avec ✥ et ⊹.
+  (document.getElementById('at-draw3d') as HTMLElement | null)?.addEventListener('click', (e) => {
+    draw3dMode = !draw3dMode;
+    if (!draw3dMode) clearDraw3d();
+    if (draw3dMode) {
+      if (!atelierDesign) enterDesign();
+      move3DEnabled = false;
+      gizmoPick = null;
+      arrangeMode = false;
+      arrangePick = null;
+      arrangeHoverId = null;
+      pieceHoverDirty = true;
+      setPieceHover(null);
+    }
+    (e.currentTarget as HTMLElement).setAttribute('aria-pressed', String(draw3dMode));
+    setPressed('at-move3d', move3DEnabled);
+    setPressed('at-arrange', arrangeMode);
+    setPressed('at-draw3d', draw3dMode);
+    showPlacementStatus(
+      draw3dMode
+        ? [
+            'Dessin SUR LE TISSU actif : cliquez des points sur une pièce de la préparation 3D.',
+            'Re-clic sur le 1er point = polygone fermé · sur le dernier = polyligne · le tracé retombe en ligne interne du patron, scindable au ✂.',
+          ]
+        : ['Dessin sur le tissu désactivé.'],
+      true,
+    );
+    refreshHint();
+  });
+  (document.getElementById('at-mirror-draw') as HTMLElement | null)?.addEventListener('click', (e) => {
+    const on = patternView.togglePenMirror();
+    (e.currentTarget as HTMLElement).classList.toggle('active', on);
+    (e.currentTarget as HTMLElement).setAttribute('aria-pressed', String(on));
+    if (on && !patternView.drawing) document.getElementById('at-piece')?.click();
+    showToast(
+      on
+        ? 'Miroir au tracé ACTIF : le 1er point pose l’axe — dessinez UNE moitié, l’autre s’écrit toute seule.'
+        : 'Miroir au tracé désactivé : la plume redevient libre.',
+    );
+    syncAtelierControls();
+    refreshHint();
+  });
+  // ⌖ RANGER : réinitialiser l'arrangement 2D — les pièces déplacées dans le
+  // plan retrouvent leurs colonnes (état de vue pur, rien d'autre ne bouge).
+  (document.getElementById('at-reset2d') as HTMLElement | null)?.addEventListener('click', () => {
+    const moved = patternView.resetLayoutArrangement();
+    showToast(
+      moved
+        ? `Arrangement 2D réinitialisé — ${moved} pièce${moved > 1 ? 's' : ''} rangée${moved > 1 ? 's' : ''} dans ${moved > 1 ? 'leurs colonnes' : 'sa colonne'}.`
+        : 'Le plan est déjà rangé.',
+    );
+  });
   (document.getElementById('at-sim') as HTMLElement).addEventListener('click', () => {
     if (atelierDesign) {
+      if (!atelierEmptyState.hidden) {
+        showToast('Commencez par choisir un modèle ou tracer une pièce.');
+        return;
+      }
       simulate();
     } else {
       if (!bigPanel) setBig(true);
@@ -2097,7 +2706,86 @@ async function main(): Promise<void> {
   // (drapé, couture, robe…) restent joignables via le sélecteur de scène du
   // panneau Réglages. Boot atelier câblé plus bas (setBig avant buildNow).
   let sceneMode: SceneMode = 'atelier';
+  // Bitmaps des graphiques de pièce, décodés une fois par data URL (les
+  // rebuilds réutilisent ; un décodage raté est mémorisé null, sans re-tenter).
+  const graphicBitmapCache = new Map<string, ImageBitmap | null>();
+  const graphicBitmap = async (dataUrl: string): Promise<ImageBitmap | null> => {
+    const cached = graphicBitmapCache.get(dataUrl);
+    if (cached !== undefined) return cached;
+    let bitmap: ImageBitmap | null = null;
+    try {
+      const blob = await (await fetch(dataUrl)).blob();
+      bitmap = await createImageBitmap(blob);
+    } catch {
+      bitmap = null;
+    }
+    graphicBitmapCache.set(dataUrl, bitmap);
+    return bitmap;
+  };
   let resolution: SupportedResolution = DEFAULT_RESOLUTION;
+  // « Distance entre particules » (le Particle Distance de Clo) : la face
+  // atelier de `resolution`. Les étiquettes affichent le pas RÉEL du maillage,
+  // calculé depuis la largeur physique de la pièce de devant.
+  const syncParticleSelect = (): void => {
+    const select = document.getElementById('at-particles') as HTMLSelectElement | null;
+    if (!select) return;
+    const width = draft?.piece?.width ?? 0.95;
+    const names: Record<string, string> = { '32': 'rapide', '64': 'équilibré', '128': 'fin' };
+    for (const opt of Array.from(select.options)) {
+      const n = Number(opt.value);
+      if (!Number.isFinite(n) || n <= 1) continue;
+      const mm = (width / (n - 1)) * 1000;
+      const shown = mm < 10 ? mm.toFixed(1).replace('.', ',') : String(Math.round(mm));
+      opt.textContent = `≈ ${shown} mm — ${names[opt.value] ?? ''}`;
+    }
+    select.value = String(resolution);
+  };
+  /** Changer de MANNEQUIN (femme/homme) : même transaction que le panneau
+   * Réglages — mensurations naturelles du nouveau corps, rebuild. Utilisé par
+   * le panneau ET par le choix d'avatar de la page blanche. */
+  const applyBody = (kind: 'femme' | 'homme' | 'scan homme' | 'scan femme'): void => {
+    collisionAuditAnalyticTPose = false;
+    bodyKind = kind;
+    morphs = { ...NO_MORPH }; // a new body starts at ITS natural measurements
+    const naturalCm = baseCm(
+      kind,
+      kind.startsWith('scan') ? (scans[kind] ?? null) : null,
+    );
+    panel.syncMorphCm(naturalCm);
+    syncAvatarStature(naturalCm.stature!);
+    // Only rebuild where a body is actually on stage; drapé/couture keep
+    // their cloth instead of resetting for an invisible change.
+    if (sceneMode !== 'drapé' && sceneMode !== 'couture') {
+      build();
+    }
+    syncEmptyAvatarButtons();
+  };
+  /** État pressé des boutons mannequin de la page blanche. */
+  const syncEmptyAvatarButtons = (): void => {
+    const femme = document.getElementById('at-empty-femme');
+    const homme = document.getElementById('at-empty-homme');
+    femme?.setAttribute('aria-pressed', String(bodyKind.includes('femme')));
+    femme?.classList.toggle('active', bodyKind.includes('femme'));
+    homme?.setAttribute('aria-pressed', String(bodyKind.includes('homme')));
+    homme?.classList.toggle('active', bodyKind.includes('homme'));
+  };
+  /** Appliquer un nouveau pas de maillage : même transaction que le panneau
+   * Réglages (statut de reconstruction, gridN du draft, rebuild). */
+  const applyResolution = (r: number): void => {
+    const nextResolution = normalizeResolution(r, resolution);
+    resolution = nextResolution;
+    resolutionStatus.dataset.pendingResolution = String(nextResolution);
+    resolutionStatus.textContent = resolutionRebuildMessage(nextResolution);
+    resolutionStatus.hidden = false;
+    // Keep the persisted draft grid in sync with the sim resolution (the
+    // atelier cuts on `resolution`, so a stale gridN would lie in the file).
+    if (draft) draft.gridN = nextResolution;
+    syncParticleSelect();
+    // An option change is a real lifecycle request, even when the target
+    // scene itself did not change. This starts teardown synchronously; the
+    // status above remains visible until that transaction reaches idle.
+    build();
+  };
   let selfCollision = true;
   let wind = 0;
   let seamAllowanceM = 0.01; // seam allowance drawn on the pattern (meters)
@@ -2127,7 +2815,12 @@ async function main(): Promise<void> {
     const active = patternView.activeDraftPieceId;
     const selected = patternView.selectedDraftPieceIds;
     const requested = selected.includes(active) ? selected : [active];
-    return [...new Set(requested)].filter((pieceId) => !!draftPieceAt(pieceId));
+    // Jamais le socle vide : les outils de panneau (offset, couleur, grammage)
+    // ne doivent pas viser une face sentinelle invisible (audit v150-158).
+    return [...new Set(requested)].filter((pieceId) => {
+      const piece = draftPieceAt(pieceId);
+      return !!piece && !piece.blank;
+    });
   };
   const effectivePieceGsm = (piece: DraftPiece): number =>
     piece.arealDensityGsm ??
@@ -2137,7 +2830,283 @@ async function main(): Promise<void> {
       1000;
   const formatGsm = (value: number): string =>
     new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 1 }).format(value);
+  const colorInput = document.getElementById('at-color') as HTMLInputElement | null;
+  const colorReset = document.getElementById('at-color-reset') as HTMLButtonElement | null;
+  const colorHelp = document.getElementById('at-color-help') as HTMLElement | null;
+  /** Pastille du sélecteur quand aucune couleur n'est posée : la teinte 2D du
+   * tissu de la pièce (mêmes valeurs que le remplissage du plan). */
+  const FABRIC_SWATCH: Record<string, string> = {
+    Jersey: '#ded1b8',
+    Maille: '#b8736b',
+    Popeline: '#edede6',
+    Denim: '#3b4a73',
+    Lin: '#d9ccad',
+    Laine: '#858085',
+    Soie: '#eddec7',
+  };
+  const graphicAddBtn = document.getElementById('at-graphic-add') as HTMLButtonElement | null;
+  const graphicRemoveBtn = document.getElementById('at-graphic-remove') as HTMLButtonElement | null;
+  const graphicFileInput = document.getElementById('at-graphic-file') as HTMLInputElement | null;
+  const graphicHelp = document.getElementById('at-graphic-help') as HTMLElement | null;
+  const syncPieceGraphicControl = (): void => {
+    if (!graphicAddBtn || !graphicRemoveBtn || !graphicHelp) return;
+    const activeId = patternView.activeDraftPieceId;
+    const piece = draftPieceAt(activeId);
+    const enabled = !!piece && pieceFabricSelectEnabled(sceneMode, !!piece);
+    graphicAddBtn.disabled = !enabled;
+    graphicRemoveBtn.disabled = !enabled || !piece?.graphic;
+    graphicAddBtn.textContent = piece?.graphic ? '🖼 Remplacer le graphique' : '🖼 Poser un graphique';
+    if (!piece) {
+      graphicHelp.textContent = 'Sélectionnez une pièce pour poser une image.';
+    } else if (piece.graphic?.repeat) {
+      const wCm = Math.round(piece.graphic.widthM * 100);
+      graphicHelp.textContent = `Motif répété · ${wCm} cm — glisser = phase · coin = taille · poignée haute = direction.`;
+    } else if (piece.graphic) {
+      const wCm = Math.round(piece.graphic.widthM * 100);
+      const hCm = Math.round(piece.graphic.widthM * piece.graphic.aspect * 100);
+      graphicHelp.textContent = `Graphique ${wCm} × ${hCm} cm — glissez-le sur le plan · coin = taille · poignée haute = rotation.`;
+    } else {
+      graphicHelp.textContent = 'PNG ou JPEG — il se drape avec le tissu à l’essayage.';
+    }
+  };
+  /** Poser / remplacer / retirer (undefined) le graphique de la pièce `pid`. */
+  const applyPieceGraphic = (pid: number, graphic: PieceGraphic | undefined, note?: string): void => {
+    if (!draft || !draftPieceAt(pid)) return;
+    pushHistory();
+    if (draft.preset === 'lucas-hoodie') hoodieFitPristine = false;
+    const next = structuredClone(draftPieceAt(pid)!);
+    if (graphic) next.graphic = graphic;
+    else delete next.graphic;
+    replaceDraftPiece(pid, next);
+    draftTouched = true;
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    build();
+    if (note) {
+      showPlacementStatus([note, 'Lancez ▶ l’essayage : le graphique se drape avec le tissu.'], true);
+    }
+    syncPieceGraphicControl();
+  };
+  /** Tuile de motif 512² PÉRIODIQUE, fond transparent, dessinée dans l'encre
+   * donnée — rayures, vichy, pois (en quinconce), damier. */
+  const motifTile = (kind: string, ink: string): HTMLCanvasElement => {
+    const c = document.createElement('canvas');
+    c.width = c.height = 512;
+    const g = c.getContext('2d')!;
+    g.fillStyle = ink;
+    if (kind === 'rayures') {
+      g.fillRect(0, 0, 256, 512);
+    } else if (kind === 'vichy') {
+      g.globalAlpha = 0.45;
+      g.fillRect(0, 0, 256, 512);
+      g.fillRect(0, 0, 512, 256);
+      g.globalAlpha = 1;
+    } else if (kind === 'pois') {
+      for (const [cx, cy] of [[128, 128], [384, 384]] as const) {
+        g.beginPath();
+        g.arc(cx, cy, 88, 0, Math.PI * 2);
+        g.fill();
+      }
+    } else {
+      g.fillRect(0, 0, 256, 256);
+      g.fillRect(256, 256, 256, 256);
+    }
+    return c;
+  };
+  /** Poser un MOTIF intégré (répété) sur la pièce active, encre = nuancier. */
+  const applyBuiltinMotif = (kind: string): void => {
+    const pid = patternView.activeDraftPieceId;
+    const piece = draftPieceAt(pid);
+    if (!draft || !piece) return;
+    if (piece.blank) {
+      showToast('Dessinez d’abord une pièce — le motif se pose sur une pièce du patron.');
+      return;
+    }
+    const ink = colorInput && /^#[0-9a-f]{6}$/i.test(colorInput.value) ? colorInput.value : '#2b2b33';
+    const image = motifTile(kind, ink).toDataURL('image/png');
+    if (image.length > GRAPHIC_IMAGE_MAX_CHARS) {
+      showToast('Motif trop lourd — réessayez.');
+      return;
+    }
+    const existing = piece.graphic;
+    const graphic: PieceGraphic = {
+      image,
+      anchor: existing?.repeat ? [existing.anchor[0], existing.anchor[1]] : [0.5, 0.5],
+      widthM: existing?.repeat ? existing.widthM : 0.05,
+      aspect: 1,
+      rotationRad: existing?.repeat ? existing.rotationRad : 0,
+      repeat: true,
+    };
+    applyPieceGraphic(
+      pid,
+      graphic,
+      `Motif « ${kind} » posé sur « ${draftPieceLabel(piece, pid)} » (répétition ${Math.round(graphic.widthM * 100)} cm, encre ${ink}) — poignées : phase, taille, direction.`,
+    );
+  };
+  /** Le prochain fichier importé devient un MOTIF répété (panneau ▦). */
+  let importAsRepeat = false;
+  const importGraphicFile = async (file: File): Promise<void> => {
+    const pid = patternView.activeDraftPieceId;
+    const piece = draftPieceAt(pid);
+    if (!draft || !piece) return;
+    if (piece.blank) {
+      showToast('Dessinez d’abord une pièce — le graphique se pose sur une pièce du patron.');
+      return;
+    }
+    let bitmap: ImageBitmap;
+    try {
+      bitmap = await createImageBitmap(file);
+    } catch {
+      showToast('Image illisible — un PNG ou un JPEG.');
+      return;
+    }
+    // Réduction : ≤512 px de côté, puis 256 si le data URL dépasse le budget
+    // du document (l'image voyage DANS le patron sauvegardé).
+    const encode = (maxSide: number): string => {
+      const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+      const w = Math.max(1, Math.round(bitmap.width * scale));
+      const h = Math.max(1, Math.round(bitmap.height * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      canvas.getContext('2d')!.drawImage(bitmap, 0, 0, w, h);
+      return canvas.toDataURL('image/png');
+    };
+    let image = encode(512);
+    if (image.length > GRAPHIC_IMAGE_MAX_CHARS) image = encode(256);
+    if (image.length > GRAPHIC_IMAGE_MAX_CHARS) {
+      showToast('Image trop lourde même réduite — simplifiez-la (PNG à fonds transparents).');
+      return;
+    }
+    const aspect = bitmap.height / Math.max(1, bitmap.width);
+    const existing = piece.graphic;
+    const asRepeat = importAsRepeat;
+    importAsRepeat = false;
+    const graphic: PieceGraphic = {
+      image,
+      // Remplacement : l'image change, la pose (ancre/taille/rotation) reste.
+      anchor: existing ? [existing.anchor[0], existing.anchor[1]] : asRepeat ? [0.5, 0.5] : [0.5, 0.4],
+      widthM: existing?.widthM ?? (asRepeat ? 0.08 : Math.min(0.18, piece.width * 0.45)),
+      aspect,
+      rotationRad: existing?.rotationRad ?? 0,
+      ...(asRepeat ? { repeat: true } : {}),
+    };
+    const wCm = Math.round(graphic.widthM * 100);
+    applyPieceGraphic(
+      pid,
+      graphic,
+      asRepeat
+        ? `Motif répété posé (répétition ${wCm} cm) sur « ${draftPieceLabel(piece, pid)} » — poignées : phase, taille, direction.`
+        : `Graphique posé (${wCm} cm de large) sur « ${draftPieceLabel(piece, pid)} » — glissez-le sur le plan 2D pour l'ajuster.`,
+    );
+  };
+  graphicAddBtn?.addEventListener('click', () => graphicFileInput?.click());
+  graphicFileInput?.addEventListener('change', () => {
+    const file = graphicFileInput.files?.[0];
+    graphicFileInput.value = '';
+    if (file) void importGraphicFile(file);
+  });
+  graphicRemoveBtn?.addEventListener('click', () => {
+    const pid = patternView.activeDraftPieceId;
+    if (draftPieceAt(pid)?.graphic) {
+      applyPieceGraphic(pid, undefined, 'Graphique retiré — la pièce revient au tissu nu.');
+    }
+  });
+  patternView.onGraphicChange = (pid, graphic) => {
+    if (draftPieceAt(pid)?.graphic) applyPieceGraphic(pid, graphic);
+  };
+  // ▦ MOTIF DE LA PIÈCE : bibliothèque intégrée (encre = nuancier) ou image
+  // répétée — même pipeline que le graphique, avec repeat: true.
+  const motifChooser = document.getElementById('motif-chooser') as HTMLElement | null;
+  const closeMotifChooser = (): void => {
+    if (motifChooser) motifChooser.hidden = true;
+    document.getElementById('at-motif')?.classList.remove('active');
+  };
+  (document.getElementById('at-motif') as HTMLElement | null)?.addEventListener('click', (e) => {
+    if (!motifChooser) return;
+    if (!motifChooser.hidden) {
+      closeMotifChooser();
+      return;
+    }
+    const piece = draftPieceAt(patternView.activeDraftPieceId);
+    if (!draft || !piece) {
+      showToast('Sélectionnez d’abord une pièce (clic droit).');
+      return;
+    }
+    motifChooser.hidden = false;
+    (e.currentTarget as HTMLElement).classList.add('active');
+  });
+  motifChooser?.querySelectorAll<HTMLButtonElement>('button[data-motif]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      closeMotifChooser();
+      applyBuiltinMotif(btn.dataset.motif ?? 'rayures');
+    });
+  });
+  (document.getElementById('motif-image') as HTMLElement | null)?.addEventListener('click', () => {
+    closeMotifChooser();
+    importAsRepeat = true;
+    graphicFileInput?.click();
+  });
+  (document.getElementById('motif-cancel') as HTMLElement | null)?.addEventListener('click', closeMotifChooser);
+  const syncPieceColorControl = (): void => {
+    if (!colorInput || !colorReset || !colorHelp) return;
+    const activeId = patternView.activeDraftPieceId;
+    const activePiece = draftPieceAt(activeId);
+    const ids = selectedFabricPieceIds();
+    const pieces = ids.map((pid) => draftPieceAt(pid)!).filter(Boolean);
+    const enabled = pieces.length > 0 && pieceFabricSelectEnabled(sceneMode, !!activePiece);
+    colorInput.disabled = !enabled;
+    colorReset.disabled = !enabled || pieces.every((piece) => !piece.color);
+    const colors = pieces.map((piece) => piece.color);
+    const first = colors[0];
+    const mixed = colors.some((value) => value !== first);
+    colorInput.value =
+      !mixed && first
+        ? first
+        : (activePiece?.fabricPreset && FABRIC_SWATCH[activePiece.fabricPreset]) || '#ded1b8';
+    colorHelp.textContent = !pieces.length
+      ? 'Sélectionnez une pièce pour la colorer.'
+      : mixed
+        ? `Couleurs différentes · ${ids.length} pièces — en choisir une l'applique à toutes.`
+        : first
+          ? `Couleur posée · ${first}${ids.length > 1 ? ` · ${ids.length} pièces` : ''}`
+          : 'Le tissu décide de la couleur.';
+  };
+  const applyPieceColor = (color: string | undefined): void => {
+    if (!draft) return;
+    const ids = selectedFabricPieceIds();
+    if (!ids.length) return;
+    const already = ids.every((pid) => draftPieceAt(pid)?.color === color);
+    if (already) {
+      syncPieceColorControl();
+      return;
+    }
+    pushHistory();
+    if (draft.preset === 'lucas-hoodie') hoodieFitPristine = false;
+    for (const pid of ids) {
+      const next = structuredClone(draftPieceAt(pid)!);
+      if (color) next.color = color;
+      else delete next.color;
+      replaceDraftPiece(pid, next);
+    }
+    draftTouched = true;
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    build();
+    showPlacementStatus(
+      [
+        color
+          ? `${ids.length} pièce${ids.length > 1 ? 's' : ''} habillée${ids.length > 1 ? 's' : ''} en ${color} — le tissu garde sa physique et son grain.`
+          : `Couleur retirée sur ${ids.length} pièce${ids.length > 1 ? 's' : ''} : le tissu décide à nouveau du rendu.`,
+        'Le plan 2D teinte la pièce ; lancez ▶ l’essayage pour le colorblock en 3D.',
+      ],
+      true,
+    );
+    syncPieceColorControl();
+  };
   const syncPieceFabricSelect = (): void => {
+    syncPieceColorControl();
+    syncPieceGraphicControl();
     if (!fabricSel) return;
     const activeId = patternView.activeDraftPieceId;
     const piece = draftPieceAt(activeId);
@@ -2151,7 +3120,7 @@ async function main(): Promise<void> {
     fabricSel.dataset.globalPreset = globalFabricPreset;
     // A draft can persist while another scene is mounted. Keep its hidden
     // toolbar select non-interactive so no orphan control can mutate that draft.
-    fabricSel.disabled = !pieceFabricSelectEnabled(sceneMode, !!piece);
+    fabricSel.disabled = !pieceFabricSelectEnabled(sceneMode, !!piece && !piece.blank);
     selectionName.textContent =
       selected.length > 1
         ? `${selected.length} pièces sélectionnées`
@@ -2192,7 +3161,10 @@ async function main(): Promise<void> {
     const selected = patternView.selectedDraftPieceIds;
     const active = patternView.activeDraftPieceId;
     const ids = selected.includes(active) ? selected : [active];
-    const valid = ids.filter((pid) => !!draftPieceAt(pid));
+    const valid = ids.filter((pid) => {
+      const piece = draftPieceAt(pid);
+      return !!piece && !piece.blank;
+    });
     if (!valid.length) return;
     pushHistory();
     if (draft.preset === 'lucas-hoodie') hoodieFitPristine = false;
@@ -2218,6 +3190,11 @@ async function main(): Promise<void> {
       true,
     );
   });
+  colorInput?.addEventListener('change', () => {
+    const value = colorInput.value;
+    if (/^#[0-9a-f]{6}$/i.test(value)) applyPieceColor(value.toLowerCase());
+  });
+  colorReset?.addEventListener('click', () => applyPieceColor(undefined));
   const applyPieceGsm = (gsm: number | undefined): void => {
     if (!draft) return;
     const ids = selectedFabricPieceIds();
@@ -2502,6 +3479,126 @@ async function main(): Promise<void> {
   // ORGANISER DANS LA 3D (mode conception, pièces gelées) : the grabbed piece
   // follows the pointer as a rigid whole. On release only its preparation
   // offset is stored; its pattern geometry and seams are untouched.
+  // ⌖ GIZMO XYZ (mode ✥) : un clic SÉLECTIONNE une pièce — un trièdre X/Y/Z
+  // apparaît à son centroïde ; tirer une flèche contraint le déplacement à CET
+  // axe monde, avec les centimètres en direct. La précision de profondeur que
+  // le drag libre en plan d'écran ne donnait pas (douleur M2 de l'audit).
+  // ✎3D DESSINER SUR LE VÊTEMENT (le « 3D Pen (Garment) » de Clo) : cliquer
+  // des points SUR le tissu de la préparation ; la polyligne retombe en LIGNE
+  // INTERNE de la pièce touchée (scindable au ✂, imprimée aux exports). En
+  // conception, chaque pièce plate est AFFINE (uvWorldOf) : le clic s'inverse
+  // exactement en (u, v) — pas de quantification de cellule.
+  let draw3dMode = false;
+  let draw3dTarget: number | null = null; // pid verrouillé au 1er point
+  let draw3dPoints: UV[] = [];
+  const clearDraw3d = (): boolean => {
+    const active = draw3dMode || draw3dPoints.length > 0;
+    draw3dTarget = null;
+    draw3dPoints = [];
+    return active;
+  };
+  /** Inverse le clic 3D en (pièce, UV) sur les pièces PLATES de la
+   * préparation : intersection rayon-plan par pièce (repère affine de
+   * uvWorldOf), la plus PROCHE de la caméra qui tombe dans le contour. */
+  const pickDraw3dPoint = (
+    ray: { origin: readonly [number, number, number]; dir: readonly [number, number, number] },
+    lockPid: number | null,
+  ): { pid: number; uv: UV } | null => {
+    if (!draft) return null;
+    const all = docPieces(draft);
+    let best: { pid: number; uv: UV; s: number } | null = null;
+    for (let pid = 0; pid < all.length; pid++) {
+      if (lockPid !== null && pid !== lockPid) continue;
+      const piece = all[pid];
+      if (!piece || piece.blank || piece.wrap) continue;
+      const map = uvWorldOf(pid);
+      if (!map) continue;
+      const p0 = map(0, 0);
+      const pu = map(1, 0);
+      const pv = map(0, 1);
+      const U: [number, number, number] = [pu[0] - p0[0], pu[1] - p0[1], pu[2] - p0[2]];
+      const V: [number, number, number] = [pv[0] - p0[0], pv[1] - p0[1], pv[2] - p0[2]];
+      const nx = U[1] * V[2] - U[2] * V[1];
+      const ny = U[2] * V[0] - U[0] * V[2];
+      const nz = U[0] * V[1] - U[1] * V[0];
+      const denom = nx * ray.dir[0] + ny * ray.dir[1] + nz * ray.dir[2];
+      if (Math.abs(denom) < 1e-9) continue;
+      const sHit =
+        (nx * (p0[0] - ray.origin[0]) + ny * (p0[1] - ray.origin[1]) + nz * (p0[2] - ray.origin[2])) / denom;
+      if (sHit < 0.01) continue;
+      const hit: [number, number, number] = [
+        ray.origin[0] + ray.dir[0] * sHit,
+        ray.origin[1] + ray.dir[1] * sHit,
+        ray.origin[2] + ray.dir[2] * sHit,
+      ];
+      // Coordonnées (u, v) dans le repère du plan (moindres carrés 2×2).
+      const w: [number, number, number] = [hit[0] - p0[0], hit[1] - p0[1], hit[2] - p0[2]];
+      const uu = U[0] * U[0] + U[1] * U[1] + U[2] * U[2];
+      const uvd = U[0] * V[0] + U[1] * V[1] + U[2] * V[2];
+      const vv = V[0] * V[0] + V[1] * V[1] + V[2] * V[2];
+      const wu = w[0] * U[0] + w[1] * U[1] + w[2] * U[2];
+      const wv = w[0] * V[0] + w[1] * V[1] + w[2] * V[2];
+      const det = uu * vv - uvd * uvd;
+      if (Math.abs(det) < 1e-12) continue;
+      const u = (wu * vv - wv * uvd) / det;
+      const v = (wv * uu - wu * uvd) / det;
+      if (u < -0.02 || u > 1.02 || v < -0.02 || v > 1.02) continue;
+      if (!pointInPolygon([u, v], piece.outline)) continue;
+      if (!best || sHit < best.s) best = { pid, uv: [u, v], s: sHit };
+    }
+    return best ? { pid: best.pid, uv: best.uv } : null;
+  };
+  let gizmoPick: { pid: number; instance: number } | null = null;
+  const GIZMO_AXES: readonly {
+    dir: readonly [number, number, number];
+    color: string;
+    label: string;
+  }[] = [
+    { dir: [1, 0, 0], color: 'rgba(255, 106, 106, 0.95)', label: 'X' },
+    { dir: [0, 1, 0], color: 'rgba(122, 226, 154, 0.95)', label: 'Y' },
+    { dir: [0, 0, 1], color: 'rgba(112, 184, 255, 0.95)', label: 'Z' },
+  ];
+  const GIZMO_LEN_M = 0.22;
+  const gizmoRangesOf = (pid: number, instance: number): PieceParticleRange[] =>
+    (pieceParticleRanges.get(pid) ?? []).filter((range) => range.instance === instance);
+  /** L'axe du trièdre sous le pointeur (px canvas), ou null. */
+  const gizmoAxisAt = (px: number, py: number): 0 | 1 | 2 | null => {
+    if (!gizmoPick) return null;
+    const c = stagingInstanceCentroid(gizmoPick.pid, gizmoPick.instance);
+    if (!c) return null;
+    const rect = canvas.getBoundingClientRect();
+    const toPx = (ndc: readonly [number, number]): [number, number] => [
+      ((ndc[0] + 1) / 2) * rect.width,
+      ((1 - ndc[1]) / 2) * rect.height,
+    ];
+    const n0 = arrangeNdcOf(c);
+    if (!n0) return null;
+    const s0 = toPx(n0);
+    let best: 0 | 1 | 2 | null = null;
+    let bestD = 12; // tolérance px
+    for (let k = 0 as 0 | 1 | 2; k < 3; k = (k + 1) as 0 | 1 | 2) {
+      const a = GIZMO_AXES[k]!.dir;
+      const n1 = arrangeNdcOf([
+        c[0] + a[0] * GIZMO_LEN_M,
+        c[1] + a[1] * GIZMO_LEN_M,
+        c[2] + a[2] * GIZMO_LEN_M,
+      ]);
+      if (!n1) continue;
+      const s1 = toPx(n1);
+      const vx = s1[0] - s0[0];
+      const vy = s1[1] - s0[1];
+      const wx = px - s0[0];
+      const wy = py - s0[1];
+      const len2 = vx * vx + vy * vy || 1e-6;
+      const t = Math.max(0, Math.min(1, (wx * vx + wy * vy) / len2));
+      const d = Math.hypot(px - (s0[0] + t * vx), py - (s0[1] + t * vy));
+      if (d < bestD) {
+        bestD = d;
+        best = k;
+      }
+    }
+    return best;
+  };
   let pieceDrag: {
     pid: number;
     instance: number;
@@ -2511,7 +3608,43 @@ async function main(): Promise<void> {
     delta: [number, number, number];
     pointerId: number;
     positions: Float32Array; // immutable CPU snapshot from the instant of grab
+    /** Drag contraint : l'index de l'axe monde du trièdre (X/Y/Z). */
+    axis?: 0 | 1 | 2;
+    grabNdc?: [number, number];
   } | null = null;
+  if (import.meta.env.DEV) {
+    (window as unknown as { __toileGizmo?: unknown }).__toileGizmo = {
+      get pick() {
+        return gizmoPick;
+      },
+      get drag() {
+        return pieceDrag
+          ? {
+              pid: pieceDrag.pid,
+              instance: pieceDrag.instance,
+              axis: pieceDrag.axis ?? null,
+              depth: pieceDrag.depth,
+              start: [...pieceDrag.start],
+              delta: [...pieceDrag.delta],
+              grabNdc: pieceDrag.grabNdc ? [...pieceDrag.grabNdc] : null,
+            }
+          : null;
+      },
+      get ndc() {
+        return [mouse.ndcX, mouse.ndcY, mouse.leftDown];
+      },
+      axisAt(px: number, py: number) {
+        return gizmoAxisAt(px, py);
+      },
+      get draw3d() {
+        return { mode: draw3dMode, target: draw3dTarget, points: draw3dPoints.map((q) => [...q]) };
+      },
+      pickAt(ndcX: number, ndcY: number, lock: number | null) {
+        const ray = camera.pickRay(ndcX, ndcY, canvas.width / canvas.height);
+        return pickDraw3dPoint(ray, lock);
+      },
+    };
+  }
   type StagingPiecePick = StagingPieceIdentity & {
     index: number;
     depth: number;
@@ -3125,7 +4258,8 @@ async function main(): Promise<void> {
                   pieceMesh,
                   pins,
                   garment.count,
-                  fp.placement.surface.supportPieceId === 1 ? -1 : 1,
+                  (((fp.placement.surface.supportPieceId === 1 ? -1 : 1) *
+                    (fp.placement.surface.side === 'under' ? -1 : 1)) as 1 | -1),
                 );
               } else if (
                 !fp.wrap &&
@@ -3387,15 +4521,69 @@ async function main(): Promise<void> {
     if (materialPieceIds.length) {
       materialPieceIds.forEach((pid, index) => {
         const materialId = materialLibrary.ids[index]!;
-        const visualMaterialId = materialLibrary.baseIds[index]!;
+        // Mot visuel : id de tissu (octet bas) + couleur d'EMPIÈCEMENT de la
+        // pièce (24 bits hauts) — le shader déballe, zéro plomberie GPU en plus.
+        const visualWord = packVisualMaterial(
+          materialLibrary.baseIds[index]!,
+          draftPieceAt(pid)?.color,
+        );
         const ranges = pieceParticleRanges.get(pid) ?? [];
         for (const range of ranges) {
           materialIds.fill(materialId, range.first, range.first + range.count);
-          visualMaterialIds.fill(visualMaterialId, range.first, range.first + range.count);
+          visualMaterialIds.fill(visualWord, range.first, range.first + range.count);
         }
       });
     }
     const materialMesh: ClothMeshData = { ...mesh, materialIds };
+    // GRAPHIQUES de pièce : composer l'atlas (4 tuiles 512², bord transparent)
+    // et précalculer l'UV atlas de chaque particule des pièces décorées.
+    // Par particule : xy = UV graphique CONTINUE (le shader borne les posés,
+    // répète les motifs), z = tuile d'atlas (-8 = aucune), w = drapeau motif.
+    const graphicUVs = new Float32Array(mesh.count * 4);
+    for (let i = 0; i < mesh.count; i++) graphicUVs[i * 4 + 2] = -8;
+    let graphicAtlas: HTMLCanvasElement | null = null;
+    if (materialPieceIds.length) {
+      const decorated = materialPieceIds.filter((pid) => draftPieceAt(pid)?.graphic).slice(0, 4);
+      if (decorated.length) {
+        const TILE = 512;
+        const MARGIN = 4; // marge transparente des tuiles POSÉES (le shader la connaît)
+        graphicAtlas = document.createElement('canvas');
+        graphicAtlas.width = TILE * 2;
+        graphicAtlas.height = TILE * 2;
+        const gctx = graphicAtlas.getContext('2d');
+        for (let slot = 0; slot < decorated.length && gctx; slot++) {
+          const pid = decorated[slot]!;
+          const piece = draftPieceAt(pid)!;
+          const graphic = piece.graphic!;
+          const bitmap = await graphicBitmap(graphic.image);
+          if (!bitmap) continue;
+          const tx = (slot % 2) * TILE;
+          const ty = Math.floor(slot / 2) * TILE;
+          if (graphic.repeat) {
+            // Motif : la tuile ENTIÈRE est une répétition, périodique plein bord.
+            gctx.drawImage(bitmap, tx, ty, TILE, TILE);
+          } else {
+            gctx.drawImage(bitmap, tx + MARGIN, ty + MARGIN, TILE - 2 * MARGIN, TILE - 2 * MARGIN);
+          }
+          const n = resolution;
+          const panelSize = n * n;
+          const rep = graphic.repeat ? 1 : 0;
+          for (const range of pieceParticleRanges.get(pid) ?? []) {
+            for (let k = 0; k < range.count; k++) {
+              const particle = range.first + k;
+              const local = particle % panelSize;
+              const u = (local % n) / (n - 1);
+              const v = Math.floor(local / n) / (n - 1);
+              const [gu, gv] = graphicLocalUV(graphic, piece.width, piece.height, u, v);
+              graphicUVs[particle * 4] = gu;
+              graphicUVs[particle * 4 + 1] = gv;
+              graphicUVs[particle * 4 + 2] = slot;
+              graphicUVs[particle * 4 + 3] = rep;
+            }
+          }
+        }
+      }
+    }
     await checkpoint();
     // A rebuild is a transaction: the live globals are only replaced after
     // every allocation and the final cancellation checkpoint succeed. A
@@ -3452,6 +4640,8 @@ async function main(): Promise<void> {
         visualMaterialIds,
         mesh.layers,
         fabricDynamics.collisionThickness,
+        graphicUVs,
+        graphicAtlas,
       );
       nextRenderer.setFabric(fabricStyle); // keep the preset's look across rebuilds
       nextRenderer.setFitMap(fitMap); // the tension view is a rebuild-surviving setting (M29)
@@ -3574,6 +4764,7 @@ async function main(): Promise<void> {
         fabricPreset: globalFabricPreset,
       });
       syncPieceFabricSelect();
+      syncParticleSelect();
       if (transitionRecoveryInFlight) {
         console.info(`[toile] scène ${target} restaurée après une transition interrompue`);
       }
@@ -3679,6 +4870,14 @@ async function main(): Promise<void> {
       !patternView.drawing
     );
     atelierEmptyState.hidden = !emptyAtelier;
+    // PAGE BLANCHE : fenêtres vierges — le plan ne montre que grille et
+    // silhouette, la 3D ne montre que le mannequin. Tout réapparaît au premier
+    // vrai geste (modèle chargé, tracé, import).
+    patternView.setPristine(emptyAtelier);
+    const clothless =
+      emptyAtelier || (!!draft?.piece.blank && !(draft.pieces?.length ?? 0));
+    renderer?.setClothVisible(!clothless);
+    syncEmptyAvatarButtons();
     // Loading/importing/drawing flips draftTouched after the preset selector
     // was first populated. Re-assert its enabled state and honest M4 wording
     // with the same transaction that refreshes the workspace guidance.
@@ -3687,6 +4886,10 @@ async function main(): Promise<void> {
     if (sceneMode !== 'atelier') {
       message =
         'glisser sur le tissu : le tirer · glisser à côté : tourner · clic droit + glisser : se déplacer · molette : zoom visuel · R : réinitialiser le tissu';
+    } else if (patternView.drawing) {
+      message = patternView.penMirroring
+        ? '✎ tracé MIROIR : le 1er point pose l’axe vertical — dessinez UNE moitié, l’autre s’écrit en direct · re-clic au 1er point ou ✓ Fermer le tracé = la pièce entière, symétrique'
+        : '✎ tracé : cliquez point par point dans la zone de dessin · re-clic sur le 1er point ou ✓ Fermer le tracé referme la pièce · ⋈ Miroir au tracé = ne dessiner qu’une moitié';
     } else if (patternView.linkingSegments || patternView.segmentLinkPick) {
       message = patternView.segmentLinkPick
         ? '🔗 1er segment retenu — cliquez maintenant le second, sur la même pièce ou une autre · re-cliquer le même bord annule'
@@ -3699,10 +4902,40 @@ async function main(): Promise<void> {
       message = patternView.seamPick
         ? '🪡 1er bord retenu (en orange) — cliquez maintenant le 2e bord, celui à assembler · re-cliquer le même bord = annuler'
         : '🪡 couture : cliquez près d’un bord de pièce — en 3D sur l’avatar (contours allumés) ou dans le plan 2D';
+    } else if (patternView.freeSewing) {
+      message = patternView.freeSewTracing
+        ? '🧵 tracé en cours — suivez le contour (coins et demi-tour permis), cliquez la fin · re-clic au départ = annuler'
+        : patternView.freeSewHasRunA
+          ? '🧵 1er tracé retenu (en orange) — cliquez le DÉPART du bord à assembler, sur une autre pièce ou le même contour'
+          : '🧵 couture libre : cliquez un DÉPART n’importe où sur un contour — milieu de bord et coins permis · Échap annule';
+    } else if (patternView.mirroring) {
+      message =
+        '⧎ miroir cousu : cliquez le bord-AXE d’une pièce (le milieu-devant d’un demi-panneau) — la jumelle symétrique apparaît, cousue le long de cet axe · Échap annule';
+    } else if (patternView.fullnessing) {
+      message = patternView.fullnessArmed
+        ? '⧢ pivot posé (point vert) — cliquez maintenant le bord qui doit S’OUVRIR (l’ourlet pour un évasé), puis choisissez les cm · Échap annule'
+        : '⧢ évasement : cliquez le PIVOT sur le contour (le bord qui reste fermé), puis le bord qui gagne l’ampleur — couper-pivoter du patronage · Échap désarme';
+    } else if (patternView.notching) {
+      message =
+        '⌵ crans : clic près d’un bord = cran posé (re-clic dessus = retiré) · clic sur le LIEN d’une couture = crans d’accord appariés des deux côtés · imprimés sur le patron · Échap désarme';
+    } else if (patternView.curvePointing) {
+      message =
+        '∿ point courbe : saisissez un SOMMET du contour et glissez — le rayon de l’arrondi suit en cm ; un clic simple = 40 % du bord voisin · le coin devient un arc, coutures préservées · Échap désarme';
+    } else if (patternView.fisheyeDrawing) {
+      message = patternView.fisheyeArmed
+        ? '◆ pince losange — 2e clic = la pointe basse, 3e clic à côté de l’axe = la largeur de taille (cm en direct) · Échap annule'
+        : '◆ pince losange : cliquez la POINTE HAUTE dans une pièce (taille, poitrine), puis la pointe basse, puis la largeur · pince de bord = Alt + glisser un bord · Échap désarme';
+    } else if (patternView.internalDrawing) {
+      message = patternView.internalTraceArmed
+        ? '▱ ligne interne en cours — cliquez point par point DANS la pièce · re-clic au 1er point = polygone fermé · re-clic au dernier = polyligne · Échap annule'
+        : '▱ ligne interne : cliquez DANS une pièce pour poser le 1er point (style, pliure, repère) · cliquer une ligne existante = la supprimer · Échap désarme';
     } else if (patternView.cutting) {
       message = patternView.cutPickArmed
         ? '✂ 1er point posé (en orange) — cliquez le 2e point sur le contour de la MÊME pièce : elle se scinde et la couture se pose seule · Échap annule'
-        : '✂ découper : cliquez un 1er point sur le contour d’une pièce, puis un 2e — la ligne doit traverser la pièce · Échap annule';
+        : '✂ découper : deux clics sur le contour = corde droite · un clic sur une LIGNE INTERNE (▱) = scinder le long de son tracé, courbes comprises · Échap annule';
+    } else if (!(document.getElementById('offset-chooser') as HTMLElement | null)?.hidden) {
+      message =
+        '⇱ offset : choisissez la distance — vers l’extérieur pour l’aisance, vers l’intérieur pour une doublure · les coutures restent posées';
     } else if (patternView.gathering) {
       message =
         '〰 fronces : cliquez le lien d’une couture (le trait entre deux bords cousus), puis choisissez le côté qui fronce et le ratio · Échap annule';
@@ -3717,9 +4950,13 @@ async function main(): Promise<void> {
       message = arrangePick
         ? '⊹ pièce saisie — cliquez une pastille autour du corps pour l’y ranger · re-cliquer une autre pièce change la saisie · Échap annule'
         : '⊹ arrangement : cliquez une pièce dans la vue 3D, puis une pastille (Devant, Dos, Bras…) — préparation seulement, coutures inchangées · Échap annule';
+    } else if (draw3dMode) {
+      message = draw3dPoints.length
+        ? '✎ tracé sur le tissu en cours — cliquez la suite sur la MÊME pièce · re-clic au 1er point = polygone fermé · au dernier = polyligne · Échap annule'
+        : '✎ dessin sur le tissu : cliquez des points sur une pièce plate de la préparation 3D — le tracé retombe en ligne interne du patron, scindable au ✂ · Échap désarme';
     } else if (move3DEnabled) {
       message =
-        '✥ déplacement 3D : glissez l’exemplaire voulu sans entraîner sa jumelle · plan 2D : Cmd/Ctrl + clic droit = sélection multiple · patron et coutures inchangés · ▶ Simuler recale automatiquement';
+        '✥ déplacement 3D : glissez l’exemplaire voulu, ou cliquez-le — trièdre X·Y·Z, tirer une flèche = déplacement précis sur cet axe, en cm · Échap range le trièdre · patron et coutures inchangés · ▶ Simuler recale automatiquement';
     } else {
       message =
         'atelier : clic droit pièce 2D = sélectionner · Cmd/Ctrl + clic droit = groupe · tirer un coin = taille commune · Poche / applique = cliquer son support puis retirer les × voulus';
@@ -4157,12 +5394,22 @@ async function main(): Promise<void> {
     const surfacePieces = (draft.pieces ?? [])
       .map((piece, index) => ({ piece, pieceId: index + 2 }))
       .filter(({ piece }) => !!piece.placement?.surface);
+    const triad =
+      gizmoPick && move3DEnabled && atelierDesign && !arrangeMode
+        ? gizmoPick
+        : null;
+    const anyInternal =
+      atelierDesign &&
+      (docPieces(draft).some((piece) => !!piece?.internalLines?.length) ||
+        (draw3dMode && draw3dPoints.length > 0));
     if (
       !sewing &&
       !zippering &&
       !pick &&
       !pieceHover &&
       !pieceDrag &&
+      !triad &&
+      !anyInternal &&
       !surfacePieces.length
     ) {
       return;
@@ -4531,6 +5778,157 @@ async function main(): Promise<void> {
         );
       }
     }
+    // ✎3D : le tracé en cours sur le tissu — points + fil, 1er/dernier allumés.
+    if (draw3dMode && draw3dTarget !== null && draw3dPoints.length && atelierDesign) {
+      const map = uvWorldOf(draw3dTarget);
+      if (map) {
+        const sp = draw3dPoints
+          .map(([u, v]) => proj(map(u, v)))
+          .filter((q): q is [number, number] => q !== null);
+        if (sp.length) {
+          mirrorCtx.strokeStyle = 'rgba(255, 214, 170, 0.95)';
+          mirrorCtx.lineWidth = 1.6;
+          mirrorCtx.setLineDash([6, 4]);
+          mirrorCtx.beginPath();
+          sp.forEach((q, i) => (i === 0 ? mirrorCtx.moveTo(q[0], q[1]) : mirrorCtx.lineTo(q[0], q[1])));
+          mirrorCtx.stroke();
+          mirrorCtx.setLineDash([]);
+          for (let i = 0; i < sp.length; i++) {
+            const closable = i === 0 && sp.length >= 3;
+            const endable = i === sp.length - 1 && sp.length >= 2 && i !== 0;
+            mirrorCtx.beginPath();
+            mirrorCtx.arc(sp[i]![0], sp[i]![1], closable || endable ? 6 : 3.5, 0, Math.PI * 2);
+            mirrorCtx.fillStyle = closable
+              ? 'rgba(255, 159, 107, 0.95)'
+              : endable
+                ? 'rgba(122, 226, 154, 0.95)'
+                : 'rgba(255, 255, 255, 0.92)';
+            mirrorCtx.fill();
+          }
+        }
+      }
+    }
+    // ▱ Lignes internes sur la préparation 3D : la géométrie plate de chaque
+    // pièce est affine (uvWorldOf) — les sommets suffisent, en pointillé fin.
+    if (atelierDesign) {
+      const allPieces = docPieces(draft);
+      for (let pid = 0; pid < allPieces.length; pid++) {
+        const piece = allPieces[pid];
+        if (!piece?.internalLines?.length || piece.blank) continue;
+        const map = uvWorldOf(pid);
+        if (!map) continue;
+        mirrorCtx.strokeStyle = 'rgba(222, 230, 240, 0.7)';
+        mirrorCtx.lineWidth = 1.5;
+        mirrorCtx.setLineDash([5, 4]);
+        for (const line of piece.internalLines) {
+          const sp = line.points
+            .map(([u, v]) => proj(map(u, v)))
+            .filter((q): q is [number, number] => q !== null);
+          if (sp.length < 2) continue;
+          mirrorCtx.beginPath();
+          sp.forEach((q, i) => (i === 0 ? mirrorCtx.moveTo(q[0], q[1]) : mirrorCtx.lineTo(q[0], q[1])));
+          if (line.closed) mirrorCtx.closePath();
+          mirrorCtx.stroke();
+        }
+        mirrorCtx.setLineDash([]);
+      }
+    }
+    // ⌖ Trièdre XYZ au centroïde de l'exemplaire sélectionné (✥). Pendant un
+    // drag il suit la pièce ; drag de flèche → l'axe actif seul + cm signés.
+    if (triad) {
+      const dragging =
+        pieceDrag &&
+        pieceDrag.pid === triad.pid &&
+        pieceDrag.instance === triad.instance
+          ? pieceDrag
+          : null;
+      let base: [number, number, number] | null;
+      if (dragging) {
+        // Snapshot de saisie + delta : posCache peut déjà refléter la
+        // translation en cours, le relire doublerait le déplacement.
+        let n = 0;
+        let cx = 0;
+        let cy = 0;
+        let cz = 0;
+        for (const range of dragging.ranges) {
+          for (let i = range.first; i < range.first + range.count; i++) {
+            if (!system.isMovable(i)) continue;
+            cx += dragging.positions[i * 4]!;
+            cy += dragging.positions[i * 4 + 1]!;
+            cz += dragging.positions[i * 4 + 2]!;
+            n++;
+          }
+        }
+        base = n
+          ? [
+              cx / n + dragging.delta[0],
+              cy / n + dragging.delta[1],
+              cz / n + dragging.delta[2],
+            ]
+          : null;
+      } else {
+        base = stagingInstanceCentroid(triad.pid, triad.instance);
+      }
+      const s0 = base ? proj(base) : null;
+      if (base && s0) {
+        const active = dragging && dragging.axis !== undefined ? dragging : null;
+        mirrorCtx.save();
+        mirrorCtx.lineCap = 'round';
+        mirrorCtx.font = '700 12px Inter, ui-sans-serif, sans-serif';
+        mirrorCtx.textAlign = 'center';
+        mirrorCtx.textBaseline = 'middle';
+        for (let k = 0 as 0 | 1 | 2; k < 3; k = (k + 1) as 0 | 1 | 2) {
+          if (active && active.axis !== k) continue; // l'axe tiré seul
+          const axe = GIZMO_AXES[k]!;
+          const s1 = proj([
+            base[0] + axe.dir[0] * GIZMO_LEN_M,
+            base[1] + axe.dir[1] * GIZMO_LEN_M,
+            base[2] + axe.dir[2] * GIZMO_LEN_M,
+          ]);
+          if (!s1) continue;
+          const vx = s1[0] - s0[0];
+          const vy = s1[1] - s0[1];
+          const len = Math.hypot(vx, vy);
+          if (len < 6) continue; // axe quasi perpendiculaire à l'écran
+          const ux = vx / len;
+          const uy = vy / len;
+          mirrorCtx.strokeStyle = axe.color;
+          mirrorCtx.lineWidth = active ? 4 : 3;
+          mirrorCtx.beginPath();
+          mirrorCtx.moveTo(s0[0], s0[1]);
+          mirrorCtx.lineTo(s1[0], s1[1]);
+          mirrorCtx.stroke();
+          mirrorCtx.beginPath();
+          mirrorCtx.moveTo(s1[0], s1[1]);
+          mirrorCtx.lineTo(s1[0] - ux * 10 - uy * 5, s1[1] - uy * 10 + ux * 5);
+          mirrorCtx.moveTo(s1[0], s1[1]);
+          mirrorCtx.lineTo(s1[0] - ux * 10 + uy * 5, s1[1] - uy * 10 - ux * 5);
+          mirrorCtx.stroke();
+          mirrorCtx.fillStyle = axe.color;
+          mirrorCtx.fillText(axe.label, s1[0] + ux * 15, s1[1] + uy * 15);
+        }
+        mirrorCtx.beginPath();
+        mirrorCtx.arc(s0[0], s0[1], active ? 3 : 4.5, 0, Math.PI * 2);
+        mirrorCtx.fillStyle = 'rgba(236, 240, 246, 0.95)';
+        mirrorCtx.fill();
+        mirrorCtx.lineWidth = 1.5;
+        mirrorCtx.strokeStyle = 'rgba(14, 15, 18, 0.9)';
+        mirrorCtx.stroke();
+        if (active && active.axis !== undefined) {
+          const t = active.delta[active.axis]!;
+          const label = `${t >= 0 ? '+' : '−'}${Math.abs(t * 100)
+            .toFixed(1)
+            .replace('.', ',')} cm`;
+          mirrorCtx.font = '700 13px Inter, ui-sans-serif, sans-serif';
+          const w = mirrorCtx.measureText(label).width;
+          mirrorCtx.fillStyle = 'rgba(14, 15, 18, 0.85)';
+          mirrorCtx.fillRect(s0[0] - w / 2 - 7, s0[1] - 36, w + 14, 22);
+          mirrorCtx.fillStyle = GIZMO_AXES[active.axis]!.color;
+          mirrorCtx.fillText(label, s0[0], s0[1] - 25);
+        }
+        mirrorCtx.restore();
+      }
+    }
   };
   // CLO3D-style pointer model: a left press ON the fabric grabs it; a left
   // press on empty space orbits the camera. Returns true when orbit is allowed.
@@ -4544,6 +5942,43 @@ async function main(): Promise<void> {
     const count = Math.min(system.count, posCache.length / 4);
     // ⊹ Points d'arrangement : 1er clic = la pièce, 2e clic = l'ancre. Un clic
     // dans le vide (ni pièce ni pastille) rend la main à l'orbite caméra.
+    // ✎3D : chaque clic sur le tissu pose un point ; re-clic au 1er (≥3) =
+    // polygone fermé, re-clic au dernier (≥2) = polyligne — comme au ▱ 2D.
+    if (sceneMode === 'atelier' && atelierDesign && draw3dMode) {
+      const hit = pickDraw3dPoint(ray, draw3dTarget);
+      if (!hit) {
+        if (draw3dTarget !== null) showToast('Cliquez sur le tissu de la MÊME pièce (les tubes viendront plus tard).');
+        return false; // le mode consomme le clic — pas d'orbite surprise
+      }
+      const toPx = (uv: UV): [number, number] | null => {
+        const map = uvWorldOf(hit.pid);
+        if (!map) return null;
+        const n0 = arrangeNdcOf(map(uv[0], uv[1]));
+        if (!n0) return null;
+        const rect2 = canvas.getBoundingClientRect();
+        return [((n0[0] + 1) / 2) * rect2.width, ((1 - n0[1]) / 2) * rect2.height];
+      };
+      const clickPx: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
+      const near = (uv: UV): boolean => {
+        const s0 = toPx(uv);
+        return !!s0 && (clickPx[0] - s0[0]) ** 2 + (clickPx[1] - s0[1]) ** 2 <= 12 ** 2;
+      };
+      if (draw3dTarget === null) {
+        draw3dTarget = hit.pid;
+        draw3dPoints = [hit.uv];
+        return false;
+      }
+      if (draw3dPoints.length >= 3 && near(draw3dPoints[0]!)) {
+        commitDraw3d(true);
+        return false;
+      }
+      if (draw3dPoints.length >= 2 && near(draw3dPoints[draw3dPoints.length - 1]!)) {
+        commitDraw3d(false);
+        return false;
+      }
+      draw3dPoints.push(hit.uv);
+      return false;
+    }
     if (sceneMode === 'atelier' && atelierDesign && arrangeMode) {
       const anchor = arrangePointNear(ndcX, ndcY);
       if (anchor && arrangePick) {
@@ -4575,9 +6010,39 @@ async function main(): Promise<void> {
       !patternView.sewing &&
       !patternView.zippering
     ) {
+      // ⌖ Une flèche du trièdre sous le pointeur : drag CONTRAINT sur cet axe.
+      if (gizmoPick) {
+        const axis = gizmoAxisAt(e.clientX - rect.left, e.clientY - rect.top);
+        if (axis !== null) {
+          const ranges = gizmoRangesOf(gizmoPick.pid, gizmoPick.instance);
+          const centroid = stagingInstanceCentroid(gizmoPick.pid, gizmoPick.instance);
+          if (ranges.length && centroid) {
+            pieceDrag = {
+              pid: gizmoPick.pid,
+              instance: gizmoPick.instance,
+              ranges,
+              depth: 0,
+              start: [centroid[0], centroid[1], centroid[2]],
+              delta: [0, 0, 0],
+              pointerId: e.pointerId,
+              positions: posCache,
+              axis,
+              grabNdc: [ndcX, ndcY],
+            };
+            try {
+              canvas.setPointerCapture(e.pointerId);
+            } catch {
+              // A synthetic or already-cancelled pointer cannot be captured.
+            }
+            canvas.classList.add('piece-dragging');
+            return false;
+          }
+        }
+      }
       const target = pickStagingPiece(ray);
       if (!target) {
         setPieceHover(null);
+        gizmoPick = null; // clic dans le vide : le trièdre se range
         return true;
       }
       setPieceHover(null);
@@ -4657,6 +6122,16 @@ async function main(): Promise<void> {
     const patternCancel = patternView.cancelInteractions();
     let cancelled3D = false;
     if (cancelPieceDrag()) cancelled3D = true;
+    if (gizmoPick) {
+      gizmoPick = null; // Échap range le trièdre
+      cancelled3D = true;
+    }
+    if (draw3dMode || draw3dPoints.length) {
+      draw3dMode = false;
+      clearDraw3d();
+      setPressed('at-draw3d', false);
+      cancelled3D = true;
+    }
     if (dragIndex !== null) {
       system.setDrag(null, [0, 0, 0]);
       dragIndex = null;
@@ -4760,36 +6235,8 @@ async function main(): Promise<void> {
           build();
         }
       },
-      onBody: (kind) => {
-        collisionAuditAnalyticTPose = false;
-        bodyKind = kind;
-        morphs = { ...NO_MORPH }; // a new body starts at ITS natural measurements
-        const naturalCm = baseCm(
-          kind,
-          kind.startsWith('scan') ? (scans[kind] ?? null) : null,
-        );
-        panel.syncMorphCm(naturalCm);
-        syncAvatarStature(naturalCm.stature!);
-        // Only rebuild where a body is actually on stage; drapé/couture keep
-        // their cloth instead of resetting for an invisible change.
-        if (sceneMode !== 'drapé' && sceneMode !== 'couture') {
-          build();
-        }
-      },
-      onResolution: (r) => {
-        const nextResolution = normalizeResolution(r, resolution);
-        resolution = nextResolution;
-        resolutionStatus.dataset.pendingResolution = String(nextResolution);
-        resolutionStatus.textContent = resolutionRebuildMessage(nextResolution);
-        resolutionStatus.hidden = false;
-        // Keep the persisted draft grid in sync with the sim resolution (the
-        // atelier cuts on `resolution`, so a stale gridN would lie in the file).
-        if (draft) draft.gridN = nextResolution;
-        // An option change is a real lifecycle request, even when the target
-        // scene itself did not change. This starts teardown synchronously; the
-        // status above remains visible until that transaction reaches idle.
-        build();
-      },
+      onBody: (kind) => applyBody(kind),
+      onResolution: (r) => applyResolution(r),
       onFabricPreset: (preset) => {
         globalFabricPreset = preset;
         // The atelier selector's inherit option is a view of this canonical
@@ -5150,6 +6597,7 @@ async function main(): Promise<void> {
     fabricPreset: globalFabricPreset,
   });
   syncPieceFabricSelect();
+  syncParticleSelect();
   syncAvatarStature(initialBodyCm.stature!);
 
   // Canonical garment autosave. A lightweight change detector also catches
@@ -6081,11 +7529,43 @@ async function main(): Promise<void> {
     if (pieceDrag) {
       if (mouse.leftDown && sceneMode === 'atelier' && atelierDesign) {
         const d = pieceDrag;
-        d.delta = [
-          ray.origin[0] + ray.dir[0] * d.depth - d.start[0],
-          ray.origin[1] + ray.dir[1] * d.depth - d.start[1],
-          ray.origin[2] + ray.dir[2] * d.depth - d.start[2],
-        ];
+        if (d.axis !== undefined && d.grabNdc) {
+          // ⌖ Drag de flèche : le paramètre d'axe qui suit au mieux le curseur
+          // à l'écran (projection du delta souris sur l'axe projeté, en px).
+          const a = GIZMO_AXES[d.axis]!.dir;
+          // Base de projection = le segment de flèche DESSINÉ (0,22 m), pas
+          // 1 m : pour un axe pointant vers la caméra, la perspective tord ou
+          // retourne le segment lointain (Z restait alors figé à zéro).
+          const n0 = arrangeNdcOf(d.start);
+          const n1 = arrangeNdcOf([
+            d.start[0] + a[0] * GIZMO_LEN_M,
+            d.start[1] + a[1] * GIZMO_LEN_M,
+            d.start[2] + a[2] * GIZMO_LEN_M,
+          ]);
+          if (n0 && n1) {
+            const rect2 = canvas.getBoundingClientRect();
+            const vx = ((n1[0] - n0[0]) * rect2.width) / 2;
+            const vy = (-(n1[1] - n0[1]) * rect2.height) / 2;
+            const wx = ((mouse.ndcX - d.grabNdc[0]) * rect2.width) / 2;
+            const wy = (-(mouse.ndcY - d.grabNdc[1]) * rect2.height) / 2;
+            const len2 = vx * vx + vy * vy;
+            // ≥ 6 px de flèche projetée — même seuil que le dessin, sinon la
+            // précision du geste n'existe pas.
+            if (len2 > 36) {
+              const t = Math.max(
+                -2,
+                Math.min(2, ((wx * vx + wy * vy) / len2) * GIZMO_LEN_M),
+              );
+              d.delta = [a[0] * t, a[1] * t, a[2] * t];
+            }
+          }
+        } else {
+          d.delta = [
+            ray.origin[0] + ray.dir[0] * d.depth - d.start[0],
+            ray.origin[1] + ray.dir[1] * d.depth - d.start[1],
+            ray.origin[2] + ray.dir[2] * d.depth - d.start[2],
+          ];
+        }
         for (const range of d.ranges) {
           system.translateRange(range.first, range.count, d.delta);
         }
@@ -6096,6 +7576,8 @@ async function main(): Promise<void> {
         pieceHoverDirty = true;
         canvas.classList.remove('piece-dragging');
         const moved = !!draft && Math.hypot(...d.delta) >= 0.005;
+        // Sélection du trièdre : le clic simple sélectionne, un drag la garde.
+        gizmoPick = { pid: d.pid, instance: d.instance };
         if (moved && draft) {
           pushHistory();
           let piece = draftPieceOf(d.pid);

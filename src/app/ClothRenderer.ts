@@ -95,6 +95,13 @@ struct Fabric {
 @group(0) @binding(5) var<storage, read> ribbonMaterials: array<u32>;
 @group(0) @binding(6) var<storage, read> ribbonNormals: array<vec4f>;
 @group(0) @binding(7) var<storage, read> ribbonWeights: array<f32>;
+// GRAPHIQUES et MOTIFS de pièce : un atlas 2×2 de tuiles 512² + par particule
+// un vec4 CONTINU : xy = UV en espace graphique (non borné — le shader borne
+// ou répète), z = tuile (0-3 ; -8 = aucune), w = 1 si le décor SE RÉPÈTE
+// (motif) / 0 s'il est posé une fois (graphique, tuile à marge transparente).
+@group(0) @binding(8) var<storage, read> ribbonGraphicUVs: array<vec4f>;
+@group(0) @binding(9) var graphicTex: texture_2d<f32>;
+@group(0) @binding(10) var graphicSamp: sampler;
 
 fn turn_cloth(v: vec3f) -> vec3f {
   return vec3f(spin.x * v.x - spin.y * v.z, v.y, spin.y * v.x + spin.x * v.z);
@@ -108,9 +115,10 @@ struct VSOut {
   @location(3) @interpolate(flat) garment: u32,
   @location(4) @interpolate(flat) material: u32,
   @location(5) ribbonNormal: vec3f,
+  @location(6) graphicUV: vec4f, // xy = UV graphique continu, z = tuile, w = répétition
 };
 
-fn cloth_vertex(vid: u32, pos: vec4f, nrm: vec4f, material: u32) -> VSOut {
+fn cloth_vertex(vid: u32, pos: vec4f, nrm: vec4f, material: u32, graphicUV: vec4f) -> VSOut {
   var out: VSOut;
   let worldPosition = turn_cloth(pos.xyz);
   let worldNormal = turn_cloth(nrm.xyz);
@@ -141,6 +149,7 @@ fn cloth_vertex(vid: u32, pos: vec4f, nrm: vec4f, material: u32) -> VSOut {
   out.uv = vec2f(f32(local % n) * sp.x, f32(local / n) * sp.y);
   out.strain = nrm.w;
   out.material = material;
+  out.graphicUV = graphicUV;
   return out;
 }
 
@@ -150,8 +159,9 @@ fn vs(
   @location(0) pos: vec4f,
   @location(1) nrm: vec4f,
   @location(2) material: u32,
+  @location(3) graphicUV: vec4f,
 ) -> VSOut {
-  return cloth_vertex(vid, pos, nrm, material);
+  return cloth_vertex(vid, pos, nrm, material, graphicUV);
 }
 
 // Fit map: blue (slack) → green (easy) → yellow (snug) → red (tight).
@@ -227,10 +237,11 @@ fn vsRibbon(@builtin(vertex_index) drawVertex: u32) -> VSOut {
     particle,
     ribbonPositions[particle],
     ribbonNormals[particle],
-    ribbonMaterials[particle]
+    ribbonMaterials[particle],
+    ribbonGraphicUVs[particle]
   );
   let visualOffset =
-    min(material_thickness(ribbonMaterials[particle]), 0.005) *
+    min(material_thickness(ribbonMaterials[particle] & 0xFFu), 0.005) *
     ribbonWeights[drawVertex];
   let worldPosition = turn_cloth(ribbonPositions[particle].xyz);
   out.clip = camera.viewProj * vec4f(
@@ -251,20 +262,54 @@ fn shade_fabric(in: VSOut, n: vec3f, visualFront: bool, minimumShade: f32) -> ve
   let wrapKey = clamp(dot(n, L) * 0.5 + 0.5, 0.0, 1.0);
   let wrapFill = clamp(dot(n, F) * 0.5 + 0.5, 0.0, 1.0);
   let wrap = clamp(wrapKey + 0.4 * wrapFill * (1.0 - wrapKey), 0.0, 1.0);
+  // Mot visuel par particule : octet bas = id de tissu, 24 bits hauts = la
+  // couleur d'EMPIÈCEMENT choisie (0 = pas de couleur posée).
+  let matId = in.material & 0xFFu;
+  let pieceRgb = in.material >> 8u;
   var base = select(fabric.back.rgb, fabric.face.rgb, visualFront);
   var exponent = fabric.face.a;
   var ambient = fabric.back.a;
-  if (in.material > 0u) {
-    let look = material_look(in.material);
+  if (matId > 0u) {
+    let look = material_look(matId);
     base = select(look.back, look.face, visualFront);
     exponent = look.exponent;
     ambient = look.ambient;
+  }
+  if (pieceRgb != 0u) {
+    // Couleur d'empiècement : un uni qui REMPLACE la couleur du tissu (le
+    // grain, l'exposant et l'ambiance du tissu restent) ; le dos lit plus sombre.
+    let rgb = vec3f(
+      f32((pieceRgb >> 16u) & 0xFFu),
+      f32((pieceRgb >> 8u) & 0xFFu),
+      f32(pieceRgb & 0xFFu)
+    ) / 255.0;
+    base = select(rgb * 0.72, rgb, visualFront);
+  }
+  if (matId > 0u) {
     // A fine weave cue keeps small appliqués readable without faking a print.
     let weave = 0.025 * sin(in.uv.x * 900.0) * sin(in.uv.y * 900.0);
     base *= 1.0 + weave;
-  } else if (visualFront) {
+  } else if (visualFront && pieceRgb == 0u) {
     base = mix(base, fabric.motifColor.rgb, motif_mask(in.uv) * fabric.motifColor.a);
   }
+  // GRAPHIQUE / MOTIF de pièce : échantillonné inconditionnellement (contrainte
+  // WGSL), masqué par la tuile et par le côté — le décor vit sur l'ENDROIT du
+  // tissu. Posé : UV bornée dans une tuile à marge transparente (l'extérieur
+  // meurt en douceur). Motif : fract(UV) tuile la répétition sur toute la
+  // pièce, plein bord (les tuiles répétées sont dessinées périodiques).
+  let rep = clamp(in.graphicUV.w, 0.0, 1.0);
+  let localUV = mix(
+    clamp(in.graphicUV.xy, vec2f(0.0), vec2f(1.0)),
+    fract(in.graphicUV.xy),
+    rep,
+  );
+  let slot = u32(clamp(in.graphicUV.z, 0.0, 3.0));
+  let tileO = vec2f(f32(slot % 2u), f32(slot / 2u)) * 0.5;
+  let inset = mix(vec2f(4.0 / 1024.0), vec2f(0.0), rep);
+  let span = mix(0.5 - 8.0 / 1024.0, 0.5, rep);
+  let g = textureSample(graphicTex, graphicSamp, tileO + inset + localUV * span);
+  let gMask = select(0.0, 1.0, in.graphicUV.z > -0.5) * select(0.0, 1.0, visualFront);
+  base = mix(base, g.rgb, g.a * gMask);
   // Outfit (2+ garments): the under piece (garment 0 — the tee, the bodice)
   // reads in a deeper shade so its collar and sleeves peek apart from the
   // outer garment instead of melting into one beige mass.
@@ -300,6 +345,10 @@ struct Camera { viewProj: mat4x4f };
 @group(0) @binding(0) var<uniform> camera: Camera;
 // Podium turn: x = cos, y = sin (identity when 1,0). Applied per draw range.
 @group(0) @binding(1) var<uniform> spin: vec4f;
+// skin.rgb = selected skin tone. params.x = 0 realistic, 1 cel;
+// params.y = number of cel light bands; params.z = 1 for the avatar draw.
+struct AvatarLook { skin: vec4f, params: vec4f };
+@group(0) @binding(2) var<uniform> avatar: AvatarLook;
 
 struct VSOut {
   @builtin(position) clip: vec4f,
@@ -322,15 +371,49 @@ fn vs(@location(0) pos: vec3f, @location(1) normal: vec3f, @location(2) color: v
 
 @fragment
 fn fs(in: VSOut) -> @location(0) vec4f {
-  // Key + fill assortis au tissu : le dos du mannequin reste lisible quand la
-  // caméra tourne, sans aplatir le relief du corps.
+  // The avatar and the static scene share one pipeline, but separate bind
+  // groups. Only the avatar receives the selected skin tone and style filter.
   let L = normalize(vec3f(0.4, 0.9, 0.35));
   let F = normalize(vec3f(-0.45, 0.4, -0.8));
   let n = normalize(in.normal);
   let diff = max(dot(n, L), 0.0);
   let fill = max(dot(n, F), 0.0);
-  let shade = min(0.24 + 0.62 * diff + 0.3 * fill, 1.0);
-  return vec4f(in.color * shade, 1.0);
+  let base = select(in.color, avatar.skin.rgb, avatar.params.z > 0.5);
+
+  // Realistic studio skin: a soft key/fill pair and a restrained highlight.
+  let softShade = min(0.28 + 0.56 * diff + 0.28 * fill, 1.0);
+  let H = normalize(L + vec3f(0.0, 0.25, 1.0));
+  let specular = pow(max(dot(n, H), 0.0), 28.0) * 0.11;
+  let realistic = base * softShade + vec3f(specular);
+
+  // Cel filter: the same lighting is quantized into deliberate, stable bands.
+  let bands = max(2.0, avatar.params.y);
+  let celLight = floor(clamp(0.22 + 0.72 * diff + 0.18 * fill, 0.0, 0.999) * bands) / (bands - 1.0);
+  let cel = mix(base * 0.84, base * 1.08, clamp(celLight, 0.0, 1.0));
+  let styled = select(realistic, cel, avatar.params.x > 0.5);
+  return vec4f(styled, 1.0);
+}
+`;
+
+const AVATAR_OUTLINE_SHADER = /* wgsl */ `
+struct Camera { viewProj: mat4x4f };
+@group(0) @binding(0) var<uniform> camera: Camera;
+@group(0) @binding(1) var<uniform> spin: vec4f;
+
+fn turn(v: vec3f) -> vec3f {
+  return vec3f(spin.x * v.x - spin.y * v.z, v.y, spin.y * v.x + spin.x * v.z);
+}
+
+@vertex
+fn vs(@location(0) pos: vec3f, @location(1) normal: vec3f) -> @builtin(position) vec4f {
+  // Inverted hull: front faces are culled, leaving a clean silhouette around
+  // the avatar. The offset is in metres and follows every morphed scan.
+  return camera.viewProj * vec4f(turn(pos + normal * 0.006), 1.0);
+}
+
+@fragment
+fn fs() -> @location(0) vec4f {
+  return vec4f(0.055, 0.052, 0.06, 1.0);
 }
 `;
 
@@ -362,6 +445,69 @@ export const DEFAULT_FABRIC: FabricStyle = {
   exponent: 2.0,
   ambient: 0.22,
 };
+
+export type AvatarRenderStyle = 'realistic' | 'cel';
+
+export interface AvatarAppearance {
+  style: AvatarRenderStyle;
+  skinColor: string;
+}
+
+export const DEFAULT_AVATAR_APPEARANCE: AvatarAppearance = {
+  style: 'realistic',
+  skinColor: '#a87962',
+};
+
+/** Validate persisted/user-authored appearance without letting malformed data reach WGSL. */
+export function normalizeAvatarAppearance(
+  value: Partial<AvatarAppearance> | null | undefined,
+): AvatarAppearance {
+  return {
+    style: value?.style === 'cel' ? 'cel' : 'realistic',
+    skinColor:
+      typeof value?.skinColor === 'string' && /^#[0-9a-f]{6}$/i.test(value.skinColor)
+        ? value.skinColor.toLowerCase()
+        : DEFAULT_AVATAR_APPEARANCE.skinColor,
+  };
+}
+
+/** GPU layout: skin rgba + style mode, cel bands, body flag, spare. */
+export function avatarAppearanceUniform(
+  value: Partial<AvatarAppearance> | null | undefined,
+  isAvatar = true,
+): Float32Array {
+  const appearance = normalizeAvatarAppearance(value);
+  const rgb = [
+    parseInt(appearance.skinColor.slice(1, 3), 16) / 255,
+    parseInt(appearance.skinColor.slice(3, 5), 16) / 255,
+    parseInt(appearance.skinColor.slice(5, 7), 16) / 255,
+  ];
+  return new Float32Array([
+    rgb[0]!,
+    rgb[1]!,
+    rgb[2]!,
+    1,
+    appearance.style === 'cel' ? 1 : 0,
+    4,
+    isAvatar ? 1 : 0,
+    0,
+  ]);
+}
+
+/**
+ * Pack the per-particle VISUAL word: low byte = stable material id (0 = global
+ * fabric, 1-7 = presets), upper 24 bits = the piece's colour override as RGB
+ * (0 = no override — pure black is nudged to 0x010101 so it stays encodable).
+ * One u32 per particle: the existing vertex attribute and ribbon storage carry
+ * piece colours with zero new GPU plumbing.
+ */
+export function packVisualMaterial(materialId: number, hexColor?: string): number {
+  const id = Math.max(0, Math.min(0xff, Math.round(materialId) | 0));
+  if (!hexColor || !/^#[0-9a-f]{6}$/i.test(hexColor)) return id;
+  let rgb = parseInt(hexColor.slice(1), 16);
+  if (rgb === 0) rgb = 0x010101;
+  return (id | (rgb << 8)) >>> 0;
+}
 
 export function clampCollisionThickness(value: number): number {
   return Number.isFinite(value) ? Math.max(0.002, Math.min(0.02, value)) : 0.005;
@@ -471,6 +617,7 @@ interface RendererPipelines {
   cloth: GPURenderPipeline;
   clothRibbon: GPURenderPipeline;
   scene: GPURenderPipeline;
+  avatarOutline: GPURenderPipeline;
 }
 const rendererPipelineCache = new WeakMap<GPUDevice, RendererPipelines>();
 function rendererPipelines(device: GPUDevice, format: GPUTextureFormat): RendererPipelines {
@@ -493,6 +640,7 @@ function rendererPipelines(device: GPUDevice, format: GPUTextureFormat): Rendere
         { arrayStride: 16, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x4' }] },
         { arrayStride: 16, attributes: [{ shaderLocation: 1, offset: 0, format: 'float32x4' }] },
         { arrayStride: 4, attributes: [{ shaderLocation: 2, offset: 0, format: 'uint32' }] },
+        { arrayStride: 16, attributes: [{ shaderLocation: 3, offset: 0, format: 'float32x4' }] }, // UV graphique continue + tuile + répétition
       ],
     },
     fragment: { module: clothModule, entryPoint: 'fs', targets: [{ format }] },
@@ -540,7 +688,37 @@ function rendererPipelines(device: GPUDevice, format: GPUTextureFormat): Rendere
     primitive: { topology: 'triangle-list', cullMode: 'back' },
     depthStencil,
   });
-  const pipelines: RendererPipelines = { normals, cloth, clothRibbon, scene };
+  const outlineModule = device.createShaderModule({
+    code: AVATAR_OUTLINE_SHADER,
+    label: 'avatar-outline',
+  });
+  const avatarOutline = device.createRenderPipeline({
+    label: 'avatar-outline-pipeline',
+    layout: 'auto',
+    vertex: {
+      module: outlineModule,
+      entryPoint: 'vs',
+      buffers: [
+        {
+          arrayStride: SCENE_VERTEX_FLOATS * 4,
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: 'float32x3' },
+            { shaderLocation: 1, offset: 12, format: 'float32x3' },
+          ],
+        },
+      ],
+    },
+    fragment: { module: outlineModule, entryPoint: 'fs', targets: [{ format }] },
+    primitive: { topology: 'triangle-list', cullMode: 'front' },
+    depthStencil,
+  });
+  const pipelines: RendererPipelines = {
+    normals,
+    cloth,
+    clothRibbon,
+    scene,
+    avatarOutline,
+  };
   rendererPipelineCache.set(device, pipelines);
   return pipelines;
 }
@@ -556,21 +734,30 @@ export class ClothRenderer {
   private readonly clothRibbonPipeline: GPURenderPipeline;
   private readonly clothRibbonBindGroup: GPUBindGroup;
   private readonly scenePipeline: GPURenderPipeline;
+  private readonly avatarOutlinePipeline: GPURenderPipeline;
   private spinBuffer!: GPUBuffer;
   private spinIdentityBuffer!: GPUBuffer;
+  private avatarAppearanceBuffer!: GPUBuffer;
+  private avatarStaticAppearanceBuffer!: GPUBuffer;
   private sceneStaticBindGroup!: GPUBindGroup;
   private sceneBodyIndexCount = 0;
   private readonly clothBindGroup: GPUBindGroup;
   private readonly sceneBindGroup: GPUBindGroup;
+  private readonly avatarOutlineBindGroup: GPUBindGroup;
   private readonly positionBuffer: GPUBuffer;
   private readonly normalsBuffer: GPUBuffer;
   private readonly gridInfoBuffer: GPUBuffer;
   private readonly cameraBuffer: GPUBuffer;
   private readonly fabricBuffer: GPUBuffer;
   private readonly materialIdBuffer: GPUBuffer;
+  private readonly graphicUVBuffer: GPUBuffer;
+  private readonly graphicTexture: GPUTexture;
+  private readonly graphicSampler: GPUSampler;
   private readonly clothResolution: number;
   private collisionThickness: number;
   private fitMap = false;
+  // PAGE BLANCHE : le mannequin et la scène se dessinent, le tissu non.
+  private clothVisible = true;
   private lastStyle: FabricStyle | null = null;
   private readonly clothSpacing: number;
   private readonly clothSpacingV: number;
@@ -587,6 +774,7 @@ export class ClothRenderer {
   private readonly sceneIndexCount: number;
   private readonly count: number;
   private depthTexture: GPUTexture;
+  private avatarCelShaded = false;
 
   constructor(
     device: GPUDevice,
@@ -603,6 +791,8 @@ export class ClothRenderer {
     materialIds: Uint32Array = new Uint32Array(count),
     layers?: ArrayLike<number>,
     collisionThickness = 0.005,
+    graphicUVs?: Float32Array,
+    graphicAtlas?: CanvasImageSource | OffscreenCanvas | null,
   ) {
     this.device = device;
     const createBuffer = (descriptor: GPUBufferDescriptor): GPUBuffer =>
@@ -639,11 +829,75 @@ export class ClothRenderer {
     });
     new Uint32Array(this.materialIdBuffer.getMappedRange()).set(materialIds);
     this.materialIdBuffer.unmap();
+    // UV graphique par particule (attribut de sommet + storage des surplus).
+    // Sans graphique : le marqueur (-8,-8) partout et une texture 1×1
+    // transparente — le shader échantillonne toujours, le masque tue tout.
+    this.graphicUVBuffer = createBuffer({
+      size: Math.max(16, count * 16),
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      mappedAtCreation: true,
+    });
+    {
+      const uvView = new Float32Array(this.graphicUVBuffer.getMappedRange());
+      if (graphicUVs && graphicUVs.length === count * 4) {
+        uvView.set(graphicUVs);
+      } else {
+        // Marqueur « aucune tuile » sur z, drapeau répétition neutre sur w.
+        for (let i = 0; i < count; i++) {
+          uvView[i * 4 + 2] = -8;
+        }
+      }
+      this.graphicUVBuffer.unmap();
+    }
+    const atlasW = graphicAtlas ? Math.max(1, Number((graphicAtlas as { width?: number }).width) || 1) : 1;
+    const atlasH = graphicAtlas ? Math.max(1, Number((graphicAtlas as { height?: number }).height) || 1) : 1;
+    this.graphicTexture = this.resources.trackTexture(device.createTexture({
+      size: [atlasW, atlasH],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+    }));
+    if (graphicAtlas) {
+      device.queue.copyExternalImageToTexture(
+        { source: graphicAtlas as GPUCopyExternalImageSource },
+        { texture: this.graphicTexture },
+        [atlasW, atlasH],
+      );
+    } else {
+      device.queue.writeTexture(
+        { texture: this.graphicTexture },
+        new Uint8Array([0, 0, 0, 0]),
+        { bytesPerRow: 256 },
+        [1, 1],
+      );
+    }
+    this.graphicSampler = device.createSampler({
+      magFilter: 'linear',
+      minFilter: 'linear',
+      addressModeU: 'clamp-to-edge',
+      addressModeV: 'clamp-to-edge',
+    });
     // One presentation transform shared by the visual body and every cloth
     // pass. The solver remains in the mannequin's local frame, so a podium
     // turn cannot make the collider travel through a stationary garment.
     this.spinBuffer = createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(this.spinBuffer, 0, new Float32Array([1, 0, 0, 0]));
+    this.avatarAppearanceBuffer = createBuffer({
+      size: 32,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.avatarStaticAppearanceBuffer = createBuffer({
+      size: 32,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.setAvatarAppearance(DEFAULT_AVATAR_APPEARANCE);
+    device.queue.writeBuffer(
+      this.avatarStaticAppearanceBuffer,
+      0,
+      avatarAppearanceUniform(
+        DEFAULT_AVATAR_APPEARANCE,
+        false,
+      ) as unknown as BufferSource,
+    );
 
     // --- Normals compute pass ---
     this.normalsBuffer = createBuffer({
@@ -683,6 +937,8 @@ export class ClothRenderer {
         { binding: 0, resource: { buffer: this.cameraBuffer } },
         { binding: 1, resource: { buffer: this.fabricBuffer } },
         { binding: 2, resource: { buffer: this.spinBuffer } },
+        { binding: 9, resource: this.graphicTexture.createView() },
+        { binding: 10, resource: this.graphicSampler },
       ],
     });
     const partition = partitionClothTriangles(triangleIndices, resolution);
@@ -724,11 +980,15 @@ export class ClothRenderer {
         { binding: 5, resource: { buffer: this.materialIdBuffer } },
         { binding: 6, resource: { buffer: this.normalsBuffer } },
         { binding: 7, resource: { buffer: this.clothRibbonWeightBuffer } },
+        { binding: 8, resource: { buffer: this.graphicUVBuffer } },
+        { binding: 9, resource: this.graphicTexture.createView() },
+        { binding: 10, resource: this.graphicSampler },
       ],
     });
 
     // --- Scene colliders (lit triangles) ---
     this.scenePipeline = rp.scene;
+    this.avatarOutlinePipeline = rp.avatarOutline;
     this.spinIdentityBuffer = createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(this.spinIdentityBuffer, 0, new Float32Array([1, 0, 0, 0]));
     this.sceneBindGroup = device.createBindGroup({
@@ -736,6 +996,7 @@ export class ClothRenderer {
       entries: [
         { binding: 0, resource: { buffer: this.cameraBuffer } },
         { binding: 1, resource: { buffer: this.spinBuffer } },
+        { binding: 2, resource: { buffer: this.avatarAppearanceBuffer } },
       ],
     });
     this.sceneStaticBindGroup = device.createBindGroup({
@@ -743,6 +1004,14 @@ export class ClothRenderer {
       entries: [
         { binding: 0, resource: { buffer: this.cameraBuffer } },
         { binding: 1, resource: { buffer: this.spinIdentityBuffer } },
+        { binding: 2, resource: { buffer: this.avatarStaticAppearanceBuffer } },
+      ],
+    });
+    this.avatarOutlineBindGroup = device.createBindGroup({
+      layout: this.avatarOutlinePipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.cameraBuffer } },
+        { binding: 1, resource: { buffer: this.spinBuffer } },
       ],
     });
 
@@ -781,6 +1050,17 @@ export class ClothRenderer {
   /** Live update of the body's interleaved vertices (skinned animation). */
   updateBodyVertices(data: Float32Array): void {
     this.device.queue.writeBuffer(this.sceneVertexBuffer, 0, data as unknown as BufferSource);
+  }
+
+  /** Live avatar styling: no scene rebuild and no texture upload required. */
+  setAvatarAppearance(value: Partial<AvatarAppearance>): void {
+    const appearance = normalizeAvatarAppearance(value);
+    this.avatarCelShaded = appearance.style === 'cel';
+    this.device.queue.writeBuffer(
+      this.avatarAppearanceBuffer,
+      0,
+      avatarAppearanceUniform(appearance) as unknown as BufferSource,
+    );
   }
 
   setFabric(style: FabricStyle): void {
@@ -874,9 +1154,15 @@ export class ClothRenderer {
     });
 
     pass.setPipeline(this.scenePipeline);
-    pass.setBindGroup(0, this.sceneBindGroup);
     pass.setVertexBuffer(0, this.sceneVertexBuffer);
     pass.setIndexBuffer(this.sceneIndexBuffer, 'uint32');
+    if (this.avatarCelShaded && this.sceneBodyIndexCount > 0) {
+      pass.setPipeline(this.avatarOutlinePipeline);
+      pass.setBindGroup(0, this.avatarOutlineBindGroup);
+      pass.drawIndexed(this.sceneBodyIndexCount);
+      pass.setPipeline(this.scenePipeline);
+    }
+    pass.setBindGroup(0, this.sceneBindGroup);
     // Body first (podium spin), then the static remainder (ground, props).
     if (this.sceneBodyIndexCount > 0) pass.drawIndexed(this.sceneBodyIndexCount);
     if (this.sceneIndexCount > this.sceneBodyIndexCount) {
@@ -884,21 +1170,28 @@ export class ClothRenderer {
       pass.drawIndexed(this.sceneIndexCount - this.sceneBodyIndexCount, 1, this.sceneBodyIndexCount);
     }
 
-    pass.setPipeline(this.clothPipeline);
-    pass.setBindGroup(0, this.clothBindGroup);
-    pass.setVertexBuffer(0, this.positionBuffer);
-    pass.setVertexBuffer(1, this.normalsBuffer);
-    pass.setVertexBuffer(2, this.materialIdBuffer);
-    pass.setIndexBuffer(this.clothIndexBuffer, 'uint32');
-    pass.drawIndexed(this.clothIndexCount);
-    if (this.clothRibbonIndexCount > 0) {
-      pass.setPipeline(this.clothRibbonPipeline);
-      pass.setBindGroup(0, this.clothRibbonBindGroup);
-      pass.draw(this.clothRibbonIndexCount);
+    if (this.clothVisible) {
+      pass.setPipeline(this.clothPipeline);
+      pass.setBindGroup(0, this.clothBindGroup);
+      pass.setVertexBuffer(0, this.positionBuffer);
+      pass.setVertexBuffer(1, this.normalsBuffer);
+      pass.setVertexBuffer(2, this.materialIdBuffer);
+      pass.setVertexBuffer(3, this.graphicUVBuffer);
+      pass.setIndexBuffer(this.clothIndexBuffer, 'uint32');
+      pass.drawIndexed(this.clothIndexCount);
+      if (this.clothRibbonIndexCount > 0) {
+        pass.setPipeline(this.clothRibbonPipeline);
+        pass.setBindGroup(0, this.clothRibbonBindGroup);
+        pass.draw(this.clothRibbonIndexCount);
+      }
     }
 
     pass.end();
     this.device.queue.submit([encoder.finish()]);
+  }
+
+  setClothVisible(visible: boolean): void {
+    this.clothVisible = visible;
   }
 
   dispose(): void {

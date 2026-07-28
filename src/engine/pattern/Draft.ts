@@ -109,6 +109,79 @@ export interface SurfaceAttachment {
   anchor: UV;
   rotationRad?: number;
   stitchedEdges: number[];
+  /**
+   * De quel côté du support la pièce vit : 'over' (défaut — poche, empiècement
+   * superposé) ou 'under' (doublure, fond — glissée ENTRE le corps et le
+   * support). La même contrainte unilatérale s'exerce vers l'intérieur.
+   */
+  side?: 'over' | 'under';
+}
+
+/** Une image posée sur une pièce de coupe, dans le repère de la pièce. */
+export interface PieceGraphic {
+  /** PNG ou JPEG en data URL, déjà réduit à l'import (≤ ~256 Ko). */
+  image: string;
+  /** Centre du graphique dans le [0,1]² de la pièce. */
+  anchor: UV;
+  /** Largeur RÉELLE imprimée, en mètres ; la hauteur suit `aspect`. */
+  widthM: number;
+  /** Ratio hauteur/largeur de l'image, figé à l'import. */
+  aspect: number;
+  /** Rotation dans le plan de la pièce, en radians (sens patron). */
+  rotationRad: number;
+  /**
+   * MOTIF : l'image se RÉPÈTE sur toute la pièce (widthM = taille d'UNE
+   * répétition, l'ancre en règle la phase, la rotation la direction).
+   * Absent/false : graphique posé une seule fois.
+   */
+  repeat?: boolean;
+}
+
+/** Taille max du data URL embarqué (≈256 Ko d'image encodée). */
+export const GRAPHIC_IMAGE_MAX_CHARS = 360_000;
+
+/** ▱ LIGNE INTERNE — polyligne ou polygone DANS une pièce : ligne de style,
+ * pliure, surpiqûre, repère de placement. Points en UV du cadre (comme les
+ * pinces et l'ancre du graphique : ils suivent les changements de cadre). */
+export interface InternalLine {
+  points: UV[];
+  /** true = polygone fermé (le dernier point rejoint le premier). */
+  closed?: boolean;
+}
+export const INTERNAL_LINES_MAX = 24;
+export const INTERNAL_LINE_POINTS_MAX = 64;
+
+/** ⌵ CRAN DE MONTAGE (le « Notch » de Clo) : un repère d'alignement sur le
+ * bord — petit trait perpendiculaire, imprimé sur le patron. Ancré en UV
+ * (comme les lignes internes) : il suit les changements de cadre et se
+ * projette sur le bord le plus proche au rendu. */
+export interface PieceNotch {
+  at: UV;
+}
+export const NOTCHES_MAX = 64;
+
+/**
+ * Coordonnée GRAPHIQUE (repère [0,1]² de l'image, y vers le bas) du point
+ * (u,v) de la pièce — l'inverse ancre/rotation/échelle, en espace MÉTRIQUE
+ * pour que la rotation reste vraie sur une pièce non carrée. Hors de l'image,
+ * les valeurs sortent de [0,1] (l'appelant borne ou masque). Pure.
+ */
+export function graphicLocalUV(
+  graphic: PieceGraphic,
+  pieceWidthM: number,
+  pieceHeightM: number,
+  u: number,
+  v: number,
+): [number, number] {
+  const dxM = (u - graphic.anchor[0]) * pieceWidthM;
+  const dyM = (v - graphic.anchor[1]) * pieceHeightM;
+  const c = Math.cos(-graphic.rotationRad);
+  const s = Math.sin(-graphic.rotationRad);
+  const rxM = dxM * c - dyM * s;
+  const ryM = dxM * s + dyM * c;
+  const w = Math.max(1e-6, graphic.widthM);
+  const h = Math.max(1e-6, graphic.widthM * Math.max(1e-6, graphic.aspect));
+  return [rxM / w + 0.5, ryM / h + 0.5];
 }
 
 export interface DraftPiece {
@@ -125,12 +198,35 @@ export interface DraftPiece {
    * excluded from cloth simulation (pocket bags, fly pieces, waistband…). */
   patternOnly?: boolean;
   /**
+   * SOCLE VIDE : cette face de base n'existe pas encore — contour sentinelle
+   * minuscule qui ne rasterise AUCUNE cellule, invisible dans le plan et la 3D.
+   * C'est l'état « je pars de zéro » : l'utilisateur trace ses pièces libres
+   * sans qu'aucun vêtement socle n'apparaisse.
+   */
+  blank?: boolean;
+  /**
    * Optional fabric assigned to this cutting piece. Absent means that the
    * piece follows the live global fabric selected in the material panel.
    */
   fabricPreset?: import('../solver/FabricMaterial').FabricPresetName;
   /** Piece-specific fabric mass in g/m². Absent means preset/global default. */
   arealDensityGsm?: number;
+  /**
+   * Couleur d'EMPIÈCEMENT ('#rrggbb') : habille cette pièce de coupe d'une
+   * couleur unie choisie, indépendamment du tissu (qui garde la physique et
+   * son grain). Absente, le tissu — de la pièce ou global — décide du rendu.
+   */
+  color?: string;
+  /**
+   * GRAPHIQUE de pièce (le « Graphic » de Clo) : une image posée sur la pièce
+   * — logo, print — éditable sur le plan 2D (déplacer, taille, rotation) et
+   * drapée sur le côté endroit du tissu à l'essayage. Un graphique par pièce.
+   */
+  graphic?: PieceGraphic;
+  /** ▱ Lignes internes (style, pliure, repères) — optionnel. */
+  internalLines?: InternalLine[];
+  /** ⌵ Crans de montage — optionnel. */
+  notches?: PieceNotch[];
   // Physical placement in meters — mirrors generateSeamedPanels.
   width: number;
   height: number;
@@ -438,6 +534,31 @@ export function nearestOutlineEdgeInfo(p: UV, outline: readonly UV[]): { edge: n
  * Renvoie une NOUVELLE pièce ; les index de bords ne bougent pas (coutures et
  * bords ouverts restent valides). Pure.
  */
+/** L'ancre d'un graphique suit la MÊME transformation UV que le contour et
+ * les pinces quand le cadre d'une pièce change — la taille et la rotation du
+ * print sont MÉTRIQUES donc invariantes ; seule l'ancre vit en UV de cadre. */
+function remapGraphicAnchor(
+  piece: DraftPiece,
+  map: (p: UV) => UV,
+): Pick<DraftPiece, 'graphic' | 'internalLines'> {
+  return {
+    ...(piece.graphic
+      ? { graphic: { ...piece.graphic, anchor: map(piece.graphic.anchor) } }
+      : {}),
+    ...(piece.internalLines?.length
+      ? {
+          internalLines: piece.internalLines.map((line) => ({
+            ...line,
+            points: line.points.map((pt) => map(pt)),
+          })),
+        }
+      : {}),
+    ...(piece.notches?.length
+      ? { notches: piece.notches.map((notch) => ({ at: map(notch.at) })) }
+      : {}),
+  };
+}
+
 export function shiftOutlineUV(piece: DraftPiece, du: number, dv: number): DraftPiece {
   let uMin = Infinity;
   let uMax = -Infinity;
@@ -456,6 +577,7 @@ export function shiftOutlineUV(piece: DraftPiece, du: number, dv: number): Draft
     ...piece,
     outline: piece.outline.map(sh),
     darts: piece.darts.map((d) => ({ apex: sh(d.apex), legA: sh(d.legA), legB: sh(d.legB) })),
+    ...remapGraphicAnchor(piece, sh),
   };
 }
 
@@ -483,6 +605,7 @@ export function movePieceWorld(piece: DraftPiece, dx: number, dy: number): Draft
       ...moved,
       outline: piece.outline.map(sh),
       darts: piece.darts.map((d) => ({ apex: sh(d.apex), legA: sh(d.legA), legB: sh(d.legB) })),
+      ...remapGraphicAnchor(piece, sh),
     };
   }
   // Débordement : élargir la boîte pour couvrir le contour décalé (en monde).
@@ -495,6 +618,7 @@ export function movePieceWorld(piece: DraftPiece, dx: number, dy: number): Draft
     width: w2,
     outline: piece.outline.map(sh),
     darts: piece.darts.map((d) => ({ apex: sh(d.apex), legA: sh(d.legA), legB: sh(d.legB) })),
+    ...remapGraphicAnchor(piece, sh),
   };
 }
 
@@ -525,14 +649,18 @@ export function syncPieceFrames(front: DraftPiece, back: DraftPiece): { front: D
   const width = Math.max(1e-4, halfWidth * 2);
   const height = Math.max(1e-4, topY - bottomY);
   const uv = ([x, y]: [number, number]): UV => [x / width + 0.5, (topY - y) / height];
-  const remap = (piece: DraftPiece, data: { outline: [number, number][]; darts: [number, number][][] }): DraftPiece => ({
-    ...piece,
-    width,
-    height,
-    topY,
-    outline: data.outline.map(uv),
-    darts: data.darts.map((d) => ({ apex: uv(d[0]!), legA: uv(d[1]!), legB: uv(d[2]!) })),
-  });
+  const remap = (piece: DraftPiece, data: { outline: [number, number][]; darts: [number, number][][] }): DraftPiece => {
+    const world = ([u, v]: UV): [number, number] => [(u - 0.5) * piece.width, piece.topY - v * piece.height];
+    return {
+      ...piece,
+      width,
+      height,
+      topY,
+      outline: data.outline.map(uv),
+      darts: data.darts.map((d) => ({ apex: uv(d[0]!), legA: uv(d[1]!), legB: uv(d[2]!) })),
+      ...remapGraphicAnchor(piece, (p) => uv(world(p))),
+    };
+  };
   return { front: remap(front, f), back: remap(back, b) };
 }
 
@@ -571,15 +699,21 @@ export function moveFaceWorld(
   const topY = yTop + PAD;
   const height = Math.max(0.05, topY - yBot + PAD);
   const uv = ([x, y]: [number, number]): UV => [x / width + 0.5, (topY - y) / height];
-  const rebox = (piece: DraftPiece, w: { pts: [number, number][]; darts: [number, number][][] }): DraftPiece => ({
+  const rebox = (piece: DraftPiece, w: { pts: [number, number][]; darts: [number, number][][] }, mdx: number, mdy: number): DraftPiece => ({
     ...piece,
     width,
     height,
     topY,
     outline: w.pts.map(uv),
     darts: w.darts.map((t) => ({ apex: uv(t[0]!), legA: uv(t[1]!), legB: uv(t[2]!) })),
+    ...remapGraphicAnchor(piece, ([u, v]) =>
+      uv([(u - 0.5) * box.width + mdx, box.topY - v * box.height + mdy]),
+    ),
   });
-  return { front: rebox(front, wF), back: rebox(back, wB) };
+  return {
+    front: rebox(front, wF, which === 0 ? dx : 0, which === 0 ? dy : 0),
+    back: rebox(back, wB, which === 1 ? dx : 0, which === 1 ? dy : 0),
+  };
 }
 
 /**
@@ -620,6 +754,7 @@ export function reboxPiece(piece: DraftPiece, gap: number): DraftPiece {
     gap,
     outline: piece.outline.map(mapUV),
     darts: piece.darts.map((d) => ({ apex: mapUV(d.apex), legA: mapUV(d.legA), legB: mapUV(d.legB) })),
+    ...remapGraphicAnchor(piece, mapUV),
   };
 }
 
@@ -1577,6 +1712,8 @@ export function compileSurfaceContacts(
    * triangle plus particles on deliberately unstitched boundary edges.
    */
   active: boolean;
+  /** +1 = par-dessus le support (défaut), -1 = par-dessous (doublure). */
+  side: 1 | -1;
 }[] {
   const projection = surfaceProjection(doc, n, offsets, enteringPid);
   if (!projection) return [];
@@ -1588,6 +1725,7 @@ export function compileSurfaceContacts(
     contactFrame,
   } = projection;
   const emitted = new Set<string>();
+  const contactSide: 1 | -1 = surface.side === 'under' ? -1 : 1;
   const out: {
     i: number;
     j: number;
@@ -1597,6 +1735,7 @@ export function compileSurfaceContacts(
     weightA: number;
     weightB: number;
     active: boolean;
+    side: 1 | -1;
   }[] = [];
   const stitched = new Set(
     surface.stitchedEdges
@@ -1641,6 +1780,7 @@ export function compileSurfaceContacts(
         weightA: frame.weightA,
         weightB: frame.weightB,
         active: false,
+        side: contactSide,
       });
     }
   }
@@ -1791,6 +1931,35 @@ export function defaultDraft(gridN: 32 | 64 | 128 = 64): DraftDoc {
  * like an automatic mirror seam, so it drapes as a clean closed shell but stays
  * editable. Sized to the avatar by the caller (width ≈ 0.7·topScale, height 0.62,
  * gap 0.9, topY 1.52 + dyShoulder). */
+/** Le SOCLE VIDE : un doc dont les deux faces de base sont des sentinelles
+ * `blank` — contour minuscule logé ENTRE les centres de cellules (aucune
+ * cellule rasterisée à 32/64/128), cadre grandeur corps pour servir de boîte
+ * de tracé. L'atelier « page blanche » trace ses pièces libres dessus sans
+ * qu'aucun vêtement n'apparaisse. */
+export function blankBaseDraft(gridN: 32 | 64 | 128 = 64): DraftDoc {
+  const face = (): DraftPiece => ({
+    outline: [
+      [0.0002, 0.0002],
+      [0.0007, 0.0002],
+      [0.0005, 0.0007],
+    ],
+    darts: [],
+    seams: [],
+    openEdges: [],
+    blank: true,
+    ...DEFAULT_PIECE_DIMS,
+  });
+  return {
+    format: 'toile-draft',
+    version: 1,
+    gridN,
+    piece: face(),
+    back: face(),
+    manual: true,
+    seams: [],
+  };
+}
+
 export function tshirtDraft(width: number, height: number, gap: number, topY: number, gridN: 32 | 64 | 128 = 64): DraftDoc {
   const body = (): DraftPiece => ({
     outline: [
@@ -1887,6 +2056,7 @@ export function sanitizeDraft(raw: unknown): DraftDoc {
         : {}),
       ...(pp.onFold === true ? { onFold: true } : {}),
       ...(pp.patternOnly === true ? { patternOnly: true } : {}),
+      ...(pp.blank === true ? { blank: true } : {}),
       ...((): Pick<DraftPiece, 'fabricPreset'> => {
         const allowed = ['Jersey', 'Maille', 'Popeline', 'Denim', 'Lin', 'Laine', 'Soie'] as const;
         return allowed.includes(pp.fabricPreset as (typeof allowed)[number])
@@ -1900,6 +2070,84 @@ export function sanitizeDraft(raw: unknown): DraftDoc {
         return typeof pp.arealDensityGsm === 'number' && Number.isFinite(pp.arealDensityGsm)
           ? { arealDensityGsm: clampFabricGsm(pp.arealDensityGsm) }
           : {};
+      })(),
+      // Couleur d'empiècement : un hex strict survit (en minuscules), le reste tombe.
+      ...(typeof pp.color === 'string' && /^#[0-9a-f]{6}$/i.test(pp.color)
+        ? { color: pp.color.toLowerCase() }
+        : {}),
+      // Graphique de pièce : data URL image borné + transform assaini, sinon il tombe.
+      ...((): { graphic?: PieceGraphic } => {
+        const raw = pp.graphic as Partial<PieceGraphic> | undefined;
+        if (
+          !raw ||
+          typeof raw.image !== 'string' ||
+          raw.image.length > GRAPHIC_IMAGE_MAX_CHARS ||
+          !/^data:image\/(png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(raw.image) ||
+          typeof raw.widthM !== 'number' ||
+          !Number.isFinite(raw.widthM) ||
+          typeof raw.aspect !== 'number' ||
+          !Number.isFinite(raw.aspect)
+        ) {
+          return {};
+        }
+        const rotation =
+          typeof raw.rotationRad === 'number' && Number.isFinite(raw.rotationRad)
+            ? Math.min(Math.PI * 2, Math.max(-Math.PI * 2, raw.rotationRad))
+            : 0;
+        return {
+          graphic: {
+            image: raw.image,
+            anchor: uv(raw.anchor),
+            widthM: Math.min(2, Math.max(0.01, raw.widthM)),
+            aspect: Math.min(20, Math.max(0.05, raw.aspect)),
+            rotationRad: rotation,
+            ...(raw.repeat === true ? { repeat: true } : {}),
+          },
+        };
+      })(),
+      // ▱ Lignes internes : points UV clampés, tailles bornées, dégénérées
+      // (< 2 points) écartées ; le drapeau closed ne survit que s'il est vrai.
+      ...((): { internalLines?: InternalLine[] } => {
+        if (!Array.isArray(pp.internalLines)) return {};
+        const lines: InternalLine[] = [];
+        for (const rawLine of pp.internalLines.slice(0, INTERNAL_LINES_MAX)) {
+          const rl = rawLine as Partial<InternalLine> | undefined;
+          if (!rl || !Array.isArray(rl.points)) continue;
+          const points = rl.points
+            .slice(0, INTERNAL_LINE_POINTS_MAX)
+            .filter(
+              (pt): pt is UV =>
+                Array.isArray(pt) &&
+                typeof pt[0] === 'number' &&
+                Number.isFinite(pt[0]) &&
+                typeof pt[1] === 'number' &&
+                Number.isFinite(pt[1]),
+            )
+            .map((pt) => uv(pt));
+          if (points.length < 2) continue;
+          lines.push({ points, ...(rl.closed === true ? { closed: true } : {}) });
+        }
+        return lines.length ? { internalLines: lines } : {};
+      })(),
+      // ⌵ Crans : UV clampés, plafond, dégénérés écartés.
+      ...((): { notches?: PieceNotch[] } => {
+        if (!Array.isArray(pp.notches)) return {};
+        const notches: PieceNotch[] = [];
+        for (const rawNotch of pp.notches.slice(0, NOTCHES_MAX)) {
+          const rn = rawNotch as Partial<PieceNotch> | undefined;
+          const at = rn?.at;
+          if (
+            !Array.isArray(at) ||
+            typeof at[0] !== 'number' ||
+            !Number.isFinite(at[0]) ||
+            typeof at[1] !== 'number' ||
+            !Number.isFinite(at[1])
+          ) {
+            continue;
+          }
+          notches.push({ at: uv(at) });
+        }
+        return notches.length ? { notches } : {};
       })(),
       // Proven wrap modes survive the round-trip.
       ...(pp.wrap === 'armL' || pp.wrap === 'armR' || pp.wrap === 'neck' ? { wrap: pp.wrap } : {}),
@@ -1934,6 +2182,7 @@ export function sanitizeDraft(raw: unknown): DraftDoc {
                     surface: {
                       supportPieceId: Math.min(64, Math.max(0, Math.round(surface.supportPieceId))),
                       anchor: uv(surface.anchor),
+                      ...(surface.side === 'under' ? { side: 'under' as const } : {}),
                       ...(typeof surface.rotationRad === 'number' && Number.isFinite(surface.rotationRad)
                         ? { rotationRad: Math.min(Math.PI * 2, Math.max(-Math.PI * 2, surface.rotationRad)) }
                         : {}),
@@ -2112,7 +2361,7 @@ export type ChordCutResult = ChordCutOk | ChordCutError;
 const CUT_SNAP_T = 0.04; // sous ce paramètre, la découpe s'accroche au sommet existant
 
 /** Longueur métrique (m) d'un run de contour, arêtes sommées. */
-function runLengthM(piece: DraftPiece, run: EdgeRun): number {
+export function runLengthM(piece: DraftPiece, run: EdgeRun): number {
   const N = piece.outline.length;
   const steps = (run.to - run.from + N) % N;
   let len = 0;
@@ -2183,11 +2432,55 @@ function cyclicWithin(v: number, from: number, to: number, N: number): boolean {
   return (v - from + N) % N <= (to - from + N) % N;
 }
 
+/** Pose (ou retrouve) un sommet au point UV du contour de la pièce `pieceId`,
+ * avec accrochage aux sommets proches (CUT_SNAP_T) et ré-indexation complète du
+ * doc (coutures d'assemblage + mariages ; openEdges/coutures main/surface via
+ * insertOutlineVertex). L'index rendu n'est STABLE que jusqu'à la prochaine
+ * insertion sur la même pièce — relire par géométrie ensuite. Partagé par
+ * Couper & Coudre et la couture libre. */
+function placeVertexAtUV(
+  work: DraftDoc,
+  pieceId: number,
+  uv: UV,
+): { work: DraftDoc; vertex: number } | null {
+  const cur = docPieces(work)[pieceId];
+  if (!cur) return null;
+  const Ncur = cur.outline.length;
+  // Accrochage sommet existant ?
+  for (let i = 0; i < Ncur; i++) {
+    const q = cur.outline[i]!;
+    if (Math.hypot(q[0] - uv[0], q[1] - uv[1]) < 0.004) return { work, vertex: i };
+  }
+  const { edge } = nearestOutlineEdgeInfo(uv, cur.outline);
+  const a = cur.outline[edge]!;
+  const b = cur.outline[(edge + 1) % Ncur]!;
+  const ex = b[0] - a[0];
+  const ey = b[1] - a[1];
+  const d2 = ex * ex + ey * ey;
+  const t = d2 > 1e-12 ? ((uv[0] - a[0]) * ex + (uv[1] - a[1]) * ey) / d2 : 0;
+  if (t <= CUT_SNAP_T) return { work, vertex: edge };
+  if (t >= 1 - CUT_SNAP_T) return { work, vertex: (edge + 1) % Ncur };
+  const next = insertOutlineVertex(cur, edge, uv);
+  const nV = next.outline.length;
+  let out = replaceDocPiece(work, pieceId, next);
+  out = {
+    ...out,
+    seams: reindexAssemblySeams(out.seams ?? [], pieceId, 'insert', edge + 1, nV),
+    segmentLinks: out.segmentLinks?.length
+      ? reindexAssemblySeams(out.segmentLinks, pieceId, 'insert', edge + 1, nV)
+      : out.segmentLinks,
+  };
+  return { work: out, vertex: edge + 1 };
+}
+
 export function cutPieceAlongChord(
   doc: DraftDoc,
   pieceId: number,
   cutA: ChordCutPoint,
   cutB: ChordCutPoint,
+  /** Chemin INTÉRIEUR de la découpe (scission le long d'une ligne interne) :
+   * points UV ordonnés du côté cutA vers le côté cutB. Vide = corde droite. */
+  interiorPath: readonly UV[] = [],
 ): ChordCutResult {
   const pieces0 = docPieces(doc);
   const piece0 = pieces0[pieceId];
@@ -2219,38 +2512,16 @@ export function cutPieceAlongChord(
   const second = norm(cutB);
   let work = doc;
   const placeVertex = (p: ChordCutPoint): number | null => {
-    const cur = docPieces(work)[pieceId]!;
-    const Ncur = cur.outline.length;
-    // L'arête visée peut avoir été décalée par l'insertion précédente : on la
-    // retrouve par proximité géométrique du point cible.
+    // L'arête visée peut avoir été décalée par l'insertion précédente : le
+    // point cible est calculé sur le contour D'ORIGINE, puis retrouvé/inséré
+    // par proximité géométrique sur l'état courant (helper partagé).
     const a0 = piece0.outline[p.edge]!;
     const b0 = piece0.outline[(p.edge + 1) % N0]!;
     const uv: UV = [a0[0] + (b0[0] - a0[0]) * p.t, a0[1] + (b0[1] - a0[1]) * p.t];
-    // Accrochage sommet existant ?
-    for (let i = 0; i < Ncur; i++) {
-      const q = cur.outline[i]!;
-      if (Math.hypot(q[0] - uv[0], q[1] - uv[1]) < 0.004) return i;
-    }
-    const { edge } = nearestOutlineEdgeInfo(uv, cur.outline);
-    const a = cur.outline[edge]!;
-    const b = cur.outline[(edge + 1) % Ncur]!;
-    const ex = b[0] - a[0];
-    const ey = b[1] - a[1];
-    const d2 = ex * ex + ey * ey;
-    const t = d2 > 1e-12 ? ((uv[0] - a[0]) * ex + (uv[1] - a[1]) * ey) / d2 : 0;
-    if (t <= CUT_SNAP_T) return edge;
-    if (t >= 1 - CUT_SNAP_T) return (edge + 1) % Ncur;
-    const next = insertOutlineVertex(cur, edge, uv);
-    const nV = next.outline.length;
-    work = replaceDocPiece(work, pieceId, next);
-    work = {
-      ...work,
-      seams: reindexAssemblySeams(work.seams ?? [], pieceId, 'insert', edge + 1, nV),
-      segmentLinks: work.segmentLinks?.length
-        ? reindexAssemblySeams(work.segmentLinks, pieceId, 'insert', edge + 1, nV)
-        : work.segmentLinks,
-    };
-    return edge + 1;
+    const placed = placeVertexAtUV(work, pieceId, uv);
+    if (!placed) return null;
+    work = placed.work;
+    return placed.vertex;
   };
   const xiRaw = placeVertex(first);
   if (xiRaw === null) return { ok: false, reason: 'Point de découpe introuvable.' };
@@ -2286,9 +2557,11 @@ export function cutPieceAlongChord(
   // La corde doit traverser l'INTÉRIEUR de la pièce.
   const X = cutPiece.outline[xi]!;
   const Y = cutPiece.outline[yi]!;
-  const mid: UV = [(X[0] + Y[0]) / 2, (X[1] + Y[1]) / 2];
-  if (!pointInPolygon(mid, cutPiece.outline)) {
-    return { ok: false, reason: 'La découpe doit traverser la pièce de part en part.' };
+  if (!interiorPath.length) {
+    const mid: UV = [(X[0] + Y[0]) / 2, (X[1] + Y[1]) / 2];
+    if (!pointInPolygon(mid, cutPiece.outline)) {
+      return { ok: false, reason: 'La découpe doit traverser la pièce de part en part.' };
+    }
   }
 
   // 2 · Les deux moitiés. A = xi→yi (CCW), B = yi→xi. Même repère physique.
@@ -2296,8 +2569,20 @@ export function cutPieceAlongChord(
   for (let k = 0; k <= spanAB; k++) idxA.push((xi + k) % N);
   const idxB: number[] = [];
   for (let k = 0; k <= N - spanAB; k++) idxB.push((yi + k) % N);
-  const outlineA = idxA.map((i) => [...cutPiece.outline[i]!] as UV);
-  const outlineB = idxB.map((i) => [...cutPiece.outline[i]!] as UV);
+  const interior = interiorPath.map((q) => [q[0], q[1]] as UV);
+  if (idxA.length + interior.length > 128 || idxB.length + interior.length > 128) {
+    return { ok: false, reason: 'Contour trop dense pour cette découpe (128 sommets max).' };
+  }
+  // A = contour xi→yi puis le chemin REBROUSSÉ (yi → … → xi par l'intérieur) ;
+  // B = contour yi→xi puis le chemin dans l'ordre. Corde droite : chemins vides.
+  const outlineA = [
+    ...idxA.map((i) => [...cutPiece.outline[i]!] as UV),
+    ...[...interior].reverse(),
+  ];
+  const outlineB = [
+    ...idxB.map((i) => [...cutPiece.outline[i]!] as UV),
+    ...interior,
+  ];
   if (isSelfIntersecting(outlineA) || isSelfIntersecting(outlineB)) {
     return { ok: false, reason: 'Cette découpe créerait une pièce croisée.' };
   }
@@ -2534,6 +2819,53 @@ export function cutPieceAlongChord(
     stagingOffset: undefined,
     stagingOffsets: undefined,
   };
+  // Un LOGO suit LA moitié qui contient son ancre (comme les poches) — pas de
+  // logo dupliqué des deux côtés de la découpe. Un MOTIF répété est un tissu
+  // imprimé : les DEUX moitiés le gardent, et comme elles partagent le même
+  // cadre, le motif se prolonge sans raccord à travers la découpe (audit).
+  if (cutPiece.graphic && !cutPiece.graphic.repeat) {
+    if (pointInPolygon(cutPiece.graphic.anchor, outlineA)) {
+      delete (pieceB as { graphic?: PieceGraphic }).graphic;
+    } else {
+      delete (pieceA as { graphic?: PieceGraphic }).graphic;
+    }
+  }
+  // ▱ Lignes internes : chacune suit la moitié qui contient son centroïde
+  // (pas de découpe de ligne en v1 — une ligne à cheval part entière).
+  if (cutPiece.internalLines?.length) {
+    const linesA: InternalLine[] = [];
+    const linesB: InternalLine[] = [];
+    for (const line of cutPiece.internalLines) {
+      let cu = 0;
+      let cv = 0;
+      for (const [u, v] of line.points) {
+        cu += u;
+        cv += v;
+      }
+      const centroid: UV = [cu / line.points.length, cv / line.points.length];
+      (pointInPolygon(centroid, outlineA) ? linesA : linesB).push(line);
+    }
+    if (linesA.length) pieceA.internalLines = linesA;
+    else delete (pieceA as { internalLines?: InternalLine[] }).internalLines;
+    if (linesB.length) pieceB.internalLines = linesB;
+    else delete (pieceB as { internalLines?: InternalLine[] }).internalLines;
+  }
+
+  // ⌵ Crans : chacun suit la moitié dont le BORD passe le plus près de lui.
+  if (cutPiece.notches?.length) {
+    const notchesA: PieceNotch[] = [];
+    const notchesB: PieceNotch[] = [];
+    for (const notch of cutPiece.notches) {
+      (segDistToPoly(notch.at, outlineA) <= segDistToPoly(notch.at, outlineB)
+        ? notchesA
+        : notchesB
+      ).push({ at: [...notch.at] as UV });
+    }
+    if (notchesA.length) pieceA.notches = notchesA;
+    else delete (pieceA as { notches?: PieceNotch[] }).notches;
+    if (notchesB.length) pieceB.notches = notchesB;
+    else delete (pieceB as { notches?: PieceNotch[] }).notches;
+  }
 
   // 8 · Poches posées sur la pièce coupée : suivre la moitié qui porte l'ancre.
   let docOut: DraftDoc = replaceDocPiece(work, pieceId, pieceA);
@@ -2560,11 +2892,13 @@ export function cutPieceAlongChord(
     docOut = replaceDocPiece(docOut, pid, updated);
   }
 
-  // 9 · La couture de la découpe elle-même : dernier bord de chaque moitié.
+  // 9 · La couture de la découpe elle-même : du dernier sommet de contour de
+  //     chaque moitié jusqu'au retour au sommet 0 — corde droite = 1 bord,
+  //     scission sur ligne interne = tout le chemin (m+1 bords).
   const chordA: FaceRun = pieceId <= 1
-    ? { ...(pieceId === 1 ? { face: 'back' as const } : { face: 'front' as const }), pieceId, from: outlineA.length - 1, to: 0 }
-    : { pieceId, from: outlineA.length - 1, to: 0 };
-  const chordB: FaceRun = { pieceId: newPid, from: outlineB.length - 1, to: 0 };
+    ? { ...(pieceId === 1 ? { face: 'back' as const } : { face: 'front' as const }), pieceId, from: idxA.length - 1, to: 0 }
+    : { pieceId, from: idxA.length - 1, to: 0 };
+  const chordB: FaceRun = { pieceId: newPid, from: idxB.length - 1, to: 0 };
   docOut = {
     ...docOut,
     manual: true,
@@ -2582,6 +2916,1265 @@ function segDistToPoly(p: UV, poly: readonly UV[]): number {
     d2 = Math.min(d2, segDist2(p, poly[k]!, poly[(k + 1) % poly.length]!));
   }
   return Math.sqrt(d2);
+}
+
+/* ------------------------------------------------------------------------- *
+ * COUTURE LIBRE — coudre deux TRACÉS quelconques du contour (façon Clo
+ * « Free Sewing ») : départ et arrivée n'importe où sur le bord, mi-arête
+ * comprise, coins passés. Les points d'accord nécessaires sont insérés avec
+ * la ré-indexation complète (même machinerie que Couper & Coudre) ; la
+ * direction du tracé choisit L'ARC du contour, l'anti-vrillage de
+ * l'assembleur reste automatique (pairRunCells).
+ * ------------------------------------------------------------------------- */
+
+/** Un tracé de couture libre : du point `start` au point `end` en suivant le
+ * contour dans la direction `dir` (+1 = sens des index de sommets croissants,
+ * -1 = sens inverse). start/end sont exprimés sur le contour AVANT insertion. */
+export interface FreeRunSpec {
+  pieceId: number;
+  start: ChordCutPoint;
+  end: ChordCutPoint;
+  dir: 1 | -1;
+}
+
+export type FreeSeamResult =
+  | { ok: true; doc: DraftDoc; seamIndex: number; lengthAM: number; lengthBM: number }
+  | { ok: false; reason: string };
+
+export function freeSeamBetween(
+  doc: DraftDoc,
+  specA: FreeRunSpec,
+  specB: FreeRunSpec,
+): FreeSeamResult {
+  if (doc.preset) {
+    return {
+      ok: false,
+      reason:
+        'Ce modèle intégré utilise un assemblage spécial — la couture libre fonctionne sur le t-shirt et les pièces dessinées.',
+    };
+  }
+  const pieces0 = docPieces(doc);
+  for (const spec of [specA, specB]) {
+    if (
+      !Number.isFinite(spec.start.edge) ||
+      !Number.isFinite(spec.start.t) ||
+      !Number.isFinite(spec.end.edge) ||
+      !Number.isFinite(spec.end.t)
+    ) {
+      return { ok: false, reason: 'Point de couture invalide.' };
+    }
+    const piece = pieces0[spec.pieceId];
+    if (!piece || piece.outline.length < 3) return { ok: false, reason: 'Pièce introuvable.' };
+    if (piece.outline.length > 124) {
+      return { ok: false, reason: 'Contour trop dense pour ajouter des points de couture.' };
+    }
+    if (piece.placement?.surface) {
+      return {
+        ok: false,
+        reason: 'Une poche posée se coud par ses pointillés (outil 🪡) — pas en couture libre.',
+      };
+    }
+  }
+
+  // 1 · UVs cibles depuis les contours D'ORIGINE (les insertions décalent les
+  //     index ; la géométrie, elle, ne bouge pas).
+  const uvAt = (pid: number, p: ChordCutPoint): UV => {
+    const piece = pieces0[pid]!;
+    const N = piece.outline.length;
+    const e = ((Math.round(p.edge) % N) + N) % N;
+    const t = Math.min(1, Math.max(0, p.t));
+    const a = piece.outline[e]!;
+    const b = piece.outline[(e + 1) % N]!;
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  };
+  const targets = [
+    { pieceId: specA.pieceId, uv: uvAt(specA.pieceId, specA.start) },
+    { pieceId: specA.pieceId, uv: uvAt(specA.pieceId, specA.end) },
+    { pieceId: specB.pieceId, uv: uvAt(specB.pieceId, specB.start) },
+    { pieceId: specB.pieceId, uv: uvAt(specB.pieceId, specB.end) },
+  ] as const;
+
+  // 2 · Poser les (jusqu'à) 4 sommets, en relisant le doc COURANT à chaque pose.
+  let work = doc;
+  for (const target of targets) {
+    const placed = placeVertexAtUV(work, target.pieceId, target.uv);
+    if (!placed) return { ok: false, reason: 'Point de couture introuvable.' };
+    work = placed.work;
+  }
+
+  // 3 · Retrouver les 4 index par géométrie sur l'état FINAL (les insertions
+  //     suivantes ont pu décaler les précédents).
+  const vertexNear = (pid: number, uv: UV): number => {
+    const piece = docPieces(work)[pid]!;
+    let best = 0;
+    let bestD = Infinity;
+    for (let i = 0; i < piece.outline.length; i++) {
+      const q = piece.outline[i]!;
+      const d = Math.hypot(q[0] - uv[0], q[1] - uv[1]);
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    return best;
+  };
+  const aStart = vertexNear(specA.pieceId, targets[0].uv);
+  const aEnd = vertexNear(specA.pieceId, targets[1].uv);
+  const bStart = vertexNear(specB.pieceId, targets[2].uv);
+  const bEnd = vertexNear(specB.pieceId, targets[3].uv);
+  if (aStart === aEnd || bStart === bEnd) {
+    return { ok: false, reason: 'Tracé trop court — écartez le point de départ et celui d’arrivée.' };
+  }
+
+  // 4 · Runs orientés par la direction TRACÉE. Un FaceRun se parcourt toujours
+  //     dans le sens des index croissants : un tracé en sens inverse décrit le
+  //     même arc en échangeant from/to. L'orientation de fermeture (quel bout
+  //     rejoint quel bout) reste choisie par l'anti-vrillage de l'assembleur.
+  const mkRun = (pid: number, startV: number, endV: number, dir: 1 | -1): FaceRun => {
+    const from = dir === 1 ? startV : endV;
+    const to = dir === 1 ? endV : startV;
+    return pid <= 1 ? { face: pid === 1 ? 'back' : 'front', from, to } : { pieceId: pid, from, to };
+  };
+  const runA = mkRun(specA.pieceId, aStart, aEnd, specA.dir);
+  const runB = mkRun(specB.pieceId, bStart, bEnd, specB.dir);
+
+  // 5 · Garde-fous sur l'état final.
+  const pieceA = docPieces(work)[specA.pieceId]!;
+  const pieceB = docPieces(work)[specB.pieceId]!;
+  const edgesOf = (piece: DraftPiece, r: EdgeRun): Set<number> => {
+    const N = piece.outline.length;
+    const steps = (r.to - r.from + N) % N;
+    const set = new Set<number>();
+    for (let k = 0; k < steps; k++) set.add((r.from + k) % N);
+    return set;
+  };
+  const edgesA = edgesOf(pieceA, { from: runA.from, to: runA.to });
+  const edgesB = edgesOf(pieceB, { from: runB.from, to: runB.to });
+  if (!edgesA.size || !edgesB.size) return { ok: false, reason: 'Tracé vide.' };
+  if (specA.pieceId === specB.pieceId) {
+    for (const e of edgesA) {
+      if (edgesB.has(e)) {
+        return { ok: false, reason: 'Les deux tracés se chevauchent sur la même pièce — écartez-les.' };
+      }
+    }
+  }
+  const lengthAM = runLengthM(pieceA, { from: runA.from, to: runA.to });
+  const lengthBM = runLengthM(pieceB, { from: runB.from, to: runB.to });
+  if (lengthAM < 0.01 || lengthBM < 0.01) {
+    return { ok: false, reason: 'Tracé trop court pour une couture (moins de 1 cm).' };
+  }
+  const sameRun = (x: FaceRun, y: FaceRun): boolean =>
+    pieceIdOf(x) === pieceIdOf(y) && x.from === y.from && x.to === y.to;
+  for (const s of work.seams ?? []) {
+    if ((sameRun(s.a, runA) && sameRun(s.b, runB)) || (sameRun(s.a, runB) && sameRun(s.b, runA))) {
+      return { ok: false, reason: 'Ces deux bords sont déjà cousus ensemble.' };
+    }
+  }
+
+  const seams = [...(work.seams ?? []), { a: runA, b: runB }];
+  return { ok: true, doc: { ...work, seams }, seamIndex: seams.length - 1, lengthAM, lengthBM };
+}
+
+/* ------------------------------------------------------------------------- *
+ * MIROIR COUSU (le « Clone-Off Symmetric » de Clo) — dupliquer une pièce en
+ * SYMÉTRIE par rapport à un de ses bords, et coudre la paire le long de cet
+ * axe. Le geste patronnière fondamental : dessiner un demi-devant, le déplier.
+ * La réflexion se fait en espace MÉTRIQUE (vraie sur une pièce non carrée) ;
+ * la jumelle est une pièce libre avec son propre cadre, sa pose d'essayage
+ * vient de la couture d'axe (placement automatique par les coutures).
+ * ------------------------------------------------------------------------- */
+
+export type MirrorDuplicateResult =
+  | { ok: true; doc: DraftDoc; newPieceId: number; seamIndex: number }
+  | { ok: false; reason: string };
+
+export function mirrorDuplicatePiece(
+  doc: DraftDoc,
+  pieceId: number,
+  axisEdge: number,
+): MirrorDuplicateResult {
+  if (doc.preset) {
+    return { ok: false, reason: 'Modèle intégré : le miroir cousu fonctionne sur le t-shirt et les pièces dessinées.' };
+  }
+  const piece = docPieces(doc)[pieceId];
+  if (!piece || piece.outline.length < 3) return { ok: false, reason: 'Pièce introuvable.' };
+  if (piece.blank) return { ok: false, reason: 'Rien à dupliquer ici.' };
+  if (piece.wrap) return { ok: false, reason: 'Cette pièce est enroulée (manche/col) — le miroir des tubes viendra plus tard.' };
+  if (piece.placement?.surface) {
+    return { ok: false, reason: 'Détachez d’abord la pièce de son support (elle est posée dessus).' };
+  }
+  if ((doc.pieces?.length ?? 0) >= 14) {
+    return { ok: false, reason: 'Trop de pièces libres pour en créer une nouvelle.' };
+  }
+  const N = piece.outline.length;
+  const k = ((Math.round(axisEdge) % N) + N) % N;
+
+  // 1 · Réflexion MÉTRIQUE sur la droite du bord-axe.
+  const M = ([u, v]: UV): [number, number] => [u * piece.width, v * piece.height];
+  const A = M(piece.outline[k]!);
+  const B = M(piece.outline[(k + 1) % N]!);
+  const axisLen = Math.hypot(B[0] - A[0], B[1] - A[1]);
+  if (axisLen < 1e-6) return { ok: false, reason: 'Bord d’axe dégénéré.' };
+  const dx = (B[0] - A[0]) / axisLen;
+  const dy = (B[1] - A[1]) / axisLen;
+  const reflect = ([u, v]: UV): [number, number] => {
+    const [x, y] = M([u, v]);
+    const t = (x - A[0]) * dx + (y - A[1]) * dy;
+    const px = A[0] + t * dx;
+    const py = A[1] + t * dy;
+    return [2 * px - x, 2 * py - y];
+  };
+
+  // 2 · Contour jumeau : points réfléchis en ordre INVERSE (une réflexion
+  //     retourne l'orientation ; inverser l'ordre la restaure). Le sommet i
+  //     devient l'index N-1-i, l'arête k devient l'arête N-2-k.
+  const mirroredM = piece.outline.map(reflect).reverse();
+
+  // 3 · Cadre neuf ajusté sur l'emprise réfléchie (même hauteur de monde que
+  //     l'original le long de l'axe — le cadre est recentré, positions
+  //     physiques du contour préservées dans SON repère).
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const [x, y] of mirroredM) {
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y);
+    maxY = Math.max(maxY, y);
+  }
+  const PAD = 0.01;
+  const w = Math.max(0.02, maxX - minX + 2 * PAD);
+  const h = Math.max(0.02, maxY - minY + 2 * PAD);
+  const toUV = ([x, y]: [number, number]): UV => [
+    (x - minX + PAD) / w,
+    (y - minY + PAD) / h,
+  ];
+  const twinOutline = mirroredM.map(toUV);
+  const reflectUV = (p: UV): UV => toUV(reflect(p));
+
+  const label = draftPieceLabel(piece, pieceId);
+  const twin: DraftPiece = {
+    ...piece,
+    outline: twinOutline,
+    darts: piece.darts.map((d) => ({
+      apex: reflectUV(d.apex),
+      legA: reflectUV(d.legA),
+      legB: reflectUV(d.legB),
+    })),
+    // Coutures main : les runs suivent l'inversion d'index (from/to échangés).
+    seams: piece.seams.map((s) => ({
+      a: { from: (N - 1 - s.a.to + N) % N, to: (N - 1 - s.a.from + N) % N },
+      b: { from: (N - 1 - s.b.to + N) % N, to: (N - 1 - s.b.from + N) % N },
+    })),
+    openEdges: [],
+    width: w,
+    height: h,
+    // Même monde vertical (y = topY − y_métrique) : le haut du nouveau cadre
+    // se cale pour que chaque point réfléchi garde sa hauteur réelle.
+    topY: piece.topY - minY + PAD,
+    name: `${label} · miroir`,
+    placement: { role: 'auto', autoAlign: true },
+    stagingOffset: undefined,
+    stagingOffsets: undefined,
+    ...(piece.graphic
+      ? {
+          graphic: {
+            ...piece.graphic,
+            anchor: reflectUV(piece.graphic.anchor),
+            rotationRad: -piece.graphic.rotationRad,
+          },
+        }
+      : {}),
+    ...(piece.internalLines?.length
+      ? {
+          internalLines: piece.internalLines.map((line) => ({
+            ...line,
+            points: line.points.map(reflectUV),
+          })),
+        }
+      : {}),
+    ...(piece.notches?.length
+      ? { notches: piece.notches.map((notch) => ({ at: reflectUV(notch.at) })) }
+      : {}),
+  };
+
+  // 4 · La couture d'axe : l'arête k de l'original ↔ l'arête N-2-k de la
+  //     jumelle (l'anti-vrillage de l'assembleur choisit l'orientation).
+  const newPieceId = 2 + (doc.pieces?.length ?? 0);
+  const mkRun = (pid: number, from: number, to: number): FaceRun =>
+    pid <= 1 ? { face: pid === 1 ? 'back' : 'front', from, to } : { pieceId: pid, from, to };
+  const seam: AssemblySeam = {
+    a: mkRun(pieceId, k, (k + 1) % N),
+    b: mkRun(newPieceId, (N - 2 - k + N) % N, (N - 1 - k + N) % N),
+  };
+  const seams = [...(doc.seams ?? []), seam];
+  return {
+    ok: true,
+    doc: { ...doc, pieces: [...(doc.pieces ?? []), twin], seams },
+    newPieceId,
+    seamIndex: seams.length - 1,
+  };
+}
+
+/* ------------------------------------------------------------------------- *
+ * OFFSET DU CONTOUR (l'« Offset Pattern Outline » de Clo) — décaler TOUTE la
+ * pièce d'une distance uniforme, vers l'extérieur (aisance) ou l'intérieur
+ * (doublure). Sommet par sommet le long des bissectrices, en espace MÉTRIQUE
+ * (vrai sur une pièce non carrée). Le nombre de points ne change pas : toutes
+ * les coutures, mariages et bords ouverts restent valides sans ré-indexation —
+ * ils recousent aux nouvelles longueurs (l'embu suit).
+ * ------------------------------------------------------------------------- */
+
+export interface OffsetOutlineResult {
+  ok: boolean;
+  doc?: DraftDoc;
+  reason?: string;
+}
+
+export function offsetPieceOutline(
+  doc: DraftDoc,
+  pieceId: number,
+  distanceM: number,
+): OffsetOutlineResult {
+  if (doc.preset) {
+    return { ok: false, reason: 'Modèle intégré : l’offset fonctionne sur le t-shirt et les pièces dessinées.' };
+  }
+  const piece = docPieces(doc)[pieceId];
+  if (!piece || piece.outline.length < 3) return { ok: false, reason: 'Pièce introuvable.' };
+  // Audit v150×v154 : décaler la sentinelle invisible du socle vide la ferait
+  // grandir jusqu'à devenir un vrai tissu fantôme — indessinable et incliquable.
+  if (piece.blank) return { ok: false, reason: 'Rien à décaler ici — dessinez d’abord une pièce.' };
+  if (!Number.isFinite(distanceM) || Math.abs(distanceM) < 1e-5) {
+    return { ok: false, reason: 'Distance d’offset invalide.' };
+  }
+  const N = piece.outline.length;
+  const W = piece.width;
+  const H = piece.height;
+  // 1 · Espace métrique (y patron vers le bas, comme v).
+  const pts: [number, number][] = piece.outline.map(([u, v]) => [u * W, v * H]);
+  const signedArea = (poly: readonly [number, number][]): number => {
+    let a = 0;
+    for (let i = 0; i < poly.length; i++) {
+      const p = poly[i]!;
+      const q = poly[(i + 1) % poly.length]!;
+      a += p[0] * q[1] - q[0] * p[1];
+    }
+    return a / 2;
+  };
+  const areaBefore = signedArea(pts);
+  if (Math.abs(areaBefore) < 1e-8) return { ok: false, reason: 'Pièce dégénérée.' };
+
+  const offsetBy = (d: number): [number, number][] => {
+    // Normales d'arêtes (perpendiculaire cohérente ; le sens « extérieur » est
+    // vérifié après coup par l'aire — bulletproof quel que soit l'enroulement).
+    const normals: [number, number][] = [];
+    for (let i = 0; i < N; i++) {
+      const a = pts[i]!;
+      const b = pts[(i + 1) % N]!;
+      const ex = b[0] - a[0];
+      const ey = b[1] - a[1];
+      const len = Math.hypot(ex, ey);
+      normals.push(len > 1e-9 ? [ey / len, -ex / len] : [0, 0]);
+    }
+    return pts.map((p, i) => {
+      let np = normals[(i - 1 + N) % N]!;
+      let nn = normals[i]!;
+      if (np[0] === 0 && np[1] === 0) np = nn;
+      if (nn[0] === 0 && nn[1] === 0) nn = np;
+      const denom = 1 + (np[0] * nn[0] + np[1] * nn[1]);
+      // Miter borné : une pointe aiguë est déplacée d'au plus 4×d (léger
+      // arrondi de la distance au lieu d'une aiguille qui explose).
+      const safe = Math.max(denom, 2 / 16);
+      let mx = (np[0] + nn[0]) / safe;
+      let my = (np[1] + nn[1]) / safe;
+      const m = Math.hypot(mx, my);
+      if (m > 4) {
+        mx = (mx / m) * 4;
+        my = (my / m) * 4;
+      }
+      return [p[0] + d * mx, p[1] + d * my];
+    });
+  };
+  // 2 · Une distance positive doit AGRANDIR la pièce, quel que soit le sens
+  //     d'enroulement du contour : on vérifie sur l'aire et on retourne sinon.
+  let next = offsetBy(distanceM);
+  if ((Math.abs(signedArea(next)) - Math.abs(areaBefore)) * distanceM < 0) {
+    next = offsetBy(-distanceM);
+  }
+  // Aucune arête ne doit INVERSER sa direction : un bord qui se retourne a
+  // été avalé par l'offset (l'inversion centrale d'un rectangle garde aire et
+  // simplicité — seul ce critère l'attrape).
+  for (let i = 0; i < N; i++) {
+    const a0 = pts[i]!;
+    const b0 = pts[(i + 1) % N]!;
+    const a1 = next[i]!;
+    const b1 = next[(i + 1) % N]!;
+    const dot = (b0[0] - a0[0]) * (b1[0] - a1[0]) + (b0[1] - a0[1]) * (b1[1] - a1[1]);
+    if (dot <= 0) {
+      return {
+        ok: false,
+        reason:
+          distanceM < 0
+            ? 'La pièce disparaîtrait — offset trop grand vers l’intérieur.'
+            : 'L’offset avale un bord — réduisez la distance.',
+      };
+    }
+  }
+  const areaAfter = signedArea(next);
+  if (
+    Math.abs(areaAfter) < Math.abs(areaBefore) * 0.02 ||
+    areaAfter * areaBefore <= 0
+  ) {
+    return { ok: false, reason: 'La pièce disparaîtrait — offset trop grand vers l’intérieur.' };
+  }
+  const uvCandidate: UV[] = next.map(([x, y]) => [x / W, y / H]);
+  if (isSelfIntersecting(uvCandidate)) {
+    return { ok: false, reason: 'L’offset croise le contour — réduisez la distance.' };
+  }
+
+  // 3 · Cadre : un offset vers l'extérieur peut sortir de [0,1]² — on prend
+  //     une plus grande feuille (largeur centrée, topY remonté), positions
+  //     PHYSIQUES du contour et des pinces préservées.
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const [x, y] of next) {
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y);
+    maxY = Math.max(maxY, y);
+  }
+  const needsFrame = minX < 0 || maxX > W || minY < 0 || maxY > H;
+  if (!needsFrame) {
+    const out: DraftPiece = { ...piece, outline: uvCandidate };
+    return { ok: true, doc: replaceDocPiece(doc, pieceId, out) };
+  }
+  // Le x métrique du doc est x = (u − 0,5)·W : centre du cadre à W/2. On garde
+  // ce centre ; la nouvelle largeur couvre l'excursion la plus large.
+  const halfW = Math.max(W / 2 - minX, maxX - W / 2);
+  const nextW = Math.max(W, (halfW * 2) / 0.98);
+  // La nouvelle hauteur couvre l'ANCIEN cadre entier plus toute excursion —
+  // haut (minY < 0) comme bas (maxY > H) — avec 1 % de marge de chaque côté.
+  const spanY = Math.max(H, maxY) - Math.min(0, minY);
+  const nextH = Math.max(H, spanY / 0.98);
+  // v = (y − yTop)/H avec yTop = 0 dans notre espace local ; remonter le haut
+  // du cadre si le contour est monté au-dessus (minY < 0), en topY réel.
+  const yTopLocal = Math.min(0, minY) - 0.01 * nextH;
+  const remap = ([x, y]: [number, number]): UV => [
+    (x - W / 2) / nextW + 0.5,
+    (y - yTopLocal) / nextH,
+  ];
+  const remapUV = ([u, v]: UV): UV => remap([u * W, v * H]);
+  const out: DraftPiece = {
+    ...piece,
+    outline: next.map(remap),
+    darts: piece.darts.map((d) => ({
+      apex: remapUV(d.apex),
+      legA: remapUV(d.legA),
+      legB: remapUV(d.legB),
+    })),
+    ...remapGraphicAnchor(piece, remapUV),
+    width: nextW,
+    height: nextH,
+    topY: piece.topY - yTopLocal, // yTopLocal ≤ 0 : le cadre monte d'autant
+  };
+  return { ok: true, doc: replaceDocPiece(doc, pieceId, out) };
+}
+
+/* ------------------------------------------------------------------------- *
+ * CRÉATION MIROIR AU TRACÉ — le 1er point du tracé pose un AXE VERTICAL ;
+ * fermer une moitié dessinée produit la pièce symétrique ENTIÈRE : les points
+ * dessinés + leur écho réfléchi en ordre inverse. Le dernier point posé près
+ * de l'axe s'y aimante (pas de micro-cran au raccord) et n'est pas doublé.
+ * ------------------------------------------------------------------------- */
+
+export function mirrorClosedOutline(points: readonly UV[]): UV[] {
+  const pts = points.map((p) => [p[0], p[1]] as UV);
+  if (pts.length < 2) return pts;
+  const axisU = pts[0]![0];
+  const EPS = 0.004;
+  const last = pts[pts.length - 1]!;
+  if (Math.abs(last[0] - axisU) < EPS) last[0] = axisU;
+  const tail = pts.slice(1);
+  const mirrored = tail
+    .filter((p, i) => !(i === tail.length - 1 && p[0] === axisU))
+    .map(([u, v]) => [2 * axisU - u, v] as UV)
+    .reverse();
+  return [...pts, ...mirrored];
+}
+
+/* ------------------------------------------------------------------------- *
+ * ⧢ ÉVASEMENT (l'« Add Dart Fullness » de Clo, le COUPER-PIVOTER du
+ * patronage) — entailler la pièce du point d'ouverture au pivot, faire
+ * tourner un côté autour du pivot : l'ouverture devient de l'AMPLEUR (ourlet
+ * évasé, godet, tête froncée). La pièce reste UNE pièce ; l'entaille
+ * disparaît dans le tissu ajouté. Tout le décor du côté pivoté suit.
+ * ------------------------------------------------------------------------- */
+
+export interface SlashSpreadResult {
+  ok: boolean;
+  doc?: DraftDoc;
+  reason?: string;
+  /** Ouverture réellement obtenue au bord (m). */
+  openedM?: number;
+}
+
+export function slashSpreadFullness(
+  doc: DraftDoc,
+  pieceId: number,
+  pivotCut: ChordCutPoint,
+  openCut: ChordCutPoint,
+  openM: number,
+): SlashSpreadResult {
+  const pieces0 = docPieces(doc);
+  const piece0 = pieces0[pieceId];
+  if (!piece0 || piece0.outline.length < 3) return { ok: false, reason: 'Pièce introuvable.' };
+  if (doc.preset) {
+    return { ok: false, reason: 'Modèle intégré : l’évasement fonctionne sur le t-shirt et les pièces dessinées.' };
+  }
+  if (piece0.blank) return { ok: false, reason: 'Dessinez d’abord une pièce.' };
+  if (piece0.wrap) return { ok: false, reason: 'Cette pièce est enroulée (manche/col) — l’évasement des tubes viendra plus tard.' };
+  if (piece0.placement?.surface) {
+    return { ok: false, reason: 'Détachez d’abord la pièce de son support.' };
+  }
+  if (!Number.isFinite(openM) || openM < 0.005) {
+    return { ok: false, reason: 'Ouverture trop petite — 5 mm minimum.' };
+  }
+  if (piece0.outline.length + 3 > 128) {
+    return { ok: false, reason: 'Contour trop dense pour un évasement de plus (128 sommets max).' };
+  }
+
+  // 1 · Poser le PIVOT puis les DEUX sommets d'ouverture (jumeaux au même
+  //     point — l'arête de longueur nulle entre eux deviendra l'ampleur).
+  const N0 = piece0.outline.length;
+  const uvOfCut = (p: ChordCutPoint): UV => {
+    const e = ((Math.round(p.edge) % N0) + N0) % N0;
+    const t = Math.min(1, Math.max(0, p.t));
+    const a = piece0.outline[e]!;
+    const b = piece0.outline[(e + 1) % N0]!;
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  };
+  const pivotUV = uvOfCut(pivotCut);
+  const openUV = uvOfCut(openCut);
+  const W = piece0.width;
+  const H = piece0.height;
+  const L = Math.hypot((openUV[0] - pivotUV[0]) * W, (openUV[1] - pivotUV[1]) * H);
+  if (L < 0.03) return { ok: false, reason: 'Pivot et ouverture trop proches — 3 cm minimum.' };
+  if (openM > L) {
+    return { ok: false, reason: 'Ouverture trop grande pour cette entaille — rapprochez-vous ou réduisez les cm.' };
+  }
+  // L'entaille doit traverser l'INTÉRIEUR.
+  const midCheck: UV = [(pivotUV[0] + openUV[0]) / 2, (pivotUV[1] + openUV[1]) / 2];
+  if (!pointInPolygon(midCheck, piece0.outline)) {
+    return { ok: false, reason: 'L’entaille doit traverser la pièce de part en part.' };
+  }
+  // Une pince à cheval sur l'entaille tournerait à moitié : refus propre.
+  const sideOf = (pt: UV): number =>
+    Math.sign(
+      ((openUV[0] - pivotUV[0]) * W) * ((pt[1] - pivotUV[1]) * H) -
+        ((openUV[1] - pivotUV[1]) * H) * ((pt[0] - pivotUV[0]) * W),
+    );
+  for (const d of piece0.darts) {
+    const signs = [d.apex, d.legA, d.legB].map(sideOf).filter((x) => x !== 0);
+    if (signs.length && new Set(signs).size > 1) {
+      return { ok: false, reason: 'L’entaille traverse une pince — déplacez-la d’abord.' };
+    }
+  }
+
+  let work = doc;
+  const placeAt = (uv: UV): number | null => {
+    const placed = placeVertexAtUV(work, pieceId, uv);
+    if (!placed) return null;
+    work = placed.work;
+    return placed.vertex;
+  };
+  if (placeAt(pivotUV) === null) return { ok: false, reason: 'Point de pivot introuvable.' };
+  if (placeAt(openUV) === null) return { ok: false, reason: 'Point d’ouverture introuvable.' };
+  let piece = docPieces(work)[pieceId]!;
+  const findNear = (uv: UV): number => {
+    let best = 0;
+    let bestD = Infinity;
+    for (let i = 0; i < piece.outline.length; i++) {
+      const q = piece.outline[i]!;
+      const d = Math.hypot(q[0] - uv[0], q[1] - uv[1]);
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    return best;
+  };
+  let qa = findNear(openUV);
+  // Jumeau Qb juste APRÈS Qa (arête Qa→Qb de longueur nulle), ré-indexé.
+  {
+    const nBefore = piece.outline.length;
+    const qaUV = piece.outline[qa]!;
+    piece = insertOutlineVertex(piece, qa, [qaUV[0], qaUV[1]]);
+    work = replaceDocPiece(work, pieceId, piece);
+    work = {
+      ...work,
+      seams: reindexAssemblySeams(work.seams ?? [], pieceId, 'insert', qa + 1, nBefore),
+      segmentLinks: work.segmentLinks?.length
+        ? reindexAssemblySeams(work.segmentLinks, pieceId, 'insert', qa + 1, nBefore)
+        : work.segmentLinks,
+    };
+  }
+  piece = docPieces(work)[pieceId]!;
+  const N = piece.outline.length;
+  const pIdx = findNear(pivotUV);
+  qa = findNear(openUV); // le premier des jumeaux
+  const qb = (qa + 1) % N;
+
+  // 2 · Rotation MÉTRIQUE du côté B (de Qb au pivot, pivot exclu) autour du
+  //     pivot, de l'angle qui ouvre exactement openM au bord. Le SIGNE est
+  //     choisi par l'aire : l'évasement AGRANDIT toujours la pièce.
+  const theta = 2 * Math.asin(Math.min(1, openM / (2 * L)));
+  const P: [number, number] = [pivotUV[0] * W, pivotUV[1] * H];
+  const rotate = (pt: UV, ang: number): UV => {
+    const x = pt[0] * W - P[0];
+    const y = pt[1] * H - P[1];
+    const c = Math.cos(ang);
+    const sn = Math.sin(ang);
+    return [(x * c - y * sn + P[0]) / W, (x * sn + y * c + P[1]) / H];
+  };
+  // Indices du côté B : de qb (inclus) en avançant jusqu'au pivot (exclu).
+  const bIndices: number[] = [];
+  for (let k = qb; k !== pIdx; k = (k + 1) % N) bIndices.push(k);
+  const signedArea = (poly: readonly UV[]): number => {
+    let a = 0;
+    for (let i = 0; i < poly.length; i++) {
+      const u = poly[i]!;
+      const v = poly[(i + 1) % poly.length]!;
+      a += u[0] * W * (v[1] * H) - v[0] * W * (u[1] * H);
+    }
+    return a / 2;
+  };
+  const build = (ang: number): UV[] =>
+    piece.outline.map((pt, i) => (bIndices.includes(i) ? rotate(pt, ang) : ([pt[0], pt[1]] as UV)));
+  const plus = build(theta);
+  const minus = build(-theta);
+  const outline = Math.abs(signedArea(plus)) >= Math.abs(signedArea(minus)) ? plus : minus;
+  const ang = outline === plus ? theta : -theta;
+  if (isSelfIntersecting(outline)) {
+    return { ok: false, reason: 'Cet évasement croiserait le contour — réduisez l’ouverture.' };
+  }
+
+  // 3 · Le décor du côté B tourne avec lui (pinces, ancre, lignes, crans).
+  // Référence de côté B : le premier sommet de B strictement hors de la
+  // droite d'entaille (un sommet pile dessus rendrait le signe muet).
+  let bRefSign = 0;
+  for (const k of bIndices) {
+    bRefSign = sideOf(piece.outline[k]!);
+    if (bRefSign !== 0) break;
+  }
+  const bSide = (pt: UV): boolean => bRefSign !== 0 && sideOf(pt) === bRefSign;
+  const rotIf = (pt: UV): UV => (bSide(pt) ? rotate(pt, ang) : ([pt[0], pt[1]] as UV));
+  let next: DraftPiece = {
+    ...piece,
+    outline,
+    darts: piece.darts.map((d) => ({ apex: rotIf(d.apex), legA: rotIf(d.legA), legB: rotIf(d.legB) })),
+    ...(piece.graphic ? { graphic: { ...piece.graphic, anchor: rotIf(piece.graphic.anchor) } } : {}),
+    ...(piece.internalLines?.length
+      ? { internalLines: piece.internalLines.map((l) => ({ ...l, points: l.points.map(rotIf) })) }
+      : {}),
+    ...(piece.notches?.length ? { notches: piece.notches.map((nt) => ({ at: rotIf(nt.at) })) } : {}),
+  };
+
+  // 4 · Cadre : la rotation peut sortir de [0,1]² — même croissance que
+  //     l'offset (largeur centrée, topY remonté), tout le décor remappé.
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const [u, v] of next.outline) {
+    minX = Math.min(minX, u * W);
+    maxX = Math.max(maxX, u * W);
+    minY = Math.min(minY, v * H);
+    maxY = Math.max(maxY, v * H);
+  }
+  if (minX < 0 || maxX > W || minY < 0 || maxY > H) {
+    const halfW = Math.max(W / 2 - minX, maxX - W / 2);
+    const nextW = Math.max(W, (halfW * 2) / 0.98);
+    const spanY = Math.max(H, maxY) - Math.min(0, minY);
+    const nextH = Math.max(H, spanY / 0.98);
+    const yTopLocal = Math.min(0, minY) - 0.01 * nextH;
+    const remapUV = ([u, v]: UV): UV => [((u * W - W / 2) / nextW) + 0.5, (v * H - yTopLocal) / nextH];
+    next = {
+      ...next,
+      outline: next.outline.map(remapUV),
+      darts: next.darts.map((d) => ({ apex: remapUV(d.apex), legA: remapUV(d.legA), legB: remapUV(d.legB) })),
+      ...remapGraphicAnchor(next, remapUV),
+      width: nextW,
+      height: nextH,
+      topY: next.topY - yTopLocal,
+    };
+  }
+
+  return { ok: true, doc: replaceDocPiece(work, pieceId, next), openedM: openM };
+}
+
+/* ------------------------------------------------------------------------- *
+ * ⌵ CRANS DE MONTAGE — poser/retirer un cran sur un bord, et générer les
+ * CRANS D'ACCORD d'une couture : les deux côtés reçoivent leurs repères aux
+ * positions APPARIÉES par abscisse de couture (sens de fermeture compris),
+ * comme au patronage réel — le cran de la manche tombe sur celui du corps.
+ * ------------------------------------------------------------------------- */
+
+/** Point UV à la fraction f de la LONGUEUR MÉTRIQUE d'un run du contour. */
+export function runPointAtFraction(piece: DraftPiece, run: EdgeRun, fraction: number): UV {
+  const N = piece.outline.length;
+  const steps = ((run.to - run.from + N) % N) || 1;
+  const f = Math.min(1, Math.max(0, fraction));
+  const total = runLengthM(piece, run);
+  if (total < 1e-9) return [...piece.outline[run.from % N]!] as UV;
+  let target = f * total;
+  for (let k = 0; k < steps; k++) {
+    const a = piece.outline[(run.from + k) % N]!;
+    const b = piece.outline[(run.from + k + 1) % N]!;
+    const len = Math.hypot((b[0] - a[0]) * piece.width, (b[1] - a[1]) * piece.height);
+    if (target <= len || k === steps - 1) {
+      const t = len > 1e-12 ? Math.min(1, target / len) : 0;
+      return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    }
+    target -= len;
+  }
+  return [...piece.outline[run.to % N]!] as UV;
+}
+
+const notchNearM = (piece: DraftPiece, a: UV, b: UV): number =>
+  Math.hypot((a[0] - b[0]) * piece.width, (a[1] - b[1]) * piece.height);
+
+export interface NotchToggleResult {
+  ok: boolean;
+  doc?: DraftDoc;
+  reason?: string;
+  action?: 'added' | 'removed';
+}
+
+/** Poser un cran au point du bord le plus proche du clic — ou RETIRER le cran
+ * existant si le clic tombe dessus (à 6 mm métriques). */
+export function toggleNotchAt(doc: DraftDoc, pieceId: number, uvPt: UV): NotchToggleResult {
+  const piece = docPieces(doc)[pieceId];
+  if (!piece || piece.outline.length < 3) return { ok: false, reason: 'Pièce introuvable.' };
+  if (piece.blank) return { ok: false, reason: 'Dessinez d’abord une pièce.' };
+  const existing = piece.notches ?? [];
+  // Projection sur le bord le plus proche (le cran vit SUR le contour).
+  const N = piece.outline.length;
+  let best: UV | null = null;
+  let bestD = Infinity;
+  for (let e = 0; e < N; e++) {
+    const a = piece.outline[e]!;
+    const b = piece.outline[(e + 1) % N]!;
+    const ex = (b[0] - a[0]) * piece.width;
+    const ey = (b[1] - a[1]) * piece.height;
+    const px = (uvPt[0] - a[0]) * piece.width;
+    const py = (uvPt[1] - a[1]) * piece.height;
+    const len2 = ex * ex + ey * ey || 1e-12;
+    const t = Math.max(0, Math.min(1, (px * ex + py * ey) / len2));
+    const d = Math.hypot(px - t * ex, py - t * ey);
+    if (d < bestD) {
+      bestD = d;
+      best = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    }
+  }
+  if (!best || bestD > 0.03) {
+    return { ok: false, reason: 'Cliquez plus près d’un bord — le cran vit sur le contour.' };
+  }
+  // Bascule sur le point PROJETÉ : re-cliquer le même endroit du bord retire
+  // le cran existant (et l'ajout ne peut jamais créer un doublon à 6 mm).
+  for (let i = 0; i < existing.length; i++) {
+    if (notchNearM(piece, existing[i]!.at, best) < 0.006) {
+      const notches = existing.filter((_, k) => k !== i);
+      const next: DraftPiece = { ...piece };
+      if (notches.length) next.notches = notches;
+      else delete (next as { notches?: PieceNotch[] }).notches;
+      return { ok: true, doc: replaceDocPiece(doc, pieceId, next), action: 'removed' };
+    }
+  }
+  if (existing.length >= NOTCHES_MAX) {
+    return { ok: false, reason: `Plafond atteint : ${NOTCHES_MAX} crans par pièce.` };
+  }
+  const next: DraftPiece = { ...piece, notches: [...existing, { at: best }] };
+  return { ok: true, doc: replaceDocPiece(doc, pieceId, next), action: 'added' };
+}
+
+export interface SeamNotchesResult {
+  ok: boolean;
+  doc?: DraftDoc;
+  reason?: string;
+  added?: number;
+}
+
+/** Crans d'accord d'une couture : chaque côté reçoit ses repères aux MÊMES
+ * abscisses de couture (1 cran à mi-longueur, 2 aux tiers si > 25 cm), le
+ * sens de fermeture respecté (runPairReversed). Idempotent à 6 mm près. */
+export function addSeamNotches(doc: DraftDoc, seamIndex: number): SeamNotchesResult {
+  const seam = (doc.seams ?? [])[seamIndex];
+  if (!seam) return { ok: false, reason: 'Couture introuvable.' };
+  const pidA = pieceIdOf(seam.a);
+  const pidB = pieceIdOf(seam.b);
+  const pieceA = docPieces(doc)[pidA];
+  const pieceB = docPieces(doc)[pidB];
+  if (!pieceA || !pieceB) return { ok: false, reason: 'Pièces de la couture introuvables.' };
+  const lenA = runLengthM(pieceA, seam.a);
+  const lenB = runLengthM(pieceB, seam.b);
+  const longest = Math.max(lenA, lenB);
+  if (longest < 0.03) return { ok: false, reason: 'Couture trop courte pour des crans.' };
+  const fractions = longest < 0.25 ? [0.5] : [1 / 3, 2 / 3];
+  const reversed = runPairReversed(pieceA, pieceB, seam.a, seam.b, doc.gridN);
+  let out = doc;
+  let added = 0;
+  const place = (pid: number, run: EdgeRun, f: number): void => {
+    const cur = docPieces(out)[pid]!;
+    const at = runPointAtFraction(cur, run, f);
+    const existing = cur.notches ?? [];
+    if (existing.some((notch) => notchNearM(cur, notch.at, at) < 0.006)) return;
+    if (existing.length >= NOTCHES_MAX) return;
+    out = replaceDocPiece(out, pid, { ...cur, notches: [...existing, { at }] });
+    added++;
+  };
+  for (const f of fractions) {
+    place(pidA, seam.a, f);
+    place(pidB, seam.b, reversed ? 1 - f : f);
+  }
+  if (!added) return { ok: false, reason: 'Crans déjà en place sur cette couture.' };
+  return { ok: true, doc: out, added };
+}
+
+/* ------------------------------------------------------------------------- *
+ * SCINDER SUR UNE LIGNE INTERNE — la ligne dessinée au ▱ devient le chemin de
+ * découpe : ses extrémités sont PROLONGÉES le long de leurs derniers segments
+ * jusqu'au contour, puis la pièce se scinde le long du tracé entier (courbes
+ * et empiècements en un geste), couture auto-posée sur tout le chemin.
+ * ------------------------------------------------------------------------- */
+
+/** Premier bord du contour touché par le rayon métrique parti de `fromUV` dans
+ * la direction UV donnée (convertie en métrique). null si aucun. */
+function castRayToOutline(
+  piece: DraftPiece,
+  fromUV: UV,
+  dirUV: readonly [number, number],
+): ChordCutPoint | null {
+  const W = piece.width;
+  const H = piece.height;
+  const N = piece.outline.length;
+  const ox = fromUV[0] * W;
+  const oy = fromUV[1] * H;
+  const dx = dirUV[0] * W;
+  const dy = dirUV[1] * H;
+  const dl = Math.hypot(dx, dy);
+  if (dl < 1e-12) return null;
+  let best: { edge: number; t: number; s: number } | null = null;
+  for (let e = 0; e < N; e++) {
+    const a = piece.outline[e]!;
+    const b = piece.outline[(e + 1) % N]!;
+    const ax = a[0] * W;
+    const ay = a[1] * H;
+    const ex = b[0] * W - ax;
+    const ey = b[1] * H - ay;
+    const denom = dx * ey - dy * ex;
+    if (Math.abs(denom) < 1e-12) continue;
+    const t = (dx * (oy - ay) - dy * (ox - ax)) / denom;
+    const sRay = Math.abs(dx) > Math.abs(dy) ? (ax + t * ex - ox) / dx : (ay + t * ey - oy) / dy;
+    if (t < -1e-9 || t > 1 + 1e-9 || sRay < 1e-9) continue;
+    if (!best || sRay < best.s) best = { edge: e, t: Math.min(1, Math.max(0, t)), s: sRay };
+  }
+  return best ? { edge: best.edge, t: best.t } : null;
+}
+
+export function cutPieceAlongInternalLine(
+  doc: DraftDoc,
+  pieceId: number,
+  lineIndex: number,
+): ChordCutResult {
+  const piece = docPieces(doc)[pieceId];
+  if (!piece) return { ok: false, reason: 'Pièce introuvable.' };
+  const line = piece.internalLines?.[lineIndex];
+  if (!line) return { ok: false, reason: 'Ligne interne introuvable.' };
+  if (line.closed) {
+    return { ok: false, reason: 'Un polygone fermé ne scinde pas la pièce — dessinez une ligne OUVERTE qui la traverse.' };
+  }
+  const pts = line.points;
+  if (pts.length < 2) return { ok: false, reason: 'Ligne trop courte pour scinder.' };
+  // Prolonger chaque extrémité le long de SON dernier segment jusqu'au contour.
+  const d0: [number, number] = [pts[0]![0] - pts[1]![0], pts[0]![1] - pts[1]![1]];
+  const dn: [number, number] = [
+    pts[pts.length - 1]![0] - pts[pts.length - 2]![0],
+    pts[pts.length - 1]![1] - pts[pts.length - 2]![1],
+  ];
+  const hitStart = castRayToOutline(piece, pts[0]!, d0);
+  const hitEnd = castRayToOutline(piece, pts[pts.length - 1]!, dn);
+  if (!hitStart || !hitEnd) {
+    return { ok: false, reason: 'La ligne ne rejoint pas le contour — orientez ses extrémités vers les bords.' };
+  }
+  // La ligne devient LA découpe : elle quitte la pièce avant la scission.
+  const remaining = piece.internalLines!.filter((_, i) => i !== lineIndex);
+  const trimmed: DraftPiece = { ...piece };
+  if (remaining.length) trimmed.internalLines = remaining;
+  else delete (trimmed as { internalLines?: InternalLine[] }).internalLines;
+  const work = replaceDocPiece(doc, pieceId, trimmed);
+  return cutPieceAlongChord(work, pieceId, hitStart, hitEnd, pts);
+}
+
+/* ------------------------------------------------------------------------- *
+ * ∿ POINT COURBE (l'« Edit Curve Point » de Clo) — arrondir un SOMMET du
+ * contour : le coin devient un arc de Bézier quadratique (le coin d'origine
+ * en point de contrôle), échantillonné en vrais sommets. Les coutures, bords
+ * ouverts, mariages et poches sont ré-indexés par les primitives éprouvées
+ * (insertOutlineVertex / deleteOutlineVertex + reindexAssemblySeams).
+ * ------------------------------------------------------------------------- */
+
+export const CURVE_POINT_SAMPLES = 6;
+
+export interface RoundCornerResult {
+  ok: boolean;
+  doc?: DraftDoc;
+  reason?: string;
+  /** Rayon effectivement appliqué (borné par les bords adjacents), en m. */
+  radiusM?: number;
+}
+
+export function roundOutlineCorner(
+  doc: DraftDoc,
+  pieceId: number,
+  vertex: number,
+  radiusM: number,
+): RoundCornerResult {
+  if (doc.preset) {
+    return { ok: false, reason: 'Modèle intégré : le point courbe fonctionne sur le t-shirt et les pièces dessinées.' };
+  }
+  const source = docPieces(doc)[pieceId];
+  if (!source || source.outline.length < 3) return { ok: false, reason: 'Pièce introuvable.' };
+  if (source.blank) return { ok: false, reason: 'Dessinez d’abord une pièce.' };
+  const N0 = source.outline.length;
+  if (N0 + CURVE_POINT_SAMPLES - 1 > 128) {
+    return { ok: false, reason: 'Contour trop dense pour un arrondi de plus (128 sommets max).' };
+  }
+  const i = ((Math.round(vertex) % N0) + N0) % N0;
+  const W = source.width;
+  const H = source.height;
+  const M = ([u, v]: UV): [number, number] => [u * W, v * H];
+  const P = M(source.outline[i]!);
+  const A = M(source.outline[(i - 1 + N0) % N0]!);
+  const B = M(source.outline[(i + 1) % N0]!);
+  const lenIn = Math.hypot(P[0] - A[0], P[1] - A[1]);
+  const lenOut = Math.hypot(P[0] - B[0], P[1] - B[1]);
+  if (Math.min(lenIn, lenOut) < 0.008) {
+    return { ok: false, reason: 'Les bords autour de ce sommet sont trop courts pour un arrondi.' };
+  }
+  const r = Math.min(Math.max(radiusM, 0.003), 0.45 * Math.min(lenIn, lenOut));
+  // Arc de Bézier quadratique : départ/arrivée à r du coin sur chaque bord,
+  // le coin d'origine en contrôle. K échantillons, extrémités comprises.
+  const start: [number, number] = [P[0] + ((A[0] - P[0]) * r) / lenIn, P[1] + ((A[1] - P[1]) * r) / lenIn];
+  const end: [number, number] = [P[0] + ((B[0] - P[0]) * r) / lenOut, P[1] + ((B[1] - P[1]) * r) / lenOut];
+  const K = CURVE_POINT_SAMPLES;
+  const arc: UV[] = [];
+  for (let j = 0; j < K; j++) {
+    const t = j / (K - 1);
+    const x = (1 - t) * (1 - t) * start[0] + 2 * (1 - t) * t * P[0] + t * t * end[0];
+    const y = (1 - t) * (1 - t) * start[1] + 2 * (1 - t) * t * P[1] + t * t * end[1];
+    arc.push([x / W, y / H]);
+  }
+  const target = pieceId === 0 ? ('front' as const) : pieceId === 1 ? ('back' as const) : pieceId;
+  let piece = source;
+  let seams = doc.seams ?? [];
+  let links = doc.segmentLinks ?? [];
+  let corner = i;
+  // 1 · Les points d'arc APRÈS le coin (c1..cK-1), insérés en ordre inverse sur
+  //     le bord sortant : chaque insertion à corner+1 laisse le coin en place.
+  for (let j = K - 1; j >= 1; j--) {
+    const nBefore = piece.outline.length;
+    piece = insertOutlineVertex(piece, corner, arc[j]!);
+    seams = reindexAssemblySeams(seams, target, 'insert', corner + 1, nBefore);
+    links = reindexAssemblySeams(links, target, 'insert', corner + 1, nBefore);
+  }
+  // 2 · Le point d'arc AVANT le coin (c0), sur le bord entrant. corner = 0 :
+  //     l'insertion « après le bord N−1 » tombe en fin de contour, le coin
+  //     reste à l'index 0 ; sinon le coin glisse d'un cran.
+  {
+    const nBefore = piece.outline.length;
+    const edge = (corner - 1 + nBefore) % nBefore;
+    piece = insertOutlineVertex(piece, edge, arc[0]!);
+    seams = reindexAssemblySeams(seams, target, 'insert', edge + 1, nBefore);
+    links = reindexAssemblySeams(links, target, 'insert', edge + 1, nBefore);
+    if (corner > 0) corner += 1;
+  }
+  // 3 · Le coin d'origine disparaît : l'arc parle à sa place.
+  {
+    const nBefore = piece.outline.length;
+    piece = deleteOutlineVertex(piece, corner);
+    seams = reindexAssemblySeams(seams, target, 'delete', corner, nBefore - 1);
+    links = reindexAssemblySeams(links, target, 'delete', corner, nBefore - 1);
+  }
+  let out = replaceDocPiece(doc, pieceId, piece);
+  out = { ...out, seams, segmentLinks: links.length ? links : undefined };
+  return { ok: true, doc: out, radiusM: r };
+}
+
+/* ------------------------------------------------------------------------- *
+ * ◆ PINCE LOSANGE (le « Dart » interne de Clo, la fisheye du patronage) — un
+ * losange en plein milieu de pièce, aux deux pointes effilées : LA pince de
+ * cintrage taille/poitrine. Un losange = DEUX pinces triangulaires dos à dos
+ * partageant leurs jambes — exactement ce que le moteur sait déjà découper et
+ * recoudre (compileDraft), donc aucun chemin physique nouveau.
+ * ------------------------------------------------------------------------- */
+
+export interface FisheyeDartResult {
+  ok: boolean;
+  doc?: DraftDoc;
+  reason?: string;
+  /** Largeur totale du losange à la taille, en mètres. */
+  widthM?: number;
+  /** Hauteur (pointe à pointe), en mètres. */
+  heightM?: number;
+}
+
+/** Poser une pince losange : pointes haute et basse + DEMI-largeur métrique.
+ * La taille du losange est PERPENDICULAIRE à l'axe en espace MÉTRIQUE (vraie
+ * sur une pièce non carrée). Refus propres si le losange sort de la pièce. */
+export function addFisheyeDart(
+  doc: DraftDoc,
+  pieceId: number,
+  top: UV,
+  bottom: UV,
+  halfWidthM: number,
+): FisheyeDartResult {
+  if (doc.preset) {
+    return { ok: false, reason: 'Modèle intégré : la pince losange fonctionne sur le t-shirt et les pièces dessinées.' };
+  }
+  const piece = docPieces(doc)[pieceId];
+  if (!piece || piece.outline.length < 3) return { ok: false, reason: 'Pièce introuvable.' };
+  if (piece.blank) return { ok: false, reason: 'Dessinez d’abord une pièce.' };
+  if (piece.darts.length > 14) {
+    return { ok: false, reason: 'Trop de pinces sur cette pièce (16 max — le losange en compte deux).' };
+  }
+  const W = piece.width;
+  const H = piece.height;
+  const M = ([u, v]: UV): [number, number] => [u * W, v * H];
+  const toUV = ([x, y]: [number, number]): UV => [x / W, y / H];
+  const a = M(top);
+  const b = M(bottom);
+  const axis = Math.hypot(b[0] - a[0], b[1] - a[1]);
+  if (axis < 0.02) return { ok: false, reason: 'Losange trop court — écartez les deux pointes (2 cm minimum).' };
+  if (!Number.isFinite(halfWidthM) || halfWidthM < 0.002) {
+    return { ok: false, reason: 'Losange trop étroit — élargissez la taille (4 mm minimum).' };
+  }
+  // Taille au MILIEU de l'axe, perpendiculaire métrique.
+  const mx = (a[0] + b[0]) / 2;
+  const my = (a[1] + b[1]) / 2;
+  const nx = -(b[1] - a[1]) / axis;
+  const ny = (b[0] - a[0]) / axis;
+  const waistL = toUV([mx - nx * halfWidthM, my - ny * halfWidthM]);
+  const waistR = toUV([mx + nx * halfWidthM, my + ny * halfWidthM]);
+  for (const pt of [top, bottom, waistL, waistR]) {
+    if (!pointInPolygon(pt, piece.outline)) {
+      return { ok: false, reason: 'Le losange sort de la pièce — resserrez-le ou déplacez ses pointes.' };
+    }
+  }
+  // Le losange ne doit pas mordre une pince existante (les coutures de deux
+  // coins qui se chevauchent se disputeraient les mêmes cellules).
+  for (const d of piece.darts) {
+    for (const pt of [top, bottom, waistL, waistR]) {
+      if (pointInTriangle(pt, d.apex, d.legA, d.legB)) {
+        return { ok: false, reason: 'Le losange chevauche une pince existante.' };
+      }
+    }
+    for (const pt of [d.apex, d.legA, d.legB]) {
+      if (pointInTriangle(pt, top, waistL, waistR) || pointInTriangle(pt, bottom, waistL, waistR)) {
+        return { ok: false, reason: 'Le losange chevauche une pince existante.' };
+      }
+    }
+  }
+  const next: DraftPiece = {
+    ...piece,
+    darts: [
+      ...piece.darts,
+      { apex: [top[0], top[1]], legA: waistL, legB: waistR },
+      { apex: [bottom[0], bottom[1]], legA: waistL, legB: waistR },
+    ],
+  };
+  return {
+    ok: true,
+    doc: replaceDocPiece(doc, pieceId, next),
+    widthM: 2 * halfWidthM,
+    heightM: axis,
+  };
+}
+
+/* ------------------------------------------------------------------------- *
+ * MANCHE ADAPTÉE À L'EMMANCHURE — mesurer le run d'emmanchure OUVERT du corps
+ * (le même choix de run que sideOpeningCells : le run ouvert le plus à gauche
+ * ou à droite, dans le tiers latéral) en LONGUEUR MÉTRIQUE, puis produire une
+ * manche dont l'arc de tête mesure exactement ce tour — ou ajuster la largeur
+ * d'une pièce dessinée à la main au moment de sa pose sur le bras.
+ * ------------------------------------------------------------------------- */
+
+export interface ArmholeMeasure {
+  /** Longueur métrique du run d'emmanchure (m). */
+  lengthM: number;
+  /** Hauteur monde du point le plus haut du run (naissance de la manche). */
+  topWorldY: number;
+}
+
+/** Mesure l'emmanchure ouverte d'une face du corps, côté demandé. null si la
+ * face ne déclare aucun run ouvert dans le tiers latéral correspondant. */
+export function measureArmhole(piece: DraftPiece, side: 'L' | 'R'): ArmholeMeasure | null {
+  const N = piece.outline.length;
+  if (N < 3) return null;
+  const M = ([u, v]: UV): [number, number] => [u * piece.width, v * piece.height];
+  let best: { lengthM: number; meanU: number; minV: number } | null = null;
+  for (const run of piece.openEdges) {
+    const steps = ((run.to - run.from + N) % N) || 0;
+    if (steps < 1) continue;
+    let len = 0;
+    let sumU = 0;
+    let minV = Infinity;
+    for (let i = 0; i < steps; i++) {
+      const a = piece.outline[(run.from + i) % N]!;
+      const b = piece.outline[(run.from + i + 1) % N]!;
+      const [ax, ay] = M(a);
+      const [bx, by] = M(b);
+      len += Math.hypot(bx - ax, by - ay);
+      sumU += (a[0] + b[0]) / 2;
+      minV = Math.min(minV, a[1], b[1]);
+    }
+    const meanU = sumU / steps;
+    if (len < 1e-4) continue;
+    const pick = side === 'L' ? !best || meanU < best.meanU : !best || meanU > best.meanU;
+    if (pick) best = { lengthM: len, meanU, minV };
+  }
+  if (!best) return null;
+  // Même seuil latéral que sideOpeningCells : un run central (ourlet, encolure)
+  // n'est jamais une emmanchure.
+  if (side === 'L' && best.meanU >= 1 / 3) return null;
+  if (side === 'R' && best.meanU <= 2 / 3) return null;
+  return { lengthM: best.lengthM, topWorldY: piece.topY - best.minV * piece.height };
+}
+
+/** Forme de manche maison (la même famille que le t-shirt paramétrique) :
+ * tête en arc sinus, poignet fuselé. */
+const SLEEVE_CAP_RATIO = 0.14;
+const SLEEVE_CUFF_RATIO = 0.8;
+const SLEEVE_CAP_US = [0.1, 0.28, 0.5, 0.72, 0.9] as const;
+
+const sleeveCapLengthM = (w: number, lengthM: number): number => {
+  const rise = SLEEVE_CAP_RATIO * lengthM;
+  const pts: [number, number][] = [[-0.01 * w, rise]];
+  for (const u of SLEEVE_CAP_US) pts.push([u * w, rise * (1 - Math.sin(Math.PI * u))]);
+  pts.push([1.01 * w, rise]);
+  let len = 0;
+  for (let i = 1; i < pts.length; i++) {
+    len += Math.hypot(pts[i]![0] - pts[i - 1]![0], pts[i]![1] - pts[i - 1]![1]);
+  }
+  return len;
+};
+
+/** La pièce de manche (tube wrap éditable) dont la TÊTE mesure targetCapM. */
+export function fittedSleevePiece(
+  targetCapM: number,
+  lengthM: number,
+  topY: number,
+  wrap: 'armL' | 'armR',
+): DraftPiece {
+  // Résoudre la largeur : l'arc de tête est monotone en w — sécante suffit.
+  let w = Math.max(0.04, targetCapM * 0.92);
+  for (let it = 0; it < 32; it++) {
+    const f = sleeveCapLengthM(w, lengthM) - targetCapM;
+    if (Math.abs(f) < 1e-6) break;
+    const df = (sleeveCapLengthM(w + 1e-4, lengthM) - sleeveCapLengthM(w, lengthM)) / 1e-4;
+    w = Math.max(0.03, w - f / Math.max(df, 1e-6));
+  }
+  const capArc: UV[] = SLEEVE_CAP_US.map((u) => [
+    u,
+    SLEEVE_CAP_RATIO * (1 - Math.sin(Math.PI * u)),
+  ]);
+  const cuffIn = (1.02 * (1 - SLEEVE_CUFF_RATIO)) / 2;
+  return {
+    outline: [
+      [-0.01, SLEEVE_CAP_RATIO],
+      ...capArc,
+      [1.01, SLEEVE_CAP_RATIO],
+      [1.01 - cuffIn, 1.01],
+      [-0.01 + cuffIn, 1.01],
+    ],
+    darts: [],
+    seams: [],
+    openEdges: [],
+    width: w,
+    height: lengthM,
+    topY,
+    gap: 0.18,
+    wrap,
+    placement: { role: wrap, autoAlign: true },
+    name: wrap === 'armR' ? 'Manche droite' : 'Manche gauche',
+  };
+}
+
+export interface FittedSleevesResult {
+  ok: boolean;
+  doc?: DraftDoc;
+  created?: { side: 'L' | 'R'; pieceId: number; capM: number }[];
+  reason?: string;
+}
+
+/** Génère une manche ADAPTÉE pour chaque emmanchure libre (droite puis
+ * gauche) : tête = moyenne des runs devant/dos, naissance à la hauteur réelle
+ * du haut d'emmanchure. Les côtés déjà pourvus d'une manche sont laissés. */
+export function generateFittedSleeves(doc: DraftDoc, lengthM = 0.25): FittedSleevesResult {
+  if (doc.preset) {
+    return { ok: false, reason: 'Modèle intégré : la manche adaptée fonctionne sur le t-shirt et les corps dessinés.' };
+  }
+  if (doc.piece.blank) {
+    return { ok: false, reason: 'Dessinez d’abord un corps — la manche se mesure sur son emmanchure.' };
+  }
+  const existing = new Set((doc.pieces ?? []).map((p) => p.wrap).filter(Boolean));
+  const created: { side: 'L' | 'R'; pieceId: number; capM: number }[] = [];
+  let out = doc;
+  let blockedBySlots = false;
+  for (const side of ['R', 'L'] as const) {
+    const wrap = side === 'R' ? ('armR' as const) : ('armL' as const);
+    if (existing.has(wrap)) continue;
+    const front = measureArmhole(doc.piece, side);
+    const back = doc.back ? measureArmhole(doc.back, side) : null;
+    if (!front && !back) continue;
+    if ((out.pieces?.length ?? 0) >= 14) {
+      blockedBySlots = true;
+      break;
+    }
+    const target = ((front?.lengthM ?? back!.lengthM) + (back?.lengthM ?? front!.lengthM)) / 2;
+    const topWorldY = Math.max(front?.topWorldY ?? -Infinity, back?.topWorldY ?? -Infinity);
+    const len = Math.min(Math.max(lengthM, 0.08), 0.8);
+    const piece = fittedSleevePiece(target, len, topWorldY + 0.01, wrap);
+    out = { ...out, pieces: [...(out.pieces ?? []), piece] };
+    created.push({ side, pieceId: (out.pieces!.length - 1) + 2, capM: target });
+  }
+  if (!created.length) {
+    if (blockedBySlots) return { ok: false, reason: 'Trop de pièces libres pour en créer une nouvelle.' };
+    if (existing.has('armR') && existing.has('armL')) {
+      return { ok: false, reason: 'Les deux manches sont déjà en place — supprimez-en une pour la régénérer à la cote.' };
+    }
+    return { ok: false, reason: 'Aucune emmanchure ouverte mesurable — l’emmanchure est un bord laissé LIBRE (non cousu) sur le côté du corps.' };
+  }
+  return { ok: true, doc: out, created };
+}
+
+/** Ajuste la LARGEUR d'une pièce dessinée à la main pour que sa tête (la
+ * bouche du tube, qui court sur toute la largeur) corresponde à l'emmanchure
+ * mesurée. null si aucune emmanchure ouverte de ce côté. */
+export function fitCapWidthToArmhole(
+  front: DraftPiece,
+  back: DraftPiece | null,
+  side: 'L' | 'R',
+  piece: DraftPiece,
+): { piece: DraftPiece; capM: number } | null {
+  const f = measureArmhole(front, side);
+  const b = back ? measureArmhole(back, side) : null;
+  if (!f && !b) return null;
+  const target = ((f?.lengthM ?? b!.lengthM) + (b?.lengthM ?? f!.lengthM)) / 2;
+  if (!(target > 0.02)) return null;
+  return { piece: { ...piece, width: target }, capM: target };
 }
 
 /* ------------------------------------------------------------------------- *
@@ -2724,10 +4317,25 @@ export function gatherSeamSide(
     // le cas : la transformation est appliquée uniformément à tout le contour.
   }
 
+  // La MÊME transformation de cadre s'applique aux pinces et à l'ancre du
+  // graphique (audit v151 : elles restaient en UV de l'ancien cadre).
+  const frameMap = ([u, v]: UV): UV =>
+    needsWiden
+      ? [
+          0.5 + (u - 0.5) * (pieceG.width / nextW),
+          (v + Math.max(0, -vMin) * 1.02) * (pieceG.height / nextH),
+        ]
+      : [u, v];
   const achieved = lenAt(s) / partnerLen;
   const nextPiece: DraftPiece = {
     ...pieceG,
     outline,
+    darts: pieceG.darts.map((d) => ({
+      apex: frameMap(d.apex),
+      legA: frameMap(d.legA),
+      legB: frameMap(d.legB),
+    })),
+    ...remapGraphicAnchor(pieceG, frameMap),
     width: nextW,
     height: nextH,
     topY: nextTopY,

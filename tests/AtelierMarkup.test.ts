@@ -31,10 +31,16 @@ describe('atelier workspace markup', () => {
       'at-cut',
       'at-gather',
       'gather-chooser',
+      'at-offset',
+      'at-mirror',
+      'offset-chooser',
+      'offset-target-label',
+      'offset-cancel',
       'at-sleeves',
       'at-pen',
       'at-link',
       'at-sew',
+      'at-sew-free',
       'at-zipper',
       'at-place',
       'at-fabric',
@@ -42,15 +48,29 @@ describe('atelier workspace markup', () => {
       'at-gsm-reset',
       'at-gsm-help',
       'at-gsm-explanation',
+      'at-color',
+      'at-color-reset',
+      'at-color-help',
+      'at-graphic-add',
+      'at-graphic-remove',
+      'at-graphic-file',
+      'at-graphic-help',
+      'at-motif',
+      'motif-chooser',
+      'motif-image',
+      'motif-cancel',
       'at-reverse',
       'at-move3d',
       'at-arrange',
       'at-reset3d',
       'at-del',
       'at-undo',
+      'at-reset2d',
       'at-zoom-out',
       'at-zoom-reset',
       'at-zoom-in',
+      'at-particles',
+      'at-particles-help',
       'at-big',
       'at-advanced',
       'at-help',
@@ -61,6 +81,8 @@ describe('atelier workspace markup', () => {
       'atelier-empty-state-title',
       'at-empty-tshirt',
       'at-empty-piece',
+      'at-empty-femme',
+      'at-empty-homme',
     ];
 
     for (const id of requiredIds) expect(countId(id), id).toBe(1);
@@ -76,12 +98,39 @@ describe('atelier workspace markup', () => {
     expect(html).toContain(
       '<option value="__global__">🧵 Tissu global — Jersey</option>',
     );
+    expect(html).toMatch(
+      /<select id="at-particles" aria-label="Distance entre particules du maillage d’essayage"/,
+    );
+    expect(html).toContain('Distance entre particules');
+    const particleValues = [
+      ...html.matchAll(/<select id="at-particles"[^>]*>([\s\S]*?)<\/select>/g),
+    ][0]?.[1] ?? '';
+    expect([...particleValues.matchAll(/<option value="(\d+)"/g)].map((m) => m[1])).toEqual([
+      '32',
+      '64',
+      '128',
+    ]);
+    expect(particleValues).toContain('mm');
     expect(html).not.toMatch(/<option value="">/);
     expect(html).toMatch(/<label class="field-label" for="at-gsm">Grammage \(GSM\)<\/label>/);
     expect(html).toContain('inputmode="decimal"');
     expect(html).toContain('aria-describedby="at-gsm-help at-gsm-explanation"');
     expect(html).toMatch(/<small id="at-gsm-help" role="status" aria-live="polite">/);
     expect(html).toContain('Le GSM ajuste la masse et l’inertie');
+    expect(html).toMatch(/<input id="at-color" type="color"[^>]*aria-label="Couleur de l’empiècement sélectionné"/);
+    expect(html).toContain('Couleur de la pièce');
+    expect(html).toContain('Le tissu décide de la couleur.');
+    expect(html).toContain('Graphique de la pièce');
+    expect(html).toMatch(/<input id="at-graphic-file" type="file" accept="image\/png,image\/jpeg" hidden/);
+    expect(html).toContain('🖼 Poser un graphique');
+    expect(html).toContain('▦ Poser un motif');
+    const motifKinds = [...html.matchAll(/<button data-motif="([^"]+)"/g)].map((m) => m[1]);
+    expect(motifKinds).toEqual(['rayures', 'vichy', 'pois', 'damier']);
+    expect(html).toContain('⇱ Décaler le contour');
+    const offsetValues = [
+      ...html.matchAll(/<button data-offset-cm="([^"]+)"/g),
+    ].map((m) => m[1]);
+    expect(offsetValues).toEqual(['-1', '-0.5', '0.5', '1', '2']);
     expect(html).toMatch(
       /<input id="at-avatar-stature" type="range" min="140" max="210" step="1"/,
     );
@@ -135,6 +184,9 @@ describe('atelier workspace markup', () => {
     expect(html).toContain(
       '<button id="at-empty-piece" type="button">✎ Tracer une pièce</button>',
     );
+    expect(html).toContain('Votre mannequin');
+    expect(html).toMatch(/<button id="at-empty-femme"[^>]+aria-pressed="true"/);
+    expect(html).toMatch(/<button id="at-empty-homme"[^>]+aria-pressed="false"/);
     expect(html).toContain('aria-label="Premier T-shirt en six étapes"');
     expect(html).toContain(
       'tracez votre première pièce dans le plan 2D, puis choisissez son placement sur le mannequin',
@@ -185,6 +237,61 @@ describe('atelier workspace markup', () => {
     );
   });
 
+  it('exposes the ✎3D draw-on-fabric button (v168) with its cheat-sheet entry', () => {
+    expect(html).toMatch(/<button id="at-draw3d"[^>]*title="[^"]*SUR LE TISSU[^"]*"/);
+    expect(html).toContain('<dt>✎ Dessiner sur tissu</dt>');
+  });
+
+  it('exposes the ⧢ fullness tool (v167) with chooser and cheat-sheet entry', () => {
+    expect(html).toMatch(/<button id="at-fullness"[^>]*title="[^"]*couper-pivoter[^"]*"/);
+    expect(html).toContain('<div id="fullness-chooser" hidden>');
+    const cms = [...html.matchAll(/<button data-open-cm="([^"]+)"/g)].map((m) => m[1]);
+    expect(cms).toEqual(['2', '4', '6', '8', '12']);
+    expect(html).toContain('<dt>⧢ Évasement</dt>');
+  });
+
+  it('exposes the ⌵ notch tool (v166) with its cheat-sheet entry', () => {
+    expect(html).toMatch(/<button id="at-notch"[^>]*title="[^"]*CRANS de montage[^"]*"/);
+    expect(html).toContain('<dt>⌵ Crans</dt>');
+  });
+
+  it('documents splitting along an internal line (v165) in the cheat-sheet', () => {
+    expect(html).toMatch(/<dt>▱ Ligne interne<\/dt><dd>[^<]*SCINDE la pièce le long de son tracé/);
+  });
+
+  it('exposes the ∿ curve-point tool (v164) with its cheat-sheet entry', () => {
+    expect(html).toMatch(/<button id="at-curvepoint"[^>]*title="[^"]*POINT COURBE[^"]*"/);
+    expect(html).toContain('<dt>∿ Point courbe</dt>');
+  });
+
+  it('exposes the ◆ fisheye-dart tool (v163) with its cheat-sheet entry', () => {
+    expect(html).toMatch(/<button id="at-dart"[^>]*title="[^"]*LOSANGE[^"]*"/);
+    expect(html).toContain('<dt>◆ Pince losange</dt>');
+  });
+
+  it('exposes the ▱ internal-line tool (v162) with its cheat-sheet entry', () => {
+    expect(html).toMatch(/<button id="at-internal"[^>]*title="[^"]*LIGNES INTERNES[^"]*"/);
+    expect(html).toContain('<dt>▱ Ligne interne</dt>');
+  });
+
+  it('exposes the ⋈ mirror-draw toggle (v161) with its cheat-sheet entry', () => {
+    expect(html).toMatch(/<button id="at-mirror-draw"[^>]*aria-pressed="false"[^>]*title="[^"]*axe vertical[^"]*"/);
+    expect(html).toContain('<dt>⋈ Miroir au tracé</dt>');
+  });
+
+  it('exposes the ⌒ fitted-sleeve button (v160) with its cheat-sheet entry', () => {
+    expect(html).toMatch(/<button id="at-sleeve-fit"[^>]*title="[^"]*emmanchure[^"]*"/);
+    expect(html).toContain('<dt>⌒ Manche adaptée</dt>');
+  });
+
+  it('documents the ✥ XYZ triad (v158) in tooltip and cheat-sheet', () => {
+    expect(html).toMatch(
+      /<button id="at-move3d"[^>]*title="[^"]*trièdre X·Y·Z[^"]*"/,
+    );
+    expect(html).toContain('<dt>Clic 3D = trièdre X·Y·Z</dt>');
+    expect(html).toContain('centimètres en direct');
+  });
+
   it('preserves every supported placement destination', () => {
     const destinations = [
       ...html.matchAll(/<button data-place="([^"]+)"/g),
@@ -201,6 +308,7 @@ describe('atelier workspace markup', () => {
       'legR',
       'legL',
       'pocket',
+      'under',
       'free',
     ]);
   });

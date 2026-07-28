@@ -93,7 +93,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   ) {
     raw_normal = -raw_normal;
   }
-  let normal = normalize(raw_normal);
+  // weights.w : 0 = inactif, 1 = par-dessus, 2 = par-dessous (doublure) — la
+  // même contrainte unilatérale, orientée vers l'intérieur du support.
+  let side = select(1.0, -1.0, contact.weights.w > 1.5);
+  let normal = normalize(raw_normal) * side;
 
   let support_point =
     p0 * contact.weights.x +

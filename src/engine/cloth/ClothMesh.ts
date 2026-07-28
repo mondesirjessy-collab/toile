@@ -1002,7 +1002,10 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
   // change can't break the topology unnoticed. O(n²) 4-neighbour flood fill.
   const expectedIslands = shape === 'setin' ? 3 : 1;
   const islandCount = countMaskIslands(kept, n);
-  if (islandCount !== expectedIslands) {
+  // Un SOCLE VIDE (contour sentinelle « blank ») rasterise 0 cellule par
+  // construction — ce n'est pas un patron déconnecté, ne pas alerter.
+  const blankMask = islandCount === 0 && kept.every((keep) => !keep);
+  if (!blankMask && islandCount !== expectedIslands) {
     console.warn(
       `ClothMesh: patron déconnecté — ${islandCount} îlot(s), attendu ${expectedIslands} (shape=${shape ?? 'rect'})`,
     );
@@ -1682,6 +1685,8 @@ export interface SurfaceContact extends CrossSeam {
   weightB: number;
   /** Apply one-sided projection; false entries still define contact masks. */
   active?: boolean;
+  /** +1 = overlay par-dessus le support (défaut), -1 = par-dessous (doublure). */
+  side?: 1 | -1;
 }
 
 export function combineClothMeshes(
@@ -1791,6 +1796,7 @@ export function combineClothMeshes(
         weightA: view.getFloat32(base + 20, true),
         weightB: view.getFloat32(base + 24, true),
         active: view.getFloat32(base + 28, true) > 0.5,
+        ...(view.getFloat32(base + 28, true) > 1.5 ? { side: -1 as const } : {}),
       });
     }
     return decoded;
@@ -1818,7 +1824,13 @@ export function combineClothMeshes(
       view.setFloat32(base + 24, contact.weightB, true);
       // Explicit false is a stitched/interior mask-only entry. Undefined stays
       // active for backwards-compatible programmatic SurfaceContact callers.
-      view.setFloat32(base + 28, contact.active === false ? 0 : 1, true);
+      // Le canal porte AUSSI le côté : 1 = par-dessus, 2 = par-dessous (le
+      // shader lit w > 1.5 → contrainte vers l'intérieur du support).
+      view.setFloat32(
+        base + 28,
+        contact.active === false ? 0 : contact.side === -1 ? 2 : 1,
+        true,
+      );
     }
   }
   // Cross-seamed particles (and one row inward on each side) are exempt from

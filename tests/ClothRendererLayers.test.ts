@@ -3,6 +3,7 @@ import {
   countVisualLayers,
   partitionClothTriangles,
   ribbonVisualOffset,
+  packVisualMaterial,
 } from '../src/app/ClothRenderer';
 
 describe('countVisualLayers', () => {
@@ -160,5 +161,29 @@ describe('partitionClothTriangles', () => {
       1, 1, 0,
       1, 0, 0,
     ]);
+  });
+});
+
+describe('packVisualMaterial (couleur d’empiècement dans le mot visuel)', () => {
+  it('sans couleur : le mot est l’id nu (0-7), inchangé', () => {
+    expect(packVisualMaterial(0)).toBe(0);
+    expect(packVisualMaterial(4)).toBe(4);
+    expect(packVisualMaterial(7, undefined)).toBe(7);
+    expect(packVisualMaterial(3, 'pas-un-hex')).toBe(3);
+  });
+
+  it('avec couleur : id dans l’octet bas, RGB dans les 24 bits hauts, toujours positif', () => {
+    const word = packVisualMaterial(4, '#c2543a');
+    expect(word & 0xff).toBe(4);
+    expect(word >>> 8).toBe(0xc2543a);
+    expect(word).toBeGreaterThan(0);
+    // Le pire cas (blanc sur id 255) reste un u32 positif.
+    expect(packVisualMaterial(255, '#ffffff')).toBe(((0xffffff << 8) | 0xff) >>> 0);
+  });
+
+  it('le noir pur reste encodable (poussé à 0x010101, jamais 0)', () => {
+    const word = packVisualMaterial(2, '#000000');
+    expect(word & 0xff).toBe(2);
+    expect(word >>> 8).toBe(0x010101);
   });
 });

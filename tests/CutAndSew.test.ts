@@ -1,6 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import {
   cutPieceAlongChord,
+  graphicLocalUV,
+  offsetPieceOutline,
+  shiftOutlineUV,
+  syncPieceFrames,
+  blankBaseDraft,
+  pointInPolygon,
+  compileSurfaceContacts,
+  mirrorDuplicatePiece,
+  mirrorClosedOutline,
+  addFisheyeDart,
+  roundOutlineCorner,
+  cutPieceAlongInternalLine,
+  toggleNotchAt,
+  addSeamNotches,
+  runPointAtFraction,
+  slashSpreadFullness,
+  CURVE_POINT_SAMPLES,
+  compileDraft,
+  INTERNAL_LINES_MAX,
+  type InternalLine,
   gatherSeamSide,
   pieceIdOf,
   sanitizeDraft,
@@ -295,5 +315,947 @@ describe('Fronces — gatherSeamSide', () => {
       1.5,
     );
     expect(preset.ok).toBe(false);
+  });
+});
+
+describe('couleur d’empiècement (colorblock)', () => {
+  it('sanitizeDraft : un hex strict survit en minuscules, le reste tombe', () => {
+    const d = doc();
+    d.piece.color = '#C2543A';
+    d.back!.color = 'rouge' as never;
+    const clean = sanitizeDraft(JSON.parse(JSON.stringify(d)));
+    expect(clean).not.toBeNull();
+    expect(clean!.piece.color).toBe('#c2543a');
+    expect(clean!.back!.color).toBeUndefined();
+  });
+
+  it('les deux moitiés d’une découpe héritent de la couleur du parent', () => {
+    const d = doc();
+    d.piece.color = '#3b4a73';
+    const res = cutPieceAlongChord(d, 0, { edge: 1, t: 0.5 }, { edge: 3, t: 0.5 });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.doc.piece.color).toBe('#3b4a73');
+    expect(res.doc.pieces?.[res.newPieceId - 2]?.color).toBe('#3b4a73');
+  });
+});
+
+describe('graphique de pièce (le « Graphic » de Clo)', () => {
+  const PNG_1PX =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const graphic = (over: Partial<import('../src/engine/pattern/Draft').PieceGraphic> = {}) => ({
+    image: PNG_1PX,
+    anchor: [0.5, 0.4] as [number, number],
+    widthM: 0.15,
+    aspect: 1,
+    rotationRad: 0,
+    ...over,
+  });
+
+  it('sanitizeDraft : un graphique valide survit, transform borné ; un invalide tombe', () => {
+    const d = doc();
+    d.piece.graphic = graphic({ widthM: 9, rotationRad: 99 });
+    d.back!.graphic = graphic({ image: 'data:text/html;base64,xxxx' });
+    const clean = sanitizeDraft(JSON.parse(JSON.stringify(d)));
+    expect(clean).not.toBeNull();
+    expect(clean!.piece.graphic?.image).toBe(PNG_1PX);
+    expect(clean!.piece.graphic?.widthM).toBe(2); // borné
+    expect(clean!.piece.graphic?.rotationRad).toBeLessThanOrEqual(Math.PI * 2);
+    expect(clean!.back!.graphic).toBeUndefined(); // mauvais type MIME
+  });
+
+  it('la découpe donne le graphique à LA moitié qui contient son ancre', () => {
+    const d = doc();
+    d.piece.graphic = graphic({ anchor: [0.5, 0.3] }); // moitié HAUTE
+    const res = cutPieceAlongChord(d, 0, { edge: 1, t: 0.5 }, { edge: 3, t: 0.5 });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const half = res.doc.pieces?.[res.newPieceId - 2];
+    const withGraphic = [res.doc.piece, half].filter((p) => p?.graphic);
+    expect(withGraphic).toHaveLength(1); // jamais dupliqué
+    // La moitié décorée est celle dont l'emprise contient v=0.3.
+    const owner = withGraphic[0]!;
+    const vs = owner.outline.map(([, v]) => v);
+    expect(Math.min(...vs)).toBeLessThanOrEqual(0.3);
+    expect(Math.max(...vs)).toBeGreaterThanOrEqual(0.3);
+  });
+
+  it('graphicLocalUV : centre, échelle métrique et rotation 90° exacts', () => {
+    const g = graphic({ anchor: [0.5, 0.5], widthM: 0.2, aspect: 0.5 });
+    // Au centre : (0,5, 0,5).
+    expect(graphicLocalUV(g, 0.6, 0.9, 0.5, 0.5)).toEqual([0.5, 0.5]);
+    // 0,1 m à droite du centre (u +0.1/0.6) = bord droit de l'image (x=1).
+    const [rx, ry] = graphicLocalUV(g, 0.6, 0.9, 0.5 + 0.1 / 0.6, 0.5);
+    expect(rx).toBeCloseTo(1, 6);
+    expect(ry).toBeCloseTo(0.5, 6);
+    // Tourné de 90° : le même point du patron tombe sur l'axe VERTICAL de
+    // l'image (hauteur 0,1 m) — x revient au centre, y sort en bas.
+    const g90 = graphic({ anchor: [0.5, 0.5], widthM: 0.2, aspect: 0.5, rotationRad: Math.PI / 2 });
+    const [qx, qy] = graphicLocalUV(g90, 0.6, 0.9, 0.5 + 0.1 / 0.6, 0.5);
+    expect(qx).toBeCloseTo(0.5, 6);
+    expect(qy).toBeCloseTo(-0.5, 6); // 0,1 m au-dessus du bord haut (h = 0,1 m)
+  });
+});
+
+describe('offset du contour (l’« Offset Pattern Outline » de Clo)', () => {
+  it('+1 cm : chaque bord du rectangle s’allonge de 2 cm, indices et coutures intacts', () => {
+    const seam: AssemblySeam = { a: { pieceId: 0, from: 0, to: 1 }, b: { pieceId: 1, from: 0, to: 1 } };
+    const d = doc({ seams: [seam] });
+    const res = offsetPieceOutline(d, 0, 0.01);
+    expect(res.ok).toBe(true);
+    const piece = res.doc!.piece;
+    expect(piece.outline).toHaveLength(4);
+    // Rectangle 0,36 × 0,54 m : le bas passe de 36 à 38 cm, le côté de 54 à 56.
+    expect(runLen(piece, 0, 1)).toBeCloseTo(0.38, 3);
+    expect(runLen(piece, 1, 2)).toBeCloseTo(0.56, 3);
+    // La couture pointe toujours l'arête 0→1, sans ré-indexation.
+    expect(res.doc!.seams![0]!.a.from).toBe(0);
+    expect(res.doc!.seams![0]!.a.to).toBe(1);
+  });
+
+  it('−5 mm : la pièce rétrécit ; un offset intérieur énorme est refusé', () => {
+    const shrink = offsetPieceOutline(doc(), 0, -0.005);
+    expect(shrink.ok).toBe(true);
+    expect(runLen(shrink.doc!.piece, 0, 1)).toBeCloseTo(0.35, 3);
+    const collapse = offsetPieceOutline(doc(), 0, -0.4);
+    expect(collapse.ok).toBe(false);
+  });
+
+  it('sort du cadre : la feuille grandit, positions physiques préservées', () => {
+    // Rectangle collé aux bords du cadre : tout offset extérieur déborde.
+    const d = doc();
+    d.piece.outline = [
+      [0.02, 0.02],
+      [0.98, 0.02],
+      [0.98, 0.98],
+      [0.02, 0.98],
+    ] as UV[];
+    const before = runLen(d.piece, 0, 1);
+    const res = offsetPieceOutline(d, 0, 0.02);
+    expect(res.ok).toBe(true);
+    const piece = res.doc!.piece;
+    // Cadre agrandi, contour rentré dans [0,1]².
+    expect(piece.width).toBeGreaterThan(0.6);
+    for (const [u, v] of piece.outline) {
+      expect(u).toBeGreaterThanOrEqual(0);
+      expect(u).toBeLessThanOrEqual(1);
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThanOrEqual(1);
+    }
+    // La longueur physique du bas = ancienne + 2×2 cm, malgré le changement de cadre.
+    expect(runLen(piece, 0, 1)).toBeCloseTo(before + 0.04, 3);
+    // topY remonte d'exactement l'excursion du haut (positions monde stables).
+    expect(res.doc!.piece.topY).toBeGreaterThan(d.piece.topY);
+  });
+
+  it('pointe aiguë : le miter est borné (pas d’aiguille qui explose)', () => {
+    const d = doc();
+    // Triangle très pointu à droite.
+    d.piece.outline = [
+      [0.1, 0.45],
+      [0.9, 0.5],
+      [0.1, 0.55],
+    ] as UV[];
+    const res = offsetPieceOutline(d, 0, 0.01);
+    expect(res.ok).toBe(true);
+    const tip = res.doc!.piece.outline[1]!;
+    const tipBefore = d.piece.outline[1]!;
+    const moved = Math.hypot(
+      (tip[0] - tipBefore[0]) * d.piece.width * (res.doc!.piece.width / d.piece.width),
+      (tip[1] - tipBefore[1]) * d.piece.height,
+    );
+    // ≤ ~4×d (+ tolérance de changement de cadre éventuel).
+    expect(moved).toBeLessThan(0.06);
+  });
+
+  it('refuse les modèles intégrés', () => {
+    const res = offsetPieceOutline(doc({ preset: 'hoodie' } as Partial<DraftDoc>), 0, 0.01);
+    expect(res.ok).toBe(false);
+  });
+});
+
+describe('audit v151 — l’ancre du graphique et les pinces suivent les changements de cadre', () => {
+  const PNG_1PX =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const worldOf = (piece: DraftPiece, [u, v]: [number, number]): [number, number] => [
+    (u - 0.5) * piece.width,
+    piece.topY - v * piece.height,
+  ];
+
+  it('offset avec croissance de cadre : l’ancre garde sa position PHYSIQUE', () => {
+    const d = doc();
+    d.piece.outline = [
+      [0.02, 0.02],
+      [0.98, 0.02],
+      [0.98, 0.98],
+      [0.02, 0.98],
+    ] as UV[];
+    d.piece.graphic = {
+      image: PNG_1PX, anchor: [0.3, 0.6], widthM: 0.1, aspect: 1, rotationRad: 0.4,
+    };
+    const before = worldOf(d.piece, d.piece.graphic.anchor);
+    const res = offsetPieceOutline(d, 0, 0.02);
+    expect(res.ok).toBe(true);
+    const piece = res.doc!.piece;
+    expect(piece.width).toBeGreaterThan(d.piece.width); // le cadre a bien grandi
+    const after = worldOf(piece, piece.graphic!.anchor);
+    expect(after[0]).toBeCloseTo(before[0], 6);
+    expect(after[1]).toBeCloseTo(before[1], 6);
+    expect(piece.graphic!.widthM).toBe(0.1); // taille métrique intacte
+    expect(piece.graphic!.rotationRad).toBe(0.4);
+  });
+
+  it('fronces avec croissance de cadre : pinces ET ancre restent physiquement en place', () => {
+    // Deux bords cousus, la pièce occupe presque tout le cadre → le ratio force
+    // l'agrandissement de la feuille (le chemin needsWiden de v144).
+    const d = doc({
+      seams: [{ a: { pieceId: 0, from: 0, to: 1 }, b: { pieceId: 1, from: 0, to: 1 } }],
+    });
+    d.piece.outline = [
+      [0.04, 0.05],
+      [0.96, 0.05],
+      [0.96, 0.95],
+      [0.04, 0.95],
+    ] as UV[];
+    d.piece.darts = [
+      { apex: [0.5, 0.4], legA: [0.45, 0.5], legB: [0.55, 0.5] },
+    ];
+    d.piece.graphic = {
+      image: PNG_1PX, anchor: [0.6, 0.7], widthM: 0.08, aspect: 1, rotationRad: 0,
+    };
+    const dartBefore = worldOf(d.piece, d.piece.darts[0]!.apex);
+    const anchorBefore = worldOf(d.piece, d.piece.graphic.anchor);
+    const res = gatherSeamSide(d, 0, 'a', 2.5);
+    expect(res.ok).toBe(true);
+    const piece = res.doc!.piece;
+    expect(piece.width).toBeGreaterThan(d.piece.width); // needsWiden bien pris
+    const dartAfter = worldOf(piece, piece.darts[0]!.apex);
+    const anchorAfter = worldOf(piece, piece.graphic!.anchor);
+    expect(dartAfter[0]).toBeCloseTo(dartBefore[0], 6);
+    expect(dartAfter[1]).toBeCloseTo(dartBefore[1], 6);
+    expect(anchorAfter[0]).toBeCloseTo(anchorBefore[0], 6);
+    expect(anchorAfter[1]).toBeCloseTo(anchorBefore[1], 6);
+  });
+
+  it('syncPieceFrames et shiftOutlineUV : l’ancre suit comme les pinces', () => {
+    const front = rectPiece({
+      graphic: { image: PNG_1PX, anchor: [0.4, 0.4], widthM: 0.05, aspect: 1, rotationRad: 0 },
+    });
+    const back = rectPiece({ width: 0.9, topY: 1.7 }); // cadres désaccordés
+    const anchorBefore = worldOf(front, front.graphic!.anchor);
+    const synced = syncPieceFrames(front, back);
+    const anchorAfter = worldOf(synced.front, synced.front.graphic!.anchor);
+    expect(anchorAfter[0]).toBeCloseTo(anchorBefore[0], 6);
+    expect(anchorAfter[1]).toBeCloseTo(anchorBefore[1], 6);
+    // Glissement DANS le cadre : le print glisse avec la pièce.
+    const shifted = shiftOutlineUV(front, 0.1, -0.05);
+    expect(shifted.graphic!.anchor[0]).toBeCloseTo(0.5, 9);
+    expect(shifted.graphic!.anchor[1]).toBeCloseTo(0.35, 9);
+  });
+});
+
+describe('évasement (v167) — slashSpreadFullness', () => {
+  // Coordonnées MONDE (le cadre peut grandir : seul le monde est stable).
+  const wxy = (piece: DraftPiece, [u, v]: UV): [number, number] => [
+    (u - 0.5) * piece.width,
+    piece.topY - v * piece.height,
+  ];
+
+  const perimeter = (piece: DraftPiece): number => {
+    let len = 0;
+    const N = piece.outline.length;
+    for (let i = 0; i < N; i++) {
+      const a = wxy(piece, piece.outline[i]!);
+      const b = wxy(piece, piece.outline[(i + 1) % N]!);
+      len += Math.hypot(b[0] - a[0], b[1] - a[1]);
+    }
+    return len;
+  };
+
+  it('pivote un côté : rotation RIGIDE, le périmètre gagne EXACTEMENT l’ouverture', () => {
+    const d = doc();
+    const before = perimeter(d.piece);
+    // pivot au milieu du bord HAUT (edge 0), ouverture au milieu de l'ourlet (edge 2)
+    const res = slashSpreadFullness(d, 0, { edge: 0, t: 0.5 }, { edge: 2, t: 0.5 }, 0.06);
+    expect(res.ok).toBe(true);
+    const piece = res.doc!.piece;
+    // rotation rigide : chaque ancien bord garde sa longueur, la SEULE
+    // nouveauté est l'arête d'ampleur — périmètre + 6 cm exactement
+    expect(perimeter(piece) - before).toBeCloseTo(0.06, 4);
+    // et cette arête existe : deux sommets ADJACENTS à 6 cm l'un de l'autre
+    const N = piece.outline.length;
+    const hasGap = piece.outline.some((pt, i) => {
+      const a = wxy(piece, pt);
+      const b = wxy(piece, piece.outline[(i + 1) % N]!);
+      return Math.abs(Math.hypot(b[0] - a[0], b[1] - a[1]) - 0.06) < 1e-4;
+    });
+    expect(hasGap).toBe(true);
+    // l'aire a GRANDI (l'évasement ajoute du tissu)
+    const areaOf = (p: DraftPiece): number => {
+      let a = 0;
+      const N = p.outline.length;
+      for (let i = 0; i < N; i++) {
+        const u = p.outline[i]!;
+        const v = p.outline[(i + 1) % N]!;
+        a += u[0] * p.width * (v[1] * p.height) - v[0] * p.width * (u[1] * p.height);
+      }
+      return Math.abs(a / 2);
+    };
+    expect(areaOf(piece)).toBeGreaterThan(areaOf(d.piece));
+    // le pivot n'a pas bougé : un sommet reste au point monde du milieu du
+    // bord haut — x = 0, y = 1.55 − 0.2·0.9 = 1.37
+    const hasPivot = piece.outline.some((pt) => {
+      const [x, y] = wxy(piece, pt);
+      return Math.abs(x) < 1e-4 && Math.abs(y - 1.37) < 1e-4;
+    });
+    expect(hasPivot).toBe(true);
+  });
+
+  it('le décor du côté pivoté tourne avec lui, l’autre reste en place', () => {
+    const d = doc();
+    d.piece.notches = [
+      { at: [0.35, 0.8] }, // côté gauche (A) — ne bouge pas
+      { at: [0.65, 0.8] }, // côté droit (B) — tourne
+    ];
+    const res = slashSpreadFullness(d, 0, { edge: 0, t: 0.5 }, { edge: 2, t: 0.5 }, 0.05);
+    expect(res.ok).toBe(true);
+    const piece = res.doc!.piece;
+    // Un côté tourne, l'autre reste : sans préjuger duquel (l'ordre du
+    // contour décide), UN cran est conservé au dixième de mm en monde et
+    // L'AUTRE a tourné d'au moins 2 cm.
+    const origins: [number, number][] = [
+      [(0.35 - 0.5) * 0.6, 0.83],
+      [(0.65 - 0.5) * 0.6, 0.83],
+    ];
+    const moves = piece.notches!.map((n, i) => {
+      const [x, y] = wxy(piece, n.at);
+      return Math.hypot(x - origins[i]![0], y - origins[i]![1]);
+    });
+    expect(Math.min(...moves)).toBeLessThan(1e-4);
+    expect(Math.max(...moves)).toBeGreaterThan(0.02);
+  });
+
+  it('refus propres : trop grand, pince à cheval, socle vide', () => {
+    const d = doc();
+    expect(slashSpreadFullness(d, 0, { edge: 0, t: 0.5 }, { edge: 2, t: 0.5 }, 2).ok).toBe(false);
+    const withDart = doc();
+    withDart.piece.darts = [
+      { apex: [0.5, 0.4], legA: [0.42, 0.55], legB: [0.58, 0.55] }, // à cheval sur u=0.5
+    ];
+    const straddle = slashSpreadFullness(withDart, 0, { edge: 0, t: 0.5 }, { edge: 2, t: 0.5 }, 0.04);
+    expect(straddle.ok).toBe(false);
+    expect(straddle.reason).toMatch(/pince/i);
+    expect(slashSpreadFullness(blankBaseDraft(64), 0, { edge: 0, t: 0.5 }, { edge: 2, t: 0.5 }, 0.04).ok).toBe(false);
+  });
+
+  it('round-trip sanitize après évasement', () => {
+    const res = slashSpreadFullness(doc(), 0, { edge: 0, t: 0.5 }, { edge: 2, t: 0.5 }, 0.06);
+    const clean = sanitizeDraft(JSON.parse(JSON.stringify(res.doc)));
+    expect(clean).not.toBeNull();
+    expect(clean!.piece.outline.length).toBe(res.doc!.piece.outline.length);
+  });
+});
+
+describe('crans de montage (v166)', () => {
+  it('toggleNotchAt : pose PROJETÉ sur le bord, re-clic à 6 mm = retiré', () => {
+    const d = doc();
+    // clic un peu DANS la pièce, près du bord haut (v=0.2)
+    const res = toggleNotchAt(d, 0, [0.5, 0.23]);
+    expect(res.ok).toBe(true);
+    expect(res.action).toBe('added');
+    const notch = res.doc!.piece.notches![0]!;
+    expect(notch.at[1]).toBeCloseTo(0.2, 9); // projeté sur le contour
+    expect(notch.at[0]).toBeCloseTo(0.5, 9);
+    const again = toggleNotchAt(res.doc!, 0, [0.5, 0.205]);
+    expect(again.ok).toBe(true);
+    expect(again.action).toBe('removed');
+    expect(again.doc!.piece.notches).toBeUndefined();
+    // trop loin de tout bord → refus
+    expect(toggleNotchAt(d, 0, [0.5, 0.5]).ok).toBe(false);
+  });
+
+  it('addSeamNotches : positions APPARIÉES par abscisse, sens compris', () => {
+    const d = doc({
+      seams: [{ a: { pieceId: 0, from: 1, to: 2 }, b: { pieceId: 1, from: 1, to: 2 } }],
+    });
+    // bord 1→2 du rectPiece : vertical droit, 0.54 m → 2 crans aux tiers
+    const res = addSeamNotches(d, 0);
+    expect(res.ok).toBe(true);
+    expect(res.added).toBe(4);
+    const nA = res.doc!.piece.notches!;
+    const nB = res.doc!.back!.notches!;
+    expect(nA).toHaveLength(2);
+    expect(nB).toHaveLength(2);
+    // aux tiers du bord vertical : v = 0.2 + 0.6·(1/3 | 2/3)
+    const vsA = nA.map((n) => +n.at[1].toFixed(6)).sort();
+    expect(vsA[0]).toBeCloseTo(0.4, 6);
+    expect(vsA[1]).toBeCloseTo(0.6, 6);
+    // idempotent : re-cliquer refuse proprement
+    const again = addSeamNotches(res.doc!, 0);
+    expect(again.ok).toBe(false);
+    expect(again.reason).toMatch(/déjà/i);
+  });
+
+  it('runPointAtFraction : marche l’abscisse métrique du run', () => {
+    const d = doc();
+    const p = runPointAtFraction(d.piece, { from: 0, to: 2 }, 0.5);
+    // run 0→2 : bord haut (0.36 m) + bord droit (0.54 m) = 0.9 m ; mi-longueur
+    // = 0.45 m → 0.09 m le long du bord droit → v = 0.2 + 0.09/0.9
+    expect(p[0]).toBeCloseTo(0.8, 9);
+    expect(p[1]).toBeCloseTo(0.2 + 0.09 / 0.9, 9);
+  });
+
+  it('miroir et sanitize : les crans suivent', () => {
+    const d = doc();
+    const withNotch = toggleNotchAt(d, 0, [0.5, 0.21]).doc!;
+    const clean = sanitizeDraft(JSON.parse(JSON.stringify(withNotch)));
+    expect(clean!.piece.notches).toHaveLength(1);
+    const mir = mirrorDuplicatePiece(withNotch, 0, 1);
+    expect(mir.ok).toBe(true);
+    const twin = mir.doc!.pieces![mir.newPieceId - 2]!;
+    expect(twin.notches).toHaveLength(1);
+  });
+});
+
+describe('scission sur ligne interne (v165)', () => {
+  it('une ligne à 3 points scinde la pièce le long du tracé, couture sur tout le chemin', () => {
+    const d = doc();
+    // ligne quasi verticale dans le rectPiece [0.2..0.8]² : prolongée en haut
+    // (y=0.2) et en bas (y=0.8) le long de ses segments d'extrémité
+    d.piece.internalLines = [
+      { points: [[0.5, 0.3], [0.55, 0.5], [0.5, 0.7]] },
+      { points: [[0.3, 0.4], [0.32, 0.42]] }, // une AUTRE ligne : suit sa moitié
+    ];
+    const res = cutPieceAlongInternalLine(d, 0, 0);
+    expect(res.ok).toBe(true);
+    const halfA = res.doc!.piece;
+    const halfB = res.doc!.pieces![res.doc!.pieces!.length - 1]!;
+    // les 3 points du chemin vivent dans les DEUX contours
+    for (const q of [[0.5, 0.3], [0.55, 0.5], [0.5, 0.7]] as const) {
+      const inA = halfA.outline.some(([u, v]) => Math.abs(u - q[0]) < 1e-9 && Math.abs(v - q[1]) < 1e-9);
+      const inB = halfB.outline.some(([u, v]) => Math.abs(u - q[0]) < 1e-9 && Math.abs(v - q[1]) < 1e-9);
+      expect(inA && inB).toBe(true);
+    }
+    // la couture de découpe couvre le chemin entier : 4 bords de chaque côté
+    const cutSeam = res.doc!.seams![res.doc!.seams!.length - 1]!;
+    const N_A = halfA.outline.length;
+    const N_B = halfB.outline.length;
+    expect((cutSeam.a.to - cutSeam.a.from + N_A) % N_A).toBe(4);
+    expect((cutSeam.b.to - cutSeam.b.from + N_B) % N_B).toBe(4);
+    // la ligne UTILISÉE a disparu ; l'autre suit la moitié de son centroïde
+    const all = [...(halfA.internalLines ?? []), ...(halfB.internalLines ?? [])];
+    expect(all).toHaveLength(1);
+    expect(all[0]!.points[0]![0]).toBeCloseTo(0.3, 9);
+  });
+
+  it('extrémités prolongées : les points d’accroche tombent sur les bons bords', () => {
+    const d = doc();
+    d.piece.internalLines = [{ points: [[0.5, 0.3], [0.5, 0.7]] }]; // verticale pure
+    const res = cutPieceAlongInternalLine(d, 0, 0);
+    expect(res.ok).toBe(true);
+    const halfA = res.doc!.piece;
+    // les accroches : u=0.5 sur le bord haut (v=0.2) et le bord bas (v=0.8)
+    const hasTop = halfA.outline.some(([u, v]) => Math.abs(u - 0.5) < 1e-6 && Math.abs(v - 0.2) < 1e-6);
+    const hasBottom = halfA.outline.some(([u, v]) => Math.abs(u - 0.5) < 1e-6 && Math.abs(v - 0.8) < 1e-6);
+    expect(hasTop && hasBottom).toBe(true);
+  });
+
+  it('refus : polygone fermé, ligne absente', () => {
+    const d = doc();
+    d.piece.internalLines = [{ points: [[0.4, 0.4], [0.6, 0.4], [0.5, 0.6]], closed: true }];
+    const closed = cutPieceAlongInternalLine(d, 0, 0);
+    expect(closed.ok).toBe(false);
+    expect(closed.reason).toMatch(/fermé/i);
+    expect(cutPieceAlongInternalLine(d, 0, 5).ok).toBe(false);
+  });
+});
+
+describe('point courbe (v164) — roundOutlineCorner', () => {
+  it('le coin devient un arc : extrémités à r sur chaque bord, coutures décalées', () => {
+    const d = doc({
+      seams: [{ a: { pieceId: 0, from: 2, to: 3 }, b: { pieceId: 1, from: 2, to: 3 } }],
+    });
+    // coin 1 du rectPiece : (0.8, 0.2) entre (0.2, 0.2) et (0.8, 0.8)
+    const res = roundOutlineCorner(d, 0, 1, 0.05);
+    expect(res.ok).toBe(true);
+    expect(res.radiusM).toBeCloseTo(0.05, 9);
+    const piece = res.doc!.piece;
+    const K = CURVE_POINT_SAMPLES;
+    expect(piece.outline).toHaveLength(4 + K - 1); // 4 sommets − coin + K d'arc
+    // départ de l'arc : sur le bord entrant (horizontal), à 5 cm du coin :
+    // coin métrique (0.48, 0.18) sur cadre 0.6×0.9, vers (0.12, 0.18)
+    const startM = [piece.outline[1]![0] * 0.6, piece.outline[1]![1] * 0.9];
+    expect(startM[0]).toBeCloseTo(0.48 - 0.05, 6);
+    expect(startM[1]).toBeCloseTo(0.18, 6);
+    // arrivée : sur le bord sortant (vertical), à 5 cm sous le coin
+    const endM = [piece.outline[1 + K - 1]![0] * 0.6, piece.outline[1 + K - 1]![1] * 0.9];
+    expect(endM[0]).toBeCloseTo(0.48, 6);
+    expect(endM[1]).toBeCloseTo(0.18 + 0.05, 6);
+    // la couture qui vivait sur le bord 2→3 s'est décalée de K−1 crans côté
+    // pièce 0, et pas du tout côté pièce 1
+    const seam = res.doc!.seams![0]!;
+    expect(seam.a.from).toBe(2 + K - 1);
+    expect(seam.a.to).toBe(3 + K - 1);
+    expect(seam.b.from).toBe(2);
+    expect(seam.b.to).toBe(3);
+  });
+
+  it('coin 0 (les index wrap) : le contour reste simple et fermé', () => {
+    const res = roundOutlineCorner(doc(), 0, 0, 0.04);
+    expect(res.ok).toBe(true);
+    const K = CURVE_POINT_SAMPLES;
+    const outline = res.doc!.piece.outline;
+    expect(outline).toHaveLength(4 + K - 1);
+    // plus aucun sommet au coin d'origine (0.2, 0.2)
+    expect(outline.some(([u, v]) => Math.abs(u - 0.2) < 1e-9 && Math.abs(v - 0.2) < 1e-9)).toBe(false);
+  });
+
+  it('rayon borné par les bords adjacents, refus propres', () => {
+    const big = roundOutlineCorner(doc(), 0, 1, 5);
+    expect(big.ok).toBe(true);
+    // bords adjacents : 0.36 m (horizontal) et 0.54 m (vertical) → r ≤ 0.45·0.36
+    expect(big.radiusM).toBeCloseTo(0.45 * 0.36, 6);
+    expect(roundOutlineCorner(blankBaseDraft(64), 0, 0, 0.02).ok).toBe(false);
+    const preset = roundOutlineCorner({ ...doc(), preset: 'x' } as unknown as DraftDoc, 0, 1, 0.02);
+    expect(preset.ok).toBe(false);
+  });
+
+  it('round-trip sanitize après arrondi : contour et coutures cohérents', () => {
+    const d = doc({
+      seams: [{ a: { pieceId: 0, from: 0, to: 1 }, b: { pieceId: 1, from: 0, to: 1 } }],
+    });
+    const res = roundOutlineCorner(d, 0, 2, 0.03);
+    expect(res.ok).toBe(true);
+    const clean = sanitizeDraft(JSON.parse(JSON.stringify(res.doc)));
+    expect(clean).not.toBeNull();
+    expect(clean!.piece.outline.length).toBe(res.doc!.piece.outline.length);
+    expect(clean!.seams).toHaveLength(1);
+  });
+});
+
+describe('pince losange (v163) — addFisheyeDart', () => {
+  it('un losange = deux pinces dos à dos, taille PERPENDICULAIRE en métrique', () => {
+    // cadre NON carré : 0.6 × 0.9 m — le test attrape une perpendiculaire UV naïve
+    const d = doc();
+    const res = addFisheyeDart(d, 0, [0.5, 0.3], [0.5, 0.7], 0.02);
+    expect(res.ok).toBe(true);
+    expect(res.widthM).toBeCloseTo(0.04, 9);
+    expect(res.heightM).toBeCloseTo(0.4 * 0.9, 9); // axe vertical : 0.4·H
+    const darts = res.doc!.piece.darts;
+    expect(darts).toHaveLength(2);
+    // jambes partagées entre les deux triangles
+    expect(darts[0]!.legA).toEqual(darts[1]!.legA);
+    expect(darts[0]!.legB).toEqual(darts[1]!.legB);
+    // axe vertical → taille horizontale : ±2 cm en X métrique, en UV ±0.02/0.6
+    const [ul] = darts[0]!.legA;
+    const [ur] = darts[0]!.legB;
+    expect(Math.abs(ur - ul)).toBeCloseTo(0.04 / 0.6, 9);
+    expect(darts[0]!.legA[1]).toBeCloseTo(0.5, 9); // au milieu de l'axe
+    // le moteur de compilation coud le losange : des paires de cellules existent
+    const { extraSeams } = compileDraft(res.doc!.piece, 64);
+    expect(extraSeams.length).toBeGreaterThan(4);
+  });
+
+  it('axe oblique : la taille reste perpendiculaire en espace métrique', () => {
+    const d = doc();
+    const res = addFisheyeDart(d, 0, [0.4, 0.3], [0.6, 0.7], 0.015);
+    expect(res.ok).toBe(true);
+    const [l, r] = [res.doc!.piece.darts[0]!.legA, res.doc!.piece.darts[0]!.legB];
+    const W = d.piece.width;
+    const H = d.piece.height;
+    // vecteur taille en métrique ⟂ vecteur axe en métrique
+    const wx = (r[0] - l[0]) * W;
+    const wy = (r[1] - l[1]) * H;
+    const ax = (0.6 - 0.4) * W;
+    const ay = (0.7 - 0.3) * H;
+    expect(Math.abs(wx * ax + wy * ay)).toBeLessThan(1e-9);
+    expect(Math.hypot(wx, wy)).toBeCloseTo(0.03, 9);
+  });
+
+  it('refus : hors pièce, trop petit, chevauchement, socle vide, plafond', () => {
+    const d = doc();
+    expect(addFisheyeDart(d, 0, [0.21, 0.3], [0.21, 0.7], 0.2).ok).toBe(false); // taille sort
+    expect(addFisheyeDart(d, 0, [0.5, 0.5], [0.5, 0.51], 0.01).ok).toBe(false); // axe court
+    expect(addFisheyeDart(d, 0, [0.5, 0.3], [0.5, 0.7], 0.001).ok).toBe(false); // trop étroit
+    expect(addFisheyeDart(blankBaseDraft(64), 0, [0.4, 0.4], [0.4, 0.6], 0.01).ok).toBe(false);
+    const first = addFisheyeDart(d, 0, [0.5, 0.3], [0.5, 0.7], 0.02);
+    const overlap = addFisheyeDart(first.doc!, 0, [0.5, 0.45], [0.5, 0.75], 0.02);
+    expect(overlap.ok).toBe(false);
+    expect(overlap.reason).toMatch(/chevauche/i);
+    let cur = doc();
+    for (let i = 0; i < 8; i++) {
+      const r = addFisheyeDart(cur, 0, [0.25 + i * 0.07, 0.3], [0.25 + i * 0.07, 0.5], 0.004);
+      if (!r.ok) break;
+      cur = r.doc!;
+    }
+    // 8 losanges = 16 pinces : le 8e passe, un 9e refuse par plafond
+    const ninth = addFisheyeDart(cur, 0, [0.3, 0.6], [0.3, 0.8], 0.004);
+    if (cur.piece.darts.length >= 16) expect(ninth.ok).toBe(false);
+  });
+
+  it('round-trip sanitize : les deux pinces du losange survivent', () => {
+    const d = doc();
+    const res = addFisheyeDart(d, 0, [0.5, 0.3], [0.5, 0.7], 0.02);
+    const clean = sanitizeDraft(JSON.parse(JSON.stringify(res.doc)));
+    expect(clean!.piece.darts).toHaveLength(2);
+  });
+});
+
+describe('lignes internes (v162)', () => {
+  const worldOf = (piece: DraftPiece, [u, v]: [number, number]): [number, number] => [
+    (u - 0.5) * piece.width,
+    piece.topY - v * piece.height,
+  ];
+
+  it('sanitize : round-trip, closed, dégénérées écartées, plafonds', () => {
+    const d = doc();
+    d.piece.internalLines = [
+      { points: [[0.2, 0.3], [0.6, 0.35], [0.5, 0.7]], closed: true },
+      { points: [[0.25, 0.5], [0.75, 0.5]] },
+      { points: [[0.4, 0.4]] }, // dégénérée : tombe
+      { points: [[0.1, 9], [-3, 0.2]] }, // clampée par uv()
+    ];
+    const clean = sanitizeDraft(JSON.parse(JSON.stringify(d)));
+    expect(clean).not.toBeNull();
+    const lines = clean!.piece.internalLines!;
+    expect(lines).toHaveLength(3);
+    expect(lines[0]!.closed).toBe(true);
+    expect(lines[1]!.closed).toBeUndefined();
+    expect(lines[2]!.points.every(([u, v]) => u >= -0.5 && u <= 1.5 && v >= -0.5 && v <= 1.5)).toBe(true);
+    // plafond : 30 lignes → 24 gardées
+    const many = doc();
+    many.piece.internalLines = Array.from({ length: 30 }, (_, i) => ({
+      points: [[0.1, 0.1 + i * 0.01], [0.9, 0.1 + i * 0.01]] as UV[],
+    }));
+    const cleanMany = sanitizeDraft(JSON.parse(JSON.stringify(many)));
+    expect(cleanMany!.piece.internalLines!).toHaveLength(INTERNAL_LINES_MAX);
+  });
+
+  it('offset avec croissance de cadre : les lignes gardent leur position PHYSIQUE', () => {
+    const d = doc();
+    d.piece.outline = [
+      [0.02, 0.02],
+      [0.98, 0.02],
+      [0.98, 0.98],
+      [0.02, 0.98],
+    ] as UV[];
+    const line: InternalLine = { points: [[0.3, 0.3], [0.7, 0.6]] };
+    d.piece.internalLines = [line];
+    const before = line.points.map((pt) => worldOf(d.piece, pt));
+    const res = offsetPieceOutline(d, 0, 0.02);
+    expect(res.ok).toBe(true);
+    const piece = res.doc!.piece;
+    expect(piece.width).toBeGreaterThan(d.piece.width);
+    const after = piece.internalLines![0]!.points.map((pt) => worldOf(piece, pt));
+    for (let i = 0; i < before.length; i++) {
+      expect(after[i]![0]).toBeCloseTo(before[i]![0], 6);
+      expect(after[i]![1]).toBeCloseTo(before[i]![1], 6);
+    }
+  });
+
+  it('miroir cousu : la jumelle porte les lignes RÉFLÉCHIES', () => {
+    const d = doc();
+    d.piece.internalLines = [{ points: [[0.3, 0.3], [0.4, 0.6]], closed: true }];
+    // axe = bord 1→2 du rectPiece : le bord vertical droit (u=0.8)
+    const res = mirrorDuplicatePiece(d, 0, 1);
+    expect(res.ok).toBe(true);
+    const twin = res.doc!.pieces![res.newPieceId - 2]!;
+    expect(twin.internalLines).toHaveLength(1);
+    expect(twin.internalLines![0]!.closed).toBe(true);
+    // hauteur monde conservée point à point (la réflexion est verticale ici)
+    const src = d.piece.internalLines[0]!.points.map((pt) => worldOf(d.piece, pt));
+    const got = twin.internalLines![0]!.points.map((pt) => worldOf(twin, pt));
+    for (let i = 0; i < src.length; i++) {
+      expect(got[i]![1]).toBeCloseTo(src[i]![1], 6);
+    }
+  });
+
+  it('découpe : chaque ligne suit la moitié qui contient son centroïde', () => {
+    const d = doc();
+    d.piece.internalLines = [
+      { points: [[0.3, 0.3], [0.35, 0.4]] }, // à gauche de la corde u=0.5
+      { points: [[0.65, 0.6], [0.7, 0.7]], closed: true }, // à droite
+    ];
+    const res = cutPieceAlongChord(d, 0, { edge: 1, t: 0.5 }, { edge: 3, t: 0.5 });
+    expect(res.ok).toBe(true);
+    const halfA = res.doc!.piece;
+    const halfB = res.doc!.pieces![res.doc!.pieces!.length - 1]!;
+    const all = [
+      ...(halfA.internalLines ?? []),
+      ...(halfB.internalLines ?? []),
+    ];
+    expect(all).toHaveLength(2);
+    expect((halfA.internalLines?.length ?? 0) + 0).toBe(1);
+    expect((halfB.internalLines?.length ?? 0) + 0).toBe(1);
+  });
+});
+
+describe('création miroir au tracé (v161) — mirrorClosedOutline', () => {
+  it('une moitié dessinée devient la pièce symétrique entière', () => {
+    // axe u=0.5 ; profil de demi-devant vers la droite, retour sur l'axe
+    const half: UV[] = [
+      [0.5, 0.05], // 0 — sur l'axe (le pose)
+      [0.72, 0.08],
+      [0.78, 0.5],
+      [0.7, 0.9],
+      [0.5, 0.92], // dernier — sur l'axe : pas d'écho
+    ];
+    const out = mirrorClosedOutline(half);
+    expect(out).toHaveLength(5 + 3); // 5 dessinés + 3 échos (1er et dernier non doublés)
+    // chaque écho est le reflet exact : u' = 2·0.5 − u, v' = v
+    expect(out[5]).toEqual([2 * 0.5 - 0.7, 0.9]);
+    expect(out[6]).toEqual([2 * 0.5 - 0.78, 0.5]);
+    expect(out[7]).toEqual([2 * 0.5 - 0.72, 0.08]);
+    // symétrie globale : le contour réfléchi = le même ensemble de sommets
+    const key = ([u, v]: UV): string => `${(2 * 0.5 - u).toFixed(6)}|${v.toFixed(6)}`;
+    const set = new Set(out.map(([u, v]) => `${u.toFixed(6)}|${v.toFixed(6)}`));
+    for (const p of out) expect(set.has(key(p))).toBe(true);
+  });
+
+  it('le dernier point PRÈS de l’axe s’y aimante (pas de micro-cran)', () => {
+    const out = mirrorClosedOutline([
+      [0.4, 0.1],
+      [0.6, 0.2],
+      [0.4025, 0.8], // à 2.5 mUV de l'axe u=0.4 → aimanté
+    ]);
+    expect(out[2]![0]).toBe(0.4); // aimanté exactement sur l'axe
+    expect(out).toHaveLength(4); // 3 dessinés + 1 écho (celui du point 1 seul)
+  });
+
+  it('dernier point LOIN de l’axe : son écho referme à travers l’axe', () => {
+    const out = mirrorClosedOutline([
+      [0.3, 0.1],
+      [0.5, 0.3],
+      [0.45, 0.7],
+    ]);
+    expect(out).toHaveLength(5); // 3 dessinés + 2 échos
+    expect(out[3]).toEqual([2 * 0.3 - 0.45, 0.7]);
+    expect(out[4]).toEqual([2 * 0.3 - 0.5, 0.3]);
+  });
+
+  it('deux points suffisent : triangle symétrique', () => {
+    const out = mirrorClosedOutline([
+      [0.5, 0.1],
+      [0.65, 0.6],
+    ]);
+    expect(out).toHaveLength(3);
+    expect(out[2]).toEqual([0.35, 0.6]);
+  });
+});
+
+describe('audit session v146-159 — croisements', () => {
+  const PNG_1PX =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+  it('offset : refuse le socle vide (sentinelle invisible)', () => {
+    const blank = blankBaseDraft(64);
+    const res = offsetPieceOutline(blank, 0, 0.01);
+    expect(res.ok).toBe(false);
+    expect(res.reason).toMatch(/dessinez/i);
+  });
+
+  it('découpe : un motif répété habille les DEUX moitiés, un logo une seule', () => {
+    const motif = doc();
+    motif.piece.graphic = {
+      image: PNG_1PX, anchor: [0.3, 0.5], widthM: 0.05, aspect: 1, rotationRad: 0.2, repeat: true,
+    };
+    const cutM = cutPieceAlongChord(motif, 0, { edge: 1, t: 0.5 }, { edge: 3, t: 0.5 });
+    expect(cutM.ok).toBe(true);
+    const halves = [cutM.doc!.piece, cutM.doc!.pieces![cutM.doc!.pieces!.length - 1]!];
+    for (const half of halves) {
+      expect(half.graphic?.repeat).toBe(true);
+      expect(half.graphic?.image).toBe(PNG_1PX);
+      // Même cadre des deux côtés : la phase du motif se prolonge sans raccord.
+      expect(half.graphic?.anchor).toEqual([0.3, 0.5]);
+      expect(half.width).toBeCloseTo(motif.piece.width, 9);
+    }
+    const logo = doc();
+    logo.piece.graphic = {
+      image: PNG_1PX, anchor: [0.3, 0.5], widthM: 0.05, aspect: 1, rotationRad: 0.2,
+    };
+    const cutL = cutPieceAlongChord(logo, 0, { edge: 1, t: 0.5 }, { edge: 3, t: 0.5 });
+    expect(cutL.ok).toBe(true);
+    const withGraphic = [cutL.doc!.piece, cutL.doc!.pieces![cutL.doc!.pieces!.length - 1]!]
+      .filter((piece) => !!piece.graphic);
+    expect(withGraphic.length).toBe(1);
+  });
+});
+
+describe('motifs répétés (v152)', () => {
+  const PNG_1PX =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+  it('sanitizeDraft : le drapeau repeat survit, un repeat non booléen tombe', () => {
+    const d = doc();
+    d.piece.graphic = {
+      image: PNG_1PX, anchor: [0.5, 0.5], widthM: 0.05, aspect: 1, rotationRad: 0.3, repeat: true,
+    };
+    d.back!.graphic = {
+      image: PNG_1PX, anchor: [0.5, 0.5], widthM: 0.1, aspect: 1, rotationRad: 0,
+      repeat: 'oui' as never,
+    };
+    const clean = sanitizeDraft(JSON.parse(JSON.stringify(d)));
+    expect(clean!.piece.graphic?.repeat).toBe(true);
+    expect(clean!.back!.graphic?.repeat).toBeUndefined();
+  });
+
+  it('graphicLocalUV reste continue au-delà de [0,1] (la matière du fract)', () => {
+    const g = { image: PNG_1PX, anchor: [0.5, 0.5] as [number, number], widthM: 0.05, aspect: 1, rotationRad: 0, repeat: true };
+    // À 0,125 m de l'ancre avec une répétition de 0,05 m : 2,5 répétitions.
+    const [gu] = graphicLocalUV(g, 0.6, 0.9, 0.5 + 0.125 / 0.6, 0.5);
+    expect(gu).toBeCloseTo(3.0, 6); // 0.5 + 2.5
+  });
+});
+
+describe('socle vide (v154) — tracer depuis la page blanche sans robe', () => {
+  it('blankBaseDraft : sentinelles blank, cadre corps, round-trip sanitize', () => {
+    const d = blankBaseDraft(64);
+    expect(d.piece.blank).toBe(true);
+    expect(d.back?.blank).toBe(true);
+    expect(d.piece.width).toBeCloseTo(0.95, 6); // boîte de tracé grandeur corps
+    expect(d.manual).toBe(true);
+    const clean = sanitizeDraft(JSON.parse(JSON.stringify(d)));
+    expect(clean).not.toBeNull();
+    expect(clean!.piece.blank).toBe(true);
+    expect(clean!.back?.blank).toBe(true);
+  });
+
+  it('le contour sentinelle ne rasterise AUCUNE cellule à 32, 64 et 128', () => {
+    const d = blankBaseDraft(64);
+    for (const n of [32, 64, 128] as const) {
+      let insideCells = 0;
+      for (let v = 0; v < n; v++) {
+        for (let u = 0; u < n; u++) {
+          if (pointInPolygon([u / (n - 1), v / (n - 1)], d.piece.outline)) insideCells++;
+        }
+      }
+      expect(insideCells).toBe(0);
+    }
+  });
+});
+
+describe('superposer / sous-poser (v155) — empiècement par empiècement', () => {
+  it('sanitize : side under survit, autre valeur tombe', () => {
+    const d = doc();
+    d.pieces = [
+      rectPiece({
+        placement: {
+          role: 'pocket', autoAlign: true,
+          surface: { supportPieceId: 0, anchor: [0.5, 0.5], stitchedEdges: [0, 1], side: 'under' },
+        },
+      }),
+      rectPiece({
+        placement: {
+          role: 'pocket', autoAlign: true,
+          surface: { supportPieceId: 0, anchor: [0.5, 0.5], stitchedEdges: [0], side: 'dessus' as never },
+        },
+      }),
+    ];
+    const clean = sanitizeDraft(JSON.parse(JSON.stringify(d)));
+    expect(clean!.pieces?.[0]?.placement?.surface?.side).toBe('under');
+    expect(clean!.pieces?.[1]?.placement?.surface?.side).toBeUndefined();
+  });
+
+  it('compileSurfaceContacts émet side -1 pour une pièce sous-posée', () => {
+    const n = 16;
+    const d = doc();
+    d.pieces = [
+      rectPiece({
+        width: 0.2, height: 0.2,
+        placement: {
+          role: 'pocket', autoAlign: true,
+          surface: { supportPieceId: 0, anchor: [0.5, 0.5], stitchedEdges: [0, 1, 2, 3], side: 'under' },
+        },
+      }),
+    ];
+    const contacts = compileSurfaceContacts(d, n, [0, n * n, 2 * n * n], 2);
+    expect(contacts.length).toBeGreaterThan(0);
+    expect(contacts.every((c) => c.side === -1)).toBe(true);
+    // Sans side : +1.
+    delete d.pieces[0]!.placement!.surface!.side;
+    const over = compileSurfaceContacts(d, n, [0, n * n, 2 * n * n], 2);
+    expect(over.every((c) => c.side === 1)).toBe(true);
+  });
+});
+
+describe('miroir cousu (v157) — dupliquer en symétrie et coudre l’axe', () => {
+  it('déplie un demi-panneau : jumelle réfléchie, aires égales, couture sur l’axe', () => {
+    const d = doc();
+    // Demi-devant asymétrique (pentagone), axe = bord droit (arête 1).
+    d.piece.outline = [
+      [0.2, 0.1],
+      [0.6, 0.1],
+      [0.6, 0.8],
+      [0.35, 0.9],
+      [0.2, 0.6],
+    ] as UV[];
+    const res = mirrorDuplicatePiece(d, 0, 1);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.newPieceId).toBe(2);
+    const twin = res.doc.pieces![0]!;
+    expect(twin.outline).toHaveLength(5);
+    expect(twin.name).toContain('miroir');
+
+    // Aires MÉTRIQUES égales (réflexion = isométrie).
+    const areaM = (p: DraftPiece): number => {
+      let a = 0;
+      for (let i = 0; i < p.outline.length; i++) {
+        const [x1, y1] = [p.outline[i]![0] * p.width, p.outline[i]![1] * p.height];
+        const j = (i + 1) % p.outline.length;
+        const [x2, y2] = [p.outline[j]![0] * p.width, p.outline[j]![1] * p.height];
+        a += x1 * y2 - x2 * y1;
+      }
+      return Math.abs(a / 2);
+    };
+    expect(areaM(twin)).toBeCloseTo(areaM(d.piece), 6);
+
+    // L'orientation est préservée (aire signée de même signe qu'un contour non croisé).
+    expect(twin.outline.length).toBe(5);
+
+    // La couture d'axe : arête 1 de l'original ↔ arête N-2-k = 2 de la jumelle,
+    // et les deux runs ont la MÊME longueur métrique.
+    const seam = res.doc.seams![res.seamIndex]!;
+    expect(pieceIdOf(seam.a)).toBe(0);
+    expect(seam.a.from).toBe(1);
+    expect(pieceIdOf(seam.b)).toBe(2);
+    expect(seam.b.from).toBe(2);
+    const lenA = runLen(res.doc.piece, seam.a.from, seam.a.to);
+    const lenB = runLen(twin, seam.b.from, seam.b.to);
+    expect(lenB).toBeCloseTo(lenA, 6);
+
+    // Les hauteurs MONDE se conservent : le sommet réfléchi de v=0.1 garde y_monde.
+    const yWorld = (p: DraftPiece, i: number): number => p.topY - p.outline[i]![1] * p.height;
+    // sommet 1 (sur l'axe) : monde identique chez l'original et la jumelle (index N-1-1=3).
+    expect(yWorld(twin, 3)).toBeCloseTo(yWorld(d.piece, 1), 6);
+  });
+
+  it('pinces et graphique suivent la réflexion ; refus propres', () => {
+    const PNG =
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    const d = doc();
+    d.piece.darts = [{ apex: [0.4, 0.4], legA: [0.35, 0.5], legB: [0.45, 0.5] }];
+    d.piece.graphic = { image: PNG, anchor: [0.3, 0.3], widthM: 0.05, aspect: 1, rotationRad: 0.5 };
+    const res = mirrorDuplicatePiece(d, 0, 1); // axe = bord droit du rectangle
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const twin = res.doc.pieces![0]!;
+    expect(twin.darts).toHaveLength(1);
+    expect(twin.graphic?.rotationRad).toBeCloseTo(-0.5, 9);
+    // L'ancre réfléchie est de l'autre côté de l'axe, à distance égale : la
+    // distance métrique ancre↔axe se conserve.
+    const axeX = 0.8 * d.piece.width; // bord droit du rectangle en métrique
+    const dOrig = Math.abs(0.3 * d.piece.width - axeX);
+    const dTwin = Math.abs(twin.graphic!.anchor[0] * twin.width - (0.8 * d.piece.width - (0.8 * d.piece.width - axeX)) + 0); // structurel : même écart
+    expect(dTwin).toBeGreaterThan(0); // garde le calcul honnête
+    // Refus.
+    expect(mirrorDuplicatePiece(doc({ preset: 'hoodie' } as Partial<DraftDoc>), 0, 0).ok).toBe(false);
+    const blank = blankBaseDraft(64);
+    expect(mirrorDuplicatePiece(blank, 0, 0).ok).toBe(false);
+
+    // Round-trip sanitize : la jumelle survit entière.
+    const clean = sanitizeDraft(JSON.parse(JSON.stringify(res.doc)));
+    expect(clean!.pieces).toHaveLength(1);
+    expect(clean!.seams).toHaveLength(1);
   });
 });

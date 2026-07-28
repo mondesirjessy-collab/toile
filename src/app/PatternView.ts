@@ -18,6 +18,7 @@ import type { ClothMeshData } from '../engine/cloth/ClothMesh';
 import {
   insertOutlineVertex,
   deleteOutlineVertex,
+  mirrorClosedOutline,
   reindexAssemblySeams,
   pieceIdOf,
   assemblySeamIsClosed,
@@ -25,10 +26,13 @@ import {
   defaultSurfaceStitches,
   draftPieceLabel,
   surfaceAttachmentUV,
+  pointInPolygon,
   type UV,
   type DraftPiece,
   type AssemblySeam,
   type FaceRun,
+  type PieceGraphic,
+  type InternalLine,
 } from '../engine/pattern/Draft';
 
 /** Build the persisted assembly record emitted by the two-click ZIP tool. */
@@ -1325,6 +1329,13 @@ export class PatternView {
     return draftPieceLabel(this.pieceAt(pid), pid);
   }
   private pieceFabricFill(piece: DraftPiece, alpha: number): string {
+    // Couleur d'empiècement posée : elle gagne sur la teinte du tissu, un peu
+    // plus affirmée pour que le colorblock se lise aussi dans le plan 2D.
+    if (piece.color && /^#[0-9a-f]{6}$/i.test(piece.color)) {
+      const v = parseInt(piece.color.slice(1), 16);
+      const a = Math.min(0.5, alpha + 0.18);
+      return `rgba(${(v >> 16) & 255}, ${(v >> 8) & 255}, ${v & 255}, ${a})`;
+    }
     const rgb: Record<string, [number, number, number]> = {
       Jersey: [222, 209, 184],
       Maille: [184, 115, 107],
@@ -1509,6 +1520,8 @@ export class PatternView {
   // clickable afterwards.
   private surfacePlacementPieceId: number | null = null;
   private surfacePlacementHover: { supportPieceId: number; anchor: UV } | null = null;
+  /** Côté choisi pour la pose en cours : par-dessus (défaut) ou par-dessous. */
+  private surfacePlacementSide: 'over' | 'under' = 'over';
   private linkMode = false;
   private linkPickA: { pieceId: number; edge: number } | null = null;
   private linkHover: { pieceId: number; edge: number } | null = null;
@@ -1526,10 +1539,93 @@ export class PatternView {
   // la corde la scinde et la couture se pose seule (géométrie dans Draft.ts).
   private cutMode = false;
   private cutPick: { pieceId: number; edge: number; t: number } | null = null;
-  private cutHover: [number, number] | null = null; // curseur, pour l'aperçu de corde
+  private cutHover: [number, number] | null = null;
+  /** ▱ Ligne interne : outil armé, tracé en cours, survol du curseur. */
+  private internalMode = false;
+  private internalTrace: UV[] | null = null;
+  private internalHover: [number, number] | null = null;
+  /** ⌵ Crans : outil armé. */
+  private notchMode = false;
+  /** ⧢ Évasement : outil armé + pivot retenu + survol. */
+  private fullnessMode = false;
+  private fullnessPick: { pieceId: number; edge: number; t: number } | null = null;
+  private fullnessHover: [number, number] | null = null;
+  /** ∿ Point courbe : outil armé + drag de rayon en cours. */
+  private curvePointMode = false;
+  private curvePointDrag: { vertex: number; radiusM: number; pointerId: number } | null = null;
+  /** ◆ Pince losange : outil armé, pointes posées, survol. */
+  private dartMode = false;
+  private dartTop: UV | null = null;
+  private dartBottom: UV | null = null;
+  private dartHover: [number, number] | null = null; // curseur, pour l'aperçu de corde
   // Mode FRONCES (bouton 〰) : cliquer un lien de couture ouvre le choix du
   // côté à froncer et du ratio — l'application vit dans main (gatherSeamSide).
   private gatherMode = false;
+  // Mode COUTURE LIBRE (bouton 🧵, façon Clo « Free Sewing ») : un clic pose le
+  // DÉPART d'un tracé sur un contour, le tracé SUIT le curseur le long du bord
+  // (abscisse curviligne déroulée : coins passés, deux sens possibles), un clic
+  // pose la fin — puis même geste pour le 2e tracé, et la couture se pose.
+  private freeSewMode = false;
+  /** Tracé EN COURS (1er ou 2e selon freeSewRunA) : départ figé + abscisse
+   * curviligne déroulée du curseur (curS peut sortir de [0,L) — le signe de
+   * curS−startS est la direction du tracé). */
+  private freeSewTrace: {
+    pieceId: number;
+    start: { edge: number; t: number };
+    startS: number;
+    curS: number;
+  } | null = null;
+  /** 1er tracé commité (en attente du 2e) ; startS/endS = abscisses déroulées
+   * pour repeindre l'arc exact, lenM = longueur affichée. */
+  private freeSewRunA:
+    | {
+        pieceId: number;
+        start: { edge: number; t: number };
+        end: { edge: number; t: number };
+        dir: 1 | -1;
+        lenM: number;
+        startS: number;
+        endS: number;
+      }
+    | null = null;
+  // ⧎ MIROIR COUSU (un clic) : cliquer le bord-AXE d'une pièce la duplique en
+  // symétrie et coud la paire le long de cet axe (mirrorDuplicatePiece).
+  private mirrorMode = false;
+  onMirrorPiece: (pieceId: number, axisEdge: number) => void = () => {};
+  /** ▱ Ligne interne terminée (polyligne ou polygone fermé) sur une pièce. */
+  onInternalLine: (pieceId: number, line: InternalLine) => void = () => {};
+  /** ▱ Suppression d'une ligne interne existante (clic dessus, outil armé). */
+  onInternalLineDelete: (pieceId: number, index: number) => void = () => {};
+  /** ◆ Pince losange terminée : pointes haute/basse (UV) + demi-largeur (m). */
+  onFisheyeDart: (pieceId: number, top: UV, bottom: UV, halfWidthM: number) => void = () => {};
+  /** ∿ Un sommet à arrondir : index + rayon métrique choisi au drag. */
+  onRoundCorner: (pieceId: number, vertex: number, radiusM: number) => void = () => {};
+  /** ✂ sur une ligne interne : scinder la pièce le long de ce tracé. */
+  onCutAlongInternalLine: (pieceId: number, lineIndex: number) => void = () => {};
+  /** ⌵ Cran : poser/retirer au point cliqué (l'atelier projette sur le bord). */
+  onNotchToggle: (pieceId: number, at: UV) => void = () => {};
+  /** ⌵ Crans d'accord : générer les repères appariés d'une couture. */
+  onNotchSeam: (seamIndex: number) => void = () => {};
+  /** ⧢ Pivot et ouverture choisis : l'atelier demande les cm puis évase. */
+  onFullnessPicked: (
+    pieceId: number,
+    pivot: { edge: number; t: number },
+    opening: { edge: number; t: number },
+  ) => void = () => {};
+  // 🖼 GRAPHIQUE de pièce : édition directe sur le plan — glisser = déplacer,
+  // poignée du coin = taille, poignée haute = rotation. Aperçu vivant pendant
+  // le geste ; le commit (relâché) remonte à l'atelier qui pousse l'historique.
+  private graphicImages = new Map<string, HTMLImageElement>();
+  private graphicDrag: {
+    pid: number;
+    mode: 'move' | 'scale' | 'rotate';
+    pointerId: number;
+    start: PieceGraphic;
+    preview: PieceGraphic;
+    grabDU: number;
+    grabDV: number;
+  } | null = null;
+  onGraphicChange: (pieceId: number, graphic: PieceGraphic) => void = () => {};
   /** Câblés par l'atelier (main.ts), après construction. */
   onCutPiece: (
     pieceId: number,
@@ -1537,6 +1633,10 @@ export class PatternView {
     b: { edge: number; t: number },
   ) => void = () => {};
   onGatherSeam: (seamIndex: number) => void = () => {};
+  onFreeSeam: (
+    a: { pieceId: number; start: { edge: number; t: number }; end: { edge: number; t: number }; dir: 1 | -1 },
+    b: { pieceId: number; start: { edge: number; t: number }; end: { edge: number; t: number }; dir: 1 | -1 },
+  ) => void = () => {};
   // Pen tool: drawing a new piece from scratch (click to place points, close it).
   private penMode = false;
   /** Écrit penMode ET prévient la barre d'outils quand l'état change. */
@@ -1548,6 +1648,10 @@ export class PatternView {
     this.updateCanvasLabel();
   }
   private penPoints: UV[] = [];
+  /** ⋈ Création miroir : le 1er point pose l'axe vertical, la moitié dessinée
+   * s'échoit en direct et la fermeture produit la pièce symétrique entière.
+   * Préférence COLLANTE : survit à la fermeture d'un tracé. */
+  private penMirror = false;
   // La plume ne doit plus sembler « cassée » quand un clic tombe dans une
   // autre colonne : état de survol + message bref, tous deux peints sur le
   // canvas (et reflétés dans son aria-label).
@@ -1566,6 +1670,16 @@ export class PatternView {
   // but it must not silently edit the draft. The workspace explicitly
   // re-enables interaction when the user returns to pattern design.
   private interactionEnabled = true;
+  // PAGE BLANCHE (boot de l'atelier) : le plan ne montre que la grille et la
+  // silhouette — aucune pièce, aucun geste d'édition, seul le panoramique vit.
+  private pristine = false;
+
+  setPristine(on: boolean): void {
+    if (this.pristine === on) return;
+    this.pristine = on;
+    this.staticDirty = true; // les intitulés de colonnes vivent dans la couche statique
+    this.render();
+  }
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -1766,16 +1880,30 @@ export class PatternView {
       this.sewMode ||
       this.zipperMode ||
       this.cutMode ||
+      this.internalMode ||
+      this.dartMode ||
+      this.curvePointMode ||
+      this.notchMode ||
+      this.fullnessMode ||
       this.gatherMode ||
+      this.mirrorMode ||
+      this.freeSewMode ||
       this.surfacePlacementPieceId !== null ||
       this.seamPickA !== null ||
       this.linkPickA !== null ||
       this.zipperPickA !== null ||
       this.cutPick !== null ||
+      this.internalTrace !== null ||
+      this.dartTop !== null ||
+      this.curvePointDrag !== null ||
+      this.fullnessPick !== null ||
+      this.freeSewTrace !== null ||
+      this.freeSewRunA !== null ||
       this.selectedPiece !== null ||
       this.selectedPieces.size > 0;
     const cancelledGesture =
       this.panDrag !== null ||
+      this.graphicDrag !== null ||
       this.drag !== null ||
       this.draftPreview !== null ||
       this.draftDrag !== null ||
@@ -1809,6 +1937,7 @@ export class PatternView {
     this.panDrag = null;
     this.drag = null;
     this.hover = null;
+    this.graphicDrag = null;
     this.lengthMode = false;
     this.lengthSnapEnabled = false;
     this.linkMode = false;
@@ -1818,7 +1947,22 @@ export class PatternView {
     this.cutMode = false;
     this.cutPick = null;
     this.cutHover = null;
+    this.internalMode = false;
+    this.internalTrace = null;
+    this.internalHover = null;
+    this.dartMode = false;
+    this.dartTop = null;
+    this.dartBottom = null;
+    this.dartHover = null;
+    this.curvePointMode = false;
+    this.curvePointDrag = null;
+    this.notchMode = false;
+    this.fullnessMode = false;
+    this.fullnessPick = null;
+    this.fullnessHover = null;
     this.gatherMode = false;
+    this.mirrorMode = false;
+    this.clearFreeSew();
     this.surfacePlacementPieceId = null;
     this.surfacePlacementHover = null;
     this.selectedPiece = null;
@@ -1851,6 +1995,25 @@ export class PatternView {
   setSystemLinks(links: SystemLink[]): void {
     this.systemLinks = links;
     this.render();
+  }
+
+  /**
+   * Réinitialiser l'ARRANGEMENT 2D (le « Reset 2D Arrangement » de Clo) :
+   * toutes les pièces déplacées dans le plan retrouvent leur colonne. État de
+   * vue pur — le patron, les coutures et l'essayage ne changent jamais.
+   * Rend le nombre de pièces effectivement rangées.
+   */
+  resetLayoutArrangement(): number {
+    let moved = 0;
+    for (const shift of this.layoutShifts) {
+      if (shift && (Math.abs(shift[0]) > 1e-9 || Math.abs(shift[1]) > 1e-9)) moved++;
+    }
+    if (!moved) return 0;
+    this.layoutShifts = this.layoutShifts.map(() => [0, 0] as [number, number]);
+    this.pieceMoveDrag = null;
+    this.staticDirty = true;
+    this.render();
+    return moved;
   }
 
   /**
@@ -1975,6 +2138,16 @@ export class PatternView {
     if (render) this.render();
   }
 
+  get penMirroring(): boolean {
+    return this.penMirror;
+  }
+
+  togglePenMirror(): boolean {
+    this.penMirror = !this.penMirror;
+    this.render();
+    return this.penMirror;
+  }
+
   get drawing(): boolean {
     return this.penMode;
   }
@@ -2000,6 +2173,7 @@ export class PatternView {
       this.cutMode = false;
       this.cutPick = null;
       this.gatherMode = false;
+      this.clearFreeSew();
     }
     this.seamPickA = null;
     document.body.style.cursor = '';
@@ -2007,10 +2181,31 @@ export class PatternView {
     return this.sewMode;
   }
 
+  /** Éteindre la couture libre (mode + tracés en cours), sans callback. */
+  private clearFreeSew(): void {
+    this.freeSewMode = false;
+    this.freeSewTrace = null;
+    this.freeSewRunA = null;
+  }
+
   /** Un seul outil actif à la fois — coupe les autres modes avant d'armer. */
   private disarmToolsForExclusive(): void {
+    this.internalMode = false;
+    this.internalTrace = null;
+    this.internalHover = null;
+    this.dartMode = false;
+    this.dartTop = null;
+    this.dartBottom = null;
+    this.dartHover = null;
+    this.curvePointMode = false;
+    this.curvePointDrag = null;
+    this.notchMode = false;
+    this.fullnessMode = false;
+    this.fullnessPick = null;
+    this.fullnessHover = null;
     this.sewMode = false;
     this.seamPickA = null;
+    this.clearFreeSew();
     this.zipperMode = false;
     this.zipperPickA = null;
     this.zipperHover = null;
@@ -2049,6 +2244,91 @@ export class PatternView {
     return this.cutMode;
   }
 
+  toggleInternalLine(): boolean {
+    const next = !this.internalMode;
+    if (next) this.disarmToolsForExclusive();
+    this.internalMode = next;
+    this.internalTrace = null;
+    this.internalHover = null;
+    document.body.style.cursor = next ? 'crosshair' : '';
+    this.render();
+    return this.internalMode;
+  }
+
+  get internalDrawing(): boolean {
+    return this.internalMode;
+  }
+
+  toggleFisheyeDart(): boolean {
+    const next = !this.dartMode;
+    if (next) this.disarmToolsForExclusive();
+    this.dartMode = next;
+    this.dartTop = null;
+    this.dartBottom = null;
+    this.dartHover = null;
+    document.body.style.cursor = next ? 'crosshair' : '';
+    this.render();
+    return this.dartMode;
+  }
+
+  get fisheyeDrawing(): boolean {
+    return this.dartMode;
+  }
+
+  toggleFullness(): boolean {
+    const next = !this.fullnessMode;
+    if (next) this.disarmToolsForExclusive();
+    this.fullnessMode = next;
+    this.fullnessPick = null;
+    this.fullnessHover = null;
+    document.body.style.cursor = next ? 'crosshair' : '';
+    this.render();
+    return this.fullnessMode;
+  }
+
+  get fullnessing(): boolean {
+    return this.fullnessMode;
+  }
+
+  get fullnessArmed(): boolean {
+    return this.fullnessPick !== null;
+  }
+
+  toggleNotch(): boolean {
+    const next = !this.notchMode;
+    if (next) this.disarmToolsForExclusive();
+    this.notchMode = next;
+    document.body.style.cursor = next ? 'crosshair' : '';
+    this.render();
+    return this.notchMode;
+  }
+
+  get notching(): boolean {
+    return this.notchMode;
+  }
+
+  toggleCurvePoint(): boolean {
+    const next = !this.curvePointMode;
+    if (next) this.disarmToolsForExclusive();
+    this.curvePointMode = next;
+    this.curvePointDrag = null;
+    document.body.style.cursor = next ? 'crosshair' : '';
+    this.render();
+    return this.curvePointMode;
+  }
+
+  get curvePointing(): boolean {
+    return this.curvePointMode;
+  }
+
+  get fisheyeArmed(): boolean {
+    return this.dartTop !== null;
+  }
+
+  get internalTraceArmed(): boolean {
+    return this.internalTrace !== null;
+  }
+
   get cutPickArmed(): boolean {
     return this.cutPick !== null;
   }
@@ -2068,6 +2348,58 @@ export class PatternView {
 
   get gathering(): boolean {
     return this.gatherMode;
+  }
+
+  /** Basculer la COUTURE LIBRE (bouton 🧵). Rend l'état courant. */
+  toggleFreeSew(): boolean {
+    const next = !this.freeSewMode;
+    if (next) this.disarmToolsForExclusive(); // éteint aussi un ancien tracé libre
+    this.freeSewMode = next;
+    this.freeSewTrace = null;
+    this.freeSewRunA = null;
+    if (next) {
+      this.cutMode = false;
+      this.cutPick = null;
+      this.cutHover = null;
+      this.gatherMode = false;
+    }
+    document.body.style.cursor = next ? 'crosshair' : '';
+    this.render();
+    return this.freeSewMode;
+  }
+
+  get freeSewing(): boolean {
+    return this.freeSewMode;
+  }
+
+  /** Un tracé libre est-il en cours sous le curseur ? (pour les hints) */
+  get freeSewTracing(): boolean {
+    return this.freeSewTrace !== null;
+  }
+
+  /** Le 1er tracé libre est-il commité, en attente du second ? */
+  get freeSewHasRunA(): boolean {
+    return this.freeSewRunA !== null;
+  }
+
+  /** Basculer le MIROIR COUSU (bouton ⧎). Rend l'état courant. */
+  toggleMirror(): boolean {
+    const next = !this.mirrorMode;
+    if (next) this.disarmToolsForExclusive();
+    this.mirrorMode = next;
+    if (next) {
+      this.cutMode = false;
+      this.cutPick = null;
+      this.cutHover = null;
+      this.gatherMode = false;
+    }
+    document.body.style.cursor = next ? 'crosshair' : '';
+    this.render();
+    return this.mirrorMode;
+  }
+
+  get mirroring(): boolean {
+    return this.mirrorMode;
   }
 
   /**
@@ -2094,6 +2426,7 @@ export class PatternView {
       this.lengthSnap = null;
       this.linkedPreview = null;
       this.draftPreview = null;
+      this.clearFreeSew();
     }
     document.body.style.cursor = '';
     this.render();
@@ -2135,6 +2468,7 @@ export class PatternView {
       this.linkHover = null;
       this.sewMode = false;
       this.seamPickA = null;
+      this.clearFreeSew();
     }
     document.body.style.cursor = '';
     this.render();
@@ -2162,6 +2496,7 @@ export class PatternView {
       this.lengthMode = true;
       this.sewMode = false;
       this.seamPickA = null;
+      this.clearFreeSew();
     }
     document.body.style.cursor = '';
     this.render();
@@ -2194,6 +2529,7 @@ export class PatternView {
       this.sewMode = false;
       this.seamPickA = null;
       this.draftPreview = null;
+      this.clearFreeSew();
     }
     document.body.style.cursor = '';
     this.render();
@@ -2326,10 +2662,11 @@ export class PatternView {
   }
 
   /** Arm the exact surface-placement gesture for a pocket/appliqué. */
-  startSurfacePlacement(pieceId: number): boolean {
+  startSurfacePlacement(pieceId: number, side: 'over' | 'under' = 'over'): boolean {
     const piece = this.pieceAt(pieceId);
     if (pieceId < 2 || piece?.placement?.role !== 'pocket') return false;
     this.surfacePlacementPieceId = pieceId;
+    this.surfacePlacementSide = side;
     this.surfacePlacementHover = null;
     this.activePiece = pieceId;
     this.selectedPiece = null;
@@ -2375,6 +2712,7 @@ export class PatternView {
         supportPieceId,
         anchor: [anchor[0], anchor[1]],
         stitchedEdges: defaultSurfaceStitches(next),
+        ...(this.surfacePlacementSide === 'under' ? { side: 'under' as const } : {}),
       },
     };
     this.pieces[pieceId] = next;
@@ -2464,13 +2802,20 @@ export class PatternView {
    * Sans 3 points, le tracé est ABANDONNÉ et la pièce d'origine restaurée. */
   finishPen(): void {
     if (!this.penMode) return;
-    if (this.penPoints.length < 3 || !this.draftPiece) {
+    const minPoints = this.penMirror ? 2 : 3;
+    if (this.penPoints.length < minPoints || !this.draftPiece) {
       this.abortPen();
       return;
     }
     this.penBackup = null; // tracé réussi : l'ancienne pièce est volontairement remplacée
     this.penBackupPid = null;
-    const outline = this.penPoints.map((p) => [p[0], p[1]] as UV);
+    const outline = this.penMirror
+      ? mirrorClosedOutline(this.penPoints)
+      : this.penPoints.map((p) => [p[0], p[1]] as UV);
+    if (outline.length < 3) {
+      this.abortPen();
+      return;
+    }
     // Seed the topmost edge as an opening so a body can enter (a fully-sewn
     // piece would inflate like a sealed pillow).
     let topEdge = 0;
@@ -2955,6 +3300,213 @@ export class PatternView {
     return best.edge >= 0 ? best : null;
   }
 
+  /** Sommes préfixes MÉTRIQUES (m) du contour : le sommet k est à l'abscisse
+   * prefix[k], le périmètre est prefix[N]. Recalculé à la demande (N ≤ 128). */
+  private outlinePrefix(piece: DraftPiece): number[] {
+    const N = piece.outline.length;
+    const prefix = [0];
+    for (let k = 0; k < N; k++) {
+      const a = piece.outline[k]!;
+      const b = piece.outline[(k + 1) % N]!;
+      prefix.push(prefix[k]! + Math.hypot((b[0] - a[0]) * piece.width, (b[1] - a[1]) * piece.height));
+    }
+    return prefix;
+  }
+
+  /** Abscisse curviligne (m) du point (edge, t) du contour. */
+  private outlineS(prefix: number[], edge: number, t: number): number {
+    return prefix[edge]! + t * (prefix[edge + 1]! - prefix[edge]!);
+  }
+
+  /** Point écran à l'abscisse s (enroulée modulo périmètre) du contour. */
+  private outlinePointAtS(
+    pieceId: number,
+    prefix: number[],
+    s: number,
+  ): [number, number] | null {
+    const piece = this.pieceAt(pieceId);
+    if (!piece) return null;
+    const N = piece.outline.length;
+    const L = prefix[N]! || 1e-9;
+    const sw = ((s % L) + L) % L;
+    let e = 0;
+    while (e < N - 1 && prefix[e + 1]! < sw - 1e-12) e++;
+    const edgeLen = prefix[e + 1]! - prefix[e]! || 1e-9;
+    const t = Math.min(1, Math.max(0, (sw - prefix[e]!) / edgeLen));
+    const a = piece.outline[e]!;
+    const b = piece.outline[(e + 1) % N]!;
+    const uv: UV = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    return this.vertexScreen(uv, piece, this.pieceOffset(pieceId), this.pieceYOffset(pieceId));
+  }
+
+  /** Polyligne écran de l'arc [startS..endS] (abscisses DÉROULÉES, dans un ordre
+   * quelconque), sommets traversés compris — l'aperçu du tracé libre. */
+  private freeSewArcScreen(pieceId: number, startS: number, endS: number): [number, number][] {
+    const piece = this.pieceAt(pieceId);
+    if (!piece) return [];
+    const prefix = this.outlinePrefix(piece);
+    const N = piece.outline.length;
+    const L = prefix[N]!;
+    if (L < 1e-9) return [];
+    const lo = Math.min(startS, endS);
+    const hi = Math.max(startS, endS);
+    const pts: [number, number][] = [];
+    const push = (s: number): void => {
+      const sp = this.outlinePointAtS(pieceId, prefix, s);
+      if (sp) pts.push(sp);
+    };
+    push(lo);
+    // Chaque sommet i vit aux abscisses prefix[i] + m·L : émettre ceux dans (lo, hi).
+    for (let m = Math.floor(lo / L); m <= Math.floor(hi / L) + 1; m++) {
+      for (let i = 0; i < N; i++) {
+        const sv = prefix[i]! + m * L;
+        if (sv > lo + 1e-9 && sv < hi - 1e-9) push(sv);
+      }
+    }
+    push(hi);
+    return pts;
+  }
+
+  /** Suivre le curseur le long du contour pendant un tracé libre : l'abscisse
+   * du point le plus proche est DÉROULÉE (représentation la plus proche de la
+   * position précédente) — les coins passent, dans les deux sens ; loin du
+   * contour, le tracé gèle. */
+  private updateFreeSewTrace(px: number, py: number): boolean {
+    const st = this.freeSewTrace;
+    if (!st || st.pieceId !== this.activePiece) return false;
+    const piece = this.pieceAt(st.pieceId);
+    if (!piece) return false;
+    const ne = this.nearestEdge(px, py);
+    if (!ne || ne.dist > EDGE_HIT * 3) return false;
+    const prefix = this.outlinePrefix(piece);
+    const L = prefix[piece.outline.length]!;
+    if (L < 1e-9) return false;
+    const sRaw = this.outlineS(prefix, ne.edge, ne.t);
+    const k = Math.round((st.curS - sRaw) / L);
+    let sNew = sRaw + k * L;
+    // Jamais plus d'un tour de contour (le tracé ne se recouvre pas lui-même).
+    sNew = Math.min(st.startS + L * 0.999, Math.max(st.startS - L * 0.999, sNew));
+    if (Math.abs(sNew - st.curS) < 1e-9) return false;
+    st.curS = sNew;
+    return true;
+  }
+
+  /** Image décodée d'un graphique (cache par data URL) ; null tant qu'elle charge. */
+  private graphicImage(dataUrl: string): HTMLImageElement | null {
+    let img = this.graphicImages.get(dataUrl);
+    if (!img) {
+      img = new Image();
+      img.onload = () => this.render();
+      img.src = dataUrl;
+      this.graphicImages.set(dataUrl, img);
+      if (this.graphicImages.size > 12) {
+        const oldest = this.graphicImages.keys().next().value;
+        if (oldest && oldest !== dataUrl) this.graphicImages.delete(oldest);
+      }
+    }
+    return img.complete && img.naturalWidth > 0 ? img : null;
+  }
+
+  /** Cadre ÉCRAN du graphique d'une pièce : centre, tailles px, rotation.
+   * (u,v) patron et (x,y) écran partagent la même orientation — la rotation
+   * passe telle quelle. */
+  private graphicScreenFrame(
+    pid: number,
+    graphic: PieceGraphic,
+  ): { cx: number; cy: number; w: number; h: number; rot: number } | null {
+    const piece = this.pieceAt(pid);
+    if (!piece || !this.tf) return null;
+    const c = this.vertexScreen(graphic.anchor, piece, this.pieceOffset(pid), this.pieceYOffset(pid));
+    if (!c) return null;
+    const scale = this.tf.scale;
+    return {
+      cx: c[0],
+      cy: c[1],
+      w: Math.max(4, graphic.widthM * scale),
+      h: Math.max(4, graphic.widthM * graphic.aspect * scale),
+      rot: graphic.rotationRad,
+    };
+  }
+
+  /** Qu'attrape ce point : l'image, sa poignée de taille, celle de rotation ? */
+  private graphicHit(
+    pid: number,
+    graphic: PieceGraphic,
+    px: number,
+    py: number,
+  ): 'inside' | 'scale' | 'rotate' | null {
+    const f = this.graphicScreenFrame(pid, graphic);
+    if (!f) return null;
+    const dx = px - f.cx;
+    const dy = py - f.cy;
+    const c = Math.cos(-f.rot);
+    const sn = Math.sin(-f.rot);
+    const lx = dx * c - dy * sn;
+    const ly = dx * sn + dy * c;
+    const hw = f.w / 2;
+    const hh = f.h / 2;
+    if (Math.hypot(lx - hw, ly - hh) <= HIT_RADIUS) return 'scale';
+    if (Math.hypot(lx, ly + hh + 20) <= HIT_RADIUS) return 'rotate';
+    if (Math.abs(lx) <= hw && Math.abs(ly) <= hh) return 'inside';
+    return null;
+  }
+
+  private beginGraphicDrag(
+    e: PointerEvent,
+    p: [number, number],
+    mode: 'inside' | 'scale' | 'rotate',
+    graphic: PieceGraphic,
+  ): void {
+    const pointerUV = this.screenToUV(p[0], p[1], false);
+    this.graphicDrag = {
+      pid: this.activePiece,
+      mode: mode === 'inside' ? 'move' : mode,
+      pointerId: e.pointerId,
+      start: graphic,
+      preview: { ...graphic, anchor: [graphic.anchor[0], graphic.anchor[1]] },
+      grabDU: graphic.anchor[0] - pointerUV[0],
+      grabDV: graphic.anchor[1] - pointerUV[1],
+    };
+    document.body.style.cursor = mode === 'inside' ? 'grabbing' : mode === 'scale' ? 'nwse-resize' : 'grab';
+    e.preventDefault();
+    e.stopPropagation();
+    this.render();
+  }
+
+  private updateGraphicDrag(px: number, py: number): void {
+    const d = this.graphicDrag;
+    if (!d) return;
+    const piece = this.pieceAt(d.pid);
+    const f = this.graphicScreenFrame(d.pid, d.preview);
+    if (!piece || !f || !this.tf) return;
+    if (d.mode === 'move') {
+      const uv = this.screenToUV(px, py, false);
+      d.preview.anchor = [
+        Math.min(0.98, Math.max(0.02, uv[0] + d.grabDU)),
+        Math.min(0.98, Math.max(0.02, uv[1] + d.grabDV)),
+      ];
+    } else if (d.mode === 'scale') {
+      const dx = px - f.cx;
+      const dy = py - f.cy;
+      const c = Math.cos(-f.rot);
+      const sn = Math.sin(-f.rot);
+      const lx = dx * c - dy * sn;
+      const ly = dx * sn + dy * c;
+      // Le coin suit le curseur : la plus grande des deux directions gagne.
+      const wFromX = (2 * Math.max(8, lx)) / this.tf.scale;
+      const wFromY = (2 * Math.max(8, ly)) / this.tf.scale / Math.max(1e-6, d.preview.aspect);
+      d.preview.widthM = Math.min(2, Math.max(0.02, Math.max(wFromX, wFromY)));
+    } else {
+      const phi = Math.atan2(py - f.cy, px - f.cx);
+      let rot = phi + Math.PI / 2; // poignée au-dessus du centre au repos
+      while (rot > Math.PI) rot -= Math.PI * 2;
+      while (rot < -Math.PI) rot += Math.PI * 2;
+      if (Math.abs(rot) < 0.05) rot = 0; // accroche au droit-fil
+      d.preview.rotationRad = rot;
+    }
+    this.render();
+  }
+
   private layoutToScreen(x: number, y: number): [number, number] {
     const t = this.tf!;
     return [t.ox + (x - t.minA) * t.scale, t.H - (t.oy + (y - t.minB) * t.scale)];
@@ -3111,6 +3663,14 @@ export class PatternView {
       if (this.draftDrag || this.curveDrag || this.curveLengthDrag || this.pieceResizeDrag || this.pieceMoveDrag || e.button !== 0) return;
       const p = navPoint;
       if (!p) return;
+      if (this.pristine) {
+        this.beginPan(e); // page blanche : rien à saisir, le fond se déplace
+        return;
+      }
+      if (this.draftPiece?.blank && !this.penMode) {
+        this.beginPan(e); // socle vide actif : rien à éditer là
+        return;
+      }
       const surfaceEdge = this.pickSurfaceEdge(p[0], p[1]);
       if (
         surfaceEdge &&
@@ -3135,10 +3695,251 @@ export class PatternView {
         this.beginPieceResize(e, p, resizeTarget);
         return;
       }
+      // 🧵 COUTURE LIBRE : départ/fin du 1er tracé, puis départ/fin du 2e — le
+      // tracé suit le contour entre deux clics (onMove). AVANT le mode
+      // sélection, qui intercepterait le clic pour déplacer la pièce.
+      if (this.freeSewMode) {
+        this.routePieceGesture(p[0], p[1]); // la colonne cliquée devient active
+        const ne = this.nearestEdge(p[0], p[1]);
+        if (ne && ne.dist <= EDGE_HIT * 2) {
+          e.preventDefault();
+          e.stopPropagation();
+          const piece = this.pieceAt(this.activePiece);
+          if (!piece) return;
+          const prefix = this.outlinePrefix(piece);
+          const L = prefix[piece.outline.length]!;
+          const st = this.freeSewTrace;
+          if (!st || st.pieceId !== this.activePiece || L < 1e-9) {
+            // Départ d'un tracé (1er ou 2e) — un clic sur une AUTRE pièce en
+            // cours de tracé repart de celle-ci (même règle que ✂).
+            const s0 = this.outlineS(prefix, ne.edge, ne.t);
+            this.freeSewTrace = {
+              pieceId: this.activePiece,
+              start: { edge: ne.edge, t: ne.t },
+              startS: s0,
+              curS: s0,
+            };
+            this.render();
+            return;
+          }
+          // Fin du tracé courant, à l'abscisse DÉROULÉE (même déroulé que le
+          // survol : le clic ne peut pas sauter de l'autre côté du contour).
+          const sRaw = this.outlineS(prefix, ne.edge, ne.t);
+          const k = Math.round((st.curS - sRaw) / L);
+          const sEnd = Math.min(
+            st.startS + L * 0.999,
+            Math.max(st.startS - L * 0.999, sRaw + k * L),
+          );
+          if (Math.abs(sEnd - st.startS) < L * 1e-4) {
+            this.freeSewTrace = null; // re-clic au départ = annuler ce tracé
+            this.render();
+            return;
+          }
+          const dir: 1 | -1 = sEnd >= st.startS ? 1 : -1;
+          const runSpec = {
+            pieceId: st.pieceId,
+            start: st.start,
+            end: { edge: ne.edge, t: ne.t },
+            dir,
+          };
+          if (!this.freeSewRunA) {
+            this.freeSewRunA = {
+              ...runSpec,
+              lenM: Math.abs(sEnd - st.startS),
+              startS: st.startS,
+              endS: sEnd,
+            };
+            this.freeSewTrace = null;
+            this.render();
+            return;
+          }
+          const a = this.freeSewRunA;
+          this.freeSewMode = false; // couture posée : le mode guidé se referme
+          this.freeSewTrace = null;
+          this.freeSewRunA = null;
+          document.body.style.cursor = '';
+          this.render();
+          this.onFreeSeam(
+            { pieceId: a.pieceId, start: a.start, end: a.end, dir: a.dir },
+            runSpec,
+          );
+        }
+        return;
+      }
+      // ⧎ MIROIR COUSU : UN clic sur le bord-axe — la pièce se duplique en
+      // symétrie, cousue le long de cet axe. AVANT le mode sélection.
+      if (this.mirrorMode) {
+        this.routePieceGesture(p[0], p[1]);
+        const ne = this.nearestEdge(p[0], p[1]);
+        if (ne && ne.dist <= EDGE_HIT * 2) {
+          e.preventDefault();
+          e.stopPropagation();
+          const pid = this.activePiece;
+          this.mirrorMode = false; // geste fait : le mode guidé se referme
+          document.body.style.cursor = '';
+          this.render();
+          this.onMirrorPiece(pid, ne.edge);
+        }
+        return;
+      }
       // ✂ COUPER & COUDRE : deux clics sur le contour de la MÊME pièce. AVANT
       // le mode sélection, qui intercepterait le clic pour déplacer la pièce.
+      // ⧢ ÉVASEMENT : 1er clic = le PIVOT (le bord qui reste fermé), 2e clic
+      // = l'OUVERTURE (le bord qui gagne l'ampleur) — puis le choix des cm.
+      if (this.fullnessMode) {
+        this.routePieceGesture(p[0], p[1]);
+        const ne = this.nearestEdge(p[0], p[1]);
+        if (ne && ne.dist <= EDGE_HIT * 2) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (this.fullnessPick && this.fullnessPick.pieceId === this.activePiece) {
+            const pivot = { edge: this.fullnessPick.edge, t: this.fullnessPick.t };
+            const pid = this.fullnessPick.pieceId;
+            this.fullnessMode = false;
+            this.fullnessPick = null;
+            this.fullnessHover = null;
+            document.body.style.cursor = '';
+            this.render();
+            this.onFullnessPicked(pid, pivot, { edge: ne.edge, t: ne.t });
+          } else {
+            this.fullnessPick = { pieceId: this.activePiece, edge: ne.edge, t: ne.t };
+            this.fullnessHover = [p[0], p[1]];
+            this.render();
+          }
+        }
+        return;
+      }
+      // ⌵ CRANS : clic sur le LIEN d'une couture = crans d'accord des deux
+      // côtés ; clic près d'un bord = poser (ou retirer) un cran à cet endroit.
+      if (this.notchMode) {
+        this.routePieceGesture(p[0], p[1]);
+        e.preventDefault();
+        e.stopPropagation();
+        const seamIdx = this.pickSeam(p[0], p[1]);
+        if (seamIdx !== null) {
+          this.onNotchSeam(seamIdx);
+          return;
+        }
+        const piece = this.pieceAt(this.activePiece);
+        if (!piece || piece.blank) return;
+        const ne = this.nearestEdge(p[0], p[1]);
+        if (ne && ne.dist <= EDGE_HIT * 2) {
+          this.onNotchToggle(this.activePiece, this.screenToUV(p[0], p[1]));
+        }
+        return;
+      }
+      // ∿ POINT COURBE : saisir un SOMMET du contour ; glisser = le rayon de
+      // l'arrondi suit le curseur (cm en direct), relâcher = le coin s'arrondit.
+      if (this.curvePointMode) {
+        this.routePieceGesture(p[0], p[1]);
+        const piece = this.pieceAt(this.activePiece);
+        if (!piece || piece.blank) return;
+        e.preventDefault();
+        e.stopPropagation();
+        let best: number | null = null;
+        let bestD = (HIT_RADIUS * 1.3) ** 2;
+        for (let i = 0; i < piece.outline.length; i++) {
+          const s = this.vertexScreen(piece.outline[i]!);
+          if (!s) continue;
+          const d2 = (p[0] - s[0]) ** 2 + (p[1] - s[1]) ** 2;
+          if (d2 < bestD) {
+            bestD = d2;
+            best = i;
+          }
+        }
+        if (best === null) return;
+        this.curvePointDrag = { vertex: best, radiusM: 0, pointerId: e.pointerId };
+        this.render();
+        return;
+      }
+      // ◆ PINCE LOSANGE : trois clics DANS la pièce — pointe haute, pointe
+      // basse, puis un clic à côté de l'axe = la demi-largeur de la taille.
+      if (this.dartMode) {
+        this.routePieceGesture(p[0], p[1]);
+        const piece = this.pieceAt(this.activePiece);
+        if (!piece || piece.blank) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const uvPt = this.screenToUV(p[0], p[1]);
+        if (!pointInPolygon(uvPt, piece.outline)) return;
+        if (!this.dartTop) {
+          this.dartTop = uvPt;
+          this.dartHover = [p[0], p[1]];
+          this.render();
+          return;
+        }
+        if (!this.dartBottom) {
+          this.dartBottom = uvPt;
+          this.render();
+          return;
+        }
+        const half = this.fisheyeHalfWidthM(uvPt);
+        const pid = this.activePiece;
+        const top = this.dartTop;
+        const bottom = this.dartBottom;
+        this.dartTop = null;
+        this.dartBottom = null;
+        this.dartHover = null;
+        this.render();
+        if (half !== null) this.onFisheyeDart(pid, top, bottom, half);
+        return;
+      }
+      // ▱ LIGNE INTERNE : poser des points DANS la pièce active ; re-clic sur
+      // le 1er point (≥ 3) = polygone fermé, re-clic sur le DERNIER (≥ 2) =
+      // polyligne ouverte. Sans tracé en cours, cliquer une ligne = supprimer.
+      if (this.internalMode) {
+        this.routePieceGesture(p[0], p[1]);
+        const piece = this.pieceAt(this.activePiece);
+        if (!piece || piece.blank) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const uvPt = this.screenToUV(p[0], p[1]);
+        if (!this.internalTrace) {
+          const hit = this.internalLineAt(p[0], p[1]);
+          if (hit !== null) {
+            this.onInternalLineDelete(this.activePiece, hit);
+            return;
+          }
+          if (!pointInPolygon(uvPt, piece.outline)) return;
+          this.internalTrace = [uvPt];
+          this.internalHover = [p[0], p[1]];
+          this.render();
+          return;
+        }
+        const trace = this.internalTrace;
+        const near = (sp: [number, number] | null): boolean =>
+          !!sp && (p[0] - sp[0]) ** 2 + (p[1] - sp[1]) ** 2 <= (HIT_RADIUS * 1.6) ** 2;
+        if (trace.length >= 3 && near(this.vertexScreen(trace[0]!))) {
+          this.commitInternalTrace(true);
+          return;
+        }
+        if (trace.length >= 2 && near(this.vertexScreen(trace[trace.length - 1]!))) {
+          this.commitInternalTrace(false);
+          return;
+        }
+        if (!pointInPolygon(uvPt, piece.outline)) return;
+        trace.push(uvPt);
+        this.render();
+        return;
+      }
       if (this.cutMode) {
         this.routePieceGesture(p[0], p[1]); // la colonne cliquée devient active
+        // Scission sur LIGNE INTERNE : sans 1er point de corde armé, cliquer
+        // une ligne dessinée au ▱ scinde la pièce le long de son tracé.
+        if (!this.cutPick) {
+          const lineHit = this.internalLineAt(p[0], p[1]);
+          if (lineHit !== null) {
+            e.preventDefault();
+            e.stopPropagation();
+            const pid = this.activePiece;
+            this.cutMode = false;
+            this.cutHover = null;
+            document.body.style.cursor = '';
+            this.render();
+            this.onCutAlongInternalLine(pid, lineHit);
+            return;
+          }
+        }
         const ne = this.nearestEdge(p[0], p[1]);
         if (ne && ne.dist <= EDGE_HIT * 2) {
           e.preventDefault();
@@ -3201,7 +4002,7 @@ export class PatternView {
         }
         this.penPointerInside = true;
         this.clearPenFeedback();
-        if (this.penPoints.length >= 3) {
+        if (this.penPoints.length >= (this.penMirror ? 2 : 3)) {
           const s0 = this.vertexScreen(this.penPoints[0]!);
           if (s0 && (p[0] - s0[0]) ** 2 + (p[1] - s0[1]) ** 2 <= (HIT_RADIUS * 1.6) ** 2) {
             this.finishPen();
@@ -3336,6 +4137,17 @@ export class PatternView {
           e.stopPropagation();
           return;
         }
+        // 🖼 GRAPHIQUE : l'image de la pièce active se saisit (corps + poignées)
+        // avant les gestes de bord — un print au milieu de la pièce se déplace
+        // sans risquer de tirer un sommet.
+        const activeGraphic = this.draftPiece?.graphic;
+        if (activeGraphic && !this.graphicDrag) {
+          const hit = this.graphicHit(this.activePiece, activeGraphic, p[0], p[1]);
+          if (hit) {
+            this.beginGraphicDrag(e, p, hit, activeGraphic);
+            return;
+          }
+        }
         const ne = this.nearestEdge(p[0], p[1]);
         if (ne && ne.dist <= EDGE_HIT) {
           const logicalCurve = this.curveIndexForEdge(ne.edge);
@@ -3391,11 +4203,63 @@ export class PatternView {
   };
 
   private readonly onMove = (e: PointerEvent): void => {
+    if (this.freeSewMode && this.freeSewTrace) {
+      const p = this.canvasPoint(e);
+      if (p && this.updateFreeSewTrace(p[0], p[1])) {
+        this.render(); // l'arc du tracé libre suit le curseur le long du bord
+      }
+      return;
+    }
+    if (this.graphicDrag && e.pointerId === this.graphicDrag.pointerId) {
+      const p = this.canvasPoint(e);
+      if (p) this.updateGraphicDrag(p[0], p[1]);
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     if (this.cutMode && this.cutPick) {
       const p = this.canvasPoint(e);
       if (p) {
         this.cutHover = [p[0], p[1]];
         this.render(); // aperçu de la corde de découpe qui suit le curseur
+      }
+      return;
+    }
+    if (this.fullnessMode && this.fullnessPick) {
+      const p = this.canvasPoint(e);
+      if (p) {
+        this.fullnessHover = [p[0], p[1]];
+        this.render(); // l'entaille fantôme suit le curseur
+      }
+      return;
+    }
+    if (this.internalMode && this.internalTrace) {
+      const p = this.canvasPoint(e);
+      if (p) {
+        this.internalHover = [p[0], p[1]];
+        this.render(); // le fil de la ligne interne suit le curseur
+      }
+      return;
+    }
+    if (this.dartMode && this.dartTop) {
+      const p = this.canvasPoint(e);
+      if (p) {
+        this.dartHover = [p[0], p[1]];
+        this.render(); // l'axe puis le losange fantôme suivent le curseur
+      }
+      return;
+    }
+    if (this.curvePointDrag) {
+      const p = this.canvasPoint(e);
+      const piece = this.pieceAt(this.activePiece);
+      if (p && piece) {
+        const corner = piece.outline[this.curvePointDrag.vertex]!;
+        const uvPt = this.screenToUV(p[0], p[1]);
+        this.curvePointDrag.radiusM = Math.hypot(
+          (uvPt[0] - corner[0]) * piece.width,
+          (uvPt[1] - corner[1]) * piece.height,
+        );
+        this.render(); // l'arc fantôme suit le rayon
       }
       return;
     }
@@ -3802,6 +4666,49 @@ export class PatternView {
   };
 
   private readonly onUp = (e: PointerEvent): void => {
+    if (this.curvePointDrag && e.pointerId === this.curvePointDrag.pointerId) {
+      const d = this.curvePointDrag;
+      this.curvePointDrag = null;
+      e.preventDefault();
+      e.stopPropagation();
+      const piece = this.pieceAt(this.activePiece);
+      if (piece) {
+        // Clic sans glisser : rayon par défaut = 40 % du plus court bord voisin.
+        const N = piece.outline.length;
+        const M = ([u, v]: UV): [number, number] => [u * piece.width, v * piece.height];
+        const P = M(piece.outline[d.vertex]!);
+        const A = M(piece.outline[(d.vertex - 1 + N) % N]!);
+        const B = M(piece.outline[(d.vertex + 1) % N]!);
+        const shortest = Math.min(Math.hypot(P[0] - A[0], P[1] - A[1]), Math.hypot(P[0] - B[0], P[1] - B[1]));
+        const radius = d.radiusM > 0.004 ? d.radiusM : 0.4 * shortest;
+        this.onRoundCorner(this.activePiece, d.vertex, radius);
+      }
+      this.render();
+      return;
+    }
+    if (this.graphicDrag && e.pointerId === this.graphicDrag.pointerId) {
+      const d = this.graphicDrag;
+      this.graphicDrag = null;
+      document.body.style.cursor = '';
+      e.preventDefault();
+      e.stopPropagation();
+      const changed =
+        Math.hypot(
+          d.preview.anchor[0] - d.start.anchor[0],
+          d.preview.anchor[1] - d.start.anchor[1],
+        ) > 1e-4 ||
+        Math.abs(d.preview.widthM - d.start.widthM) > 1e-4 ||
+        Math.abs(d.preview.rotationRad - d.start.rotationRad) > 1e-3;
+      if (changed) {
+        // La copie locale montre l'état final tout de suite (pas de retour en
+        // arrière visuel pendant le rebuild) ; l'atelier pousse l'historique.
+        const piece = this.pieceAt(d.pid);
+        if (piece) this.pieces[d.pid] = { ...piece, graphic: { ...d.preview, anchor: [...d.preview.anchor] as UV } };
+        this.onGraphicChange(d.pid, d.preview);
+      }
+      this.render();
+      return;
+    }
     if (this.panDrag && e.pointerId === this.panDrag.pointerId) {
       this.panDrag = null;
       document.body.style.cursor = '';
@@ -4134,12 +5041,71 @@ export class PatternView {
     }
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     ctx.drawImage(this.staticLayer, 0, 0);
+    if (this.inDraft && this.pristine) return; // page blanche : grille + silhouette
     this.renderHandles();
     if (this.inDraft) this.renderDraft();
   }
 
   /** Draw a face's outline + vertices with no live/transient decoration — used
    * for the INACTIVE column (dimmed) so both faces are always visible. */
+  /** Index de la ligne interne de la pièce ACTIVE sous (x, y) px, ou null. */
+  private internalLineAt(x: number, y: number): number | null {
+    const piece = this.pieceAt(this.activePiece);
+    if (!piece?.internalLines?.length) return null;
+    const TOL = 6;
+    for (let i = 0; i < piece.internalLines.length; i++) {
+      const line = piece.internalLines[i]!;
+      const sp = line.points
+        .map((uv) => this.vertexScreen(uv))
+        .filter((s): s is [number, number] => s !== null);
+      if (sp.length < 2) continue;
+      const nSeg = line.closed ? sp.length : sp.length - 1;
+      for (let k = 0; k < nSeg; k++) {
+        const a = sp[k]!;
+        const b = sp[(k + 1) % sp.length]!;
+        const vx = b[0] - a[0];
+        const vy = b[1] - a[1];
+        const len2 = vx * vx + vy * vy || 1e-6;
+        const t = Math.max(0, Math.min(1, ((x - a[0]) * vx + (y - a[1]) * vy) / len2));
+        const d = Math.hypot(x - (a[0] + t * vx), y - (a[1] + t * vy));
+        if (d <= TOL) return i;
+      }
+    }
+    return null;
+  }
+
+  /** ◆ Demi-largeur métrique du losange : distance PERPENDICULAIRE du point
+   * (UV) à l'axe pointe-à-pointe, mesurée en espace métrique de la pièce. */
+  private fisheyeHalfWidthM(uvPt: UV): number | null {
+    const piece = this.pieceAt(this.activePiece);
+    if (!piece || !this.dartTop || !this.dartBottom) return null;
+    const W = piece.width;
+    const H = piece.height;
+    const ax = this.dartTop[0] * W;
+    const ay = this.dartTop[1] * H;
+    const bx = this.dartBottom[0] * W;
+    const by = this.dartBottom[1] * H;
+    const px = uvPt[0] * W;
+    const py = uvPt[1] * H;
+    const len = Math.hypot(bx - ax, by - ay);
+    if (len < 1e-9) return null;
+    return Math.abs(((px - ax) * -(by - ay)) / len + ((py - ay) * (bx - ax)) / len);
+  }
+
+  /** Terminer le tracé de ligne interne (fermé ou ouvert) et le publier. */
+  private commitInternalTrace(closed: boolean): void {
+    const trace = this.internalTrace;
+    if (!trace) return;
+    const pid = this.activePiece;
+    this.internalTrace = null;
+    this.internalHover = null;
+    this.render();
+    this.onInternalLine(pid, {
+      points: trace.map((pt) => [pt[0], pt[1]] as UV),
+      ...(closed ? { closed: true } : {}),
+    });
+  }
+
   private drawFaceStatic(
     ctx: CanvasRenderingContext2D,
     piece: DraftPiece,
@@ -4148,6 +5114,7 @@ export class PatternView {
     outline: readonly UV[] = piece.outline,
     showVertices = true,
   ): void {
+    if (piece.blank) return; // socle vide : rien à montrer
     const pts = outline
       .map((uv) => this.vertexScreen(uv, piece, offset, yOffset))
       .filter((s): s is [number, number] => s !== null);
@@ -4161,6 +5128,87 @@ export class PatternView {
       ctx.lineWidth = 1.5;
       ctx.setLineDash([]);
       ctx.stroke();
+    }
+    // ⌵ Crans de montage : trait perpendiculaire au bord, vers l'extérieur.
+    if (piece.notches?.length && pts.length >= 3) {
+      ctx.strokeStyle = 'rgba(255, 214, 170, 0.95)';
+      ctx.lineWidth = 1.8;
+      ctx.setLineDash([]);
+      const W = piece.width;
+      const H = piece.height;
+      const N = outline.length;
+      for (const notch of piece.notches) {
+        // bord le plus proche (métrique) + projection
+        let bestE = 0;
+        let bestT = 0;
+        let bestD = Infinity;
+        for (let e = 0; e < N; e++) {
+          const a = outline[e]!;
+          const b = outline[(e + 1) % N]!;
+          const ex = (b[0] - a[0]) * W;
+          const ey = (b[1] - a[1]) * H;
+          const px = (notch.at[0] - a[0]) * W;
+          const py = (notch.at[1] - a[1]) * H;
+          const len2 = ex * ex + ey * ey || 1e-12;
+          const t = Math.max(0, Math.min(1, (px * ex + py * ey) / len2));
+          const d = Math.hypot(px - t * ex, py - t * ey);
+          if (d < bestD) {
+            bestD = d;
+            bestE = e;
+            bestT = t;
+          }
+        }
+        const a = outline[bestE]!;
+        const b = outline[(bestE + 1) % N]!;
+        const baseUV: UV = [a[0] + (b[0] - a[0]) * bestT, a[1] + (b[1] - a[1]) * bestT];
+        const exM = (b[0] - a[0]) * W;
+        const eyM = (b[1] - a[1]) * H;
+        const el = Math.hypot(exM, eyM) || 1e-9;
+        let nx = -eyM / el;
+        let ny = exM / el;
+        // vers l'EXTÉRIEUR : un pas vers n qui reste dedans → retourner
+        const TICK = 0.007;
+        const probe: UV = [baseUV[0] + (nx * 0.002) / W, baseUV[1] + (ny * 0.002) / H];
+        if (pointInPolygon(probe, outline)) {
+          nx = -nx;
+          ny = -ny;
+        }
+        const tipUV: UV = [baseUV[0] + (nx * TICK) / W, baseUV[1] + (ny * TICK) / H];
+        const s0 = this.vertexScreen(baseUV, piece, offset, yOffset);
+        const s1 = this.vertexScreen(tipUV, piece, offset, yOffset);
+        if (s0 && s1) {
+          // Plancher d'affichage : 7 mm réels mais JAMAIS moins de 7 px à
+          // l'écran — le cran reste lisible dézoomé (l'export garde ses mm).
+          let dx = s1[0] - s0[0];
+          let dy = s1[1] - s0[1];
+          const dl = Math.hypot(dx, dy);
+          if (dl > 1e-6 && dl < 7) {
+            dx = (dx / dl) * 7;
+            dy = (dy / dl) * 7;
+          }
+          ctx.beginPath();
+          ctx.moveTo(s0[0], s0[1]);
+          ctx.lineTo(s0[0] + dx, s0[1] + dy);
+          ctx.stroke();
+        }
+      }
+    }
+    // ▱ Lignes internes : style, pliures, repères — en pointillé fin.
+    if (piece.internalLines?.length) {
+      ctx.strokeStyle = 'rgba(214, 222, 234, 0.6)';
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([6, 4]);
+      for (const line of piece.internalLines) {
+        const lp = line.points
+          .map((uv) => this.vertexScreen(uv, piece, offset, yOffset))
+          .filter((s): s is [number, number] => s !== null);
+        if (lp.length < 2) continue;
+        ctx.beginPath();
+        lp.forEach((s, i) => (i === 0 ? ctx.moveTo(s[0], s[1]) : ctx.lineTo(s[0], s[1])));
+        if (line.closed) ctx.closePath();
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
     }
     if (!showVertices) return;
     const hidden = logicalCurveInteriorIndices(logicalCurveRuns(piece, outline));
@@ -4191,8 +5239,14 @@ export class PatternView {
         index === 0 ? ctx.moveTo(point[0], point[1]) : ctx.lineTo(point[0], point[1]),
       );
       ctx.closePath();
-      ctx.fillStyle = preview ? 'rgba(107, 223, 223, 0.16)' : 'rgba(255, 191, 96, 0.15)';
+      const under = surface.side === 'under';
+      ctx.fillStyle = preview
+        ? 'rgba(107, 223, 223, 0.16)'
+        : under
+          ? 'rgba(158, 178, 214, 0.1)'
+          : 'rgba(255, 191, 96, 0.15)';
       ctx.fill();
+      if (under && !preview) ctx.setLineDash([4, 4]); // sous le support : en creux
 
       for (let edge = 0; edge < points.length; edge++) {
         const a = points[edge]!;
@@ -4596,6 +5650,42 @@ export class PatternView {
     // shape can be closed.
     if (this.penMode) {
       const sp = this.penPoints.map((uv) => this.vertexScreen(uv)).filter((s): s is [number, number] => s !== null);
+      // ⋈ Miroir au tracé : l'axe vertical du 1er point + l'écho de la moitié
+      // dessinée, en direct — ce qui se fermera est exactement ce qui s'affiche.
+      if (this.penMirror && this.penPoints.length >= 1 && sp.length === this.penPoints.length) {
+        const axisU = this.penPoints[0]![0];
+        const a0 = this.vertexScreen([axisU, 0] as UV);
+        const a1 = this.vertexScreen([axisU, 1] as UV);
+        if (a0 && a1) {
+          ctx.strokeStyle = 'rgba(122, 226, 154, 0.55)';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([6, 5]);
+          ctx.beginPath();
+          ctx.moveTo(a0[0], a0[1]);
+          ctx.lineTo(a1[0], a1[1]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+        if (this.penPoints.length >= 2) {
+          const echo = this.penPoints
+            .slice(1)
+            .map(([u, v]) => this.vertexScreen([2 * axisU - u, v] as UV))
+            .filter((s): s is [number, number] => s !== null)
+            .reverse();
+          if (echo.length) {
+            ctx.strokeStyle = 'rgba(127, 178, 255, 0.45)';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            // dernier point dessiné → son écho → … → écho du 2e → 1er point (axe)
+            ctx.moveTo(sp[sp.length - 1]![0], sp[sp.length - 1]![1]);
+            for (const s of echo) ctx.lineTo(s[0], s[1]);
+            ctx.lineTo(sp[0]![0], sp[0]![1]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+        }
+      }
       if (sp.length) {
         ctx.strokeStyle = 'rgba(127, 178, 255, 0.9)';
         ctx.lineWidth = 1.5;
@@ -4604,7 +5694,7 @@ export class PatternView {
         sp.forEach((s, i) => (i === 0 ? ctx.moveTo(s[0], s[1]) : ctx.lineTo(s[0], s[1])));
         ctx.stroke();
         for (let i = 0; i < sp.length; i++) {
-          const closable = i === 0 && sp.length >= 3;
+          const closable = i === 0 && sp.length >= (this.penMirror ? 2 : 3);
           ctx.beginPath();
           ctx.arc(sp[i]![0], sp[i]![1], closable ? 6 : 4, 0, Math.PI * 2);
           ctx.fillStyle = closable ? 'rgba(255, 159, 107, 0.95)' : 'rgba(255, 255, 255, 0.92)';
@@ -4619,6 +5709,207 @@ export class PatternView {
     if (pts.length !== out.length) return;
     const wholeSelected = this.selectedPieces.has(this.activePiece);
 
+    // ⧢ Aperçu de l'évasement : le pivot retenu + l'entaille vers le curseur.
+    if (this.fullnessMode && this.fullnessPick && this.fullnessPick.pieceId === this.activePiece) {
+      const piece = this.pieceAt(this.activePiece);
+      if (piece) {
+        const N = piece.outline.length;
+        const a = piece.outline[this.fullnessPick.edge % N]!;
+        const b = piece.outline[(this.fullnessPick.edge + 1) % N]!;
+        const pivotUV: UV = [
+          a[0] + (b[0] - a[0]) * this.fullnessPick.t,
+          a[1] + (b[1] - a[1]) * this.fullnessPick.t,
+        ];
+        const sp = this.vertexScreen(pivotUV);
+        if (sp) {
+          ctx.fillStyle = 'rgba(122, 226, 154, 0.95)';
+          ctx.beginPath();
+          ctx.arc(sp[0], sp[1], 5, 0, Math.PI * 2);
+          ctx.fill();
+          if (this.fullnessHover) {
+            ctx.strokeStyle = 'rgba(122, 226, 154, 0.7)';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([7, 5]);
+            ctx.beginPath();
+            ctx.moveTo(sp[0], sp[1]);
+            ctx.lineTo(this.fullnessHover[0], this.fullnessHover[1]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+        }
+      }
+    }
+    // ∿ Aperçu du point courbe : l'arc fantôme au rayon du drag, cm affichés.
+    if (this.curvePointDrag) {
+      const piece = this.pieceAt(this.activePiece);
+      if (piece) {
+        const N = piece.outline.length;
+        const i = this.curvePointDrag.vertex;
+        const W = piece.width;
+        const H = piece.height;
+        const M = ([u, v]: UV): [number, number] => [u * W, v * H];
+        const P = M(piece.outline[i]!);
+        const A = M(piece.outline[(i - 1 + N) % N]!);
+        const B = M(piece.outline[(i + 1) % N]!);
+        const lenIn = Math.hypot(P[0] - A[0], P[1] - A[1]);
+        const lenOut = Math.hypot(P[0] - B[0], P[1] - B[1]);
+        if (lenIn > 1e-6 && lenOut > 1e-6) {
+          const rRaw = this.curvePointDrag.radiusM > 0.004
+            ? this.curvePointDrag.radiusM
+            : 0.4 * Math.min(lenIn, lenOut);
+          const r = Math.min(Math.max(rRaw, 0.003), 0.45 * Math.min(lenIn, lenOut));
+          const start = [P[0] + ((A[0] - P[0]) * r) / lenIn, P[1] + ((A[1] - P[1]) * r) / lenIn];
+          const end = [P[0] + ((B[0] - P[0]) * r) / lenOut, P[1] + ((B[1] - P[1]) * r) / lenOut];
+          ctx.strokeStyle = 'rgba(255, 159, 107, 0.95)';
+          ctx.lineWidth = 1.8;
+          ctx.beginPath();
+          let started = false;
+          for (let j = 0; j <= 12; j++) {
+            const t = j / 12;
+            const x = (1 - t) * (1 - t) * start[0]! + 2 * (1 - t) * t * P[0] + t * t * end[0]!;
+            const y = (1 - t) * (1 - t) * start[1]! + 2 * (1 - t) * t * P[1] + t * t * end[1]!;
+            const sp = this.vertexScreen([x / W, y / H]);
+            if (!sp) continue;
+            if (started) ctx.lineTo(sp[0], sp[1]);
+            else {
+              ctx.moveTo(sp[0], sp[1]);
+              started = true;
+            }
+          }
+          ctx.stroke();
+          const sc = this.vertexScreen(piece.outline[i]!);
+          if (sc) {
+            const label = `r ${(r * 100).toFixed(1).replace('.', ',')} cm`;
+            ctx.font = '600 11px Inter, ui-sans-serif, sans-serif';
+            ctx.textAlign = 'center';
+            const w = ctx.measureText(label).width;
+            ctx.fillStyle = 'rgba(14, 15, 18, 0.85)';
+            ctx.fillRect(sc[0] - w / 2 - 5, sc[1] - 26, w + 10, 16);
+            ctx.fillStyle = 'rgba(255, 194, 150, 1)';
+            ctx.fillText(label, sc[0], sc[1] - 14);
+            ctx.textAlign = 'start';
+          }
+        }
+      }
+    }
+    // ◆ Aperçu de la pince losange : axe pointe-à-pointe, puis losange
+    // fantôme dont la taille suit le curseur, largeur en cm affichée.
+    if (this.dartMode && this.dartTop) {
+      const sTop = this.vertexScreen(this.dartTop);
+      if (sTop) {
+        ctx.fillStyle = 'rgba(255, 159, 107, 0.95)';
+        ctx.beginPath();
+        ctx.arc(sTop[0], sTop[1], 4.5, 0, Math.PI * 2);
+        ctx.fill();
+        const sBottom = this.dartBottom ? this.vertexScreen(this.dartBottom) : null;
+        if (!this.dartBottom && this.dartHover) {
+          ctx.strokeStyle = 'rgba(255, 159, 107, 0.6)';
+          ctx.lineWidth = 1.4;
+          ctx.setLineDash([6, 4]);
+          ctx.beginPath();
+          ctx.moveTo(sTop[0], sTop[1]);
+          ctx.lineTo(this.dartHover[0], this.dartHover[1]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+        if (sBottom) {
+          ctx.fillStyle = 'rgba(255, 159, 107, 0.95)';
+          ctx.beginPath();
+          ctx.arc(sBottom[0], sBottom[1], 4.5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(255, 159, 107, 0.75)';
+          ctx.lineWidth = 1.2;
+          ctx.setLineDash([5, 4]);
+          ctx.beginPath();
+          ctx.moveTo(sTop[0], sTop[1]);
+          ctx.lineTo(sBottom[0], sBottom[1]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          if (this.dartHover) {
+            const hoverUV = this.screenToUV(this.dartHover[0], this.dartHover[1]);
+            const half = this.fisheyeHalfWidthM(hoverUV);
+            const piece = this.pieceAt(this.activePiece);
+            if (half !== null && piece) {
+              // Taille du losange : perpendiculaire MÉTRIQUE au milieu de l'axe.
+              const W = piece.width;
+              const H = piece.height;
+              const ax = this.dartTop[0] * W;
+              const ay = this.dartTop[1] * H;
+              const bx = this.dartBottom![0] * W;
+              const by = this.dartBottom![1] * H;
+              const len = Math.hypot(bx - ax, by - ay) || 1e-9;
+              const nx = -(by - ay) / len;
+              const ny = (bx - ax) / len;
+              const mx = (ax + bx) / 2;
+              const my = (ay + by) / 2;
+              const wl: UV = [(mx - nx * half) / W, (my - ny * half) / H];
+              const wr: UV = [(mx + nx * half) / W, (my + ny * half) / H];
+              const sl = this.vertexScreen(wl);
+              const sr = this.vertexScreen(wr);
+              if (sl && sr) {
+                ctx.strokeStyle = 'rgba(255, 159, 107, 0.95)';
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                ctx.moveTo(sTop[0], sTop[1]);
+                ctx.lineTo(sl[0], sl[1]);
+                ctx.lineTo(sBottom[0], sBottom[1]);
+                ctx.lineTo(sr[0], sr[1]);
+                ctx.closePath();
+                ctx.stroke();
+                const label = `${(2 * half * 100).toFixed(1).replace('.', ',')} cm`;
+                ctx.font = '600 11px Inter, ui-sans-serif, sans-serif';
+                ctx.textAlign = 'center';
+                const mid = this.vertexScreen([(wl[0] + wr[0]) / 2, (wl[1] + wr[1]) / 2]);
+                if (mid) {
+                  const w = ctx.measureText(label).width;
+                  ctx.fillStyle = 'rgba(14, 15, 18, 0.85)';
+                  ctx.fillRect(mid[0] - w / 2 - 5, mid[1] - 22, w + 10, 16);
+                  ctx.fillStyle = 'rgba(255, 194, 150, 1)';
+                  ctx.fillText(label, mid[0], mid[1] - 10);
+                }
+                ctx.textAlign = 'start';
+              }
+            }
+          }
+        }
+      }
+    }
+    // ▱ Tracé de ligne interne en cours : points posés + fil vers le curseur ;
+    // le 1er point s'allume quand le polygone peut se fermer, le dernier quand
+    // la polyligne peut se terminer.
+    if (this.internalMode && this.internalTrace) {
+      const sp = this.internalTrace
+        .map((uv) => this.vertexScreen(uv))
+        .filter((s): s is [number, number] => s !== null);
+      if (sp.length) {
+        ctx.strokeStyle = 'rgba(214, 222, 234, 0.9)';
+        ctx.lineWidth = 1.4;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        sp.forEach((s, i) => (i === 0 ? ctx.moveTo(s[0], s[1]) : ctx.lineTo(s[0], s[1])));
+        ctx.stroke();
+        if (this.internalHover) {
+          ctx.strokeStyle = 'rgba(214, 222, 234, 0.45)';
+          ctx.beginPath();
+          ctx.moveTo(sp[sp.length - 1]![0], sp[sp.length - 1]![1]);
+          ctx.lineTo(this.internalHover[0], this.internalHover[1]);
+          ctx.stroke();
+        }
+        ctx.setLineDash([]);
+        for (let i = 0; i < sp.length; i++) {
+          const closable = i === 0 && sp.length >= 3;
+          const endable = i === sp.length - 1 && sp.length >= 2 && i !== 0;
+          ctx.beginPath();
+          ctx.arc(sp[i]![0], sp[i]![1], closable || endable ? 6 : 3.5, 0, Math.PI * 2);
+          ctx.fillStyle = closable
+            ? 'rgba(255, 159, 107, 0.95)'
+            : endable
+              ? 'rgba(122, 226, 154, 0.95)'
+              : 'rgba(255, 255, 255, 0.92)';
+          ctx.fill();
+        }
+      }
+    }
     // ✂ Aperçu de la corde de découpe : du 1er point posé au curseur.
     if (this.cutMode && this.cutPick && this.cutPick.pieceId === this.activePiece) {
       const a = pts[this.cutPick.edge % pts.length]!;
@@ -5507,6 +6798,109 @@ export class PatternView {
       );
       ctx.setLineDash([]);
     }
+    // 🖼 GRAPHIQUES : l'image de chaque pièce, bornée à son contour, aperçu de
+    // glisser compris ; la pièce active porte le gizmo (cadre + 2 poignées).
+    for (let pid = 0; pid < this.pieces.length; pid++) {
+      const piece = this.pieceAt(pid);
+      const dragHere = this.graphicDrag && this.graphicDrag.pid === pid ? this.graphicDrag.preview : null;
+      const graphic = dragHere ?? piece?.graphic;
+      if (!piece || !graphic) continue;
+      const f = this.graphicScreenFrame(pid, graphic);
+      if (!f) continue;
+      const img = this.graphicImage(graphic.image);
+      const off = this.pieceOffset(pid);
+      const yOff = this.pieceYOffset(pid);
+      const outlineScreen = piece.outline
+        .map((q) => this.vertexScreen(q, piece, off, yOff))
+        .filter((q): q is [number, number] => !!q);
+      if (outlineScreen.length === piece.outline.length && img) {
+        ctx.save();
+        ctx.beginPath();
+        outlineScreen.forEach((q, i) => (i === 0 ? ctx.moveTo(q[0], q[1]) : ctx.lineTo(q[0], q[1])));
+        ctx.closePath();
+        ctx.clip();
+        ctx.translate(f.cx, f.cy);
+        ctx.rotate(f.rot);
+        ctx.globalAlpha = 0.96;
+        if (graphic.repeat) {
+          // MOTIF : remplir toute la pièce avec l'image répétée — l'échelle
+          // écran d'une répétition = f.w px pour l'image entière.
+          const pattern = ctx.createPattern(img, 'repeat');
+          if (pattern) {
+            const m = new DOMMatrix();
+            m.a = f.w / img.naturalWidth;
+            m.d = f.h / img.naturalHeight;
+            m.e = -f.w / 2;
+            m.f = -f.h / 2;
+            pattern.setTransform(m);
+            ctx.fillStyle = pattern;
+            // Grand rectangle en repère local tourné : couvre la pièce entière.
+            const R = Math.max(this.canvas.width, this.canvas.height) * 1.6;
+            ctx.fillRect(-R, -R, 2 * R, 2 * R);
+          }
+        } else {
+          ctx.drawImage(img, -f.w / 2, -f.h / 2, f.w, f.h);
+        }
+        ctx.globalAlpha = 1;
+        ctx.restore();
+      }
+      if (pid === this.activePiece) {
+        ctx.save();
+        ctx.translate(f.cx, f.cy);
+        ctx.rotate(f.rot);
+        ctx.strokeStyle = 'rgba(107, 223, 223, 0.9)';
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([5, 4]);
+        ctx.strokeRect(-f.w / 2, -f.h / 2, f.w, f.h);
+        ctx.setLineDash([]);
+        // poignée de taille (coin bas-droit)
+        ctx.fillStyle = 'rgba(107, 223, 223, 0.95)';
+        ctx.fillRect(f.w / 2 - 4, f.h / 2 - 4, 8, 8);
+        // poignée de rotation (au-dessus, reliée)
+        ctx.beginPath();
+        ctx.moveTo(0, -f.h / 2);
+        ctx.lineTo(0, -f.h / 2 - 20);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(0, -f.h / 2 - 20, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+    // 🧵 Aperçu de la couture libre : le 1er tracé retenu (plein) et le tracé
+    // en cours (pointillé), chacun sur SA pièce — indépendant de la colonne
+    // active, comme les coutures d'assemblage ci-dessus.
+    if (this.freeSewMode || this.freeSewRunA || this.freeSewTrace) {
+      const drawFreeSewArc = (
+        pieceId: number,
+        sA: number,
+        sB: number,
+        dash: number[],
+        width: number,
+      ): void => {
+        const arc = this.freeSewArcScreen(pieceId, sA, sB);
+        if (!arc.length) return;
+        ctx.strokeStyle = 'rgba(255, 159, 107, 0.95)';
+        ctx.lineWidth = width;
+        ctx.setLineDash(dash);
+        ctx.beginPath();
+        arc.forEach((s, i) => (i === 0 ? ctx.moveTo(s[0], s[1]) : ctx.lineTo(s[0], s[1])));
+        ctx.stroke();
+        ctx.setLineDash([]);
+        for (const end of [arc[0]!, arc[arc.length - 1]!]) {
+          ctx.beginPath();
+          ctx.arc(end[0], end[1], 4.5, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(255, 159, 107, 0.95)';
+          ctx.fill();
+        }
+      };
+      if (this.freeSewRunA) {
+        drawFreeSewArc(this.freeSewRunA.pieceId, this.freeSewRunA.startS, this.freeSewRunA.endS, [], 3);
+      }
+      if (this.freeSewTrace) {
+        drawFreeSewArc(this.freeSewTrace.pieceId, this.freeSewTrace.startS, this.freeSewTrace.curS, [6, 4], 2.2);
+      }
+    }
     // Status line (bottom-left): the picked edge's length while sewing, else how
     // many edges are still free to sew (0 = fully assembled).
     const freeOf = (pid: number): number => {
@@ -5529,6 +6923,20 @@ export class PatternView {
         this.surfacePlacementHover
           ? `Cliquez ici pour poser ${this.pieceLabel(this.surfacePlacementPieceId)} · clic droit = annuler`
           : 'Survolez la pièce support, puis cliquez à la position exacte de la poche',
+        8,
+        this.canvas.height - 20,
+      );
+    } else if (this.freeSewMode || this.freeSewTrace || this.freeSewRunA) {
+      ctx.font = '700 11px ui-monospace, monospace';
+      ctx.fillStyle = 'rgba(255, 159, 107, 0.98)';
+      const st = this.freeSewTrace;
+      const cmOf = (m: number): string => `${Math.round(m * 100)} cm`;
+      ctx.fillText(
+        st
+          ? `🧵 ${this.freeSewRunA ? '2e' : '1er'} tracé : ${cmOf(Math.abs(st.curS - st.startS))} — suivez le bord (les coins passent), cliquez la fin · re-clic au départ = annuler`
+          : this.freeSewRunA
+            ? `🧵 1er tracé retenu : ${cmOf(this.freeSewRunA.lenM)} — cliquez le DÉPART du bord à assembler (autre pièce ou même contour)`
+            : '🧵 couture libre : cliquez un point de DÉPART sur un contour — mi-bord et coins permis',
         8,
         this.canvas.height - 20,
       );
@@ -5689,6 +7097,7 @@ export class PatternView {
       const nCols = this.nCols;
       const colRange = (k: number): [number, number] => {
         const q = this.pieceAt(k);
+        if (q?.blank) return [0, 0]; // socle vide : colonne fantôme sans emprise
         const w = (q ? q.width : p.width) / 2;
         // Colonnes corps (0/1) ET colonne de tracé à la plume : la silhouette de
         // référence fait partie de l'emprise (elle sert de gabarit de dessin).
@@ -5740,7 +7149,10 @@ export class PatternView {
         ctx.fillStyle = 'rgba(214, 205, 190, 0.16)';
         ctx.fill();
       };
-      for (let k = 0; k < Math.min(nCols, 2); k++) drawSil(this.offsets[k]!);
+      for (let k = 0; k < Math.min(nCols, 2); k++) {
+        if (this.pieceAt(k)?.blank) continue; // socle vide : pas de gabarit fantôme
+        drawSil(this.offsets[k]!);
+      }
       // Pendant un tracé à la plume dans une colonne libre, la silhouette
       // s'affiche AUSSI derrière cette colonne : c'est le gabarit de référence
       // pour dessiner la pièce aux bonnes dimensions (elle s'éteint au commit).
@@ -5787,7 +7199,8 @@ export class PatternView {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'bottom';
       const labY = this.layoutToScreen(0, maxY)[1] - 3;
-      for (let k = 0; k < nCols; k++) {
+      for (let k = 0; k < (this.pristine ? 0 : nCols); k++) {
+        if (this.pieceAt(k)?.blank) continue; // socle vide : colonne muette
         const label = this.pieceLabel(k).toUpperCase();
         const sx = this.layoutToScreen(this.offsets[k]! + (ranges[k]![0] + ranges[k]![1]) / 2, maxY)[0];
         const colPx = (ranges[k]![1] - ranges[k]![0]) * this.tf.scale;
