@@ -25,7 +25,7 @@ import {
   type FabricDynamics,
 } from './engine/solver/FabricMaterial';
 import { generateClothGrid, generateSeamedPanels, combineClothMeshes, scaleMeshInverseMassesToReferenceCellArea, type CrossSeam, type ClothMeshData } from './engine/cloth/ClothMesh';
-import { defaultDraft, blankBaseDraft, tshirtDraft, compileDraft, compileAssembly, compileCrossSeams, compileSurfaceContacts, compileSurfaceSeams, crossSewnOpenCells, cutPieceAlongChord, docPieces, freeSeamBetween, mirrorDuplicatePiece, graphicLocalUV, GRAPHIC_IMAGE_MAX_CHARS, INTERNAL_LINES_MAX, offsetPieceOutline, generateFittedSleeves, addFisheyeDart, roundOutlineCorner, cutPieceAlongInternalLine, toggleNotchAt, addSeamNotches, slashSpreadFullness, fitCapWidthToArmhole, draftPieceLabel, gatherSeamSide, neckOpeningCells, removeFreePiece, reboxPiece, pieceIdOf, nearestOutlineEdgeInfo, syncPieceFrames, sanitizeDraft, pointInPolygon, pointInTriangle, surfaceAttachmentUV, type DraftDoc, type AssemblySeam, type DraftPiece, type PieceGraphic, type UV } from './engine/pattern/Draft';
+import { defaultDraft, blankBaseDraft, tshirtDraft, compileDraft, compileAssembly, compileCrossSeams, compileSurfaceContacts, compileSurfaceSeams, crossSewnOpenCells, cutPieceAlongChord, docPieces, freeSeamBetween, mirrorDuplicatePiece, graphicLocalUV, GRAPHIC_IMAGE_MAX_CHARS, INTERNAL_LINES_MAX, offsetPieceOutline, generateFittedSleeves, addFisheyeDart, roundOutlineCorner, cutPieceAlongInternalLine, toggleNotchAt, addSeamNotches, slashSpreadFullness, isSelfIntersecting, fitCapWidthToArmhole, draftPieceLabel, gatherSeamSide, neckOpeningCells, removeFreePiece, reboxPiece, pieceIdOf, nearestOutlineEdgeInfo, syncPieceFrames, sanitizeDraft, pointInPolygon, pointInTriangle, surfaceAttachmentUV, type DraftDoc, type AssemblySeam, type DraftPiece, type PieceGraphic, type UV } from './engine/pattern/Draft';
 import {
   applyStagingOffset,
   autoPlaceMeshFromCrossSeams,
@@ -923,6 +923,8 @@ async function main(): Promise<void> {
     setPressed('at-move3d', move3DEnabled);
     setPressed('at-arrange', arrangeMode);
     setPressed('at-draw3d', draw3dMode);
+    setPressed('at-edit3d', edit3dMode);
+    setPressed('at-sketch3d', sketch3dMode);
     setPressed('at-sleeves', atelierSleeves);
     setPressed(
       'at-place',
@@ -1321,6 +1323,12 @@ async function main(): Promise<void> {
       draw3dMode = false;
       clearDraw3d();
       setPressed('at-draw3d', false);
+      edit3dMode = false;
+      clearEdit3d();
+      setPressed('at-edit3d', false);
+      sketch3dMode = false;
+      clearSketch3d();
+      setPressed('at-sketch3d', false);
     }
     if (!move3DEnabled) {
       setPieceHover(null);
@@ -1450,6 +1458,12 @@ async function main(): Promise<void> {
       draw3dMode = false;
       clearDraw3d();
       setPressed('at-draw3d', false);
+      edit3dMode = false;
+      clearEdit3d();
+      setPressed('at-edit3d', false);
+      sketch3dMode = false;
+      clearSketch3d();
+      setPressed('at-sketch3d', false);
     }
     setPressed('at-move3d', move3DEnabled);
     setPressed('at-arrange', arrangeMode);
@@ -2068,6 +2082,83 @@ async function main(): Promise<void> {
     }
     if ((event.target as Element | null)?.closest('#fullness-cancel')) closeFullnessChooser();
   });
+  // ✂3D dans la foulée : la proposition qui suit un tracé ✎3D OUVERT.
+  const draw3dSplitChooser = document.getElementById('draw3d-chooser') as HTMLElement | null;
+  let draw3dSplitPending: { pid: number; lineIndex: number } | null = null;
+  const closeDraw3dChooser = (): void => {
+    if (draw3dSplitChooser) draw3dSplitChooser.hidden = true;
+    draw3dSplitPending = null;
+  };
+  draw3dSplitChooser?.addEventListener('click', (event) => {
+    const target = event.target as Element | null;
+    if (target?.closest('#draw3d-split-now')) {
+      const pending = draw3dSplitPending;
+      closeDraw3dChooser();
+      if (pending) splitAlongInternalLine(pending.pid, pending.lineIndex);
+      return;
+    }
+    if (target?.closest('#draw3d-split-keep')) {
+      closeDraw3dChooser();
+      showToast('Ligne gardée — ✂ + clic dessus (au plan) scindera plus tard.');
+    }
+  });
+  /** ⛶ : la zone fermée sur le corps devient une pièce (cadre corps, comme
+   * la plume 2D) et passe au place-chooser — tout l'aval existant s'applique
+   * (Devant/Dos remplacent la face, Bras = manche adaptée à l'emmanchure). */
+  const commitSketch3d = (): void => {
+    const drawn = sketch3dPoints.map((q) => [q[0], q[1]] as [number, number]);
+    sketch3dPoints = [];
+    if (drawn.length < 3) return;
+    const gridN = resolution as 32 | 64 | 128;
+    // Page blanche : le doc devient le socle vide, comme « Nouvelle pièce ».
+    if (!atelierEmptyState.hidden || !draft) {
+      draft = blankBaseDraft(gridN);
+      patternView.setDraft(draft.piece, draft.back ?? null, []);
+      patternView.setAssembly([]);
+      patternView.setSegmentLinks([]);
+    }
+    const world = patternView.penMirroring ? closeSketchMirror(drawn) : drawn;
+    if (world.length < 3) return;
+    const dims = draft.piece;
+    const W = dims.width;
+    const H = dims.height;
+    const outline = world.map(
+      ([x, y]) => [x / W + 0.5, (dims.topY - y) / H] as UV,
+    );
+    if (isSelfIntersecting(outline)) {
+      showToast('Cette zone se croise — reprenez le tracé (Échap pour annuler).');
+      sketch3dPoints = drawn; // rendre le tracé pour retouche
+      return;
+    }
+    pushHistory();
+    const piece: DraftPiece = {
+      outline,
+      darts: [],
+      seams: [],
+      openEdges: [],
+      width: W,
+      height: H,
+      topY: dims.topY,
+      gap: dims.gap,
+      name: 'Croquis corps',
+    };
+    draft.pieces = [...(draft.pieces ?? []), piece];
+    const pid = 1 + (draft.pieces.length);
+    draftTouched = true;
+    atelierDesign = true;
+    teePreset = false;
+    refreshPatternDoc();
+    refreshHint();
+    placePending = pid;
+    showChooser(true);
+    showPlacementStatus(
+      [
+        `Zone dessinée SUR LE CORPS — ${world.length} points${patternView.penMirroring ? ', symétrisée sur l’axe du corps' : ''}.`,
+        'Choisissez son placement : Devant/Dos remplacent la face, Bras = manche adaptée à l’emmanchure mesurée.',
+      ],
+      true,
+    );
+  };
   /** ✎3D : le tracé posé sur le tissu devient une ligne interne du patron. */
   const commitDraw3d = (closed: boolean): void => {
     const pid = draw3dTarget;
@@ -2087,10 +2178,19 @@ async function main(): Promise<void> {
     replaceDraftPiece(pid, next);
     draftTouched = true;
     refreshPatternDoc();
+    // Polyligne OUVERTE sur une pièce plate : proposer la scission tout de
+    // suite — le Cut & Sew de Clo en un geste, sans repasser par le plan.
+    const canSplitNow = !closed && !draftPieceAt(pid)?.wrap && draw3dSplitChooser;
+    if (canSplitNow) {
+      draw3dSplitPending = { pid, lineIndex: (next.internalLines?.length ?? 1) - 1 };
+      draw3dSplitChooser.hidden = false;
+    }
     showPlacementStatus(
       [
         `Tracé posé SUR LE TISSU — retombé au patron de « ${draftPieceLabel(next, pid)} » (${points.length} points${closed ? ', polygone fermé' : ''}).`,
-        'La boucle Clo complète : ✂ Découper + clic sur cette ligne (au plan) = la pièce se scinde le long · visible aussi aux exports · Ctrl+Z retire.',
+        canSplitNow
+          ? 'Scinder la pièce le long MAINTENANT ? Choisissez ci-dessus — ou gardez la ligne (style, repère) et scindez plus tard au ✂.'
+          : 'La boucle Clo complète : ✂ Découper + clic sur cette ligne (au plan) = la pièce se scinde le long · visible aussi aux exports · Ctrl+Z retire.',
       ],
       true,
     );
@@ -2127,7 +2227,9 @@ async function main(): Promise<void> {
       true,
     );
   };
-  patternView.onCutAlongInternalLine = (pid, lineIndex) => {
+  /** Scinder le long d'une ligne interne — partagé entre le clic ✂ au plan
+   * et le « Scinder maintenant ? » qui suit un tracé ✎3D. */
+  const splitAlongInternalLine = (pid: number, lineIndex: number): void => {
     if (!draft) return;
     const res = cutPieceAlongInternalLine(draft, pid, lineIndex);
     if (!res.ok) {
@@ -2153,6 +2255,7 @@ async function main(): Promise<void> {
       );
     });
   };
+  patternView.onCutAlongInternalLine = (pid, lineIndex) => splitAlongInternalLine(pid, lineIndex);
   patternView.onRoundCorner = (pid, vertex, radiusM) => {
     if (!draft) return;
     const res = roundOutlineCorner(draft, pid, vertex, radiusM);
@@ -2610,6 +2713,84 @@ async function main(): Promise<void> {
   // ⋈ MIROIR AU TRACÉ : préférence collante de la plume — le 1er point pose
   // l'axe vertical, la moitié dessinée s'échoit en direct, la fermeture donne
   // la pièce symétrique ENTIÈRE. L'armer hors tracé arme aussi la plume.
+  // ⛶ CROQUIS SUR LE CORPS : bouton du panneau VUE 3D — exclusif avec tous.
+  (document.getElementById('at-sketch3d') as HTMLElement | null)?.addEventListener('click', (e) => {
+    sketch3dMode = !sketch3dMode;
+    if (!sketch3dMode) clearSketch3d();
+    if (sketch3dMode) {
+      // Fonctionne depuis la PAGE BLANCHE : le doc devient le socle vide dès
+      // l'armement (l'aperçu du tracé vit sur l'overlay, qui exige un draft) —
+      // sans draftTouched, le mannequin nu reste la toile de fond.
+      if (!atelierEmptyState.hidden || !draft) {
+        draft = blankBaseDraft(resolution as 32 | 64 | 128);
+        patternView.setDraft(draft.piece, draft.back ?? null, []);
+        patternView.setAssembly([]);
+        patternView.setSegmentLinks([]);
+      }
+      move3DEnabled = false;
+      gizmoPick = null;
+      arrangeMode = false;
+      arrangePick = null;
+      arrangeHoverId = null;
+      draw3dMode = false;
+      clearDraw3d();
+      edit3dMode = false;
+      clearEdit3d();
+      pieceHoverDirty = true;
+      setPieceHover(null);
+    }
+    (e.currentTarget as HTMLElement).setAttribute('aria-pressed', String(sketch3dMode));
+    setPressed('at-move3d', move3DEnabled);
+    setPressed('at-arrange', arrangeMode);
+    setPressed('at-draw3d', draw3dMode);
+    setPressed('at-edit3d', edit3dMode);
+    setPressed('at-sketch3d', sketch3dMode);
+    showPlacementStatus(
+      sketch3dMode
+        ? [
+            'Croquis SUR LE CORPS : placez-vous de face et cliquez des points sur le mannequin — la zone fermée deviendra une pièce du patron.',
+            `Re-clic sur le 1er point = fermer et placer · sur le dernier = retirer le point · ⋈ Miroir au tracé ${patternView.penMirroring ? 'ACTIF : dessinez une moitié, l’axe du corps symétrise' : 'peut symétriser sur l’axe du corps'} · Échap annule.`,
+          ]
+        : ['Croquis sur le corps désactivé.'],
+      true,
+    );
+    refreshHint();
+  });
+  // ⬦ ÉDITER LE CONTOUR : bouton du panneau VUE 3D — exclusif avec ✥/⊹/✎.
+  (document.getElementById('at-edit3d') as HTMLElement | null)?.addEventListener('click', (e) => {
+    edit3dMode = !edit3dMode;
+    if (!edit3dMode) clearEdit3d();
+    if (edit3dMode) {
+      if (!atelierDesign) enterDesign();
+      move3DEnabled = false;
+      gizmoPick = null;
+      arrangeMode = false;
+      arrangePick = null;
+      arrangeHoverId = null;
+      draw3dMode = false;
+      clearDraw3d();
+      sketch3dMode = false;
+      clearSketch3d();
+      setPressed('at-sketch3d', false);
+      pieceHoverDirty = true;
+      setPieceHover(null);
+    }
+    (e.currentTarget as HTMLElement).setAttribute('aria-pressed', String(edit3dMode));
+    setPressed('at-move3d', move3DEnabled);
+    setPressed('at-arrange', arrangeMode);
+    setPressed('at-draw3d', draw3dMode);
+    setPressed('at-edit3d', edit3dMode);
+    showPlacementStatus(
+      edit3dMode
+        ? [
+            'Édition du contour EN 3D : les sommets du patron s’allument sur le tissu — tirez-en un, il suit sur le plan de sa pièce.',
+            'Relâchez : le patron 2D suit, les coutures recousent aux nouvelles longueurs · Ctrl+Z annule.',
+          ]
+        : ['Édition du contour 3D désactivée.'],
+      true,
+    );
+    refreshHint();
+  });
   // ✎3D : bouton du panneau VUE 3D — exclusif avec ✥ et ⊹.
   (document.getElementById('at-draw3d') as HTMLElement | null)?.addEventListener('click', (e) => {
     draw3dMode = !draw3dMode;
@@ -2621,6 +2802,12 @@ async function main(): Promise<void> {
       arrangeMode = false;
       arrangePick = null;
       arrangeHoverId = null;
+      edit3dMode = false;
+      clearEdit3d();
+      setPressed('at-edit3d', false);
+      sketch3dMode = false;
+      clearSketch3d();
+      setPressed('at-sketch3d', false);
       pieceHoverDirty = true;
       setPieceHover(null);
     }
@@ -3500,6 +3687,44 @@ async function main(): Promise<void> {
   /** Inverse le clic 3D en (pièce, UV) sur les pièces PLATES de la
    * préparation : intersection rayon-plan par pièce (repère affine de
    * uvWorldOf), la plus PROCHE de la caméra qui tombe dans le contour. */
+  /** (u, v) brut du rayon sur le PLAN AFFINE d'une pièce plate — sans test
+   * d'intérieur ni de bornes (l'édition de contour sort du contour !). */
+  const planeUVAt = (
+    ray: { origin: readonly [number, number, number]; dir: readonly [number, number, number] },
+    pid: number,
+  ): { uv: UV; s: number } | null => {
+    const piece = draft ? docPieces(draft)[pid] : null;
+    if (!piece || piece.blank || piece.wrap) return null;
+    const map = uvWorldOf(pid);
+    if (!map) return null;
+    const p0 = map(0, 0);
+    const pu = map(1, 0);
+    const pv = map(0, 1);
+    const U: [number, number, number] = [pu[0] - p0[0], pu[1] - p0[1], pu[2] - p0[2]];
+    const V: [number, number, number] = [pv[0] - p0[0], pv[1] - p0[1], pv[2] - p0[2]];
+    const nx = U[1] * V[2] - U[2] * V[1];
+    const ny = U[2] * V[0] - U[0] * V[2];
+    const nz = U[0] * V[1] - U[1] * V[0];
+    const denom = nx * ray.dir[0] + ny * ray.dir[1] + nz * ray.dir[2];
+    if (Math.abs(denom) < 1e-9) return null;
+    const sHit =
+      (nx * (p0[0] - ray.origin[0]) + ny * (p0[1] - ray.origin[1]) + nz * (p0[2] - ray.origin[2])) / denom;
+    if (sHit < 0.01) return null;
+    const hit: [number, number, number] = [
+      ray.origin[0] + ray.dir[0] * sHit,
+      ray.origin[1] + ray.dir[1] * sHit,
+      ray.origin[2] + ray.dir[2] * sHit,
+    ];
+    const w: [number, number, number] = [hit[0] - p0[0], hit[1] - p0[1], hit[2] - p0[2]];
+    const uu = U[0] * U[0] + U[1] * U[1] + U[2] * U[2];
+    const uvd = U[0] * V[0] + U[1] * V[1] + U[2] * V[2];
+    const vv = V[0] * V[0] + V[1] * V[1] + V[2] * V[2];
+    const wu = w[0] * U[0] + w[1] * U[1] + w[2] * U[2];
+    const wv = w[0] * V[0] + w[1] * V[1] + w[2] * V[2];
+    const det = uu * vv - uvd * uvd;
+    if (Math.abs(det) < 1e-12) return null;
+    return { uv: [(wu * vv - wv * uvd) / det, (wv * uu - wu * uvd) / det], s: sHit };
+  };
   const pickDraw3dPoint = (
     ray: { origin: readonly [number, number, number]; dir: readonly [number, number, number] },
     lockPid: number | null,
@@ -3510,43 +3735,52 @@ async function main(): Promise<void> {
     for (let pid = 0; pid < all.length; pid++) {
       if (lockPid !== null && pid !== lockPid) continue;
       const piece = all[pid];
-      if (!piece || piece.blank || piece.wrap) continue;
-      const map = uvWorldOf(pid);
-      if (!map) continue;
-      const p0 = map(0, 0);
-      const pu = map(1, 0);
-      const pv = map(0, 1);
-      const U: [number, number, number] = [pu[0] - p0[0], pu[1] - p0[1], pu[2] - p0[2]];
-      const V: [number, number, number] = [pv[0] - p0[0], pv[1] - p0[1], pv[2] - p0[2]];
-      const nx = U[1] * V[2] - U[2] * V[1];
-      const ny = U[2] * V[0] - U[0] * V[2];
-      const nz = U[0] * V[1] - U[1] * V[0];
-      const denom = nx * ray.dir[0] + ny * ray.dir[1] + nz * ray.dir[2];
-      if (Math.abs(denom) < 1e-9) continue;
-      const sHit =
-        (nx * (p0[0] - ray.origin[0]) + ny * (p0[1] - ray.origin[1]) + nz * (p0[2] - ray.origin[2])) / denom;
-      if (sHit < 0.01) continue;
-      const hit: [number, number, number] = [
-        ray.origin[0] + ray.dir[0] * sHit,
-        ray.origin[1] + ray.dir[1] * sHit,
-        ray.origin[2] + ray.dir[2] * sHit,
-      ];
-      // Coordonnées (u, v) dans le repère du plan (moindres carrés 2×2).
-      const w: [number, number, number] = [hit[0] - p0[0], hit[1] - p0[1], hit[2] - p0[2]];
-      const uu = U[0] * U[0] + U[1] * U[1] + U[2] * U[2];
-      const uvd = U[0] * V[0] + U[1] * V[1] + U[2] * V[2];
-      const vv = V[0] * V[0] + V[1] * V[1] + V[2] * V[2];
-      const wu = w[0] * U[0] + w[1] * U[1] + w[2] * U[2];
-      const wv = w[0] * V[0] + w[1] * V[1] + w[2] * V[2];
-      const det = uu * vv - uvd * uvd;
-      if (Math.abs(det) < 1e-12) continue;
-      const u = (wu * vv - wv * uvd) / det;
-      const v = (wv * uu - wu * uvd) / det;
+      if (!piece) continue;
+      const hit = planeUVAt(ray, pid);
+      if (!hit) continue;
+      const [u, v] = hit.uv;
       if (u < -0.02 || u > 1.02 || v < -0.02 || v > 1.02) continue;
       if (!pointInPolygon([u, v], piece.outline)) continue;
-      if (!best || sHit < best.s) best = { pid, uv: [u, v], s: sHit };
+      if (!best || hit.s < best.s) best = { pid, uv: [u, v], s: hit.s };
     }
     return best ? { pid: best.pid, uv: best.uv } : null;
+  };
+  // ⬦ ÉDITER LE CONTOUR EN 3D (l'« Edit 3D Garment » de Clo, allégé) : les
+  // sommets du patron deviennent des poignées SUR le tissu de la préparation ;
+  // tirer déplace le sommet sur le plan de sa pièce, relâcher committe dans le
+  // circuit 2D (build — les coutures recousent aux nouvelles longueurs).
+  let edit3dMode = false;
+  let edit3dDrag: { pid: number; vertex: number; uv: UV; moved: boolean } | null = null;
+  const clearEdit3d = (): boolean => {
+    const active = edit3dMode || edit3dDrag !== null;
+    edit3dDrag = null;
+    return active;
+  };
+  // ⛶ CROQUIS SUR LE CORPS (le « Flatten » de Clo, v1 par projection frontale)
+  // — dessiner une ZONE FERMÉE directement sur le mannequin, page blanche
+  // comprise : les clics tombent sur le plan frontal du corps (le plan de
+  // repos du Devant), l'écho miroir suit l'axe du corps si ⋈ est armé, et la
+  // fermeture crée la pièce dans le CADRE CORPS — le contrat exact de la
+  // plume 2D — puis ouvre le place-chooser (Devant, Dos, Bras…).
+  let sketch3dMode = false;
+  let sketch3dPoints: [number, number][] = []; // points MONDE (x, y)
+  const clearSketch3d = (): boolean => {
+    const active = sketch3dMode || sketch3dPoints.length > 0;
+    sketch3dPoints = [];
+    return active;
+  };
+  /** Ferme le croquis en zone symétrique sur l'axe du corps (x = 0). */
+  const closeSketchMirror = (pts: readonly [number, number][]): [number, number][] => {
+    const out = pts.map((q) => [q[0], q[1]] as [number, number]);
+    if (out.length < 2) return out;
+    for (const idx of [0, out.length - 1]) {
+      if (Math.abs(out[idx]![0]) < 0.008) out[idx]![0] = 0; // aimanté à l'axe
+    }
+    const mirrored = out
+      .filter((q) => q[0] !== 0)
+      .map((q) => [-q[0], q[1]] as [number, number])
+      .reverse();
+    return [...out, ...mirrored];
   };
   let gizmoPick: { pid: number; instance: number } | null = null;
   const GIZMO_AXES: readonly {
@@ -4950,6 +5184,14 @@ async function main(): Promise<void> {
       message = arrangePick
         ? '⊹ pièce saisie — cliquez une pastille autour du corps pour l’y ranger · re-cliquer une autre pièce change la saisie · Échap annule'
         : '⊹ arrangement : cliquez une pièce dans la vue 3D, puis une pastille (Devant, Dos, Bras…) — préparation seulement, coutures inchangées · Échap annule';
+    } else if (sketch3dMode) {
+      message = sketch3dPoints.length
+        ? '⛶ croquis en cours sur le corps — re-clic au 1er point = fermer et PLACER la zone · au dernier = retirer le point · Échap annule'
+        : '⛶ croquis sur le corps : de FACE, cliquez des points sur le mannequin — la zone fermée devient une pièce du patron, placée où vous voulez · ⋈ la symétrise sur l’axe · Échap désarme';
+    } else if (edit3dMode) {
+      message = edit3dDrag
+        ? '⬦ sommet saisi — il suit votre main sur le plan de sa pièce · relâchez pour committer (cm affichés), Échap annule'
+        : '⬦ contour en 3D : les sommets du patron s’allument sur le tissu — tirez-en un directement · le 2D suit, les coutures recousent · Échap désarme';
     } else if (draw3dMode) {
       message = draw3dPoints.length
         ? '✎ tracé sur le tissu en cours — cliquez la suite sur la MÊME pièce · re-clic au 1er point = polygone fermé · au dernier = polyligne · Échap annule'
@@ -5399,9 +5641,11 @@ async function main(): Promise<void> {
         ? gizmoPick
         : null;
     const anyInternal =
-      atelierDesign &&
-      (docPieces(draft).some((piece) => !!piece?.internalLines?.length) ||
-        (draw3dMode && draw3dPoints.length > 0));
+      (atelierDesign &&
+        (docPieces(draft).some((piece) => !!piece?.internalLines?.length) ||
+          (draw3dMode && draw3dPoints.length > 0) ||
+          edit3dMode)) ||
+      (sketch3dMode && sketch3dPoints.length > 0);
     if (
       !sewing &&
       !zippering &&
@@ -5778,6 +6022,96 @@ async function main(): Promise<void> {
         );
       }
     }
+    // ⛶ Croquis sur le corps : points + fil sur le plan frontal, écho miroir
+    // en pointillé quand ⋈ est armé, 1er point allumé dès que fermable.
+    if (sketch3dMode && sketch3dPoints.length) {
+      const dimsS = draft.piece;
+      const zS = dimsS.gap / 2;
+      const sp = sketch3dPoints
+        .map((q) => proj([q[0], q[1], zS]))
+        .filter((q): q is [number, number] => q !== null);
+      if (sp.length) {
+        if (patternView.penMirroring) {
+          const echo = sketch3dPoints
+            .filter((q) => Math.abs(q[0]) > 1e-9)
+            .map((q) => proj([-q[0], q[1], zS]))
+            .filter((q): q is [number, number] => q !== null)
+            .reverse();
+          if (echo.length) {
+            mirrorCtx.strokeStyle = 'rgba(127, 178, 255, 0.5)';
+            mirrorCtx.lineWidth = 1.4;
+            mirrorCtx.setLineDash([4, 4]);
+            mirrorCtx.beginPath();
+            mirrorCtx.moveTo(sp[sp.length - 1]![0], sp[sp.length - 1]![1]);
+            for (const q of echo) mirrorCtx.lineTo(q[0], q[1]);
+            mirrorCtx.lineTo(sp[0]![0], sp[0]![1]);
+            mirrorCtx.stroke();
+            mirrorCtx.setLineDash([]);
+          }
+        }
+        mirrorCtx.strokeStyle = 'rgba(122, 226, 154, 0.95)';
+        mirrorCtx.lineWidth = 1.7;
+        mirrorCtx.setLineDash([6, 4]);
+        mirrorCtx.beginPath();
+        sp.forEach((q, i) => (i === 0 ? mirrorCtx.moveTo(q[0], q[1]) : mirrorCtx.lineTo(q[0], q[1])));
+        mirrorCtx.stroke();
+        mirrorCtx.setLineDash([]);
+        for (let i = 0; i < sp.length; i++) {
+          const closable = i === 0 && sp.length >= 3;
+          mirrorCtx.beginPath();
+          mirrorCtx.arc(sp[i]![0], sp[i]![1], closable ? 6 : 3.5, 0, Math.PI * 2);
+          mirrorCtx.fillStyle = closable ? 'rgba(255, 159, 107, 0.95)' : 'rgba(255, 255, 255, 0.92)';
+          mirrorCtx.fill();
+        }
+      }
+    }
+    // ⬦ Édition de contour : toutes les poignées de sommets + le fantôme du
+    // contour pendant un drag (le sommet déplacé substitué, en orange).
+    if (edit3dMode && atelierDesign) {
+      const allP = docPieces(draft);
+      for (let pid = 0; pid < allP.length; pid++) {
+        const piece = allP[pid];
+        if (!piece || piece.blank || piece.wrap) continue;
+        const map = uvWorldOf(pid);
+        if (!map) continue;
+        const dragging = edit3dDrag && edit3dDrag.pid === pid ? edit3dDrag : null;
+        if (dragging) {
+          mirrorCtx.strokeStyle = 'rgba(255, 159, 107, 0.9)';
+          mirrorCtx.lineWidth = 1.6;
+          mirrorCtx.setLineDash([5, 4]);
+          mirrorCtx.beginPath();
+          let started = false;
+          for (let k = 0; k <= piece.outline.length; k++) {
+            const idx = k % piece.outline.length;
+            const src = idx === dragging.vertex ? dragging.uv : piece.outline[idx]!;
+            const q = proj(map(src[0], src[1]));
+            if (!q) continue;
+            if (started) mirrorCtx.lineTo(q[0], q[1]);
+            else {
+              mirrorCtx.moveTo(q[0], q[1]);
+              started = true;
+            }
+          }
+          mirrorCtx.stroke();
+          mirrorCtx.setLineDash([]);
+        }
+        for (let k = 0; k < piece.outline.length; k++) {
+          const src = dragging && k === dragging.vertex ? dragging.uv : piece.outline[k]!;
+          const q = proj(map(src[0], src[1]));
+          if (!q) continue;
+          const hot = dragging && k === dragging.vertex;
+          mirrorCtx.beginPath();
+          mirrorCtx.arc(q[0], q[1], hot ? 6 : 3.5, 0, Math.PI * 2);
+          mirrorCtx.fillStyle = hot ? 'rgba(255, 159, 107, 0.95)' : 'rgba(236, 240, 246, 0.9)';
+          mirrorCtx.fill();
+          if (!hot) {
+            mirrorCtx.lineWidth = 1;
+            mirrorCtx.strokeStyle = 'rgba(14, 15, 18, 0.8)';
+            mirrorCtx.stroke();
+          }
+        }
+      }
+    }
     // ✎3D : le tracé en cours sur le tissu — points + fil, 1er/dernier allumés.
     if (draw3dMode && draw3dTarget !== null && draw3dPoints.length && atelierDesign) {
       const map = uvWorldOf(draw3dTarget);
@@ -5942,6 +6276,81 @@ async function main(): Promise<void> {
     const count = Math.min(system.count, posCache.length / 4);
     // ⊹ Points d'arrangement : 1er clic = la pièce, 2e clic = l'ancre. Un clic
     // dans le vide (ni pièce ni pastille) rend la main à l'orbite caméra.
+    // ⛶ Croquis sur le corps : clics sur le plan frontal ; re-clic au 1er
+    // (≥3) = zone fermée → pièce + place-chooser ; re-clic au dernier =
+    // retirer le point (retouche).
+    if (sceneMode === 'atelier' && sketch3dMode) {
+      const dims = (draft ?? defaultDraft(resolution as 32 | 64 | 128)).piece;
+      const zPlane = dims.gap / 2;
+      if (Math.abs(ray.dir[2]) < 1e-6) return false;
+      const t = (zPlane - ray.origin[2]) / ray.dir[2];
+      if (t < 0.01) return false;
+      const wx = ray.origin[0] + ray.dir[0] * t;
+      const wy = ray.origin[1] + ray.dir[1] * t;
+      const toPx = (q: readonly [number, number]): [number, number] | null => {
+        const n0 = arrangeNdcOf([q[0], q[1], zPlane]);
+        if (!n0) return null;
+        const rect3 = canvas.getBoundingClientRect();
+        return [((n0[0] + 1) / 2) * rect3.width, ((1 - n0[1]) / 2) * rect3.height];
+      };
+      const clickPx: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
+      const near = (q: readonly [number, number]): boolean => {
+        const s0 = toPx(q);
+        return !!s0 && (clickPx[0] - s0[0]) ** 2 + (clickPx[1] - s0[1]) ** 2 <= 12 ** 2;
+      };
+      if (sketch3dPoints.length >= 3 && near(sketch3dPoints[0]!)) {
+        commitSketch3d();
+        return false;
+      }
+      if (sketch3dPoints.length >= 1 && near(sketch3dPoints[sketch3dPoints.length - 1]!)) {
+        sketch3dPoints.pop(); // retouche : le dernier point s'efface
+        return false;
+      }
+      sketch3dPoints.push([wx, wy]);
+      return false;
+    }
+    // ⬦ Édition de contour : saisir la poignée de sommet la plus proche.
+    if (sceneMode === 'atelier' && atelierDesign && edit3dMode) {
+      if (!draft) return true;
+      const all = docPieces(draft);
+      const rect3 = canvas.getBoundingClientRect();
+      const px = e.clientX - rect3.left;
+      const py = e.clientY - rect3.top;
+      let bestPick: { pid: number; vertex: number } | null = null;
+      let bestD = 14 ** 2;
+      for (let pid = 0; pid < all.length; pid++) {
+        const piece = all[pid];
+        if (!piece || piece.blank || piece.wrap) continue;
+        const map = uvWorldOf(pid);
+        if (!map) continue;
+        for (let k = 0; k < piece.outline.length; k++) {
+          const [u, v] = piece.outline[k]!;
+          const n0 = arrangeNdcOf(map(u, v));
+          if (!n0) continue;
+          const sx = ((n0[0] + 1) / 2) * rect3.width;
+          const sy = ((1 - n0[1]) / 2) * rect3.height;
+          const d2 = (px - sx) ** 2 + (py - sy) ** 2;
+          if (d2 < bestD) {
+            bestD = d2;
+            bestPick = { pid, vertex: k };
+          }
+        }
+      }
+      if (!bestPick) return false; // clic dans le vide : consommé, pas d'orbite
+      const piece = all[bestPick.pid]!;
+      edit3dDrag = {
+        pid: bestPick.pid,
+        vertex: bestPick.vertex,
+        uv: [...piece.outline[bestPick.vertex]!] as UV,
+        moved: false,
+      };
+      try {
+        canvas.setPointerCapture(e.pointerId);
+      } catch {
+        // pointeur synthétique : capture impossible, sans gravité
+      }
+      return false;
+    }
     // ✎3D : chaque clic sur le tissu pose un point ; re-clic au 1er (≥3) =
     // polygone fermé, re-clic au dernier (≥2) = polyligne — comme au ▱ 2D.
     if (sceneMode === 'atelier' && atelierDesign && draw3dMode) {
@@ -6130,6 +6539,22 @@ async function main(): Promise<void> {
       draw3dMode = false;
       clearDraw3d();
       setPressed('at-draw3d', false);
+      cancelled3D = true;
+    }
+    if (edit3dMode || edit3dDrag) {
+      edit3dMode = false;
+      clearEdit3d();
+      setPressed('at-edit3d', false);
+      cancelled3D = true;
+    }
+    if (sketch3dMode || sketch3dPoints.length) {
+      sketch3dMode = false;
+      clearSketch3d();
+      setPressed('at-sketch3d', false);
+      cancelled3D = true;
+    }
+    if (draw3dSplitChooser && !draw3dSplitChooser.hidden) {
+      closeDraw3dChooser();
       cancelled3D = true;
     }
     if (dragIndex !== null) {
@@ -7522,6 +7947,52 @@ async function main(): Promise<void> {
       });
     }
 
+    // ⬦ Édition de contour : le sommet saisi suit le rayon sur le plan de SA
+    // pièce ; au relâcher, commit dans le circuit 2D (refus si auto-croisé).
+    if (edit3dDrag) {
+      if (mouse.leftDown && sceneMode === 'atelier' && atelierDesign) {
+        const hit = planeUVAt(ray, edit3dDrag.pid);
+        if (hit) {
+          const u = Math.min(1, Math.max(0, hit.uv[0]));
+          const v = Math.min(1, Math.max(0, hit.uv[1]));
+          if (Math.hypot(u - edit3dDrag.uv[0], v - edit3dDrag.uv[1]) > 1e-6) {
+            edit3dDrag.uv = [u, v];
+            edit3dDrag.moved = true;
+          }
+        }
+      } else {
+        const d = edit3dDrag;
+        edit3dDrag = null;
+        const piece = draft ? docPieces(draft)[d.pid] : null;
+        if (piece && d.moved && draft) {
+          const prev = piece.outline[d.vertex]!;
+          const distM = Math.hypot((d.uv[0] - prev[0]) * piece.width, (d.uv[1] - prev[1]) * piece.height);
+          if (distM >= 0.002) {
+            const outline = piece.outline.map((pt, i) => (i === d.vertex ? ([d.uv[0], d.uv[1]] as UV) : pt));
+            if (isSelfIntersecting(outline)) {
+              showToast('Ce déplacement croiserait le contour — geste abandonné.');
+            } else {
+              pushHistory();
+              replaceDraftPiece(d.pid, { ...piece, outline });
+              draftTouched = true;
+              teePreset = false;
+              atelierDesign = true;
+              simBtn().classList.remove('running');
+              build();
+              void lifecycle.whenIdle().then(() => {
+                showPlacementStatus(
+                  [
+                    `Sommet du contour DÉPLACÉ depuis la 3D sur « ${draftPieceLabel(draftPieceOf(d.pid), d.pid)} » — ${(distM * 100).toFixed(1).replace('.', ',')} cm.`,
+                    'Le patron 2D a suivi · les coutures recousent aux nouvelles longueurs · Ctrl+Z annule.',
+                  ],
+                  true,
+                );
+              });
+            }
+          }
+        }
+      }
+    }
     // ORGANISER EN 3D : la pièce saisie suit la souris dans le plan d'écran
     // passant par le point saisi. Selon l'angle de caméra, ce plan déplace en
     // X/Y/Z. The solver buffers move live, then only the preparation offset is

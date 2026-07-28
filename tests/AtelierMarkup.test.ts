@@ -237,6 +237,23 @@ describe('atelier workspace markup', () => {
     );
   });
 
+  it('exposes the ⛶ sketch-on-body button (v171) with its cheat-sheet entry', () => {
+    expect(html).toMatch(/<button id="at-sketch3d"[^>]*title="[^"]*CROQUIS SUR LE CORPS[^"]*"/);
+    expect(html).toContain('<dt>⛶ Croquis sur corps</dt>');
+  });
+
+  it('exposes the ⬦ edit-3D-outline button (v170) with its cheat-sheet entry', () => {
+    expect(html).toMatch(/<button id="at-edit3d"[^>]*title="[^"]*CONTOUR EN 3D[^"]*"/);
+    expect(html).toContain('<dt>⬦ Retoucher contour</dt>');
+  });
+
+  it('offers the split-now chooser after a 3D trace (v169)', () => {
+    expect(html).toContain('<div id="draw3d-chooser" hidden>');
+    expect(html).toContain('<button id="draw3d-split-now">');
+    expect(html).toContain('<button id="draw3d-split-keep">');
+    expect(html).toMatch(/<dt>✎ Dessiner sur tissu<\/dt><dd>[^<]*SCINDER dans la foulée/);
+  });
+
   it('exposes the ✎3D draw-on-fabric button (v168) with its cheat-sheet entry', () => {
     expect(html).toMatch(/<button id="at-draw3d"[^>]*title="[^"]*SUR LE TISSU[^"]*"/);
     expect(html).toContain('<dt>✎ Dessiner sur tissu</dt>');

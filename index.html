@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TOILE — du brief au patron · v168</title>
+  <title>TOILE — du brief au patron · v171</title>
   <style>
     :root {
       color-scheme: dark;
@@ -563,6 +563,7 @@
     #motif-chooser,
     #offset-chooser,
     #fullness-chooser,
+    #draw3d-chooser,
     #gather-chooser {
       position: absolute;
       z-index: 5;
@@ -582,6 +583,7 @@
     #motif-chooser[hidden],
     #offset-chooser[hidden],
     #fullness-chooser[hidden],
+    #draw3d-chooser[hidden],
     #gather-chooser[hidden] { display: none; }
     #motif-chooser .q,
     #offset-chooser .q,
@@ -1133,7 +1135,7 @@
   <canvas id="view" tabindex="-1" aria-label="Vue 3D du vêtement et du mannequin"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 5 — du brief au patron · v168</small></span>
+    <span class="title">TOILE<small>phase 5 — du brief au patron · v171</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
       <span id="resolution-rebuild-status" role="status" aria-live="polite" hidden></span>
@@ -1361,7 +1363,9 @@
         <dt>Clic droit</dt><dd>Sélectionner toute une pièce ; avec ⌘/Ctrl, former un groupe.</dd>
         <dt>Coin + glisser</dt><dd>Redimensionner la pièce ou tout le groupe sélectionné.</dd>
         <dt>Alt + glisser un bord</dt><dd>Créer une pince ; un glisser simple bombe le bord.</dd>
-        <dt>✎ Dessiner sur tissu</dt><dd>Dans la vue 3D : cliquez des points sur une pièce — le tracé retombe en ligne interne du patron, prête à scinder au ✂. La boucle Clo, sur le mannequin.</dd>
+        <dt>⛶ Croquis sur corps</dt><dd>De face, cliquez des points sur le mannequin — la zone fermée devient une pièce (⋈ la symétrise sur l’axe du corps), placée où vous voulez. Le patron naît sur le corps.</dd>
+        <dt>⬦ Retoucher contour</dt><dd>En 3D : les sommets du patron s’allument sur le tissu — tirez-en un, le patron 2D suit et les coutures recousent. Échap désarme.</dd>
+        <dt>✎ Dessiner sur tissu</dt><dd>Dans la vue 3D : cliquez des points sur une pièce — le tracé retombe en ligne interne du patron, et TOILE propose de SCINDER dans la foulée. La boucle Clo, sur le mannequin.</dd>
         <dt>⧢ Évasement</dt><dd>Couper-pivoter : cliquez le pivot puis le bord à ouvrir, choisissez les cm — l’entaille pivote et devient de l’ampleur (évasé, godet), en une seule pièce.</dd>
         <dt>⌵ Crans</dt><dd>Clic près d’un bord = cran posé (re-clic = retiré) ; clic sur le lien d’une couture = crans d’accord appariés des deux côtés — imprimés sur le patron.</dd>
         <dt>∿ Point courbe</dt><dd>Saisissez un sommet et glissez : le coin s’arrondit en arc au rayon voulu (cm en direct) — coutures préservées, points réglables ensuite.</dd>
@@ -1447,6 +1451,11 @@
     </div>
     <!-- ⇱ OFFSET DU CONTOUR : choisir la distance — extérieur = aisance,
          intérieur = doublure. Sommets et coutures restent en place. -->
+    <div id="draw3d-chooser" hidden>
+      <span>✂ Tracé posé sur le tissu :</span>
+      <button id="draw3d-split-now">✂ Scinder maintenant</button>
+      <button id="draw3d-split-keep">Garder la ligne</button>
+    </div>
     <div id="fullness-chooser" hidden>
       <span>⧢ Ampleur à ouvrir :</span>
       <button data-open-cm="2">+2 cm</button>
@@ -1509,6 +1518,8 @@
     <button id="at-move3d" data-first-tip aria-pressed="true" title="Déplacer librement la pièce ou l’exemplaire saisi — ou le cliquer pour afficher son trièdre X·Y·Z et tirer une flèche : déplacement précis sur un axe, en cm. Le patron et les coutures ne changent pas; l’essayage reconstruira automatiquement la pose finale.">✥ Déplacer une pièce</button>
     <button id="at-arrange" data-first-tip aria-pressed="false" title="Points d’arrangement : cliquez une pièce puis une pastille autour du mannequin (Devant, Dos, Côtés, Bras, Bassin, Jambes) — la pièce s’y range en deux clics. Préparation seulement : patron, coutures et essayage inchangés.">⊹ Arranger sur le corps</button>
     <button id="at-draw3d" aria-pressed="false" title="Dessiner SUR LE TISSU de la préparation 3D : cliquez des points sur une pièce plate — re-clic sur le premier point ferme un polygone, sur le dernier termine la polyligne. Le tracé retombe en ligne interne du patron 2D, scindable avec ✂ Découper, imprimée aux exports.">✎ Dessiner sur tissu</button>
+    <button id="at-edit3d" aria-pressed="false" title="ÉDITER LE CONTOUR EN 3D : les sommets du patron s’allument sur le tissu de la préparation — tirez-en un directement, il suit sur le plan de sa pièce. Au relâcher le patron 2D suit et les coutures recousent aux nouvelles longueurs.">⬦ Retoucher contour</button>
+    <button id="at-sketch3d" aria-pressed="false" title="CROQUIS SUR LE CORPS : de face, cliquez des points directement sur le mannequin — même depuis la page blanche. La zone fermée devient une pièce du patron (⋈ la symétrise sur l’axe du corps) et passe au choix de placement : Devant, Dos, Bras avec manche adaptée…">⛶ Croquis sur corps</button>
     <button id="at-reset3d" title="Annuler uniquement le déplacement manuel de préparation de la pièce active. Son placement final sera toujours reconstruit depuis les coutures au lancement de l’essayage.">⌖ Annuler le déplacement manuel</button>
   </div>
   <div id="atelier-statusbar" role="status">
