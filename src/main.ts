@@ -4012,8 +4012,13 @@ async function main(): Promise<void> {
   // — 60 000 tris, grille 7 mm, stature CLO 1,752 m. Asset propriétaire CLO :
   // usage local/démo, droits à confirmer avant toute publication. L'historique
   // femme-scan (MakeHuman CC0) reste livré à côté en repli.
+  // v188 : le mannequin homme est « Leo » (MV2.1, l'homme phare de CLO),
+  // exporté et cuit par le même pipeline que Mia — corps seul réparé étanche,
+  // tools/bake.py à sa stature CLO de 1,8796 m. Asset propriétaire CLO :
+  // usage local/démo, droits à confirmer avant toute publication. En repli :
+  // jericho (le neutre riggé, poses A/couture committées) et homme-scan (CC0).
   const [scanHomme, scanFemme] = await Promise.all([
-    loadScanAvatar(`${import.meta.env.BASE_URL}avatars/homme-scan`),
+    loadScanAvatar(`${import.meta.env.BASE_URL}avatars/leo`),
     loadScanAvatar(`${import.meta.env.BASE_URL}avatars/mia`),
   ]);
   const scans: Record<string, ScanAvatar | null> = {
