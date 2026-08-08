@@ -3475,7 +3475,15 @@ async function main(): Promise<void> {
   });
   (document.getElementById('at-sim') as HTMLElement).addEventListener('click', () => {
     if (atelierDesign) {
-      if (!atelierEmptyState.hidden) {
+      // La VÉRITÉ, pas son miroir : `atelierEmptyState.hidden` n'est
+      // resynchronisé (refreshHint) qu'à l'atterrissage du rebuild ASYNCHRONE.
+      // Au boot vierge, le Brief charge un archétype PUIS clique ici dans la
+      // même rafale — le miroir disait encore « vide » et l'essayage était
+      // avalé avec un toast (course observée sur les validations v193/v194).
+      // On recalcule donc la formule de refreshHint sur l'état vivant.
+      const emptyAtelier =
+        sceneMode === 'atelier' && !draftTouched && !patternView.drawing;
+      if (emptyAtelier) {
         showToast('Commencez par choisir un modèle ou tracer une pièce.');
         return;
       }

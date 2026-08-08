@@ -242,7 +242,7 @@ describe('atelier workspace markup', () => {
     expect(countId('at-import-body-file')).toBe(1);
     expect(html).toMatch(/<input id="at-import-body-file"[^>]*type="file"[^>]*accept="[^"]*\.obj/);
     expect(html).toContain('<dt>⬆ Importer un corps</dt>');
-    expect(html).toContain('du brief au patron · v194');
+    expect(html).toContain('du brief au patron · v195');
   });
 
   it('exposes the jupe archetype button (v193)', () => {
