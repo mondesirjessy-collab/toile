@@ -42,6 +42,7 @@ import {
 } from './engine/pattern/PatternPlacement';
 import { boxyTee, boxyChestCm, BOXY_SIZES, type BoxySize } from './engine/pattern/draftTee';
 import { draftJupe, jupeCm, JUPE_SIZES, type JupeSize } from './engine/pattern/jupe';
+import { draftRobe, robeCm, ROBE_SIZES, type RobeSize } from './engine/pattern/robe';
 import {
   loosePants,
   loosePantsSizeLabel,
@@ -1955,8 +1956,9 @@ async function main(): Promise<void> {
   // waistband look as though it needed an invisible suspension.
   let pantsSize: LoosePantsSize = '26';
   let jupeSize: JupeSize | 'avatar' = '38';
+  let robeSize: RobeSize | 'avatar' = '38';
   let hoodieSize: LucasHoodieSize = 'S';
-  let loadedPattern: 'boxy' | 'pants' | 'hoodie' | 'jupe' = 'boxy';
+  let loadedPattern: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' = 'boxy';
   const sizeSel = document.getElementById('at-size') as HTMLSelectElement | null;
   const syncAvatarStatureHelp = (): void => {
     if (sizeSel) sizeSel.disabled = !draftTouched;
@@ -2008,12 +2010,21 @@ async function main(): Promise<void> {
     avatarStatureHelp.textContent =
       `Redimensionne le mannequin et ses collisions. ${fixedGarmentSizeMessage(selectedSize)}`;
   };
-  const showSizes = (kind: 'boxy' | 'pants' | 'hoodie' | 'jupe'): void => {
+  const showSizes = (kind: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe'): void => {
     if (!sizeSel) return;
     loadedPattern = kind;
     if (kind === 'boxy') {
       sizeSel.innerHTML = BOXY_SIZES.map((s) => `<option value="${s}">${s} · poitrine ${boxyChestCm(s)} cm</option>`).join('');
       sizeSel.value = boxySize;
+    } else if (kind === 'robe') {
+      sizeSel.innerHTML = [
+        `<option value="avatar">Ajustée au mannequin · poitrine ${(lastMeasure.chest.circ * 100).toFixed(0)} · taille ${(lastMeasure.waist.circ * 100).toFixed(0)} · hanches ${(lastMeasure.hip.circ * 100).toFixed(0)} cm</option>`,
+        ...ROBE_SIZES.map(
+          (s) =>
+            `<option value="${s}">${s} · poitrine ${robeCm(s).poitrineCm} · taille ${robeCm(s).tailleCm} · hanches ${robeCm(s).hanchesCm} cm</option>`,
+        ),
+      ].join('');
+      sizeSel.value = robeSize;
     } else if (kind === 'jupe') {
       sizeSel.innerHTML = [
         `<option value="avatar">Ajustée au mannequin · taille ${(lastMeasure.waist.circ * 100).toFixed(0)} · hanches ${(lastMeasure.hip.circ * 100).toFixed(0)} cm</option>`,
@@ -2114,6 +2125,14 @@ async function main(): Promise<void> {
       showSizes('jupe');
       return true;
     }
+    if (source.preset === 'robe') {
+      const savedSize = source.presetSize;
+      if (savedSize === 'avatar' || (ROBE_SIZES as readonly string[]).includes(savedSize ?? '')) {
+        robeSize = savedSize as RobeSize | 'avatar';
+      }
+      showSizes('robe');
+      return true;
+    }
     if (source.preset === 'lucas-hoodie') {
       const sourceSize = lucasHoodieSourceSize(source);
       hoodieFitMode = source.presetSize?.startsWith('fit-')
@@ -2183,6 +2202,26 @@ async function main(): Promise<void> {
   };
   (document.getElementById('at-jupe') as HTMLElement | null)?.addEventListener('click', loadJupe);
 
+  // v194 : la ROBE cintrée sans manches — la seconde moitié du chantier
+  // « jupe et robe ». Épaulée comme le tee : aucun ancrage de ceinture.
+  const loadRobe = (): void => {
+    if (!bigPanel) setBig(true);
+    patternView.resetView();
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    resetPlacement();
+    pushHistory();
+    showSizes('robe');
+    teePreset = false;
+    draft = draftRobe(robeSize, lastMeasure, REF);
+    draftTouched = true;
+    atelierSleeves = false;
+    atelierCollar = false;
+    document.getElementById('at-sleeves')?.classList.remove('active');
+    build();
+  };
+  (document.getElementById('at-robe') as HTMLElement | null)?.addEventListener('click', loadRobe);
+
   const loadLucasHoodie = (): void => {
     if (!bigPanel) setBig(true);
     patternView.resetView();
@@ -2231,6 +2270,9 @@ async function main(): Promise<void> {
       } else if (loadedPattern === 'jupe') {
         jupeSize = sizeSel.value as JupeSize | 'avatar';
         if (sceneMode === 'atelier') loadJupe();
+      } else if (loadedPattern === 'robe') {
+        robeSize = sizeSel.value as RobeSize | 'avatar';
+        if (sceneMode === 'atelier') loadRobe();
       } else if (loadedPattern === 'hoodie') {
         if (sizeSel.value === 'avatar-frozen') return;
         if (sizeSel.value === 'avatar') {
@@ -8604,7 +8646,9 @@ async function main(): Promise<void> {
               ? 'at-pants'
               : archetype === 'jupe'
                 ? 'at-jupe'
-                : 'at-hoodie';
+                : archetype === 'robe'
+                  ? 'at-robe'
+                  : 'at-hoodie';
         const btn = document.getElementById(id);
         if (!(btn instanceof HTMLElement)) return false;
         btn.click();

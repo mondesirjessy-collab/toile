@@ -11,6 +11,7 @@ import {
   BRIEF_HOODIE_SIZES,
   BRIEF_JUPE_SIZES,
   BRIEF_PANTS_SIZES,
+  BRIEF_ROBE_SIZES,
   clampStature,
   type BriefArchetype,
   type BriefBodyKind,
@@ -55,12 +56,6 @@ const MOTIF_RULES: Array<{ pattern: RegExp; motif: BriefMotif }> = [
 /** Vêtements que l'atelier ne sait pas encore patronner → refus + alternative. */
 const UNSUPPORTED_GARMENTS: Array<{ pattern: RegExp; nameFr: string; suggestionFr: string }> = [
   {
-    pattern: /\brobes?\b/,
-    nameFr: 'robe',
-    suggestionFr:
-      'Le plus proche aujourd’hui : un t-shirt BOXY allongé — charge « T-shirt », puis étire l’ourlet avec l’outil Longueur. La jupe trapèze, elle, existe déjà.',
-  },
-  {
     pattern: /\bchemises?\b|\bchemisiers?\b/,
     nameFr: 'chemise',
     suggestionFr: 'Le plus proche : le t-shirt BOXY en popeline.',
@@ -70,13 +65,20 @@ const UNSUPPORTED_GARMENTS: Array<{ pattern: RegExp; nameFr: string; suggestionF
     nameFr: 'veste/manteau',
     suggestionFr: 'Le plus proche aujourd’hui : le Hoodie zippé (7 pièces, fermeture séparable).',
   },
-  {
-    pattern: /\bcorsets?\b|\btraines?\b|\bbaleine(e|es)?\b|\bcrinolines?\b|\bsmokings?\b|\bdentelles?\b/,
-    nameFr: 'pièce de couture avancée',
-    suggestionFr:
-      'Corset baleiné, traîne ou dentelle demandent des techniques que TOILE ne simule pas encore. Constructible aujourd’hui : t-shirt, pantalon large, hoodie zippé — et toute pièce tracée à la main.',
-  },
 ];
+
+/**
+ * Couture avancée — corset baleiné, traîne, crinoline, dentelle : des
+ * TECHNIQUES que la simulation ne fait pas, quel que soit le vêtement porteur.
+ * Vérifiée AVANT la création : « robe de bal à corset baleiné » doit refuser
+ * honnêtement, pas produire une robe cintrée en silence.
+ */
+const ADVANCED_COUTURE = {
+  pattern: /\bcorsets?\b|\btraines?\b|\bbaleine(e|es)?\b|\bcrinolines?\b|\bsmokings?\b|\bdentelles?\b/,
+  nameFr: 'pièce de couture avancée',
+  suggestionFr:
+    'Corset baleiné, traîne ou dentelle demandent des techniques que TOILE ne simule pas encore. Constructible aujourd’hui : t-shirt, pantalon large, hoodie zippé, jupe trapèze, robe cintrée — et toute pièce tracée à la main.',
+};
 
 interface ArchetypeMatch {
   archetype: BriefArchetype;
@@ -86,6 +88,9 @@ interface ArchetypeMatch {
 function detectArchetype(t: string): ArchetypeMatch | null {
   if (/\bhoodies?\b|\bhoody\b|sweat(shirt)?s? (a|à) capuche|sweat zipp|capuches?\b/.test(t)) {
     return { archetype: 'hoodie_zip', labelFr: 'hoodie zippé' };
+  }
+  if (/\brobes?\b|\bdress(es)?\b/.test(t)) {
+    return { archetype: 'robe', labelFr: 'robe cintrée' };
   }
   if (/\bjupes?\b|\bskirts?\b/.test(t)) {
     return { archetype: 'jupe', labelFr: 'jupe trapèze' };
@@ -131,10 +136,11 @@ function detectSize(t: string, archetype: BriefArchetype | null): string | undef
     if (eu && (BRIEF_PANTS_SIZES as readonly string[]).includes(eu)) return eu;
     return undefined;
   }
-  if (archetype === 'jupe') {
+  if (archetype === 'jupe' || archetype === 'robe') {
     if (/ajust(e|ee)? au mannequin|sur[- ]mesure|a mes mesures/.test(t)) return 'avatar';
     const eu = t.match(/\b(?:taille|eu)\s?(3[468]|4[0246])\b/)?.[1];
-    if (eu && (BRIEF_JUPE_SIZES as readonly string[]).includes(eu)) return eu;
+    const pool = archetype === 'jupe' ? BRIEF_JUPE_SIZES : BRIEF_ROBE_SIZES;
+    if (eu && (pool as readonly string[]).includes(eu)) return eu;
     return undefined;
   }
   if (archetype === 'hoodie_zip' && /ajust(e|ee)? au mannequin|sur[- ]mesure|a mes mesures/.test(t)) {
@@ -184,6 +190,17 @@ export function interpretBrief(rawText: string): BriefResult {
     };
   }
 
+  // Couture avancée : refus AVANT toute création — même si un archétype
+  // constructible apparaît dans la phrase (« robe de bal à corset baleiné »
+  // ne doit pas produire une robe cintrée en silence).
+  if (ADVANCED_COUTURE.pattern.test(t)) {
+    return {
+      intent: 'refuse',
+      resumeFr: `Pas encore de patron « ${ADVANCED_COUTURE.nameFr} » dans l’atelier.`,
+      suggestionFr: ADVANCED_COUTURE.suggestionFr,
+    };
+  }
+
   // Pas d'archétype : soit un vêtement non couvert (refus outillé), soit une
   // retouche du vêtement courant (ops), soit un brief à préciser.
   if (!archetype) {
@@ -219,7 +236,7 @@ export function interpretBrief(rawText: string): BriefResult {
       intent: 'clarify',
       resumeFr: 'Je n’ai pas reconnu de vêtement constructible dans ce brief.',
       suggestionFr:
-        'L’atelier patronne aujourd’hui : t-shirt boxy, pantalon large, hoodie zippé. Exemple : « t-shirt boxy en popeline rayée, taille M ».',
+        'L’atelier patronne aujourd’hui : t-shirt boxy, pantalon large, hoodie zippé, jupe trapèze, robe cintrée. Exemple : « robe cintrée en lin, taille 38 ».',
     };
   }
 

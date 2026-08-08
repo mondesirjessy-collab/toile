@@ -27,6 +27,7 @@ const CATALOG = `ARCHÉTYPES CONSTRUCTIBLES (les seuls) :
 - "pantalon" — pantalon large. Tailles EU : 26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46.
 - "hoodie_zip" — hoodie zippé (7 pièces). Tailles : avatar (ajusté au mannequin), XS, S, M, L, XL, XXL, XXXL.
 - "jupe" — jupe trapèze à pinces (mi-genou). Tailles : avatar (coupée aux mensurations du corps), 34, 36, 38, 40, 42, 44, 46.
+- "robe" — robe cintrée sans manches (au-dessus du genou, ligne A). Tailles : avatar (coupée aux mensurations du corps), 34, 36, 38, 40, 42, 44, 46.
 
 TISSUS (presets calibrés) : Jersey, Maille, Popeline, Denim, Lin, Laine, Soie.
 MOTIFS : uni, rayures, vichy, pois.
@@ -34,10 +35,9 @@ CORPS : "scan femme", "scan homme". Stature : 140 à 210 cm.
 OPS DE RETOUCHE (intent "modify") : resize{size}, change_fabric{preset}, change_motif{motif}, set_body{kind}, set_stature{statureCm}, set_sleeves{on}, try_on{}.
 
 NON CONSTRUCTIBLES aujourd'hui (⇒ intent "refuse" + suggestionFr) :
-- robe → suggérer : « Le plus proche aujourd'hui : un t-shirt BOXY allongé — ou la jupe trapèze, qui existe déjà, avec un haut. »
 - chemise/chemisier → suggérer : « Le plus proche : le t-shirt BOXY en popeline. »
 - veste/manteau/blouson → suggérer : « Le plus proche aujourd'hui : le Hoodie zippé (7 pièces, fermeture séparable). »
-- corset/traîne/baleines/dentelle → suggérer : « Constructible aujourd'hui : t-shirt, pantalon large, hoodie zippé — et toute pièce tracée à la main. »
+- corset/traîne/baleines/dentelle — même portés par une robe → suggérer : « Constructible aujourd'hui : t-shirt, pantalon large, hoodie zippé, jupe trapèze, robe cintrée — et toute pièce tracée à la main. »
 - retouche de longueur (« allonge de 10 cm ») → intent "clarify" : « La retouche de longueur reste manuelle pour l'instant. » + suggestionFr sur l'outil Longueur.`;
 
 const CONTRACT = `CONTRAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON, sans texte autour, d'une des formes :
@@ -113,14 +113,14 @@ export const BRIEF_FEW_SHOT: ReadonlyArray<{ user: string; assistant: string }> 
       '{"intent":"modify","ops":[{"op":"resize","size":"XL"},{"op":"set_body","kind":"scan homme"}],"tryOn":false,"resumeFr":"Taille XL sur le mannequin homme."}',
   },
   {
-    user: 'robe midi évasée en jersey, encolure ronde',
+    user: 'robe évasée en jersey, encolure ronde, taille 38',
     assistant:
-      '{"intent":"refuse","resumeFr":"Pas encore de patron « robe » dans l\'atelier.","suggestionFr":"Le plus proche aujourd\'hui : un t-shirt BOXY allongé — charge « T-shirt », puis étire l\'ourlet avec l\'outil Longueur."}',
+      '{"intent":"create","garment":{"archetype":"robe","size":"38"},"fabric":"Jersey","tryOn":true,"resumeFr":"Robe cintrée en jersey, taille 38, encolure ronde par construction — essayage lancé."}',
   },
   {
     user: 'une robe de bal avec corset baleiné et traîne de 2 m',
     assistant:
-      '{"intent":"refuse","resumeFr":"Corset baleiné et traîne demandent des techniques que TOILE ne simule pas encore.","suggestionFr":"Constructible aujourd\'hui : t-shirt, pantalon large, hoodie zippé — et toute pièce tracée à la main."}',
+      '{"intent":"refuse","resumeFr":"Corset baleiné et traîne demandent des techniques que TOILE ne simule pas encore.","suggestionFr":"Constructible aujourd\'hui : t-shirt, pantalon large, hoodie zippé, jupe trapèze, robe cintrée — et toute pièce tracée à la main."}',
   },
   {
     user: 'allonge-la de 10 cm',

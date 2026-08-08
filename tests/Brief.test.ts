@@ -79,19 +79,38 @@ describe('interpretBrief (règles françaises)', () => {
     expect(r.garment.size).toBe('S');
   });
 
-  it('refuse la robe avec une alternative constructible', () => {
-    const r = interpretBrief('une robe midi évasée en jersey');
-    expect(r.intent).toBe('refuse');
-    if (r.intent !== 'refuse') return;
-    expect(r.resumeFr).toContain('robe');
-    expect(r.suggestionFr).toContain('T-shirt');
+  it('comprend la robe en taille EU (v194 — la robe n’est plus un refus)', () => {
+    const r = interpretBrief('une robe cintrée en lin, taille 40');
+    expect(r.intent).toBe('create');
+    if (r.intent !== 'create') return;
+    expect(r.garment.archetype).toBe('robe');
+    expect(r.garment.size).toBe('40');
+    expect(r.fabric).toBe('Lin');
   });
 
-  it('refuse proprement la demande hors périmètre (corset, traîne)', () => {
+  it('comprend la robe sans taille explicite et garde la taille optionnelle', () => {
+    const r = interpretBrief('une robe midi évasée en jersey');
+    expect(r.intent).toBe('create');
+    if (r.intent !== 'create') return;
+    expect(r.garment.archetype).toBe('robe');
+    expect(r.garment.size).toBeUndefined();
+    expect(r.fabric).toBe('Jersey');
+  });
+
+  it('coupe la robe aux mensurations sur « sur mesure »', () => {
+    const r = interpretBrief('une robe sur mesure pour ma cliente');
+    expect(r.intent).toBe('create');
+    if (r.intent !== 'create') return;
+    expect(r.garment.archetype).toBe('robe');
+    expect(r.garment.size).toBe('avatar');
+  });
+
+  it('refuse proprement la couture avancée MÊME portée par une robe (corset, traîne)', () => {
     const r = interpretBrief('une robe de bal avec corset baleiné et traîne de 2 mètres');
     expect(r.intent).toBe('refuse');
     if (r.intent !== 'refuse') return;
     expect(r.suggestionFr).toBeTruthy();
+    expect(r.suggestionFr).toContain('robe cintrée'); // le refus montre le chemin constructible
   });
 
   it('refuse la chemise même avec un tissu connu', () => {
@@ -166,10 +185,13 @@ describe('validateBriefResult (garde-fou du contrat)', () => {
     expect(v!.intent).toBe('create');
   });
 
-  it('rejette un archétype hors liste', () => {
+  it('rejette un archétype hors liste (et accepte la robe depuis v194)', () => {
+    expect(
+      validateBriefResult({ intent: 'create', garment: { archetype: 'cape' }, resumeFr: 'x' }),
+    ).toBeNull();
     expect(
       validateBriefResult({ intent: 'create', garment: { archetype: 'robe' }, resumeFr: 'x' }),
-    ).toBeNull();
+    ).not.toBeNull();
   });
 
   it('ignore un tissu inconnu sans rejeter le reste', () => {
