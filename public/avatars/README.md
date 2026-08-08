@@ -1,12 +1,21 @@
 # Avatars
 
-`femme-scan.*` et `homme-scan.*` sont des corps **générés avec MakeHuman**
-(via l'extension Blender **MPFB** 2.0.16, <https://extensions.blender.org/add-ons/mpfb/>),
-dont les maillages et cibles morphologiques sont publiés sous **CC0 1.0**
-(domaine public) par le projet MakeHuman
-(<https://static.makehumancommunity.org/makehuman/license.html>).
+Pour les avatars historiques, le maillage `*.mesh.bin` sert à l'affichage et
+la grille `*.sdf.bin` à la collision ressentie par le tissu. Les deux fichiers
+sont cuits depuis la même surface normalisée par `tools/bake.py`. Le format
+reste rétrocompatible : un maillage peut se terminer par un bloc facultatif
+RGB8 (trois octets par sommet). Le mannequin neutre utilise plus bas une
+séparation précise entre surface visuelle et proxy physique.
 
-Pipeline (reproductible) :
+## Avatars historiques MakeHuman
+
+`femme-scan.*` et l'ancien `homme-scan.*` sont des corps **générés avec
+MakeHuman** (via l'extension Blender **MPFB** 2.0.16,
+<https://extensions.blender.org/add-ons/mpfb/>). Leurs maillages et cibles
+morphologiques sont publiés sous **CC0 1.0** (domaine public) par le projet
+MakeHuman (<https://static.makehumancommunity.org/makehuman/license.html>).
+
+Pipeline historique reproductible :
 
 1. `tools/mh_avatar.py` (Blender headless + MPFB) — génère le corps
    (macros : genre, âge, muscle, poids…), supprime la géométrie d'aide,
@@ -21,6 +30,125 @@ Pipeline (reproductible) :
 4. `tools/refine_avatar_sdf.py` permet de reproduire seulement la grille depuis
    le maillage rendu déjà livré ; c'est le chemin utilisé pour migrer les deux
    assets historiques 12 mm sans les STL sources.
+
+## Mannequin neutre masculin
+
+Le mannequin masculin affiché comme **Neutre · Homme** conserve la clé de
+document `scan homme` et le basename historique `jericho.*` afin que les
+projets existants restent lisibles. Sa source est conservée dans
+`tools/fixtures/neutre.source.glb` :
+
+```text
+SHA-256  a107dfc848f75ecb3d5b0c2e839da70cd9b32a60daeb91e494fe2a0708738057
+Taille   43 640 octets
+```
+
+La source est un maillage fermé très léger de **885 sommets** et
+**1 766 triangles**, sans squelette, UV, texture, animation ou morph target.
+Elle contient toutefois 18 intersections réelles entre triangles sous les
+deux aisselles. `tools/rig_neutre_avatar.mjs` refuse toute source dont le hash
+diffère, puis applique une relaxation déterministe à seulement 25 sommets :
+
+- déplacement maximal à 1,83 m : **10,106 mm** ;
+- déplacement RMS global : **1,087 mm** ;
+- boîte englobante et topologie inchangées ;
+- auto-intersections : **18 → 0** ;
+- normales recalculées sur toute la surface.
+
+Le même outil génère des UV cylindriques de compatibilité et un rig humain de
+**25 articulations** avec quatre influences maximum par sommet. La transition
+clavicule–bras est calibrée pour la faible densité de la source : aucune face
+ne devient dégénérée ou auto-intersectée en pose A ou T basse. Le matériau
+reste celui du fichier fourni : blanc, métallique 0, rugosité 0,5, simple face,
+sans image ni texture.
+
+Le GLB livré comme `jericho.visual.glb` et sa copie identique
+`jericho.export.glb` sont :
+
+```text
+SHA-256  cb23e6635743328c3637c46b0ee29343de5f3a87c4279df6ff6e9a1e8ebb3263
+Taille   96 128 octets
+```
+
+La stature canonique de **1,83 m** est obtenue en mémoire par une échelle
+uniforme de **1,8335812133**. La source regarde vers `-Z`, donc une rotation
+rigide de π autour de Y la place face à `+Z`. Les dimensions canoniques de la
+pose native sont **0,504951 × 1,830000 × 0,325890 m**. L'export combiné
+vêtement + mannequin réutilise ce GLB et conserve le rig ainsi que la pose
+sélectionnée.
+
+Mesures extraites de la collision native : épaules **41,63 cm**, poitrine
+**76,53 cm**, taille **61,11 cm**, bassin **84,48 cm** et cuisse **49,06 cm**.
+Le modèle est volontairement très fin ; ces valeurs proviennent de sa surface
+et ne sont pas une reconstruction anatomique.
+
+Les trois collisions sont cuites depuis la même surface riggée :
+
+- native bras baissés : **885 sommets / 1 766 triangles**, grille
+  **91 × 256 × 65** ;
+- A à 45° : **885 / 1 766**, grille **194 × 256 × 65** ;
+- T basse à 8,53° sous l'horizontale : **885 / 1 766**, grille
+  **250 × 256 × 65**.
+
+Chaque proxy est fermé, orienté, sans triangle dégénéré et sans
+auto-intersection. L'écart positif maximal entre proxy et SDF est inférieur à
+1 mm dans les trois poses. Les couples A et T remplacent entièrement la
+collision native pendant leur utilisation ; aucun ancien volume de bras ne
+reste actif.
+
+### Reproduire les huit assets
+
+Prérequis : Node.js, Python 3.12, `numpy`, `pillow`, `scipy` et `libigl`.
+Blender n'est pas utilisé pour construire ou convertir le modèle.
+
+```sh
+SOURCE='tools/fixtures/neutre.source.glb'
+BUILD='/tmp/toile-neutre'
+mkdir -p "$BUILD"
+
+node tools/rig_neutre_avatar.mjs \
+  "$SOURCE" \
+  "$BUILD/neutre.rigged.glb"
+cp "$BUILD/neutre.rigged.glb" public/avatars/jericho.visual.glb
+cp "$BUILD/neutre.rigged.glb" public/avatars/jericho.export.glb
+
+node tools/glb_skin_to_stl.mjs \
+  "$BUILD/neutre.rigged.glb" \
+  "$BUILD/neutre.native.stl"
+python tools/bake.py \
+  "$BUILD/neutre.native.stl" public/avatars 1.83 jericho auto
+
+node tools/build_jericho_sewing_collision.mjs \
+  "$BUILD/neutre.rigged.glb" "$BUILD/neutre.apose.glb" \
+  a-pose 3.141592653589793
+node tools/glb_skin_to_stl.mjs \
+  "$BUILD/neutre.apose.glb" "$BUILD/neutre.apose.stl"
+python tools/bake.py \
+  "$BUILD/neutre.apose.stl" public/avatars 1.83 jericho.apose canonical
+
+node tools/build_jericho_sewing_collision.mjs \
+  "$BUILD/neutre.rigged.glb" "$BUILD/neutre.sewing.glb" \
+  sewing-preview 3.141592653589793
+node tools/glb_skin_to_stl.mjs \
+  "$BUILD/neutre.sewing.glb" "$BUILD/neutre.sewing.stl"
+python tools/bake.py \
+  "$BUILD/neutre.sewing.stl" public/avatars 1.83 jericho.sewing canonical
+
+node tools/validate_jericho_assets.mjs
+```
+
+Les huit fichiers publiés sont `jericho.visual.glb`, `jericho.export.glb`,
+`jericho.mesh.bin`, `jericho.sdf.bin`, `jericho.apose.mesh.bin`,
+`jericho.apose.sdf.bin`, `jericho.sewing.mesh.bin` et
+`jericho.sewing.sdf.bin`.
+
+### Licence et redistribution
+
+Le GLB source ne contient **aucune métadonnée de licence**. Sa provenance et
+les droits de modification et de redistribution doivent être confirmés avant
+toute publication du fichier source, des STL intermédiaires ou des assets
+dérivés `jericho.*` hors de l'environnement de leur propriétaire. La licence
+CC0 des anciens avatars MakeHuman ne s'applique pas à ce modèle.
 
 Historique : les versions ≤ v132 utilisaient les sculpts CC0 « Body
 male/female realistic » de Dan Ulrich (Blender Studio, Wikimedia Commons).

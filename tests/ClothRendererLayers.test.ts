@@ -1,10 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import {
+  avatarMetalRoughFallback,
   countVisualLayers,
   partitionClothTriangles,
   ribbonVisualOffset,
   packVisualMaterial,
 } from '../src/app/ClothRenderer';
+
+describe('avatarMetalRoughFallback', () => {
+  it('encodes glTF scalar roughness and metallic factors in their channels', () => {
+    expect([...avatarMetalRoughFallback({ roughnessFactor: 0.9, metallicFactor: 0 })])
+      .toEqual([0, 230, 0, 255]);
+  });
+
+  it('uses glTF defaults and clamps invalid channel ranges', () => {
+    expect([...avatarMetalRoughFallback()]).toEqual([0, 255, 255, 255]);
+    expect([...avatarMetalRoughFallback({ roughnessFactor: 2, metallicFactor: -1 })])
+      .toEqual([0, 255, 0, 255]);
+  });
+});
 
 describe('countVisualLayers', () => {
   it('keeps a multi-piece garment on one visual layer', () => {

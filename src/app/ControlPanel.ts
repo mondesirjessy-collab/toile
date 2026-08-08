@@ -1050,8 +1050,18 @@ export class ControlPanel {
     }
   }
 
-  /** Await the GPU snapshot so success means a .glb was actually downloaded. */
+  private exportingGltf = false;
+
+  /** Await the GPU snapshot so success means a .glb was actually downloaded.
+   *  The high-fidelity build can take a moment, so a second click while it runs
+   *  is ignored, and each attempt announces its preparation before the outcome. */
   private async exportGltf(): Promise<void> {
+    if (this.exportingGltf) {
+      this.toast('Export 3D déjà en cours…');
+      return;
+    }
+    this.exportingGltf = true;
+    this.toast('Préparation du modèle 3D haute fidélité…');
     try {
       const filename = await this.cb.onGltf();
       if (filename) {
@@ -1061,6 +1071,8 @@ export class ControlPanel {
       }
     } catch {
       this.toast('Échec de l’export GLB.', false);
+    } finally {
+      this.exportingGltf = false;
     }
   }
 

@@ -27,8 +27,8 @@ export interface BodyMeasure {
   waist: Level;
   hip: Level;
   thigh: Level; // one leg, mid-thigh
-  /** T-pose : axe du bras horizontal mesuré (hauteur, profondeur, racine) —
-   * absent sur un corps bras baissés. `path` conserve la vraie courbure du
+  /** Pose de couture : axe du bras dégagé (hauteur, profondeur, racine) —
+   * absent sur un corps bras collés au torse. `path` conserve la vraie courbure du
    * scan par tranches X : réduire le bras à une seule moyenne Y/Z place une
    * partie d'une manche droite à l'intérieur du coude ou de l'avant-bras. */
   arm?: {
@@ -62,16 +62,34 @@ function firstExit(sd: Sd, y: number, dx: number, dz: number): number {
   return 0.7;
 }
 
-/** Outermost |x| of the body at height y (arms/deltoids included). */
-function outerX(sd: Sd, y: number): number {
+/** Outermost distance from the axis on one side (arms/deltoids included). */
+function outerXSide(sd: Sd, y: number, side: -1 | 1, maxX = 1.0): number {
   // T-pose scans reach ~0.83–0.90 m from the centre. The former 0.65 m ceiling
   // missed the male arm entirely, so no arm axis was measured and its sleeve
   // spawned around z=0 — inside the backward-curving arm collider.
   const zSamples = [0, 0.04, -0.04, 0.08, -0.08, 0.12, -0.12];
-  for (let x = 1.0; x > 0; x -= 0.005) {
-    if (zSamples.some((z) => sd(x, y, z) < 0)) return x;
+  // 2.5 mm per side keeps the full carrure within 5 mm without making the
+  // much denser arm-path sampling depend on the same caliper resolution.
+  for (let distance = maxX; distance > 0; distance -= 0.0025) {
+    if (zSamples.some((z) => sd(side * distance, y, z) < 0)) return distance;
   }
   return 0;
+}
+
+/** Historical right-side caliper, retained for tracking the right arm. */
+function outerX(sd: Sd, y: number, maxX = 1.0): number {
+  return outerXSide(sd, y, 1, maxX);
+}
+
+/** Mean half-width from the two independent outer shoulder calipers. */
+function bilateralOuterHalfWidth(sd: Sd, y: number, maxX = 1.0): {
+  halfWidth: number;
+  left: number;
+  right: number;
+} {
+  const right = outerXSide(sd, y, 1, maxX);
+  const left = outerXSide(sd, y, -1, maxX);
+  return { halfWidth: (left + right) / 2, left, right };
 }
 
 /** Ramanujan's ellipse perimeter. */
@@ -81,7 +99,12 @@ function ellipse(a: number, b: number): number {
   return Math.PI * (h3 - Math.sqrt((h3 - 2 * b) * (h3 - 2 * a) * 1));
 }
 
-function level(sd: Sd, y: number): Level {
+function level(
+  sd: Sd,
+  y: number,
+  bilateralWidth = false,
+  maxWidthDepthRatio = 1.5,
+): Level {
   // Depth caliper along z is arm-proof. The straight x caliper is NOT: on
   // scanned bodies the arms hang against the hips and the ray exits at the
   // arm's outer edge. Instead, sample the section at ±45° (rays that pass
@@ -91,14 +114,25 @@ function level(sd: Sd, y: number): Level {
   const s2 = Math.SQRT1_2;
   const r45 =
     (firstExit(sd, y, s2, s2) + firstExit(sd, y, s2, -s2) + firstExit(sd, y, -s2, s2) + firstExit(sd, y, -s2, -s2)) / 4;
-  let halfW = firstExit(sd, y, 1, 0);
+  const directHalfW = firstExit(sd, y, 1, 0);
+  // Scanned torsos are not guaranteed to be centred perfectly on x=0. At the
+  // chest, average both sides so that a few centimetres of scan asymmetry do
+  // not become a false size difference. Lower-body levels retain the legacy
+  // one-sided caliper because an arm can hang flush against either hip.
+  let halfW = bilateralWidth
+    ? (directHalfW + firstExit(sd, y, -1, 0)) / 2
+    : directHalfW;
   if (halfD > 1e-4 && r45 > 1e-4) {
     const inv = 1 / (r45 * r45) - 0.5 / (halfD * halfD);
-    if (inv > 1e-6) halfW = Math.min(halfW, Math.sqrt(0.5 / inv));
+    if (inv > 1e-6) {
+      const diagonalHalfW = Math.sqrt(0.5 / inv);
+      halfW = Math.min(halfW, diagonalHalfW);
+    }
   }
-  // A human torso is never wider than ~1.5x its depth — anything beyond is a
-  // hanging arm or elbow the rays could not dodge.
-  halfW = Math.min(halfW, 1.5 * halfD);
+  // Anything beyond the expected torso aspect ratio is a hanging arm or elbow
+  // the rays could not dodge. Male pectorals need a slightly wider 1.65 guard
+  // than the historical 1.5 lower-body guard.
+  halfW = Math.min(halfW, maxWidthDepthRatio * halfD);
   return { y, halfW, halfD, circ: ellipse(halfW, halfD) };
 }
 
@@ -110,12 +144,16 @@ function level(sd: Sd, y: number): Level {
 export function measureBody(sd: Sd, height: number): BodyMeasure {
   const H = height;
   const step = 0.01;
+  // Some sewing poses reach close to half the stature per side. Once the
+  // public stature and shoulder controls enlarge a scan, a fixed 1 m cap can
+  // truncate the wrist and make automatic sleeves stop mid-forearm.
+  const armSearchMaxX = Math.max(1.0, 0.68 * H);
 
   // Neck: thinnest outer width between 78% and 93% of stature.
   let neckY = 0.85 * H;
   let neckW = Infinity;
   for (let y = 0.78 * H; y <= 0.93 * H; y += step) {
-    const w = outerX(sd, y);
+    const w = outerX(sd, y, armSearchMaxX);
     if (w > 0.01 && w < neckW) {
       neckW = w;
       neckY = y;
@@ -125,18 +163,21 @@ export function measureBody(sd: Sd, height: number): BodyMeasure {
   // Shoulder line: widest outer point in the anthropometric shoulder band
   // (77.5% of stature up to the neck) — below that, hanging arms take over.
   // T-POSE (scans re-cuits, bras à l'horizontale) : les bras traversent avec
-  // des largeurs d'ENVERGURE (aucune carrure humaine ne dépasse 0.19·H) —
+  // des largeurs d'ENVERGURE (une racine de manche classique reste bien sous
+  // 0.165·H par côté) —
   // ces tranches sont sautées ; la ligne d'épaule devient le HAUT de la bande
   // de bras, et la carrure la largeur du torse juste SOUS le bras (la racine
   // de l'épaule, là où la manche naît).
-  const WINGSPAN = 0.19 * H;
+  const FREE_ARM_HALF_SPAN = 0.165 * H;
   let shoulderY = 0.8 * H;
   let shoulderHalfW = 0;
+  let shoulderRightW = 0;
   for (let y = 0.79 * H; y <= neckY; y += step) {
-    const w = outerX(sd, y);
-    if (w > WINGSPAN) continue; // bras horizontal : pas une épaule
-    if (w > shoulderHalfW) {
-      shoulderHalfW = w;
+    const width = bilateralOuterHalfWidth(sd, y, armSearchMaxX);
+    if (Math.max(width.left, width.right) > FREE_ARM_HALF_SPAN) continue; // bras libre : pas une épaule
+    if (width.halfWidth > shoulderHalfW) {
+      shoulderHalfW = width.halfWidth;
+      shoulderRightW = width.right;
       shoulderY = y;
     }
   }
@@ -148,17 +189,41 @@ export function measureBody(sd: Sd, height: number): BodyMeasure {
   let armBandTop = -1;
   let armBandBot = Infinity;
   for (let y = 0.68 * H; y <= neckY; y += step) {
-    const w = outerX(sd, y);
-    if (w > WINGSPAN) {
+    const w = outerX(sd, y, armSearchMaxX);
+    if (w > FREE_ARM_HALF_SPAN) {
       armBandTop = Math.max(armBandTop, y);
       armBandBot = Math.min(armBandBot, y);
     }
   }
   let arm: BodyMeasure['arm'];
   if (armBandTop > 0) {
-    shoulderY = armBandTop;
-    const wRoot = outerX(sd, Math.max(0.6 * H, armBandBot - 2 * step));
-    if (wRoot > 0.05 && wRoot <= WINGSPAN) shoulderHalfW = wRoot;
+    // `armBandTop` is the highest slice crossed by the free arm. In a low
+    // A-pose that slice sits around the lower pectoral, not on the anatomical
+    // shoulder line. Keep the high-band shoulder landmark found above for
+    // chest grading; only the arm tracker must use armBandTop/armBandBot.
+    const rootY = Math.max(0.6 * H, armBandBot - 2 * step);
+    const rightRoot = outerX(
+      sd,
+      rootY,
+      armSearchMaxX,
+    );
+    const roots = bilateralOuterHalfWidth(sd, rootY, armSearchMaxX);
+    if (
+      shoulderHalfW <= 0.05
+      && roots.left > 0.05 && roots.right > 0.05
+      && Math.max(roots.left, roots.right) <= FREE_ARM_HALF_SPAN
+    ) {
+      // Fallback only: never replace the true high shoulder caliper with the
+      // lower sleeve-root section merely because a free arm was detected.
+      shoulderHalfW = roots.halfWidth;
+      shoulderRightW = roots.right;
+    }
+    // The tailoring carrure is bilateral, but the sleeve path below follows
+    // the actual right arm. Keeping its own root avoids shifting that path on
+    // an asymmetric scan.
+    const armRootX = rightRoot > 0.05 && rightRoot <= FREE_ARM_HALF_SPAN
+      ? rightRoot
+      : shoulderRightW || shoulderHalfW;
     // Axe du bras : centre des cellules solides sur des tranches x au-delà de
     // la racine (droite ; les mannequins sont symétriques).
     let sy = 0;
@@ -167,7 +232,7 @@ export function measureBody(sd: Sd, height: number): BodyMeasure {
     for (let dx = 0.08; dx <= 0.26; dx += 0.06) {
       for (let y = armBandBot - 0.03; y <= armBandTop + 0.03; y += step) {
         for (let z = -0.3; z <= 0.3; z += step) {
-          if (sd(shoulderHalfW + dx, y, z) < 0) {
+          if (sd(armRootX + dx, y, z) < 0) {
             sy += y;
             sz += z;
             cnt++;
@@ -176,7 +241,7 @@ export function measureBody(sd: Sd, height: number): BodyMeasure {
       }
     }
     if (cnt > 0) {
-      arm = { y: sy / cnt, z: sz / cnt, rootX: shoulderHalfW };
+      arm = { y: sy / cnt, z: sz / cnt, rootX: armRootX };
 
       // A T-pose scan is not a straight cylinder: the upper arm, elbow and
       // forearm sweep several centimetres in depth (and a little in height).
@@ -186,14 +251,34 @@ export function measureBody(sd: Sd, height: number): BodyMeasure {
       // average. Sampling starts outside the torso and stops after the wrist.
       const rawPath: { x: number; y: number; z: number }[] = [];
       let emptySections = 0;
-      const pathYMin = armBandBot - 0.12;
-      const pathYMax = armBandTop + 0.09;
-      for (let x = shoulderHalfW + 0.025; x <= 1.0; x += 0.04) {
+      // 25 mm sampling keeps enough articulation points for a low A-pose;
+      // 40 mm can produce only a few points from shoulder to wrist on a slim scan.
+      for (let x = armRootX + 0.025; x <= armSearchMaxX; x += 0.025) {
+        // Follow a LOW A-pose as a connected branch instead of scanning one
+        // fixed horizontal band. Extrapolation keeps the window on the arm as
+        // it descends toward the wrist and avoids averaging in the hip/thigh.
+        let predictedY = arm.y;
+        let predictedZ = arm.z;
+        if (rawPath.length === 1) {
+          predictedY = rawPath[0]!.y - 0.035;
+          predictedZ = rawPath[0]!.z;
+        } else if (rawPath.length >= 2) {
+          const previous = rawPath[rawPath.length - 2]!;
+          const last = rawPath[rawPath.length - 1]!;
+          const dx = Math.max(1e-6, last.x - previous.x);
+          const advance = (x - last.x) / dx;
+          predictedY = last.y + (last.y - previous.y) * advance;
+          predictedZ = last.z + (last.z - previous.z) * advance;
+        }
+        const pathYMin = Math.max(0.42 * H, predictedY - 0.12);
+        const pathYMax = Math.min(armBandTop + 0.1, predictedY + 0.12);
+        const pathZMin = Math.max(-0.3, predictedZ - 0.16);
+        const pathZMax = Math.min(0.3, predictedZ + 0.16);
         let sectionY = 0;
         let sectionZ = 0;
         let sectionCount = 0;
         for (let y = pathYMin; y <= pathYMax; y += 0.006) {
-          for (let z = -0.26; z <= 0.18; z += 0.006) {
+          for (let z = pathZMin; z <= pathZMax; z += 0.006) {
             if (sd(x, y, z) < 0) {
               sectionY += y;
               sectionZ += z;
@@ -236,10 +321,10 @@ export function measureBody(sd: Sd, height: number): BodyMeasure {
   // floor of 0.62 H let the RIBCAGE bulge (≈ 0.66 H, slightly fuller than
   // the bust on the sculpted female form) win the max — the tailor graded
   // tops on the diaphragm and the « poitrine » slider inflated it.
-  let chest = level(sd, 0.7 * H);
+  let chest = level(sd, 0.7 * H, true, 1.65);
   const chestTop = Math.min(shoulderY - 0.04, 0.76 * H);
   for (let y = 0.695 * H; y <= chestTop; y += step) {
-    const l = level(sd, y);
+    const l = level(sd, y, true, 1.65);
     if (l.circ > chest.circ) chest = l;
   }
 

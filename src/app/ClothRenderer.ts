@@ -449,6 +449,27 @@ export function packVisualMaterial(materialId: number, hexColor?: string): numbe
   return (id | (rgb << 8)) >>> 0;
 }
 
+/**
+ * glTF metallic-roughness fallback pixel for an avatar surface that carries only
+ * scalar factors (no packed map): roughness lives in the G channel, metallic in
+ * B, per the glTF 2.0 convention (R and A are unused, A kept opaque). Missing
+ * factors default to 1 and every channel clamps to [0, 1] before quantising.
+ */
+export function avatarMetalRoughFallback(
+  material: { roughnessFactor?: number; metallicFactor?: number } = {},
+): Uint8Array {
+  const channel = (value: number | undefined, fallback: number): number => {
+    const raw = Number.isFinite(value) ? (value as number) : fallback;
+    return Math.round(Math.max(0, Math.min(1, raw)) * 255);
+  };
+  return new Uint8Array([
+    0,
+    channel(material.roughnessFactor, 1),
+    channel(material.metallicFactor, 1),
+    255,
+  ]);
+}
+
 export function clampCollisionThickness(value: number): number {
   return Number.isFinite(value) ? Math.max(0.002, Math.min(0.02, value)) : 0.005;
 }

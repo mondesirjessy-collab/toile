@@ -1,6 +1,7 @@
 /**
  * Compare the baked collision SDF with the render mesh it is meant to match.
- * Read-only diagnostic: `node tools/analyze_avatar_sdf.mjs`.
+ * Read-only diagnostic:
+ *   `node tools/analyze_avatar_sdf.mjs [femme-scan jericho ...]`.
  */
 import fs from 'node:fs';
 
@@ -133,4 +134,11 @@ function analyze(name) {
   };
 }
 
-console.log(JSON.stringify(['femme-scan', 'homme-scan'].map(analyze), null, 2));
+const names = process.argv.slice(2);
+console.log(
+  JSON.stringify(
+    (names.length ? names : ['femme-scan', 'jericho']).map(analyze),
+    null,
+    2,
+  ),
+);

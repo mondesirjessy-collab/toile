@@ -70,7 +70,22 @@ export function placeWrapSleeve(
   tPose: boolean,
 ): void {
   const sign = side === 'R' ? 1 : -1;
-  const theta = tPose ? sign * (Math.PI / 2) : Math.atan2(0.11 * (piece.height / 0.5) * sign, piece.height);
+  let theta = Math.atan2(0.11 * (piece.height / 0.5) * sign, piece.height);
+  if (tPose) {
+    // Follow the measured shoulder→wrist slope. Historical horizontal scans
+    // still yield ±π/2; a clean low A-pose yields about ±35°, so the
+    // sleeve starts around the real arm instead of cutting across it.
+    const path = body.arm?.path;
+    if (path && path.length >= 2) {
+      const first = path[0]!;
+      const last = path[path.length - 1]!;
+      const lateral = Math.max(1e-6, last.x - first.x);
+      const downward = first.y - last.y;
+      theta = sign * Math.atan2(lateral, downward);
+    } else {
+      theta = sign * (Math.PI / 2);
+    }
+  }
   const pivotY = tPose ? (body.arm ? body.arm.y : piece.topY - 0.06) : piece.topY;
   const pivotX = (tPose && body.arm ? body.arm.rootX + 0.06 : body.shoulderHalfW) * sign;
   const pivotZ = tPose && body.arm ? body.arm.z : 0;

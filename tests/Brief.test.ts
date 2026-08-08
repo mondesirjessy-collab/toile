@@ -39,6 +39,22 @@ describe('interpretBrief (règles françaises)', () => {
     expect(r.body?.kind).toBe('scan homme');
   });
 
+  it('reconnaît Jericho comme le mannequin homme de 1,83 m', () => {
+    const r = interpretBrief('hoodie taille M sur Jericho 1m83');
+    expect(r.intent).toBe('create');
+    if (r.intent !== 'create') return;
+    expect(r.body?.kind).toBe('scan homme');
+    expect(r.body?.statureCm).toBe(183);
+  });
+
+  it('reconnaît le nouveau libellé mannequin neutre', () => {
+    const r = interpretBrief('t-shirt taille M sur le mannequin neutre 1m83');
+    expect(r.intent).toBe('create');
+    if (r.intent !== 'create') return;
+    expect(r.body?.kind).toBe('scan homme');
+    expect(r.body?.statureCm).toBe(183);
+  });
+
   it('comprend le pantalon en taille EU numérique', () => {
     const r = interpretBrief('pantalon large en laine, taille 42');
     expect(r.intent).toBe('create');

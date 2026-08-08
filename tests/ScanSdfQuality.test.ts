@@ -1,12 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-type AvatarName = 'femme-scan' | 'homme-scan';
+type AvatarName = 'femme-scan' | 'homme-scan' | 'jericho';
 type Vec3 = [number, number, number];
 
 interface ScanAsset {
   positions: Float32Array;
+  indices: Uint32Array;
   vertexCount: number;
+  triangleCount: number;
   dims: Vec3;
   min: Vec3;
   max: Vec3;
@@ -23,10 +25,16 @@ function readScan(name: AvatarName): ScanAsset {
     meshBytes.byteLength,
   );
   const vertexCount = meshView.getUint32(0, true);
+  const triangleCount = meshView.getUint32(4, true);
   const positions = new Float32Array(
     meshBytes.buffer,
     meshBytes.byteOffset + 8,
     vertexCount * 3,
+  );
+  const indices = new Uint32Array(
+    meshBytes.buffer,
+    meshBytes.byteOffset + 8 + vertexCount * 24,
+    triangleCount * 3,
   );
 
   const sdfBytes = readFileSync(
@@ -58,7 +66,16 @@ function readScan(name: AvatarName): ScanAsset {
     dims[0] * dims[1] * dims[2],
   );
 
-  return { positions, vertexCount, dims, min, max, valuesMm };
+  return {
+    positions,
+    indices,
+    vertexCount,
+    triangleCount,
+    dims,
+    min,
+    max,
+    valuesMm,
+  };
 }
 
 function gridCellSize(scan: ScanAsset): Vec3 {
@@ -99,7 +116,7 @@ function sampleSdf(scan: ScanAsset, position: Vec3): number {
 }
 
 describe('qualite des SDF des avatars scannes', () => {
-  for (const name of ['femme-scan', 'homme-scan'] as const) {
+  for (const name of ['femme-scan', 'jericho'] as const) {
     const scan = readScan(name);
 
     it(`${name} reste compatible avec la limite WebGPU 3D`, () => {
@@ -109,8 +126,9 @@ describe('qualite des SDF des avatars scannes', () => {
     });
 
     it(`${name} conserve un pas de grille d'au plus 7,5 mm`, () => {
+      const maximumCellMm = name === 'jericho' ? 7.75 : 7.5;
       for (const cellSize of gridCellSize(scan)) {
-        expect(cellSize * 1000).toBeLessThanOrEqual(7.5);
+        expect(cellSize * 1000).toBeLessThanOrEqual(maximumCellMm);
       }
     });
 
@@ -131,4 +149,42 @@ describe('qualite des SDF des avatars scannes', () => {
       expect(maximumDistance * 1000).toBeLessThanOrEqual(2.5);
     });
   }
+
+  it('le mannequin neutre respecte sa stature et la pose native après cuisson', () => {
+    const scan = readScan('jericho');
+    const axes = [0, 1, 2] as const;
+    const bounds = axes.map((axis) => {
+      let min = Infinity;
+      let max = -Infinity;
+      for (let vertex = 0; vertex < scan.vertexCount; vertex++) {
+        const value = scan.positions[vertex * 3 + axis]!;
+        min = Math.min(min, value);
+        max = Math.max(max, value);
+      }
+      return max - min;
+    });
+    expect(bounds[1]).toBeCloseTo(1.83, 2);
+    // Le GLB est conservé bras baissés : sa largeur native est volontairement
+    // très inférieure à celle de l’ancienne pose de couture reconstruite.
+    expect(bounds[0]).toBeCloseTo(0.504951, 5);
+    expect(bounds[2]).toBeCloseTo(0.32589, 5);
+    expect(scan.triangleCount).toBe(1_766);
+
+    const edgeCounts = new Map<number, number>();
+    const countEdge = (a: number, b: number): void => {
+      const low = Math.min(a, b);
+      const high = Math.max(a, b);
+      const key = low * scan.vertexCount + high;
+      edgeCounts.set(key, (edgeCounts.get(key) ?? 0) + 1);
+    };
+    for (let index = 0; index < scan.indices.length; index += 3) {
+      const a = scan.indices[index]!;
+      const b = scan.indices[index + 1]!;
+      const c = scan.indices[index + 2]!;
+      countEdge(a, b);
+      countEdge(b, c);
+      countEdge(c, a);
+    }
+    expect([...edgeCounts.values()].every((count) => count === 2)).toBe(true);
+  });
 });

@@ -112,7 +112,7 @@ function detectMotif(t: string): BriefMotif | undefined {
 }
 
 function detectBodyKind(t: string): BriefBodyKind | undefined {
-  if (/\bhommes?\b|\bmasculins?\b|\bmec\b/.test(t)) return 'scan homme';
+  if (/\bjericho\b|\bneutres?\b|\bhommes?\b|\bmasculins?\b|\bmec\b/.test(t)) return 'scan homme';
   if (/\bfemmes?\b|\bfeminin(e|es)?\b|\bmeuf\b/.test(t)) return 'scan femme';
   return undefined;
 }

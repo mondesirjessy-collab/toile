@@ -4,7 +4,7 @@ import { gridSd, measureBody } from '../src/engine/body/measure';
 import { buildLucasHoodieMesh } from '../src/engine/pattern/LucasHoodieAssembly';
 import { lucasHoodie } from '../src/engine/pattern/lucasHoodie';
 
-function scan(name: 'femme-scan' | 'homme-scan') {
+function scan(name: 'femme-scan' | 'jericho') {
   const raw = readFileSync(
     new URL(`../public/avatars/${name}.sdf.bin`, import.meta.url),
   );
@@ -38,12 +38,19 @@ function scan(name: 'femme-scan' | 'homme-scan') {
 }
 
 describe('Lucas Hoodie — collision réelle des manches et de la capuche', () => {
-  for (const name of ['femme-scan', 'homme-scan'] as const) {
+  for (const name of ['femme-scan', 'jericho'] as const) {
     it(`prépare les manches hors du ${name}`, () => {
       const grid = scan(name);
       const sd = gridSd(grid);
       const body = measureBody(sd, grid.max[1] - 0.06);
-      expect(body.arm?.path?.length ?? 0).toBeGreaterThan(8);
+      if (name === 'jericho') {
+        // The neutral GLB stays in its native arms-down pose. The
+        // specialised hoodie assembler must use its vertical-arm fallback,
+        // never invent an A-pose measurement.
+        expect(body.arm).toBeUndefined();
+      } else {
+        expect(body.arm?.path?.length ?? 0).toBeGreaterThan(8);
+      }
 
       const built = buildLucasHoodieMesh(
         lucasHoodie('S', body),

@@ -108,28 +108,90 @@ export function morphGrid(grid: Grid, m: Morphs, marks: MorphMarks): Grid {
 }
 
 /** Scanned body: stretch the render mesh through the same warp. */
-export function morphMesh(
-  mesh: { positions: Float32Array; normals: Float32Array; indices: Uint32Array },
+export function morphMesh<
+  T extends {
+    positions: Float32Array;
+    normals: Float32Array;
+    indices: Uint32Array;
+    colors?: Float32Array;
+    uvs?: Float32Array;
+    tangents?: Float32Array;
+  },
+>(
+  mesh: T,
   m: Morphs,
   marks: MorphMarks,
-): { positions: Float32Array; normals: Float32Array; indices: Uint32Array } {
+): Omit<T, 'positions' | 'normals'> & {
+  positions: Float32Array;
+  normals: Float32Array;
+} {
   const positions = new Float32Array(mesh.positions.length);
   const normals = new Float32Array(mesh.normals.length);
+  const tangents = mesh.tangents ? new Float32Array(mesh.tangents.length) : undefined;
   const st = m.stature;
   for (let v = 0; v < mesh.positions.length; v += 3) {
-    const y = mesh.positions[v + 1]! * st;
+    const sourceX = mesh.positions[v]!;
+    const sourceY = mesh.positions[v + 1]!;
+    const sourceZ = mesh.positions[v + 2]!;
+    const y = sourceY * st;
     const s = morphScale(y, m, marks) * st;
-    positions[v] = mesh.positions[v]! * s;
+    positions[v] = sourceX * s;
     positions[v + 1] = y;
-    positions[v + 2] = mesh.positions[v + 2]! * s;
-    // Normal of an (x,z)-scaled surface: divide lateral components by s.
-    const nx = mesh.normals[v]! / s;
-    const ny = mesh.normals[v + 1]!;
-    const nz = mesh.normals[v + 2]! / s;
-    const l = Math.hypot(nx, ny, nz) || 1;
-    normals[v] = nx / l;
-    normals[v + 1] = ny / l;
-    normals[v + 2] = nz / l;
+    positions[v + 2] = sourceZ * s;
+
+    // Exact inverse-transpose of F(x,y,z)=(s(y)x, stature*y, s(y)z).
+    // Transforming source normals (instead of re-smoothing triangles) keeps
+    // coincident vertices on opposite sides of a UV seam bit-identical.
+    const epsilon = 1e-4;
+    const scaleBefore = morphScale((sourceY - epsilon) * st, m, marks) * st;
+    const scaleAfter = morphScale((sourceY + epsilon) * st, m, marks) * st;
+    const derivative = (scaleAfter - scaleBefore) / (2 * epsilon);
+    const safeScale = Math.max(1e-6, Math.abs(s));
+    const safeStature = Math.max(1e-6, Math.abs(st));
+    const nx = mesh.normals[v]! / safeScale;
+    const nz = mesh.normals[v + 2]! / safeScale;
+    const ny = (
+      mesh.normals[v + 1]! - sourceX * derivative * nx - sourceZ * derivative * nz
+    ) / safeStature;
+    const length = Math.hypot(nx, ny, nz) || 1;
+    normals[v] = nx / length;
+    normals[v + 1] = ny / length;
+    normals[v + 2] = nz / length;
+    if (tangents && mesh.tangents) {
+      const tangent = (v / 3) * 4;
+      let tx = s * mesh.tangents[tangent]! + sourceX * derivative * mesh.tangents[tangent + 1]!;
+      let ty = st * mesh.tangents[tangent + 1]!;
+      let tz = s * mesh.tangents[tangent + 2]! + sourceZ * derivative * mesh.tangents[tangent + 1]!;
+      // Mikk tangents must stay perpendicular to the transformed normal.
+      const projection = tx * normals[v]! + ty * normals[v + 1]! + tz * normals[v + 2]!;
+      tx -= projection * normals[v]!;
+      ty -= projection * normals[v + 1]!;
+      tz -= projection * normals[v + 2]!;
+      let tangentLength = Math.hypot(tx, ty, tz);
+      if (tangentLength < 1e-8) {
+        // Degenerate source tangent (one vertex in Blender's decimated GLB):
+        // construct a stable perpendicular instead of exporting vec3(0).
+        if (Math.abs(normals[v + 1]!) < 0.9) {
+          tx = normals[v + 2]!;
+          ty = 0;
+          tz = -normals[v]!;
+        } else {
+          tx = 0;
+          ty = -normals[v + 2]!;
+          tz = normals[v + 1]!;
+        }
+        tangentLength = Math.hypot(tx, ty, tz) || 1;
+      }
+      tangents[tangent] = tx / tangentLength;
+      tangents[tangent + 1] = ty / tangentLength;
+      tangents[tangent + 2] = tz / tangentLength;
+      tangents[tangent + 3] = mesh.tangents[tangent + 3]!;
+    }
   }
-  return { positions, normals, indices: mesh.indices };
+  return {
+    ...mesh,
+    positions,
+    normals,
+    ...(tangents ? { tangents } : {}),
+  };
 }

@@ -39,7 +39,7 @@ const armDistance = (x: number, y: number, z: number): number =>
 
 function maleScanDistance() {
   const raw = readFileSync(
-    new URL('../public/avatars/homme-scan.sdf.bin', import.meta.url),
+    new URL('../public/avatars/jericho.sdf.bin', import.meta.url),
   );
   const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
   const dims: [number, number, number] = [
@@ -176,13 +176,14 @@ describe.each([64, 128])('placement anatomique des manches kimono n=%i', (n) => 
   });
 });
 
-describe('régression scan homme (bras décalés derrière z=0)', () => {
+describe('régression du mannequin neutre (pose native conservée)', () => {
   const scan = maleScanDistance();
   const body = measureBody(scan.bodyDistance, scan.max[1] - 0.06);
 
   for (const n of [64, 128]) {
-    it(`trouve l’axe des deux bras, pas le torse, à n=${n}`, () => {
-      expect(body.arm?.path?.length).toBeGreaterThan(2);
+    it(`ne fabrique pas un axe horizontal à partir du torse à n=${n}`, () => {
+      expect(body.arm).toBeUndefined();
+      expect(body.height).toBeCloseTo(1.83, 2);
       const mesh = generateSeamedPanels({
         resolution: n,
         width: 1.15,
@@ -191,38 +192,12 @@ describe('régression scan homme (bras décalés derrière z=0)', () => {
         topY: 1.52,
         shape: 'tshirt',
       });
-      const wrapped = preWrapKimonoSleeves(mesh, {
+      const before = mesh.positions.slice();
+      expect(preWrapKimonoSleeves(mesh, {
         bodyDistance: scan.bodyDistance,
         clearance: 0.024,
-      });
-      expect(wrapped).toBeGreaterThan(n * 0.3);
-
-      const panelSize = n * n;
-      let compared = 0;
-      for (let u = 0; u < n; u++) {
-        if (Math.abs(u / (n - 1) - 0.5) < 0.31) continue;
-        const rows = Array.from({ length: n }, (_, v) => v).filter(
-          (v) => mesh.invMasses[v * n + u]! > 0,
-        );
-        if (rows.length < 2) continue;
-        const top = rows[0]! * n + u;
-        const bottom = rows[rows.length - 1]! * n + u;
-        const centreY =
-          (mesh.positions[top * 4 + 1]! + mesh.positions[bottom * 4 + 1]!) * 0.5;
-        const centreZ = mesh.positions[top * 4 + 2]!;
-        const x = mesh.positions[top * 4]!;
-        const armPoint = body.arm!.path!.reduce((closest, point) =>
-          Math.abs(Math.abs(point.x) - Math.abs(x)) <
-          Math.abs(Math.abs(closest.x) - Math.abs(x))
-            ? point
-            : closest,
-        );
-        expect(Math.abs(centreY - armPoint.y)).toBeLessThan(0.07);
-        expect(Math.abs(centreZ - armPoint.z)).toBeLessThan(0.055);
-        expect(mesh.positions[(panelSize + top) * 4 + 2]).toBe(centreZ);
-        compared++;
-      }
-      expect(compared).toBeGreaterThan(0);
+      })).toBe(0);
+      expect(mesh.positions).toEqual(before);
     });
   }
 });

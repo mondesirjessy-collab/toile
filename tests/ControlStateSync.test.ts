@@ -482,6 +482,37 @@ describe('retour utilisateur des exports', () => {
     );
   });
 
+  it('ignore un second clic pendant la construction du GLB haute fidélité', async () => {
+    const { ControlPanel } = await import('../src/app/ControlPanel');
+    const callbacks = makeCallbacks();
+    let finish!: (filename: string | null) => void;
+    callbacks.onGltf.mockReturnValue(
+      new Promise<string | null>((resolve) => { finish = resolve; }),
+    );
+    const panel = new ControlPanel(callbacks, {
+      resolution: 64,
+      substeps: 20,
+    });
+    const toast = vi.fn();
+    (panel as unknown as { toast: typeof toast }).toast = toast;
+    const glb = fakeControllers.find(
+      (controller) =>
+        controller.folderName === 'fichier' && controller.property === 'glb',
+    )!;
+
+    glb.invoke();
+    glb.invoke();
+
+    expect(callbacks.onGltf).toHaveBeenCalledOnce();
+    expect(toast).toHaveBeenCalledWith('Export 3D déjà en cours…');
+    finish('toile-atelier.glb');
+    await vi.waitFor(() =>
+      expect(toast).toHaveBeenCalledWith(
+        'Modèle 3D exporté — toile-atelier.glb',
+      ),
+    );
+  });
+
   it('signale un GLB absent ou une erreur asynchrone', async () => {
     const { ControlPanel } = await import('../src/app/ControlPanel');
     const callbacks = makeCallbacks();
@@ -504,7 +535,9 @@ describe('retour utilisateur des exports', () => {
 
     callbacks.onGltf.mockRejectedValueOnce(new Error('lecture GPU impossible'));
     glb.invoke();
-    await vi.waitFor(() => expect(toast).toHaveBeenCalledTimes(2));
+    // Chaque tentative annonce d'abord la préparation du modèle haute
+    // fidélité, puis son succès ou son échec.
+    await vi.waitFor(() => expect(toast).toHaveBeenCalledTimes(4));
     expect(toast).toHaveBeenLastCalledWith('Échec de l’export GLB.', false);
   });
 

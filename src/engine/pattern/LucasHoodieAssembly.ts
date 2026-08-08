@@ -66,6 +66,9 @@ const SLEEVE_MIN_SIGNED_EDGE_RATIO = 0.35;
 const SLEEVE_CAP_EDGE_MOBILITY = 0.11;
 const HOOD_CONTACT_THICKNESS_M = 0.006;
 const HOOD_CONTACT_SAFETY_M = 0.002;
+const HOOD_NECK_CAPTURE_M = 0.082;
+const HOOD_NECK_PRE_DRESS_M = 0.076;
+const HOOD_MAX_PRE_DRESS_EDGE_RATIO = 4.25;
 
 type Point3 = [number, number, number];
 type HoodNeckTargets = ReadonlyMap<number, Point3>;
@@ -1411,10 +1414,9 @@ function withHoodCollisionLayers(
  * Clamp one hood point to a polar envelope of the real body SDF.
  *
  * A nearest-gradient projection can eject adjacent vertices through opposite
- * sides of the skull. Sampling the first radial exit at a fixed (y, theta)
- * instead defines one continuous, order-preserving shell: X keeps its sign,
- * neighbouring vertices keep their neighbourhood, and triangle chords stay
- * short enough for vertex collision to represent the surface faithfully.
+ * sides of the skull. Following the current radial component at fixed
+ * (y, theta) preserves the panel side and exits whichever body component
+ * actually contains the point (torso, head or deltoid).
  */
 function hoodRadialEnvelope(
   sd: Sd,
@@ -1432,34 +1434,18 @@ function hoodRadialEnvelope(
 
   const distanceAt = (radial: number): number =>
     sd(directionX * radial, y, directionZ * radial);
-  let lower = 0;
-  let upper = 0;
-
-  if (distanceAt(0) < clearance) {
-    // The body axis is inside the neck/head section. Take its first exit so a
-    // shoulder or arm farther along the ray cannot steal the hood point.
-    let previous = 0;
-    for (let radial = 0.004; radial <= 0.6; radial += 0.004) {
-      if (distanceAt(radial) >= clearance) {
-        lower = previous;
-        upper = radial;
-        break;
-      }
-      previous = radial;
-    }
-  } else if (distanceAt(radius) < clearance) {
-    // Defensive case for a scan with a hollow/off-axis section: preserve the
-    // current ray and leave through the same side rather than using a normal.
-    lower = radius;
-    for (let radial = radius + 0.004; radial <= radius + 0.4; radial += 0.004) {
-      if (distanceAt(radial) >= clearance) {
-        upper = radial;
-        break;
-      }
-      lower = radial;
-    }
-  } else {
+  if (distanceAt(radius) >= clearance) {
     return [point[0], point[1], point[2]];
+  }
+
+  let lower = radius;
+  let upper = 0;
+  for (let radial = radius + 0.004; radial <= radius + 0.4; radial += 0.004) {
+    if (distanceAt(radial) >= clearance) {
+      upper = radial;
+      break;
+    }
+    lower = radial;
   }
 
   if (upper <= lower) return [point[0], point[1], point[2]];
@@ -1469,8 +1455,92 @@ function hoodRadialEnvelope(
     else upper = middle;
   }
   const safeRadius = (lower + upper) / 2;
-  if (radius >= safeRadius) return [point[0], point[1], point[2]];
   return [directionX * safeRadius, y, directionZ * safeRadius];
+}
+
+/**
+ * Keep the paired hood centre seam on the sagittal plane while giving it the
+ * same body clearance as the surrounding panels. A generic radial projection
+ * may choose opposite X directions when a crown sample sits at x=z=0; moving
+ * strictly along the seam's current front/back direction avoids that split.
+ */
+function hoodSagittalEnvelope(
+  sd: Sd,
+  point: readonly [number, number, number],
+  clearance: number,
+): Point3 {
+  const y = point[1];
+  const initialZ = point[2];
+  if (sd(0, y, initialZ) >= clearance) return [0, y, initialZ];
+
+  // The centre curve is authored from the back neckline over the crown to the
+  // face opening. Preserve that local side; an exactly centred sample defaults
+  // to the back, where the centre seam is meant to lie.
+  const directionZ = initialZ > 1e-7 ? 1 : -1;
+  let lower = Math.abs(initialZ);
+  let upper = 0;
+  for (
+    let radial = lower + 0.004;
+    radial <= lower + 0.4;
+    radial += 0.004
+  ) {
+    if (sd(0, y, directionZ * radial) >= clearance) {
+      upper = radial;
+      break;
+    }
+    lower = radial;
+  }
+  if (upper <= lower) return [0, y, initialZ];
+  for (let iteration = 0; iteration < 10; iteration++) {
+    const middle = (lower + upper) / 2;
+    if (sd(0, y, directionZ * middle) < clearance) lower = middle;
+    else upper = middle;
+  }
+  return [0, y, directionZ * ((lower + upper) / 2)];
+}
+
+/**
+ * The hood neckline is sewn to the torso neckline, so its pre-dressing target
+ * must stay on the first body shell and never jump across the shoulder gap to
+ * the far side of a deltoid.
+ */
+function hoodFirstRadialEnvelope(
+  sd: Sd,
+  point: Point3,
+  clearance: number,
+  fallbackSign: -1 | 1,
+): Point3 {
+  const radius = Math.hypot(point[0], point[2]);
+  let directionX = radius > 1e-7 ? point[0] / radius : fallbackSign;
+  let directionZ = radius > 1e-7 ? point[2] / radius : 0;
+  const directionLength = Math.hypot(directionX, directionZ);
+  directionX /= Math.max(1e-9, directionLength);
+  directionZ /= Math.max(1e-9, directionLength);
+  const distanceAt = (radial: number): number =>
+    sd(directionX * radial, point[1], directionZ * radial);
+  // A neckline stitch is authored from the already placed bodice edge. Keep
+  // that exact sewing position whenever it already clears the avatar; forcing
+  // every safe stitch back onto the first SDF shell separates the hood from a
+  // deliberately loose garment neckline (especially across broad shoulders).
+  if (distanceAt(radius) >= clearance) return [...point];
+  if (distanceAt(0) >= clearance) return [...point];
+  let lower = 0;
+  let upper = 0;
+  for (let radial = 0.004; radial <= 0.6; radial += 0.004) {
+    if (distanceAt(radial) >= clearance) {
+      upper = radial;
+      break;
+    }
+    lower = radial;
+  }
+  if (upper <= lower) return [...point];
+  for (let iteration = 0; iteration < 10; iteration++) {
+    const middle = (lower + upper) / 2;
+    if (distanceAt(middle) < clearance) lower = middle;
+    else upper = middle;
+  }
+  const safeRadius = (lower + upper) / 2;
+  return [directionX * safeRadius, point[1], directionZ * safeRadius];
 }
 
 function makePolarBodyPlacementSafe(
@@ -1559,7 +1629,11 @@ function placeHoodPanels(
   const hoodHalfW = Math.max(0.135, body.shoulderHalfW * 0.66);
   const frontZ = body.chest.halfD + 0.055;
   const backZ = -(body.chest.halfD + 0.045);
-  const crownY = Math.max(body.height + 0.025, baseY + 0.31);
+  // Keep the crown curve above the complete two-layer hood clearance. If its
+  // first interior row sits only ~12 mm above a tall scan, the radial safety
+  // envelope must eject that row sideways while the sagittal seam stays at
+  // x=0, creating one highly stretched edge at the crown.
+  const crownY = Math.max(body.height + 0.04, baseY + 0.31);
   const foreheadY = crownY - 0.095;
   const neckCurves = hoodNeckTargetCurves(
     mesh,
@@ -1749,22 +1823,24 @@ function relaxHoodPanels(
         for (let local = 0; local < panelSize; local++) {
           const particle = first + local;
           if (mesh.invMasses[particle]! <= 0) continue;
-          // The centre seam is already authored as a continuous curve over
-          // the crown. A radial projection at z≈0 can flip two adjacent
-          // samples to opposite sides of the skull; keep that curve smooth
-          // and let the surrounding, projected shell carry its clearance.
-          if (centreCells.has(local) && !neckCells.has(local)) continue;
           const offset = particle * 4;
-          const safe = hoodRadialEnvelope(
-            bodySd,
-            [
-              mesh.positions[offset]!,
-              mesh.positions[offset + 1]!,
-              mesh.positions[offset + 2]!,
-            ],
-            hoodCollisionClearance(mesh, particle),
-            panelSign,
-          );
+          const point: Point3 = [
+            mesh.positions[offset]!,
+            mesh.positions[offset + 1]!,
+            mesh.positions[offset + 2]!,
+          ];
+          const safe = centreCells.has(local) && !neckCells.has(local)
+            ? hoodSagittalEnvelope(
+                bodySd,
+                point,
+                hoodCollisionClearance(mesh, particle),
+              )
+            : hoodRadialEnvelope(
+                bodySd,
+                point,
+                hoodCollisionClearance(mesh, particle),
+                panelSign,
+              );
           mesh.positions[offset] = safe[0];
           mesh.positions[offset + 1] = safe[1];
           mesh.positions[offset + 2] = safe[2];
@@ -1775,6 +1851,112 @@ function relaxHoodPanels(
       // their Y/Z response to the metric solve.
     }
 
+  }
+}
+
+/**
+ * Reconcile the three constraints that matter at the start of progressive
+ * sewing: a short neckline pull, a bounded cloth metric and a collision-safe
+ * pose. Alternating those projections avoids fixing one criterion by breaking
+ * another, and only touches the hood after its authored 3D drape is built.
+ */
+function settleHoodAssemblyPose(
+  mesh: ClothMeshData,
+  centreCells: ReadonlySet<number>,
+  seamTargets: ReadonlyMap<number, Point3>,
+  bodySd?: Sd,
+): void {
+  const n = mesh.resolution;
+  const panelSize = n * n;
+  const view = new DataView(mesh.constraintData);
+  const edges: Array<{ a: number; b: number; rest: number }> = [];
+  for (let index = 0; index < mesh.constraintCount; index++) {
+    const offset = index * 16;
+    const kind = view.getUint32(offset + 12, true);
+    if (
+      kind !== ConstraintKind.Structural &&
+      kind !== ConstraintKind.StructuralWarp &&
+      kind !== ConstraintKind.Shear
+    ) {
+      continue;
+    }
+    const a = view.getUint32(offset, true);
+    const b = view.getUint32(offset + 4, true);
+    if (Math.floor(a / panelSize) !== Math.floor(b / panelSize)) continue;
+    edges.push({ a, b, rest: view.getFloat32(offset + 8, true) });
+  }
+
+  const clampNeckline = (): void => {
+    for (const [particle, target] of seamTargets) {
+      const offset = particle * 4;
+      const dx = mesh.positions[offset]! - target[0];
+      const dy = mesh.positions[offset + 1]! - target[1];
+      const dz = mesh.positions[offset + 2]! - target[2];
+      const distance = Math.hypot(dx, dy, dz);
+      if (distance <= HOOD_NECK_PRE_DRESS_M) continue;
+      const scale = HOOD_NECK_PRE_DRESS_M / Math.max(distance, 1e-9);
+      mesh.positions[offset] = target[0] + dx * scale;
+      mesh.positions[offset + 1] = target[1] + dy * scale;
+      mesh.positions[offset + 2] = target[2] + dz * scale;
+    }
+  };
+
+  for (let iteration = 0; iteration < 2 * n; iteration++) {
+    const reverse = iteration % 2 === 1;
+    for (let step = 0; step < edges.length; step++) {
+      const edge = edges[reverse ? edges.length - 1 - step : step]!;
+      const a = edge.a * 4;
+      const b = edge.b * 4;
+      const dx = mesh.positions[b]! - mesh.positions[a]!;
+      const dy = mesh.positions[b + 1]! - mesh.positions[a + 1]!;
+      const dz = mesh.positions[b + 2]! - mesh.positions[a + 2]!;
+      const length = Math.hypot(dx, dy, dz);
+      const maximumLength = HOOD_MAX_PRE_DRESS_EDGE_RATIO * edge.rest;
+      if (length <= maximumLength || length <= 1e-9) continue;
+      const correction = (0.34 * (length - maximumLength)) / (2 * length);
+      mesh.positions[a] = mesh.positions[a]! + dx * correction;
+      mesh.positions[a + 1] = mesh.positions[a + 1]! + dy * correction;
+      mesh.positions[a + 2] = mesh.positions[a + 2]! + dz * correction;
+      mesh.positions[b] = mesh.positions[b]! - dx * correction;
+      mesh.positions[b + 1] = mesh.positions[b + 1]! - dy * correction;
+      mesh.positions[b + 2] = mesh.positions[b + 2]! - dz * correction;
+    }
+
+    clampNeckline();
+    for (let particle = 0; particle < mesh.count; particle++) {
+      if (mesh.invMasses[particle]! <= 0) continue;
+      const local = particle % panelSize;
+      const panelSign = Math.floor(particle / panelSize) === 0 ? -1 : 1;
+      const offset = particle * 4;
+      mesh.positions[offset] =
+        panelSign < 0
+          ? Math.min(0, mesh.positions[offset]!)
+          : Math.max(0, mesh.positions[offset]!);
+      if (centreCells.has(local)) {
+        mesh.positions[offset] = 0;
+      }
+      if (!bodySd) continue;
+      const point: Point3 = [
+        mesh.positions[offset]!,
+        mesh.positions[offset + 1]!,
+        mesh.positions[offset + 2]!,
+      ];
+      const safe = centreCells.has(local)
+        ? hoodSagittalEnvelope(
+            bodySd,
+            point,
+            hoodCollisionClearance(mesh, particle) + 0.001,
+          )
+        : hoodRadialEnvelope(
+            bodySd,
+            point,
+            hoodCollisionClearance(mesh, particle) + 0.001,
+            panelSign,
+          );
+      mesh.positions[offset] = safe[0];
+      mesh.positions[offset + 1] = safe[1];
+      mesh.positions[offset + 2] = safe[2];
+    }
   }
 }
 
@@ -2599,6 +2781,8 @@ export function buildLucasHoodieMesh(
 
   const hoodOffset = garment.count;
   const hoodCross: CrossSeam[] = [];
+  const hoodCrossCandidates: number[][] = [];
+  const hoodBodyCandidates: Array<Set<number>> = [new Set(), new Set()];
   const hoodNeckline = lucasHoodNecklineRuns(doc, runs);
   const targetSums = new Map<
     number,
@@ -2612,6 +2796,10 @@ export function buildLucasHoodieMesh(
     const bodyCells = pair.a.filter(
       (cell, index) => index === 0 || cell !== pair.a[index - 1],
     );
+    const bodyCandidates = bodyCells.map((cell) => bodyOffset + cell);
+    for (const candidate of bodyCandidates) {
+      hoodBodyCandidates[panel]!.add(candidate);
+    }
     const bodyPoints = bodyCells.map(
       (cell): Point3 => [
         garment.positions[(bodyOffset + cell) * 4]!,
@@ -2674,6 +2862,9 @@ export function buildLucasHoodieMesh(
         i: bodyOffset + bodyCells[nearestBodyIndex]!,
         j: hoodOffset + hoodParticle,
       });
+      // Retain the authored run candidates so retargeting can preserve its
+      // front/back provenance whenever the rasterised shoulder permits it.
+      hoodCrossCandidates.push(bodyCandidates);
       const point = sampleBodyPoint(fraction);
       const current = targetSums.get(hoodParticle) ?? {
         x: 0,
@@ -2734,7 +2925,7 @@ export function buildLucasHoodieMesh(
       sum.z / sum.count,
     ];
     if (bodySd) {
-      target = hoodRadialEnvelope(
+      target = hoodFirstRadialEnvelope(
         bodySd,
         target,
         hoodCollisionClearance(hoods, particle),
@@ -2742,6 +2933,69 @@ export function buildLucasHoodieMesh(
       );
     }
     hoodNeckTargets.set(particle, target);
+  }
+
+  // Front and back neckline runs are rasterised independently. At their
+  // shoulder junction that can assign two neighbouring hood cells to body
+  // samples several centimetres apart. Reparameterise the combined target
+  // polyline by the hood's own neckline fraction so the sewing ease is spread
+  // continuously instead of concentrated in one yarn edge.
+  for (let panel = 0; panel < 2; panel++) {
+    const entries = [...hoodNeckTargets.entries()]
+      .filter(([particle]) => Math.floor(particle / panelSize) === panel)
+      .map(([particle, point]) => ({
+        particle,
+        point,
+        fraction: nearestRunProjection(
+          hood,
+          flatParticleUV(hoods, hood, particle),
+          runs.hood.neckline,
+        ).fraction,
+      }))
+      .sort((a, b) => a.fraction - b.fraction);
+    if (entries.length < 3) continue;
+    const cumulative = new Float64Array(entries.length);
+    for (let index = 1; index < entries.length; index++) {
+      const a = entries[index - 1]!.point;
+      const b = entries[index]!.point;
+      cumulative[index] =
+        cumulative[index - 1]! +
+        Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+    }
+    const total = cumulative[cumulative.length - 1]!;
+    const firstFraction = entries[0]!.fraction;
+    const fractionSpan = Math.max(
+      1e-9,
+      entries[entries.length - 1]!.fraction - firstFraction,
+    );
+    for (const entry of entries) {
+      const targetLength =
+        ((entry.fraction - firstFraction) / fractionSpan) * total;
+      let upper = 1;
+      while (
+        upper < cumulative.length &&
+        cumulative[upper]! < targetLength
+      ) {
+        upper++;
+      }
+      upper = Math.min(upper, entries.length - 1);
+      const lower = Math.max(0, upper - 1);
+      const interval = Math.max(
+        1e-9,
+        cumulative[upper]! - cumulative[lower]!,
+      );
+      const t = (targetLength - cumulative[lower]!) / interval;
+      const a = entries[lower]!.point;
+      const b = entries[upper]!.point;
+      const sign = panel === 0 ? -1 : 1;
+      hoodNeckTargets.set(entry.particle, [
+        sign < 0
+          ? Math.min(0, a[0] + (b[0] - a[0]) * t)
+          : Math.max(0, a[0] + (b[0] - a[0]) * t),
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+      ]);
+    }
   }
 
   const frontNeckCells = pairedEdges(
@@ -2775,6 +3029,94 @@ export function buildLucasHoodieMesh(
     runs.hood.face,
     runs.hood.neckline,
     hoodNeckTargets,
+    bodySd,
+  );
+  // The same continuous parameterisation must drive the actual GPU stitches.
+  // The metric/contact solve can move the pre-dressed neckline a few cells
+  // from its analytical target, so pair against the final hood position. This
+  // only redistributes ease along the same authored body neckline and prevents
+  // a stale front/back raster pairing from recreating the shoulder jump.
+  const retargetHoodCross = (): Map<number, Point3> => {
+    const sums = new Map<
+      number,
+      { x: number; y: number; z: number; count: number }
+    >();
+    for (let seamIndex = 0; seamIndex < hoodCross.length; seamIndex++) {
+      const seam = hoodCross[seamIndex]!;
+      const hoodParticle = seam.j - hoodOffset;
+      const panel = Math.floor(hoodParticle / panelSize);
+      const runCandidates = hoodCrossCandidates[seamIndex];
+      const hoodPointOffset = hoodParticle * 4;
+      if (!runCandidates?.length) continue;
+      const distanceTo = (candidate: number): number => {
+        const bodyPointOffset = candidate * 4;
+        return Math.hypot(
+          garment.positions[bodyPointOffset]! -
+            hoods.positions[hoodPointOffset]!,
+          garment.positions[bodyPointOffset + 1]! -
+            hoods.positions[hoodPointOffset + 1]!,
+          garment.positions[bodyPointOffset + 2]! -
+            hoods.positions[hoodPointOffset + 2]!,
+        );
+      };
+      const nearestDistance = (candidates: readonly number[]): number =>
+        candidates.reduce(
+          (minimum, candidate) => Math.min(minimum, distanceTo(candidate)),
+          Infinity,
+        );
+      const runDistance = nearestDistance(runCandidates);
+      const allCandidates = [...hoodBodyCandidates[panel]!];
+      const allDistance = nearestDistance(allCandidates);
+      // Keep the authored front/back run whenever it can start inside the
+      // progressive-stitch capture radius. Only a separated shoulder raster
+      // sample may borrow the coincident endpoint of the adjoining run.
+      const candidates =
+        runDistance <= HOOD_NECK_CAPTURE_M || runDistance <= allDistance
+          ? runCandidates
+          : allCandidates;
+      let nearest = seam.i;
+      let minimumDistance = Infinity;
+      for (const candidate of candidates) {
+        const distance = distanceTo(candidate);
+        if (distance < minimumDistance) {
+          minimumDistance = distance;
+          nearest = candidate;
+        }
+      }
+      seam.i = nearest;
+      const offset = nearest * 4;
+      const sum = sums.get(hoodParticle) ?? {
+        x: 0,
+        y: 0,
+        z: 0,
+        count: 0,
+      };
+      sum.x += garment.positions[offset]!;
+      sum.y += garment.positions[offset + 1]!;
+      sum.z += garment.positions[offset + 2]!;
+      sum.count++;
+      sums.set(hoodParticle, sum);
+    }
+    const seamTargets = new Map<number, Point3>();
+    for (const [particle, sum] of sums) {
+      seamTargets.set(particle, [
+        sum.x / sum.count,
+        sum.y / sum.count,
+        sum.z / sum.count,
+      ]);
+    }
+    return seamTargets;
+  };
+  settleHoodAssemblyPose(
+    hoods,
+    hoodCenterCells,
+    retargetHoodCross(),
+    bodySd,
+  );
+  settleHoodAssemblyPose(
+    hoods,
+    hoodCenterCells,
+    retargetHoodCross(),
     bodySd,
   );
   garment = combineClothMeshes(garment, hoods, hoodCross);

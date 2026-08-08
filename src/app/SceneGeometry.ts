@@ -8,15 +8,40 @@
  * (the colliders don't move), so no per-object model matrix is needed.
  */
 import { bodyBounds, bodyNormal, sdBody, type SdfPrim } from '../engine/body/BodySdf';
+import type { ScanAppearance, ScanMesh, ScanVisualMesh } from '../engine/body/ScanAvatar';
 import { surfaceNets } from './SurfaceNets';
 
 export const SCENE_VERTEX_FLOATS = 9;
+export const MAX_SCENE_JOINTS = 64;
+export const SCENE_JOINT_INFLUENCES = 4;
+export const SCENE_JOINT_PALETTE_FLOATS = MAX_SCENE_JOINTS * 16;
+export const SCENE_JOINT_PALETTE_BYTES = SCENE_JOINT_PALETTE_FLOATS * 4;
+
+/** GPU-ready skin streams. Joint ids are palette ordinals, not glTF nodes. */
+export interface SceneSkin {
+  /** Four uint16 palette ordinals per scene vertex. */
+  jointIndices: Uint16Array;
+  /** Four float weights per scene vertex, parallel to `jointIndices`. */
+  weights: Float32Array;
+  /** Optional initial column-major mat4 palette (one to 64 matrices). */
+  jointMatrices?: Float32Array;
+}
 
 export interface SceneMesh {
   vertices: Float32Array; // interleaved pos3, normal3, color3
+  /** Parallel UV stream; (-8,-8) marks non-textured scene geometry. */
+  uvs: Float32Array;
+  /** Parallel glTF tangent stream; w=0 requests derivative fallback. */
+  tangents: Float32Array;
   indices: Uint32Array;
   /** Indices [0, bodyIndexCount) are the mannequin (podium-rotated at draw). */
   bodyIndexCount: number;
+  /** Closed low-detail surface reserved for picking/proximity audits. */
+  proximityBody?: ScanMesh;
+  /** PBR maps belonging to the high-detail body block. */
+  appearance?: ScanAppearance;
+  /** Optional skin streams, expanded to cover every scene vertex. */
+  skin?: SceneSkin;
 }
 
 export interface SceneParams {
@@ -25,9 +50,87 @@ export interface SceneParams {
   /** Smooth-blended SDF body: meshed by surface nets instead of capsule shells. */
   body?: { prims: SdfPrim[]; blend: number };
   /** Pre-built body mesh (scanned avatar) — used verbatim. */
-  rawBody?: { positions: Float32Array; normals: Float32Array; indices: Uint32Array };
+  rawBody?: {
+    positions: Float32Array;
+    normals: Float32Array;
+    indices: Uint32Array;
+    colors?: Float32Array;
+  };
+  /** UV-preserving display/export surface, independent from rawBody/SDF. */
+  visualBody?: ScanVisualMesh;
+  appearance?: ScanAppearance;
+  proximityBody?: ScanMesh;
+  /** Skin streams for the selected body mesh (four influences per vertex). */
+  skin?: SceneSkin;
   groundY: number;
   groundHalfSize?: number;
+}
+
+/**
+ * Validate the fixed-width GPU skin layout before it reaches WebGPU.
+ *
+ * The explicit vertex count also lets ClothRenderer defend against SceneMesh
+ * instances built outside buildSceneMesh().
+ */
+export function validateSceneSkin(skin: SceneSkin, vertexCount: number): void {
+  if (!Number.isInteger(vertexCount) || vertexCount < 0) {
+    throw new RangeError('scene skin vertex count must be a non-negative integer');
+  }
+  const expected = vertexCount * SCENE_JOINT_INFLUENCES;
+  if (!(skin.jointIndices instanceof Uint16Array) || !(skin.weights instanceof Float32Array)) {
+    throw new TypeError('scene skin streams must use Uint16Array indices and Float32Array weights');
+  }
+  if (skin.jointIndices.length !== expected || skin.weights.length !== expected) {
+    throw new RangeError(
+      `scene skin streams must contain four influences per vertex (${expected} values)`,
+    );
+  }
+  for (let i = 0; i < expected; i++) {
+    const joint = skin.jointIndices[i]!;
+    const weight = skin.weights[i]!;
+    if (joint >= MAX_SCENE_JOINTS) {
+      throw new RangeError(`scene skin joint ${joint} exceeds the ${MAX_SCENE_JOINTS}-joint palette`);
+    }
+    if (!Number.isFinite(weight) || weight < 0) {
+      throw new RangeError('scene skin weights must be finite and non-negative');
+    }
+  }
+  if (skin.jointMatrices) validateSceneJointMatrices(skin.jointMatrices);
+}
+
+/** Validate a compact matrix palette (the renderer pads it with identities). */
+export function validateSceneJointMatrices(matrices: ArrayLike<number>): void {
+  if (
+    matrices.length === 0 ||
+    matrices.length % 16 !== 0 ||
+    matrices.length > SCENE_JOINT_PALETTE_FLOATS
+  ) {
+    throw new RangeError(
+      `scene joint palette must contain 1-${MAX_SCENE_JOINTS} complete mat4 matrices`,
+    );
+  }
+  for (let i = 0; i < matrices.length; i++) {
+    if (!Number.isFinite(matrices[i])) {
+      throw new RangeError('scene joint palette values must be finite');
+    }
+  }
+}
+
+/** A fully populated, 256-byte aligned uniform palette with identity padding. */
+export function sceneJointPalette(matrices?: ArrayLike<number>): Float32Array {
+  const result = new Float32Array(SCENE_JOINT_PALETTE_FLOATS);
+  for (let joint = 0; joint < MAX_SCENE_JOINTS; joint++) {
+    const offset = joint * 16;
+    result[offset] = 1;
+    result[offset + 5] = 1;
+    result[offset + 10] = 1;
+    result[offset + 15] = 1;
+  }
+  if (matrices) {
+    validateSceneJointMatrices(matrices);
+    for (let i = 0; i < matrices.length; i++) result[i] = matrices[i]!;
+  }
+  return result;
 }
 
 // The sculpted body is static per collider set: mesh it once, then reuse.
@@ -85,31 +188,64 @@ export function bodyRestVertices(
 
 export function buildSceneMesh(p: SceneParams): SceneMesh {
   const vertices: number[] = [];
+  const uvs: number[] = [];
+  const tangents: number[] = [];
   const indices: number[] = [];
+  if (p.skin && !p.body && !p.rawBody && !p.visualBody) {
+    throw new RangeError('scene skin requires a body mesh');
+  }
 
   const push = (
     pos: [number, number, number],
     nrm: [number, number, number],
     col: [number, number, number],
+    uv: [number, number] = [-8, -8],
+    tangent: [number, number, number, number] = [1, 0, 0, 0],
   ): number => {
     const idx = vertices.length / SCENE_VERTEX_FLOATS;
     vertices.push(pos[0], pos[1], pos[2], nrm[0], nrm[1], nrm[2], col[0], col[1], col[2]);
+    uvs.push(uv[0], uv[1]);
+    tangents.push(tangent[0], tangent[1], tangent[2], tangent[3]);
     return idx;
   };
 
   const bodyColor: [number, number, number] = [0.45, 0.49, 0.58];
 
   // --- Sculpted body (surface nets) or scanned avatar (verbatim mesh) ---
-  if (p.body || p.rawBody) {
-    // Warm matte "display mannequin" tone — a body should not read as machinery.
+  if (p.body || p.rawBody || p.visualBody) {
+    // Warm matte fallback for historical scans. New scans may carry compact
+    // source-derived vertex RGB, which keeps face/body identity without a
+    // texture upload in every renderer rebuild.
     const skin: [number, number, number] = [0.62, 0.53, 0.47];
-    const mesh = p.rawBody ?? bodyMesh(p.body!.prims, p.body!.blend);
+    const mesh = p.visualBody ?? p.rawBody ?? bodyMesh(p.body!.prims, p.body!.blend);
+    const colors = p.visualBody ? undefined : p.rawBody?.colors;
+    const bodyVertexCount = mesh.positions.length / 3;
+    if (p.skin) validateSceneSkin(p.skin, bodyVertexCount);
     const base = vertices.length / SCENE_VERTEX_FLOATS;
-    for (let v = 0; v < mesh.positions.length / 3; v++) {
+    for (let v = 0; v < bodyVertexCount; v++) {
       push(
         [mesh.positions[v * 3]!, mesh.positions[v * 3 + 1]!, mesh.positions[v * 3 + 2]!],
         [mesh.normals[v * 3]!, mesh.normals[v * 3 + 1]!, mesh.normals[v * 3 + 2]!],
-        skin,
+        colors
+          ? [colors[v * 3]!, colors[v * 3 + 1]!, colors[v * 3 + 2]!]
+          : p.visualBody
+            ? [
+                p.appearance?.baseColorFactor[0] ?? 1,
+                p.appearance?.baseColorFactor[1] ?? 1,
+                p.appearance?.baseColorFactor[2] ?? 1,
+              ]
+            : skin,
+        p.visualBody
+          ? [p.visualBody.uvs[v * 2]!, p.visualBody.uvs[v * 2 + 1]!]
+          : [-8, -8],
+        p.visualBody?.tangents
+          ? [
+              p.visualBody.tangents[v * 4]!,
+              p.visualBody.tangents[v * 4 + 1]!,
+              p.visualBody.tangents[v * 4 + 2]!,
+              p.visualBody.tangents[v * 4 + 3]!,
+            ]
+          : [1, 0, 0, 0],
       );
     }
     for (const idx of mesh.indices) indices.push(base + idx);
@@ -185,5 +321,40 @@ export function buildSceneMesh(p: SceneParams): SceneMesh {
   const g3 = push([-h, g, h], up, groundColor);
   indices.push(g0, g2, g1, g0, g3, g2);
 
-  return { vertices: new Float32Array(vertices), indices: new Uint32Array(indices), bodyIndexCount };
+  // The body is emitted first. Copy its already-packed streams once into
+  // typed arrays sized for the complete scene; zero-initialised trailing
+  // values make ground/colliders rigid without large temporary JS arrays for
+  // detailed scan meshes.
+  const sceneVertexCount = vertices.length / SCENE_VERTEX_FLOATS;
+  const sceneJointIndices = p.skin
+    ? new Uint16Array(sceneVertexCount * SCENE_JOINT_INFLUENCES)
+    : null;
+  const sceneJointWeights = p.skin
+    ? new Float32Array(sceneVertexCount * SCENE_JOINT_INFLUENCES)
+    : null;
+  if (p.skin && sceneJointIndices && sceneJointWeights) {
+    sceneJointIndices.set(p.skin.jointIndices);
+    sceneJointWeights.set(p.skin.weights);
+  }
+
+  return {
+    vertices: new Float32Array(vertices),
+    uvs: new Float32Array(uvs),
+    tangents: new Float32Array(tangents),
+    indices: new Uint32Array(indices),
+    bodyIndexCount,
+    ...(p.proximityBody ? { proximityBody: p.proximityBody } : {}),
+    ...(p.appearance ? { appearance: p.appearance } : {}),
+    ...(p.skin
+      ? {
+          skin: {
+            jointIndices: sceneJointIndices!,
+            weights: sceneJointWeights!,
+            ...(p.skin.jointMatrices
+              ? { jointMatrices: new Float32Array(p.skin.jointMatrices) }
+              : {}),
+          },
+        }
+      : {}),
+  };
 }
