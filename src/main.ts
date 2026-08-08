@@ -4004,13 +4004,17 @@ async function main(): Promise<void> {
   let animSkin: Skin | null = null;
   let animRest: Float32Array | null = null;
   let animOut: Float32Array | null = null;
-  // The scanned CC0 avatar (Blender Studio realistic male via Wikimedia
-  // Commons) — rendered as a real mesh, felt by the cloth as a baked SDF grid.
-  // Both avatars in parallel — serial awaits held the first paint hostage
-  // to ~4.7 MB of downloads nobody sees on the default (sculpted) scene.
+  // Scanned avatars — rendered as real meshes, felt by the cloth as baked SDF
+  // grids. Both in parallel — serial awaits held the first paint hostage
+  // to several MB of downloads nobody sees on the default (sculpted) scene.
+  // v186 : le mannequin femme est « Mia », exportée de CLO (OBJ corps seul,
+  // réparée étanche) puis cuite par tools/bake.py comme les scans historiques
+  // — 60 000 tris, grille 7 mm, stature CLO 1,752 m. Asset propriétaire CLO :
+  // usage local/démo, droits à confirmer avant toute publication. L'historique
+  // femme-scan (MakeHuman CC0) reste livré à côté en repli.
   const [scanHomme, scanFemme] = await Promise.all([
     loadScanAvatar(`${import.meta.env.BASE_URL}avatars/homme-scan`),
-    loadScanAvatar(`${import.meta.env.BASE_URL}avatars/femme-scan`),
+    loadScanAvatar(`${import.meta.env.BASE_URL}avatars/mia`),
   ]);
   const scans: Record<string, ScanAvatar | null> = {
     'scan homme': scanHomme,

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-type AvatarName = 'femme-scan' | 'homme-scan' | 'jericho';
+type AvatarName = 'femme-scan' | 'homme-scan' | 'jericho' | 'mia';
 type Vec3 = [number, number, number];
 
 interface ScanAsset {
@@ -116,7 +116,7 @@ function sampleSdf(scan: ScanAsset, position: Vec3): number {
 }
 
 describe('qualite des SDF des avatars scannes', () => {
-  for (const name of ['femme-scan', 'jericho'] as const) {
+  for (const name of ['femme-scan', 'jericho', 'mia'] as const) {
     const scan = readScan(name);
 
     it(`${name} reste compatible avec la limite WebGPU 3D`, () => {
