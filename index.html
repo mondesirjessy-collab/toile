@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TOILE — du brief au patron · v184</title>
+  <title>TOILE — du brief au patron · v185</title>
   <style>
     :root {
       color-scheme: dark;
@@ -285,6 +285,13 @@
     }
     .avatar-gabarit button:hover { color: #f4f8ff; background: rgba(120, 140, 170, 0.2); }
     .avatar-gabarit button.active { color: #06121f; background: #70b8ff; border-color: #70b8ff; }
+    .avatar-import {
+      width: 100%; margin: 5px 0 2px; font-size: 10px; font-weight: 620; padding: 5px 4px;
+      color: rgba(205, 214, 226, 0.82); background: rgba(120, 140, 170, 0.1);
+      border: 1px dashed rgba(237, 233, 223, 0.2); border-radius: 7px; cursor: pointer;
+    }
+    .avatar-import:hover { color: #f4f8ff; background: rgba(120, 140, 170, 0.18); }
+    .avatar-import.active { color: #06121f; background: #7ddc96; border-color: #7ddc96; border-style: solid; }
     .avatar-silhouette-label { display: block; margin: 4px 0 2px; font-size: 9px; font-weight: 640; color: rgba(205, 214, 226, 0.6); text-transform: uppercase; letter-spacing: 0.04em; }
     .avatar-silhouettes { display: flex; gap: 4px; }
     .avatar-silhouettes button {
@@ -1208,7 +1215,7 @@
   <canvas id="view" tabindex="-1" aria-label="Vue 3D du vêtement et du mannequin"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 5 — du brief au patron · v184</small></span>
+    <span class="title">TOILE<small>phase 5 — du brief au patron · v185</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
       <span id="resolution-rebuild-status" role="status" aria-live="polite" hidden></span>
@@ -1245,6 +1252,8 @@
           <button id="at-gab-femme" type="button" aria-pressed="true" title="Mannequin femme (scan mesuré) — repart de ses mensurations naturelles">👤 Femme</button>
           <button id="at-gab-homme" type="button" aria-pressed="false" title="Mannequin homme (scan mesuré) — repart de ses mensurations naturelles">👤 Homme</button>
         </div>
+        <button id="at-import-body" type="button" class="avatar-import" title="Importer un corps au format OBJ (scan 3D, MakeHuman, Blender…) : le maillage devient un mannequin mesuré et morphable. Normalisé debout à 1,70 m — réglez ensuite sa taille et ses tours.">⬆ Importer un corps (OBJ)</button>
+        <input id="at-import-body-file" type="file" accept=".obj,model/obj,text/plain" hidden>
         <label class="avatar-size-label" for="at-avatar-stature">
           <span>Taille globale</span>
           <span class="avatar-size-value"><input id="at-avatar-stature-num" type="number" class="avatar-num" min="140" max="210" step="0.5" inputmode="decimal" aria-label="Taille globale en centimètres"> cm</span>
@@ -1510,6 +1519,7 @@
         <dt>◐ Papier</dt><dd>Le plan 2D au jour — fond papier, encre marine, la table de coupe de Clo. La 3D reste la nôtre. Mémorisé.</dd>
         <dt>↕ Mensurations (cm)</dt><dd>Sous « Mannequin » : tour de poitrine, taille, hanches, carrure, cuisse — au curseur OU <strong>tapez la cote exacte</strong> dans le champ (Taille globale comprise). Le mannequin se remodèle et l’essayage épouse le nouveau corps. « Naturelle » rend au corps ses cotes d’origine.</dd>
         <dt>Gabarit &amp; silhouette</dt><dd>Sous « Mannequin » : Femme / Homme (deux corps mesurés) toujours à portée, et des silhouettes préréglées (Menue, Ronde, Athlétique) qui posent un jeu de mensurations d’un clic. « Naturelle » rend au corps ses cotes d’origine.</dd>
+        <dt>⬆ Importer un corps</dt><dd>Charge un OBJ (scan 3D, MakeHuman, Blender…) : le maillage se voxélise en collider et devient un mannequin mesuré et morphable comme les autres — normalisé debout à 1,70 m, puis réglable à ses cotes exactes.</dd>
       </dl>
       <p class="cheatsheet-note">Astuce : la position libre des pièces en 2D ou en préparation 3D ne remplace jamais les coutures. Au lancement de l’essayage, TOILE reconstruit leur pose d’assemblage.</p>
     </section>

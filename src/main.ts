@@ -135,6 +135,7 @@ import {
 import { loadScanAvatar, type ScanAvatar } from './engine/body/ScanAvatar';
 import { arrangementPoints, gridSd, measureBody, type ArrangementPoint, type BodyMeasure, type Sd } from './engine/body/measure';
 import { isNeutral, morphGrid, morphMesh, morphPrims, NO_MORPH, type MorphMarks, type Morphs } from './engine/body/morph';
+import { parseObj, buildImportedBody } from './engine/body/importBody';
 import { applySkin, buildSkin, poseIdle, type Skin } from './engine/body/pose';
 import { bodyRestVertices } from './app/SceneGeometry';
 
@@ -3464,7 +3465,7 @@ async function main(): Promise<void> {
   /** Changer de MANNEQUIN (femme/homme) : même transaction que le panneau
    * Réglages — mensurations naturelles du nouveau corps, rebuild. Utilisé par
    * le panneau ET par le choix d'avatar de la page blanche. */
-  const applyBody = (kind: 'femme' | 'homme' | 'scan homme' | 'scan femme'): void => {
+  const applyBody = (kind: 'femme' | 'homme' | 'scan homme' | 'scan femme' | 'scan import'): void => {
     collisionAuditAnalyticTPose = false;
     bodyKind = kind;
     morphs = { ...NO_MORPH }; // a new body starts at ITS natural measurements
@@ -3989,7 +3990,7 @@ async function main(): Promise<void> {
   const skirtLinear = (flare: number): number[] =>
     Array.from({ length: 4 }, (_, k) => 0.22 + (flare - 0.22) * (k / 3));
   let skirtPattern = { length: 0.6, flare: 0.46, profile: skirtLinear(0.46) };
-  let bodyKind: 'femme' | 'homme' | 'scan homme' | 'scan femme' = 'scan femme';
+  let bodyKind: 'femme' | 'homme' | 'scan homme' | 'scan femme' | 'scan import' = 'scan femme';
   // DEV acceptance path only: analytic mannequins are staged in a true T-pose
   // so the canonical scan-style sleeve wrapper sees horizontal arm sections.
   let collisionAuditAnalyticTPose = false;
@@ -8321,8 +8322,10 @@ async function main(): Promise<void> {
     const isF = bodyKind.includes('femme');
     f?.setAttribute('aria-pressed', String(isF));
     f?.classList.toggle('active', isF);
-    h?.setAttribute('aria-pressed', String(!isF));
-    h?.classList.toggle('active', !isF);
+    h?.setAttribute('aria-pressed', String(!isF && bodyKind !== 'scan import'));
+    h?.classList.toggle('active', !isF && bodyKind !== 'scan import');
+    const imp = document.getElementById('at-import-body');
+    imp?.classList.toggle('active', bodyKind === 'scan import');
   };
   document.getElementById('at-gab-femme')?.addEventListener('click', () => {
     (document.activeElement as HTMLElement | null)?.blur?.();
@@ -8360,6 +8363,40 @@ async function main(): Promise<void> {
       guidanceEl.textContent = `Silhouette ${SIL_LABEL[sil] ?? sil} appliquée · l'essayage épousera le nouveau corps.`;
     });
   }
+  // v185 ④ « avatar » — IMPORTER un corps (OBJ) : le mesh se voxelise en SDF
+  // (MeshProximity) et devient un mannequin scan à part entière — mesuré,
+  // morphable (v182-184), senti par le tissu. Normalisé debout, 1,70 m ; règle
+  // ensuite sa taille et ses tours au panneau.
+  const importBodyFile = document.getElementById('at-import-body-file') as HTMLInputElement;
+  document.getElementById('at-import-body')?.addEventListener('click', () => {
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    importBodyFile.click();
+  });
+  importBodyFile.addEventListener('change', async () => {
+    const file = importBodyFile.files?.[0];
+    importBodyFile.value = ''; // réarme pour un ré-import du même fichier
+    if (!file) return;
+    if (file.size > 40 * 1024 * 1024) {
+      showToast('Fichier trop lourd (40 Mo max) — simplifie le maillage avant l\'import.');
+      return;
+    }
+    guidanceEl.textContent = `Import de « ${file.name} » — lecture du maillage…`;
+    try {
+      const text = await file.text();
+      guidanceEl.textContent = `Calcul du corps « ${file.name} » — voxelisation en cours…`;
+      await new Promise((r) => requestAnimationFrame(() => r(null))); // laisser le message se peindre
+      const mesh = parseObj(text);
+      const built = buildImportedBody(mesh);
+      scans['scan import'] = built;
+      applyBody('scan import');
+      const tris = mesh.indices.length / 3;
+      showToast(`Corps importé (${tris.toLocaleString('fr-FR')} triangles) — règle sa taille et ses tours dans « Mannequin ».`);
+      guidanceEl.textContent = `Corps « ${file.name} » importé · ${tris.toLocaleString('fr-FR')} triangles, mesuré et prêt à l'essayage.`;
+    } catch (e) {
+      showToast(`Import impossible : ${e instanceof Error ? e.message : 'fichier illisible'}`);
+      guidanceEl.textContent = 'Import du corps abandonné.';
+    }
+  });
   document.getElementById('at-frame-avatar')?.addEventListener('click', () => {
     const aspect = canvas.width / Math.max(1, canvas.height);
     if (lastAvatarBounds) camera.frameBounds(lastAvatarBounds, aspect);

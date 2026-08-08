@@ -237,13 +237,20 @@ describe('atelier workspace markup', () => {
     );
   });
 
+  it('exposes the OBJ body import control (v185)', () => {
+    expect(countId('at-import-body')).toBe(1);
+    expect(countId('at-import-body-file')).toBe(1);
+    expect(html).toMatch(/<input id="at-import-body-file"[^>]*type="file"[^>]*accept="[^"]*\.obj/);
+    expect(html).toContain('<dt>⬆ Importer un corps</dt>');
+    expect(html).toContain('du brief au patron · v185');
+  });
+
   it('exposes editable numeric measurement fields (v184)', () => {
     for (const id of ['at-avatar-stature-num', 'at-m-poitrine-num', 'at-m-taille-num', 'at-m-hanches-num', 'at-m-carrure-num', 'at-m-cuisse-num']) {
       expect(countId(id)).toBe(1);
       expect(html).toMatch(new RegExp(`<input id="${id}"[^>]*type="number"`));
     }
     expect(html).not.toContain('id="at-m-poitrine-val"');
-    expect(html).toContain('du brief au patron · v184');
   });
 
   it('exposes named mannequin gabarits and silhouettes (v183)', () => {

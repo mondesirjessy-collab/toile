@@ -119,7 +119,7 @@ export interface PanelCallbacks {
   onImportEnd?(): void;
 }
 
-export type BodyKind = 'femme' | 'homme' | 'scan homme' | 'scan femme';
+export type BodyKind = 'femme' | 'homme' | 'scan homme' | 'scan femme' | 'scan import';
 
 export interface EngineSelectState {
   scene: SceneMode;
