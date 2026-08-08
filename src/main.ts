@@ -725,7 +725,7 @@ async function main(): Promise<void> {
   const advancedButton = document.getElementById('at-advanced') as HTMLButtonElement;
   const guidanceEl = document.getElementById('atelier-guidance') as HTMLElement;
   const avatarStatureInput = document.getElementById('at-avatar-stature') as HTMLInputElement;
-  const avatarStatureValue = document.getElementById('at-avatar-stature-value') as HTMLOutputElement;
+  const avatarStatureNum = document.getElementById('at-avatar-stature-num') as HTMLInputElement;
   const avatarStatureHelp = document.getElementById('at-avatar-stature-help') as HTMLElement;
   const atelierHelpButton = document.getElementById('at-help') as HTMLButtonElement;
   const atelierHelpPanel = document.getElementById('atelier-cheatsheet') as HTMLElement;
@@ -816,7 +816,40 @@ async function main(): Promise<void> {
     const label = Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
     avatarStatureInput.value = String(rounded);
     avatarStatureInput.setAttribute('aria-valuetext', `${label} centimètres`);
-    avatarStatureValue.value = `${label} cm`;
+    if (document.activeElement !== avatarStatureNum) avatarStatureNum.value = label;
+  };
+  // v182 ① « avatar » — les mensurations dans l'atelier : 5 curseurs cotés cm
+  // (le pendant natif de l'onglet « Taille de l'avatar » de Clo). Ils pilotent
+  // les MÊMES morphs que le panneau avancé — panel = source unique, l'atelier
+  // en est une façade. Le curseur « Taille globale » au-dessus reste la stature.
+  const ATELIER_MEASURES: ReadonlyArray<{ field: 'poitrine' | 'taille' | 'hanches' | 'carrure' | 'cuisse'; id: string }> = [
+    { field: 'poitrine', id: 'at-m-poitrine' },
+    { field: 'taille', id: 'at-m-taille' },
+    { field: 'hanches', id: 'at-m-hanches' },
+    { field: 'carrure', id: 'at-m-carrure' },
+    { field: 'cuisse', id: 'at-m-cuisse' },
+  ];
+  const measureInput = (id: string): HTMLInputElement =>
+    document.getElementById(id) as HTMLInputElement;
+  const measureNum = (id: string): HTMLInputElement =>
+    document.getElementById(`${id}-num`) as HTMLInputElement;
+  const round2 = (cm: number): number => Math.round(cm * 2) / 2;
+  const fmtNum = (cm: number): string => {
+    const r = round2(cm);
+    return Number.isInteger(r) ? String(r) : r.toFixed(1);
+  };
+  // Recopie les valeurs mesurées du corps (via le panel) dans les curseurs ET
+  // les champs numériques — sauf celui qu'on est en train d'éditer (focus).
+  const syncAtelierMeasures = (): void => {
+    const cm = panel.measurementsCm();
+    for (const { field, id } of ATELIER_MEASURES) {
+      const v = cm[field];
+      if (typeof v !== 'number') continue;
+      const input = measureInput(id);
+      if (input) input.value = String(round2(v));
+      const num = measureNum(id);
+      if (num && document.activeElement !== num) num.value = fmtNum(v);
+    }
   };
   const simBtn = (): HTMLButtonElement =>
     document.getElementById('at-sim') as HTMLButtonElement;
@@ -3441,12 +3474,14 @@ async function main(): Promise<void> {
     );
     panel.syncMorphCm(naturalCm);
     syncAvatarStature(naturalCm.stature!);
+    syncAtelierMeasures(); // v182 : les curseurs suivent le nouveau corps
     // Only rebuild where a body is actually on stage; drapé/couture keep
     // their cloth instead of resetting for an invisible change.
     if (sceneMode !== 'drapé' && sceneMode !== 'couture') {
       build();
     }
     syncEmptyAvatarButtons();
+    syncGabaritButtons(); // v183 : les boutons gabarit de l'atelier suivent aussi
   };
   /** État pressé des boutons mannequin de la page blanche. */
   const syncEmptyAvatarButtons = (): void => {
@@ -7227,6 +7262,7 @@ async function main(): Promise<void> {
           cuisse: r(cm.cuisse, b.cuisse!),
         };
         syncAvatarStature(cm.stature);
+        syncAtelierMeasures(); // l'atelier reflète le panneau avancé (v182)
         if (sceneMode !== 'drapé' && sceneMode !== 'couture') {
           build();
         }
@@ -7586,6 +7622,7 @@ async function main(): Promise<void> {
   // Open the measurement sliders on the default mannequin's own values.
   const initialBodyCm = baseCm(bodyKind, scans[bodyKind] ?? null);
   panel.syncMorphCm(initialBodyCm);
+  syncAtelierMeasures(); // v182 : ouvre les curseurs sur le corps de départ
   panel.syncEngineSelects({
     scene: sceneMode,
     body: bodyKind,
@@ -8220,8 +8257,109 @@ async function main(): Promise<void> {
   });
   avatarStatureInput.addEventListener('change', () => {
     panel.setStatureCm(avatarStatureInput.valueAsNumber);
-    guidanceEl.textContent = `Mannequin réglé à ${avatarStatureValue.value} · corps et collisions recalculés.`;
+    guidanceEl.textContent = `Mannequin réglé à ${fmtNum(avatarStatureInput.valueAsNumber)} cm · corps et collisions recalculés.`;
   });
+  // v184 : la stature aussi se tape au chiffre.
+  const applyStatureNum = (): void => {
+    const raw = avatarStatureNum.valueAsNumber;
+    if (!Number.isFinite(raw)) { avatarStatureNum.value = fmtNum(avatarStatureInput.valueAsNumber); return; }
+    const clamped = round2(Math.min(AVATAR_STATURE_MAX_CM, Math.max(AVATAR_STATURE_MIN_CM, raw)));
+    syncAvatarStature(clamped);
+    panel.setStatureCm(clamped);
+    guidanceEl.textContent = `Mannequin réglé à ${fmtNum(clamped)} cm · corps et collisions recalculés.`;
+  };
+  avatarStatureNum.addEventListener('change', applyStatureNum);
+  avatarStatureNum.addEventListener('keydown', (e) => { if (e.key === 'Enter') avatarStatureNum.blur(); });
+  // v182 : les 5 curseurs de mensuration de l'atelier.
+  const measureLabel = (id: string): string =>
+    measureInput(id)?.previousElementSibling?.querySelector('span')?.textContent ?? id;
+  for (const { field, id } of ATELIER_MEASURES) {
+    const input = measureInput(id);
+    const num = measureNum(id);
+    if (!input || !num) continue;
+    // Le curseur : suit en direct dans le champ, applique au relâcher.
+    input.addEventListener('input', () => {
+      num.value = fmtNum(input.valueAsNumber);
+    });
+    input.addEventListener('change', () => {
+      panel.setMeasurementCm(field, input.valueAsNumber); // → onMorph → morphs + build
+      guidanceEl.textContent = `Mannequin remodelé (${measureLabel(id)} ${fmtNum(input.valueAsNumber)} cm) · l'essayage épousera le nouveau corps.`;
+    });
+    // Le champ NUMÉRIQUE : tape ta cote exacte (v184). Borné aux mêmes limites
+    // que le curseur ; Entrée valide (blur).
+    const applyNum = (): void => {
+      const raw = num.valueAsNumber;
+      if (!Number.isFinite(raw)) { num.value = fmtNum(input.valueAsNumber); return; }
+      const min = Number(input.min) || raw;
+      const max = Number(input.max) || raw;
+      const clamped = round2(Math.min(max, Math.max(min, raw)));
+      num.value = fmtNum(clamped);
+      input.value = String(clamped);
+      panel.setMeasurementCm(field, clamped);
+      guidanceEl.textContent = `Mannequin remodelé (${measureLabel(id)} ${fmtNum(clamped)} cm) · l'essayage épousera le nouveau corps.`;
+    };
+    num.addEventListener('change', applyNum);
+    num.addEventListener('keydown', (e) => { if (e.key === 'Enter') num.blur(); });
+  }
+  document.getElementById('at-measures-reset')?.addEventListener('click', () => {
+    (document.activeElement as HTMLElement | null)?.blur?.(); // v184 : reprendre la main sur les champs
+    const scan = bodyKind.startsWith('scan') ? (scans[bodyKind] ?? null) : null;
+    const natural = baseCm(bodyKind, scan);
+    panel.syncMorphCm(natural); // recale les 6 réglages du panel
+    morphs = { ...NO_MORPH }; // corps à ses mensurations naturelles
+    syncAvatarStature(natural.stature!);
+    syncAtelierMeasures();
+    if (sceneMode !== 'drapé' && sceneMode !== 'couture') build();
+    guidanceEl.textContent = 'Mannequin rendu à ses mensurations naturelles.';
+  });
+  // v183 ② « avatar » — GABARITS nommés dans l'atelier : les deux corps réels
+  // (Femme/Homme), toujours à portée — pas seulement à la page blanche qui
+  // disparaît dès qu'un patron est chargé.
+  const syncGabaritButtons = (): void => {
+    const f = document.getElementById('at-gab-femme');
+    const h = document.getElementById('at-gab-homme');
+    const isF = bodyKind.includes('femme');
+    f?.setAttribute('aria-pressed', String(isF));
+    f?.classList.toggle('active', isF);
+    h?.setAttribute('aria-pressed', String(!isF));
+    h?.classList.toggle('active', !isF);
+  };
+  document.getElementById('at-gab-femme')?.addEventListener('click', () => {
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    if (!bodyKind.includes('femme')) applyBody('scan femme');
+  });
+  document.getElementById('at-gab-homme')?.addEventListener('click', () => {
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    if (!bodyKind.includes('homme')) applyBody('scan homme');
+  });
+  syncGabaritButtons();
+  // SILHOUETTES préréglées : un jeu de morphs relatif aux mensurations
+  // NATURELLES du corps courant (un « corps de départ » d'un clic). Bornées
+  // par le panel ; une seule reconstruction via applyMeasurementsCm.
+  const SILHOUETTES: Record<string, Record<string, number>> = {
+    menue: { carrure: 0.96, poitrine: 0.92, taille: 0.9, hanches: 0.93, cuisse: 0.92 },
+    ronde: { carrure: 1.03, poitrine: 1.15, taille: 1.22, hanches: 1.15, cuisse: 1.12 },
+    athletique: { carrure: 1.12, poitrine: 1.05, taille: 0.9, hanches: 0.98, cuisse: 1.05 },
+  };
+  const SIL_LABEL: Record<string, string> = { menue: 'menue', ronde: 'ronde', athletique: 'athlétique' };
+  for (const btn of document.querySelectorAll<HTMLButtonElement>('.avatar-silhouette')) {
+    btn.addEventListener('click', () => {
+      (document.activeElement as HTMLElement | null)?.blur?.();
+      const sil = btn.dataset.sil ?? '';
+      const f = SILHOUETTES[sil];
+      if (!f) return;
+      const scan = bodyKind.startsWith('scan') ? (scans[bodyKind] ?? null) : null;
+      const base = baseCm(bodyKind, scan);
+      panel.applyMeasurementsCm({
+        carrure: base.carrure! * (f.carrure ?? 1),
+        poitrine: base.poitrine! * (f.poitrine ?? 1),
+        taille: base.taille! * (f.taille ?? 1),
+        hanches: base.hanches! * (f.hanches ?? 1),
+        cuisse: base.cuisse! * (f.cuisse ?? 1),
+      }); // → onMorph → morphs + build + resync des curseurs
+      guidanceEl.textContent = `Silhouette ${SIL_LABEL[sil] ?? sil} appliquée · l'essayage épousera le nouveau corps.`;
+    });
+  }
   document.getElementById('at-frame-avatar')?.addEventListener('click', () => {
     const aspect = canvas.width / Math.max(1, canvas.height);
     if (lastAvatarBounds) camera.frameBounds(lastAvatarBounds, aspect);

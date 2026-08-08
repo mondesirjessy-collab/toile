@@ -629,6 +629,49 @@ export class ControlPanel {
     this.emitMorph();
   }
 
+  /** Lecture publique des mensurations courantes (cm) — l'atelier reflète le
+   *  panneau avancé et vice-versa (v182). */
+  measurementsCm(): BodyMeasurementsCm {
+    return this.morphCm();
+  }
+
+  /** Régler UNE mensuration depuis l'atelier (cm) — même transaction que le
+   *  champ avancé : borne, met à jour l'affichage lil-gui, ré-émet (v182). */
+  setMeasurementCm(field: keyof BodyMeasurementsCm, cm: number): void {
+    if (!Number.isFinite(cm)) return;
+    const ctrl = this.morphControllers[field] as
+      | { updateDisplay(): void; _min?: number; _max?: number }
+      | undefined;
+    const min = typeof ctrl?._min === 'number' ? ctrl._min : cm;
+    const max = typeof ctrl?._max === 'number' ? ctrl._max : cm;
+    const clamped = Math.min(max, Math.max(min, cm));
+    (this.settings as unknown as Record<string, number>)[field] =
+      Math.round(clamped * 2) / 2;
+    ctrl?.updateDisplay();
+    this.emitMorph();
+  }
+
+  /** Régler PLUSIEURS mensurations d'un coup (silhouettes préréglées, v183) —
+   *  bornées, une seule reconstruction. */
+  applyMeasurementsCm(cm: Partial<BodyMeasurementsCm>): void {
+    const keys: Array<keyof BodyMeasurementsCm> = [
+      'stature', 'carrure', 'poitrine', 'taille', 'hanches', 'cuisse',
+    ];
+    const store = this.settings as unknown as Record<string, number>;
+    for (const k of keys) {
+      const v = cm[k];
+      if (typeof v !== 'number') continue;
+      const ctrl = this.morphControllers[k] as
+        | { updateDisplay(): void; _min?: number; _max?: number }
+        | undefined;
+      const min = typeof ctrl?._min === 'number' ? ctrl._min : v;
+      const max = typeof ctrl?._max === 'number' ? ctrl._max : v;
+      store[k] = Math.round(Math.min(max, Math.max(min, v)) * 2) / 2;
+      ctrl?.updateDisplay();
+    }
+    this.emitMorph();
+  }
+
   /** Open the measurement sliders on the selected body's own values (cm). */
   syncMorphCm(cm: Partial<BodyMeasurementsCm>): void {
     const s = this.settings as unknown as Record<string, number>;

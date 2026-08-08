@@ -22,7 +22,7 @@ describe('atelier workspace markup', () => {
       'at-hoodie',
       'at-size',
       'at-avatar-stature',
-      'at-avatar-stature-value',
+      'at-avatar-stature-num',
       'at-avatar-stature-help',
       'at-frame-avatar',
       'at-piece',
@@ -138,7 +138,7 @@ describe('atelier workspace markup', () => {
       /<label class="avatar-size-label" for="at-avatar-stature">/,
     );
     expect(html).toMatch(
-      /<output id="at-avatar-stature-value"[^>]+for="at-avatar-stature"/,
+      /<input id="at-avatar-stature-num"[^>]+type="number"/,
     );
     expect(html).toContain('aria-describedby="at-avatar-stature-help"');
     expect(html).toMatch(/<canvas id="pattern"/);
@@ -237,11 +237,39 @@ describe('atelier workspace markup', () => {
     );
   });
 
+  it('exposes editable numeric measurement fields (v184)', () => {
+    for (const id of ['at-avatar-stature-num', 'at-m-poitrine-num', 'at-m-taille-num', 'at-m-hanches-num', 'at-m-carrure-num', 'at-m-cuisse-num']) {
+      expect(countId(id)).toBe(1);
+      expect(html).toMatch(new RegExp(`<input id="${id}"[^>]*type="number"`));
+    }
+    expect(html).not.toContain('id="at-m-poitrine-val"');
+    expect(html).toContain('du brief au patron · v184');
+  });
+
+  it('exposes named mannequin gabarits and silhouettes (v183)', () => {
+    expect(countId('at-gab-femme')).toBe(1);
+    expect(countId('at-gab-homme')).toBe(1);
+    expect([...html.matchAll(/class="avatar-silhouette"/g)].length).toBe(3);
+    expect(html).toContain('data-sil="menue"');
+    expect(html).toContain('data-sil="ronde"');
+    expect(html).toContain('data-sil="athletique"');
+    expect(html).toContain('<dt>Gabarit &amp; silhouette</dt>');
+  });
+
+  it('exposes the atelier measurement sliders (v182) under the mannequin card', () => {
+    for (const id of ['at-m-poitrine', 'at-m-taille', 'at-m-hanches', 'at-m-carrure', 'at-m-cuisse']) {
+      expect(countId(id)).toBe(1);
+    }
+    expect(html).toContain('id="at-measures"');
+    expect(html).toContain('id="at-measures-reset"');
+    expect(html).toContain('↕ Mensurations (cm)');
+    expect(html).toContain('<dt>↕ Mensurations (cm)</dt>');
+  });
+
   it('exposes the 3D seam toggle (v181) in the view tools and cheat-sheet', () => {
     expect(html).toMatch(/<button id="at-seams3d"[^>]*aria-pressed="true"/);
     expect(html).toContain('🪡 Coutures');
     expect(html).toContain('<dt>🪡 Coutures en 3D</dt>');
-    expect(html).toContain('du brief au patron · v181');
   });
 
   it('teaches the measured-edge tap (v180) in the cheat-sheet', () => {

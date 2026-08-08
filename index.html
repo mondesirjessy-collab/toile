@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TOILE — du brief au patron · v181</title>
+  <title>TOILE — du brief au patron · v184</title>
   <style>
     :root {
       color-scheme: dark;
@@ -261,6 +261,48 @@
       font-size: 9px;
       line-height: 1.3;
     }
+    .avatar-measures { margin-top: 8px; border-top: 1px solid rgba(237, 233, 223, 0.08); padding-top: 6px; }
+    .avatar-measures > summary {
+      cursor: pointer; list-style: none; color: rgba(205, 214, 226, 0.72);
+      font-size: 10px; font-weight: 640; padding: 2px 0; user-select: none;
+    }
+    .avatar-measures > summary::-webkit-details-marker { display: none; }
+    .avatar-measures[open] > summary { color: #f4f8ff; }
+    .avatar-measures-body { display: flex; flex-direction: column; gap: 2px; padding-top: 4px; }
+    .avatar-measure-range { width: 100%; margin: 0 0 4px; accent-color: #70b8ff; cursor: ew-resize; }
+    .avatar-measure-range:focus-visible { outline: 2px solid rgba(112, 184, 255, 0.9); outline-offset: 3px; }
+    .avatar-measures-reset {
+      margin-top: 4px; align-self: flex-start; font-size: 9px; padding: 3px 7px;
+      color: rgba(205, 214, 226, 0.8); background: rgba(120, 140, 170, 0.14);
+      border: 1px solid rgba(237, 233, 223, 0.12); border-radius: 6px; cursor: pointer;
+    }
+    .avatar-measures-reset:hover { color: #f4f8ff; background: rgba(120, 140, 170, 0.22); }
+    .avatar-gabarit { display: flex; gap: 5px; margin: 6px 0 2px; }
+    .avatar-gabarit button {
+      flex: 1; font-size: 10px; font-weight: 640; padding: 5px 4px;
+      color: rgba(205, 214, 226, 0.82); background: rgba(120, 140, 170, 0.12);
+      border: 1px solid rgba(237, 233, 223, 0.12); border-radius: 7px; cursor: pointer;
+    }
+    .avatar-gabarit button:hover { color: #f4f8ff; background: rgba(120, 140, 170, 0.2); }
+    .avatar-gabarit button.active { color: #06121f; background: #70b8ff; border-color: #70b8ff; }
+    .avatar-silhouette-label { display: block; margin: 4px 0 2px; font-size: 9px; font-weight: 640; color: rgba(205, 214, 226, 0.6); text-transform: uppercase; letter-spacing: 0.04em; }
+    .avatar-silhouettes { display: flex; gap: 4px; }
+    .avatar-silhouettes button {
+      flex: 1; font-size: 9px; padding: 4px 3px;
+      color: rgba(205, 214, 226, 0.8); background: rgba(120, 140, 170, 0.12);
+      border: 1px solid rgba(237, 233, 223, 0.12); border-radius: 6px; cursor: pointer;
+    }
+    .avatar-silhouettes button:hover { color: #f4f8ff; background: rgba(120, 140, 170, 0.2); }
+    .avatar-size-value { display: inline-flex; align-items: baseline; gap: 2px; }
+    .avatar-num {
+      width: 42px; margin: 0; padding: 1px 3px; text-align: right;
+      font-variant-numeric: tabular-nums; font-weight: 760; font-size: 12px;
+      color: #f4f8ff; background: rgba(120, 140, 170, 0.14);
+      border: 1px solid rgba(237, 233, 223, 0.14); border-radius: 5px;
+      -moz-appearance: textfield;
+    }
+    .avatar-num::-webkit-outer-spin-button, .avatar-num::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+    .avatar-num:focus-visible { outline: 2px solid rgba(112, 184, 255, 0.9); outline-offset: 1px; }
     .tool-section small {
       display: block;
       margin-top: 2px;
@@ -1166,7 +1208,7 @@
   <canvas id="view" tabindex="-1" aria-label="Vue 3D du vêtement et du mannequin"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 5 — du brief au patron · v181</small></span>
+    <span class="title">TOILE<small>phase 5 — du brief au patron · v184</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
       <span id="resolution-rebuild-status" role="status" aria-live="polite" hidden></span>
@@ -1199,12 +1241,39 @@
           <h2 id="atelier-avatar-title">Mannequin</h2>
           <button id="at-frame-avatar" title="Agrandir le mannequin dans la vue sans changer ses dimensions physiques">⊙ Cadrer la vue</button>
         </div>
+        <div class="avatar-gabarit" role="group" aria-label="Gabarit du mannequin">
+          <button id="at-gab-femme" type="button" aria-pressed="true" title="Mannequin femme (scan mesuré) — repart de ses mensurations naturelles">👤 Femme</button>
+          <button id="at-gab-homme" type="button" aria-pressed="false" title="Mannequin homme (scan mesuré) — repart de ses mensurations naturelles">👤 Homme</button>
+        </div>
         <label class="avatar-size-label" for="at-avatar-stature">
           <span>Taille globale</span>
-          <output id="at-avatar-stature-value" class="avatar-size-value" for="at-avatar-stature">175 cm</output>
+          <span class="avatar-size-value"><input id="at-avatar-stature-num" type="number" class="avatar-num" min="140" max="210" step="0.5" inputmode="decimal" aria-label="Taille globale en centimètres"> cm</span>
         </label>
         <input id="at-avatar-stature" type="range" min="140" max="210" step="1" value="175" aria-describedby="at-avatar-stature-help" aria-valuetext="175 centimètres">
         <p id="at-avatar-stature-help" class="avatar-size-help">Redimensionne le mannequin et ses collisions. Le vêtement garde sa taille choisie ; utilisez « Taille du vêtement » pour le regrader.</p>
+        <details class="avatar-measures" id="at-measures">
+          <summary title="Régler les tours du mannequin en centimètres réels — le corps se remodèle et l’essayage épouse le nouveau volume">↕ Mensurations (cm)</summary>
+          <div class="avatar-measures-body">
+            <label class="avatar-size-label" for="at-m-poitrine"><span>Tour de poitrine</span><span class="avatar-size-value"><input id="at-m-poitrine-num" type="number" class="avatar-num" min="65" max="130" step="0.5" inputmode="decimal" aria-label="Tour de poitrine en centimètres"> cm</span></label>
+            <input id="at-m-poitrine" type="range" min="65" max="130" step="0.5" value="90" class="avatar-measure-range">
+            <label class="avatar-size-label" for="at-m-taille"><span>Tour de taille</span><span class="avatar-size-value"><input id="at-m-taille-num" type="number" class="avatar-num" min="55" max="125" step="0.5" inputmode="decimal" aria-label="Tour de taille en centimètres"> cm</span></label>
+            <input id="at-m-taille" type="range" min="55" max="125" step="0.5" value="75" class="avatar-measure-range">
+            <label class="avatar-size-label" for="at-m-hanches"><span>Tour de hanches</span><span class="avatar-size-value"><input id="at-m-hanches-num" type="number" class="avatar-num" min="75" max="140" step="0.5" inputmode="decimal" aria-label="Tour de hanches en centimètres"> cm</span></label>
+            <input id="at-m-hanches" type="range" min="75" max="140" step="0.5" value="100" class="avatar-measure-range">
+            <label class="avatar-size-label" for="at-m-carrure"><span>Carrure (épaules)</span><span class="avatar-size-value"><input id="at-m-carrure-num" type="number" class="avatar-num" min="34" max="60" step="0.5" inputmode="decimal" aria-label="Carrure (épaules) en centimètres"> cm</span></label>
+            <input id="at-m-carrure" type="range" min="34" max="60" step="0.5" value="45" class="avatar-measure-range">
+            <label class="avatar-size-label" for="at-m-cuisse"><span>Tour de cuisse</span><span class="avatar-size-value"><input id="at-m-cuisse-num" type="number" class="avatar-num" min="40" max="78" step="0.5" inputmode="decimal" aria-label="Tour de cuisse en centimètres"> cm</span></label>
+            <input id="at-m-cuisse" type="range" min="40" max="78" step="0.5" value="55" class="avatar-measure-range">
+            <p class="avatar-size-help">Les tours remodèlent le mannequin ; l’essayage épouse le nouveau corps.</p>
+            <span class="avatar-silhouette-label">Silhouette</span>
+            <div class="avatar-silhouettes" role="group" aria-label="Silhouettes préréglées">
+              <button type="button" class="avatar-silhouette" data-sil="menue" title="Silhouette menue — tours réduits par rapport au corps naturel">Menue</button>
+              <button type="button" class="avatar-silhouette" data-sil="ronde" title="Silhouette ronde — tours plus généreux">Ronde</button>
+              <button type="button" class="avatar-silhouette" data-sil="athletique" title="Silhouette athlétique — carrure marquée, taille creusée">Athlétique</button>
+            </div>
+            <button id="at-measures-reset" type="button" class="avatar-measures-reset" title="Rendre au mannequin ses mensurations naturelles">↺ Naturelle</button>
+          </div>
+        </details>
       </section>
 
       <section class="tool-section" id="at-brief-section" aria-labelledby="atelier-brief-title">
@@ -1439,6 +1508,8 @@
         <dt>A ou Z</dt><dd>Revenir au geste de base — ici, éditer le contour n’a pas besoin d’outil : glisser un point suffit.</dd>
         <dt>⇄ 3D à gauche</dt><dd>La disposition Clo : vue 3D à gauche, plan à droite — bouton dans l’en-tête du plan, mémorisé d’une session à l’autre.</dd>
         <dt>◐ Papier</dt><dd>Le plan 2D au jour — fond papier, encre marine, la table de coupe de Clo. La 3D reste la nôtre. Mémorisé.</dd>
+        <dt>↕ Mensurations (cm)</dt><dd>Sous « Mannequin » : tour de poitrine, taille, hanches, carrure, cuisse — au curseur OU <strong>tapez la cote exacte</strong> dans le champ (Taille globale comprise). Le mannequin se remodèle et l’essayage épouse le nouveau corps. « Naturelle » rend au corps ses cotes d’origine.</dd>
+        <dt>Gabarit &amp; silhouette</dt><dd>Sous « Mannequin » : Femme / Homme (deux corps mesurés) toujours à portée, et des silhouettes préréglées (Menue, Ronde, Athlétique) qui posent un jeu de mensurations d’un clic. « Naturelle » rend au corps ses cotes d’origine.</dd>
       </dl>
       <p class="cheatsheet-note">Astuce : la position libre des pièces en 2D ou en préparation 3D ne remplace jamais les coutures. Au lancement de l’essayage, TOILE reconstruit leur pose d’assemblage.</p>
     </section>
