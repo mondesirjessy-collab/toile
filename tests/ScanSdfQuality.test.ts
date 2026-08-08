@@ -7,6 +7,8 @@ type AvatarName =
   | 'jericho'
   | 'jericho.sewing'
   | 'mia'
+  | 'mia.apose'
+  | 'mia.attention'
   | 'leo'
   | 'leo.apose'
   | 'leo.attention';
@@ -124,7 +126,17 @@ function sampleSdf(scan: ScanAsset, position: Vec3): number {
 }
 
 describe('qualite des SDF des avatars scannes', () => {
-  for (const name of ['femme-scan', 'jericho', 'jericho.sewing', 'mia', 'leo', 'leo.apose', 'leo.attention'] as const) {
+  for (const name of [
+    'femme-scan',
+    'jericho',
+    'jericho.sewing',
+    'mia',
+    'mia.apose',
+    'mia.attention',
+    'leo',
+    'leo.apose',
+    'leo.attention',
+  ] as const) {
     const scan = readScan(name);
 
     it(`${name} reste compatible avec la limite WebGPU 3D`, () => {

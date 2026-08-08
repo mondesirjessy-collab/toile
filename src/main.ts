@@ -4034,13 +4034,17 @@ async function main(): Promise<void> {
   // tools/bake.py à sa stature CLO de 1,8796 m. Asset propriétaire CLO :
   // usage local/démo, droits à confirmer avant toute publication. En repli :
   // jericho (le neutre riggé, poses A/couture committées) et homme-scan (CC0).
-  // v189 : Leo embarque ses poses d'essayage cuites hors-ligne (chargement
-  // paresseux au premier clic — voir collisionPoseLoaders dans ScanAvatar).
+  // v189-190 : Leo et Mia embarquent leurs poses d'essayage cuites hors-ligne
+  // (chargement paresseux au premier clic — collisionPoseLoaders, ScanAvatar).
+  // v190 : le natif de Mia est désormais sa vraie T-pose (FV2_T, pieds au
+  // sol) — la chip « T » dit vrai, et l'habillage a les bras dégagés.
   const [scanHomme, scanFemme] = await Promise.all([
     loadScanAvatar(`${import.meta.env.BASE_URL}avatars/leo`, {
       collisionPoses: { 'a-pose': 'apose', 'debout': 'attention' },
     }),
-    loadScanAvatar(`${import.meta.env.BASE_URL}avatars/mia`),
+    loadScanAvatar(`${import.meta.env.BASE_URL}avatars/mia`, {
+      collisionPoses: { 'a-pose': 'apose', 'debout': 'attention' },
+    }),
   ]);
   const scans: Record<string, ScanAvatar | null> = {
     'scan homme': scanHomme,

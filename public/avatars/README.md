@@ -152,3 +152,39 @@ CC0 des anciens avatars MakeHuman ne s'applique pas à ce modèle.
 
 Historique : les versions ≤ v132 utilisaient les sculpts CC0 « Body
 male/female realistic » de Dan Ulrich (Blender Studio, Wikimedia Commons).
+
+## Mannequins CLO (Mia, Leo) — v186 à v190
+
+Les mannequins par défaut de l'atelier sont depuis v186/v188 les avatars
+**Mia** (`FV2.1_Mia.avt`) et **Leo** (`MV2.1_Leo.avt`) de CLO 2026, exportés
+localement depuis l'application (Fichier → Exporter → OBJ : avatars seuls,
+un seul objet, soudé, mm, Y en haut), posés via la bibliothèque de poses
+CLO (`FV2_*.pos` / `MV2_*.pos`, « Pose uniquement », sans chaussures).
+
+Pipeline reproductible, pour le natif comme pour chaque pose :
+
+1. filtre corps seul — matériaux `arm[2]`, `body[2|3]`, `leg[2]`, `face[2]`
+   (préfixe `Mara:` toléré) ; cheveux, chaussures, yeux, dents, cils écartés ;
+2. réparation étanche — boucles de bord refermées par éventail au centroïde
+   (0 bord libre, 0 arête non-manifold, volume signé sortant) ;
+3. pré-normalisation canonique — mm → m, pieds à y = 0, stature exacte,
+   centrage x/z — puis `tools/bake.py <stl> public/avatars <stature> <nom>
+   canonical` (le mode `auto` se fait piéger quand l'envergure en T dépasse
+   la stature).
+
+Statures canoniques : la « Hauteur totale » de l'Éditeur d'avatar CLO —
+**Mia 1,7526 m**, **Leo 1,8796 m**. Poses livrées par mannequin : natif
+`<nom>.*` = **T** (FV2_T/MV2_T, la pose de couture et de mesure),
+`<nom>.apose.*` = bras à 45° (A_Wide), `<nom>.attention.*` = debout bras au
+corps (Attention). L'atelier coud, mesure et arrange toujours sur le natif ;
+les poses n'échangent que le collider du solveur et le maillage affiché.
+
+### Licence et redistribution
+
+Mia et Leo sont des **avatars propriétaires CLO**, exportés dans
+l'environnement de leur détenteur de licence pour un usage local et de
+démonstration. Comme pour la source du mannequin neutre, leurs droits de
+modification et de redistribution doivent être confirmés avant toute
+publication des fichiers `mia.*` / `leo.*` hors de cet environnement.
+Les replis committés restent : `jericho.*` (mannequin neutre riggé) et
+`femme-scan.*` / `homme-scan.*` (MakeHuman, CC0).
