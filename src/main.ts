@@ -132,7 +132,13 @@ import {
   sdBody,
   type SdfPrim,
 } from './engine/body/BodySdf';
-import { loadScanAvatar, type ScanAvatar } from './engine/body/ScanAvatar';
+import {
+  ensureScanCollisionForPose,
+  loadScanAvatar,
+  scanHasCollisionPose,
+  type ScanAvatar,
+  type ScanCollisionPose,
+} from './engine/body/ScanAvatar';
 import { arrangementPoints, gridSd, measureBody, type ArrangementPoint, type BodyMeasure, type Sd } from './engine/body/measure';
 import { isNeutral, morphGrid, morphMesh, morphPrims, NO_MORPH, type MorphMarks, type Morphs } from './engine/body/morph';
 import { parseObj, buildImportedBody } from './engine/body/importBody';
@@ -3469,6 +3475,9 @@ async function main(): Promise<void> {
     collisionAuditAnalyticTPose = false;
     bodyKind = kind;
     morphs = { ...NO_MORPH }; // a new body starts at ITS natural measurements
+    bodyPose = 'native'; // v189 : un nouveau corps arrive en pose couture (T)
+    bodyPoseCollision = null;
+    syncPoseButtons();
     const naturalCm = baseCm(
       kind,
       kind.startsWith('scan') ? (scans[kind] ?? null) : null,
@@ -3995,6 +4004,14 @@ async function main(): Promise<void> {
   // so the canonical scan-style sleeve wrapper sees horizontal arm sections.
   let collisionAuditAnalyticTPose = false;
   let morphs: Morphs = { ...NO_MORPH };
+  // v189 : pose d'essayage — colliders cuits hors-ligne par pose (CLO → bake).
+  // L'ARRANGEMENT, le préhabillage et la MESURE restent toujours sur le corps
+  // natif T (leçon v188 : on ne coud pas sur des bras baissés) ; seuls le
+  // solveur et le rendu voient le corps posé. Poses réservées au corps aux
+  // mensurations naturelles (les colliders sont cuits pour le canonique).
+  let bodyPose: 'native' | 'a-pose' | 'debout' = 'native';
+  let bodyPoseCollision: ScanCollisionPose | null = null;
+  let syncPoseButtons: () => void = () => {};
   let podium = 0; // tours/minute
   let podiumAngle = 0;
   let animate = false;
@@ -4017,8 +4034,12 @@ async function main(): Promise<void> {
   // tools/bake.py à sa stature CLO de 1,8796 m. Asset propriétaire CLO :
   // usage local/démo, droits à confirmer avant toute publication. En repli :
   // jericho (le neutre riggé, poses A/couture committées) et homme-scan (CC0).
+  // v189 : Leo embarque ses poses d'essayage cuites hors-ligne (chargement
+  // paresseux au premier clic — voir collisionPoseLoaders dans ScanAvatar).
   const [scanHomme, scanFemme] = await Promise.all([
-    loadScanAvatar(`${import.meta.env.BASE_URL}avatars/leo`),
+    loadScanAvatar(`${import.meta.env.BASE_URL}avatars/leo`, {
+      collisionPoses: { 'a-pose': 'apose', 'debout': 'attention' },
+    }),
     loadScanAvatar(`${import.meta.env.BASE_URL}avatars/mia`),
   ]);
   const scans: Record<string, ScanAvatar | null> = {
@@ -4587,7 +4608,19 @@ async function main(): Promise<void> {
       };
       effScan = morphCache[key]! as ScanAvatar;
     }
-    lastAvatarBounds = effScan ? avatarBounds(effScan.mesh.positions) : null;
+    // v189 : le corps POSÉ ne remplace que ce que le solveur touche et ce que
+    // l'œil voit ; mesure, regradage, arrangement et préhabillage restent sur
+    // le corps natif T. Un corps remodelé (morphs) redevient natif : les
+    // colliders de pose sont cuits pour le canonique uniquement.
+    if (!neutral && bodyPose !== 'native') {
+      bodyPose = 'native';
+      bodyPoseCollision = null;
+      syncPoseButtons();
+    }
+    const posedBody: ScanCollisionPose | null =
+      useScan && neutral && bodyPose !== 'native' ? bodyPoseCollision : null;
+    const shownScan = posedBody ?? effScan;
+    lastAvatarBounds = shownScan ? avatarBounds(shownScan.mesh.positions) : null;
     const colliders = bodyPrims ? toColliders(bodyPrims) : useScan ? [] : SPHERE;
     // Automatic made-to-measure: measure the selected body's field like a
     // tailor (chest, waist, hips, shoulder line) and cut every garment from
@@ -5376,7 +5409,7 @@ async function main(): Promise<void> {
       nextSystem = new ParticleSystem(device, materialMesh, {
         colliders,
         colliderBlend: bodyPrims ? BODY_BLEND : 0,
-        sdfGrid: effScan ? effScan.grid : undefined,
+        sdfGrid: shownScan ? shownScan.grid : undefined, // v189 : le tissu sent le corps POSÉ
         groundY: GROUND_Y,
         frictionStatic: fabricDynamics.frictionStatic,
         frictionDynamic: fabricDynamics.frictionDynamic,
@@ -5402,7 +5435,7 @@ async function main(): Promise<void> {
       sceneMesh = buildSceneMesh({
         colliders: bodyPrims || useScan ? [] : colliders,
         body: bodyPrims ? { prims: bodyPrims, blend: BODY_BLEND } : undefined,
-        rawBody: effScan ? effScan.mesh : undefined,
+        rawBody: shownScan ? shownScan.mesh : undefined, // v189 : l'œil voit le corps POSÉ
         groundY: GROUND_Y,
       });
       nextRenderer = new ClothRenderer(
@@ -8345,6 +8378,55 @@ async function main(): Promise<void> {
     if (!bodyKind.includes('homme')) applyBody('scan homme');
   });
   syncGabaritButtons();
+  // v189 ⑤ « poses » — l'essayage se recale sur un corps POSÉ, aux colliders
+  // cuits hors-ligne pose par pose (CLO → bake.py, comme le corps lui-même).
+  // On coud, mesure et arrange toujours en T ; la pose n'échange que ce que
+  // le tissu sent et ce que l'œil voit, puis le vêtement se re-drape.
+  syncPoseButtons = (): void => {
+    const scan = bodyKind.startsWith('scan') ? (scans[bodyKind] ?? null) : null;
+    for (const btn of document.querySelectorAll<HTMLButtonElement>('.avatar-pose [data-pose]')) {
+      const pose = btn.dataset.pose ?? 'native';
+      const available = pose === 'native' || (scan !== null && scanHasCollisionPose(scan, pose));
+      btn.disabled = !available;
+      btn.classList.toggle('active', pose === bodyPose);
+      btn.setAttribute('aria-pressed', String(pose === bodyPose));
+    }
+  };
+  const applyPose = async (pose: 'native' | 'a-pose' | 'debout'): Promise<void> => {
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    if (pose === bodyPose) return;
+    const scan = bodyKind.startsWith('scan') ? (scans[bodyKind] ?? null) : null;
+    if (pose !== 'native') {
+      if (!scan || !scanHasCollisionPose(scan, pose)) return;
+      if (!isNeutral(morphs)) {
+        guidanceEl.textContent =
+          'Les poses s’appliquent au corps à ses mensurations naturelles — remettez les cotes par défaut d’abord.';
+        return;
+      }
+      guidanceEl.textContent = 'Chargement de la pose…';
+      const collision = await ensureScanCollisionForPose(scan, pose);
+      if (!collision) {
+        guidanceEl.textContent = 'Pose indisponible (collision de pose non trouvée).';
+        return;
+      }
+      bodyPoseCollision = collision;
+    } else {
+      bodyPoseCollision = null;
+    }
+    bodyPose = pose;
+    syncPoseButtons();
+    if (sceneMode !== 'drapé' && sceneMode !== 'couture') build();
+    guidanceEl.textContent =
+      pose === 'native'
+        ? 'Pose couture (T) — le mannequin est revenu à la pose de travail.'
+        : 'Essayage recalé sur le corps posé — patron, cotes et coutures inchangés.';
+  };
+  for (const btn of document.querySelectorAll<HTMLButtonElement>('.avatar-pose [data-pose]')) {
+    btn.addEventListener('click', () => {
+      void applyPose((btn.dataset.pose ?? 'native') as 'native' | 'a-pose' | 'debout');
+    });
+  }
+  syncPoseButtons();
   // SILHOUETTES préréglées : un jeu de morphs relatif aux mensurations
   // NATURELLES du corps courant (un « corps de départ » d'un clic). Bornées
   // par le panel ; une seule reconstruction via applyMeasurementsCm.

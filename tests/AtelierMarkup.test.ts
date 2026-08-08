@@ -242,7 +242,15 @@ describe('atelier workspace markup', () => {
     expect(countId('at-import-body-file')).toBe(1);
     expect(html).toMatch(/<input id="at-import-body-file"[^>]*type="file"[^>]*accept="[^"]*\.obj/);
     expect(html).toContain('<dt>⬆ Importer un corps</dt>');
-    expect(html).toContain('du brief au patron · v188');
+    expect(html).toContain('du brief au patron · v189');
+  });
+
+  it('exposes the essayage pose selector (v189)', () => {
+    expect(countId('at-pose-native')).toBe(1);
+    expect(countId('at-pose-apose')).toBe(1);
+    expect(countId('at-pose-debout')).toBe(1);
+    expect(html).toMatch(/<button id="at-pose-apose"[^>]*data-pose="a-pose"/);
+    expect(html).toMatch(/<button id="at-pose-debout"[^>]*data-pose="debout"/);
   });
 
   it('exposes editable numeric measurement fields (v184)', () => {

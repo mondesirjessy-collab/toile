@@ -1,7 +1,15 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-type AvatarName = 'femme-scan' | 'homme-scan' | 'jericho' | 'jericho.sewing' | 'mia' | 'leo';
+type AvatarName =
+  | 'femme-scan'
+  | 'homme-scan'
+  | 'jericho'
+  | 'jericho.sewing'
+  | 'mia'
+  | 'leo'
+  | 'leo.apose'
+  | 'leo.attention';
 type Vec3 = [number, number, number];
 
 interface ScanAsset {
@@ -116,7 +124,7 @@ function sampleSdf(scan: ScanAsset, position: Vec3): number {
 }
 
 describe('qualite des SDF des avatars scannes', () => {
-  for (const name of ['femme-scan', 'jericho', 'jericho.sewing', 'mia', 'leo'] as const) {
+  for (const name of ['femme-scan', 'jericho', 'jericho.sewing', 'mia', 'leo', 'leo.apose', 'leo.attention'] as const) {
     const scan = readScan(name);
 
     it(`${name} reste compatible avec la limite WebGPU 3D`, () => {
@@ -131,7 +139,7 @@ describe('qualite des SDF des avatars scannes', () => {
       // sature Y à 7,84 mm ET X (envergure 1,95 m) à 8,11 mm. Chaque valeur
       // épingle la résolution attendue de SON avatar — toute cuisson
       // accidentellement plus grossière échoue ici.
-      const maximumCellMm = name === 'leo' ? 8.15 : name.startsWith('jericho') ? 7.75 : 7.5;
+      const maximumCellMm = name.startsWith('leo') ? 8.15 : name.startsWith('jericho') ? 7.75 : 7.5;
       for (const cellSize of gridCellSize(scan)) {
         expect(cellSize * 1000).toBeLessThanOrEqual(maximumCellMm);
       }

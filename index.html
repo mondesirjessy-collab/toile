@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TOILE — du brief au patron · v188</title>
+  <title>TOILE — du brief au patron · v189</title>
   <style>
     :root {
       color-scheme: dark;
@@ -1215,7 +1215,7 @@
   <canvas id="view" tabindex="-1" aria-label="Vue 3D du vêtement et du mannequin"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 5 — du brief au patron · v188</small></span>
+    <span class="title">TOILE<small>phase 5 — du brief au patron · v189</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
       <span id="resolution-rebuild-status" role="status" aria-live="polite" hidden></span>
@@ -1254,6 +1254,11 @@
         </div>
         <button id="at-import-body" type="button" class="avatar-import" title="Importer un corps au format OBJ (scan 3D, MakeHuman, Blender…) : le maillage devient un mannequin mesuré et morphable. Normalisé debout à 1,70 m — réglez ensuite sa taille et ses tours.">⬆ Importer un corps (OBJ)</button>
         <input id="at-import-body-file" type="file" accept=".obj,model/obj,text/plain" hidden>
+        <div class="avatar-gabarit avatar-pose" role="group" aria-label="Pose d'essayage du mannequin">
+          <button id="at-pose-native" type="button" data-pose="native" aria-pressed="true" title="Pose couture (bras en T) — la pose où l'on coud et où le corps se mesure">T</button>
+          <button id="at-pose-apose" type="button" data-pose="a-pose" aria-pressed="false" title="Bras à 45° — l'essayage se recale sur le corps posé (patron et cotes inchangés)">Bras 45°</button>
+          <button id="at-pose-debout" type="button" data-pose="debout" aria-pressed="false" title="Debout, bras le long du corps — l'essayage se recale sur le corps posé (patron et cotes inchangés)">Debout</button>
+        </div>
         <label class="avatar-size-label" for="at-avatar-stature">
           <span>Taille globale</span>
           <span class="avatar-size-value"><input id="at-avatar-stature-num" type="number" class="avatar-num" min="140" max="210" step="0.5" inputmode="decimal" aria-label="Taille globale en centimètres"> cm</span>
