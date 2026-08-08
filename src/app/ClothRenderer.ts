@@ -338,6 +338,32 @@ fn fsRibbon(in: VSOut) -> @location(0) vec4f {
   // « flashe » plus en éclats clairs au col et aux épaules. (backlog TOILE-21)
   return shade_fabric(in, n, true, 0.32);
 }
+
+// ————— v181 ⑥ : les liserés de coutures posés SUR les particules — ils
+// suivent le drapé gratuitement, et une paire écartée devient un FIL tendu.
+@group(0) @binding(11) var<storage, read> seamVerts: array<vec2u>; // x = particule, y = rgba8
+struct SeamOut {
+  @builtin(position) clip: vec4f,
+  @location(0) @interpolate(flat) scolor: vec4f,
+};
+@vertex fn vsSeam(@builtin(vertex_index) vi: u32) -> SeamOut {
+  let sv = seamVerts[vi];
+  let p = turn_cloth(ribbonPositions[sv.x].xyz);
+  var out: SeamOut;
+  out.clip = camera.viewProj * vec4f(p, 1.0);
+  out.clip.z = out.clip.z - 0.0018 * out.clip.w; // flotte juste au-dessus du tissu
+  let c = sv.y;
+  out.scolor = vec4f(
+    f32(c & 255u),
+    f32((c >> 8u) & 255u),
+    f32((c >> 16u) & 255u),
+    f32((c >> 24u) & 255u),
+  ) / 255.0;
+  return out;
+}
+@fragment fn fsSeam(in: SeamOut) -> @location(0) vec4f {
+  return vec4f(in.scolor.rgb * in.scolor.a, in.scolor.a); // prémultiplié
+}
 `;
 
 const SCENE_SHADER = /* wgsl */ `
@@ -345,10 +371,6 @@ struct Camera { viewProj: mat4x4f };
 @group(0) @binding(0) var<uniform> camera: Camera;
 // Podium turn: x = cos, y = sin (identity when 1,0). Applied per draw range.
 @group(0) @binding(1) var<uniform> spin: vec4f;
-// skin.rgb = selected skin tone. params.x = 0 realistic, 1 cel;
-// params.y = number of cel light bands; params.z = 1 for the avatar draw.
-struct AvatarLook { skin: vec4f, params: vec4f };
-@group(0) @binding(2) var<uniform> avatar: AvatarLook;
 
 struct VSOut {
   @builtin(position) clip: vec4f,
@@ -371,49 +393,15 @@ fn vs(@location(0) pos: vec3f, @location(1) normal: vec3f, @location(2) color: v
 
 @fragment
 fn fs(in: VSOut) -> @location(0) vec4f {
-  // The avatar and the static scene share one pipeline, but separate bind
-  // groups. Only the avatar receives the selected skin tone and style filter.
+  // Key + fill assortis au tissu : le dos du mannequin reste lisible quand la
+  // caméra tourne, sans aplatir le relief du corps.
   let L = normalize(vec3f(0.4, 0.9, 0.35));
   let F = normalize(vec3f(-0.45, 0.4, -0.8));
   let n = normalize(in.normal);
   let diff = max(dot(n, L), 0.0);
   let fill = max(dot(n, F), 0.0);
-  let base = select(in.color, avatar.skin.rgb, avatar.params.z > 0.5);
-
-  // Realistic studio skin: a soft key/fill pair and a restrained highlight.
-  let softShade = min(0.28 + 0.56 * diff + 0.28 * fill, 1.0);
-  let H = normalize(L + vec3f(0.0, 0.25, 1.0));
-  let specular = pow(max(dot(n, H), 0.0), 28.0) * 0.11;
-  let realistic = base * softShade + vec3f(specular);
-
-  // Cel filter: the same lighting is quantized into deliberate, stable bands.
-  let bands = max(2.0, avatar.params.y);
-  let celLight = floor(clamp(0.22 + 0.72 * diff + 0.18 * fill, 0.0, 0.999) * bands) / (bands - 1.0);
-  let cel = mix(base * 0.84, base * 1.08, clamp(celLight, 0.0, 1.0));
-  let styled = select(realistic, cel, avatar.params.x > 0.5);
-  return vec4f(styled, 1.0);
-}
-`;
-
-const AVATAR_OUTLINE_SHADER = /* wgsl */ `
-struct Camera { viewProj: mat4x4f };
-@group(0) @binding(0) var<uniform> camera: Camera;
-@group(0) @binding(1) var<uniform> spin: vec4f;
-
-fn turn(v: vec3f) -> vec3f {
-  return vec3f(spin.x * v.x - spin.y * v.z, v.y, spin.y * v.x + spin.x * v.z);
-}
-
-@vertex
-fn vs(@location(0) pos: vec3f, @location(1) normal: vec3f) -> @builtin(position) vec4f {
-  // Inverted hull: front faces are culled, leaving a clean silhouette around
-  // the avatar. The offset is in metres and follows every morphed scan.
-  return camera.viewProj * vec4f(turn(pos + normal * 0.006), 1.0);
-}
-
-@fragment
-fn fs() -> @location(0) vec4f {
-  return vec4f(0.055, 0.052, 0.06, 1.0);
+  let shade = min(0.24 + 0.62 * diff + 0.3 * fill, 1.0);
+  return vec4f(in.color * shade, 1.0);
 }
 `;
 
@@ -445,54 +433,6 @@ export const DEFAULT_FABRIC: FabricStyle = {
   exponent: 2.0,
   ambient: 0.22,
 };
-
-export type AvatarRenderStyle = 'realistic' | 'cel';
-
-export interface AvatarAppearance {
-  style: AvatarRenderStyle;
-  skinColor: string;
-}
-
-export const DEFAULT_AVATAR_APPEARANCE: AvatarAppearance = {
-  style: 'realistic',
-  skinColor: '#a87962',
-};
-
-/** Validate persisted/user-authored appearance without letting malformed data reach WGSL. */
-export function normalizeAvatarAppearance(
-  value: Partial<AvatarAppearance> | null | undefined,
-): AvatarAppearance {
-  return {
-    style: value?.style === 'cel' ? 'cel' : 'realistic',
-    skinColor:
-      typeof value?.skinColor === 'string' && /^#[0-9a-f]{6}$/i.test(value.skinColor)
-        ? value.skinColor.toLowerCase()
-        : DEFAULT_AVATAR_APPEARANCE.skinColor,
-  };
-}
-
-/** GPU layout: skin rgba + style mode, cel bands, body flag, spare. */
-export function avatarAppearanceUniform(
-  value: Partial<AvatarAppearance> | null | undefined,
-  isAvatar = true,
-): Float32Array {
-  const appearance = normalizeAvatarAppearance(value);
-  const rgb = [
-    parseInt(appearance.skinColor.slice(1, 3), 16) / 255,
-    parseInt(appearance.skinColor.slice(3, 5), 16) / 255,
-    parseInt(appearance.skinColor.slice(5, 7), 16) / 255,
-  ];
-  return new Float32Array([
-    rgb[0]!,
-    rgb[1]!,
-    rgb[2]!,
-    1,
-    appearance.style === 'cel' ? 1 : 0,
-    4,
-    isAvatar ? 1 : 0,
-    0,
-  ]);
-}
 
 /**
  * Pack the per-particle VISUAL word: low byte = stable material id (0 = global
@@ -613,11 +553,11 @@ export function partitionClothTriangles(
  * groups and vertex/index buffers stay per-instance.
  */
 interface RendererPipelines {
+  seam: GPURenderPipeline;
   normals: GPUComputePipeline;
   cloth: GPURenderPipeline;
   clothRibbon: GPURenderPipeline;
   scene: GPURenderPipeline;
-  avatarOutline: GPURenderPipeline;
 }
 const rendererPipelineCache = new WeakMap<GPUDevice, RendererPipelines>();
 function rendererPipelines(device: GPUDevice, format: GPUTextureFormat): RendererPipelines {
@@ -666,6 +606,28 @@ function rendererPipelines(device: GPUDevice, format: GPUTextureFormat): Rendere
       depthCompare: 'less-equal',
     },
   });
+  const seam = device.createRenderPipeline({
+    label: 'seam-lines-pipeline',
+    layout: 'auto',
+    vertex: { module: clothModule, entryPoint: 'vsSeam', buffers: [] },
+    fragment: {
+      module: clothModule,
+      entryPoint: 'fsSeam',
+      targets: [{
+        format,
+        blend: {
+          color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+          alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+        },
+      }],
+    },
+    primitive: { topology: 'line-list' },
+    depthStencil: {
+      format: 'depth24plus',
+      depthWriteEnabled: false,
+      depthCompare: 'less-equal',
+    },
+  });
   const sceneModule = device.createShaderModule({ code: SCENE_SHADER, label: 'scene' });
   const scene = device.createRenderPipeline({
     label: 'scene-pipeline',
@@ -688,37 +650,7 @@ function rendererPipelines(device: GPUDevice, format: GPUTextureFormat): Rendere
     primitive: { topology: 'triangle-list', cullMode: 'back' },
     depthStencil,
   });
-  const outlineModule = device.createShaderModule({
-    code: AVATAR_OUTLINE_SHADER,
-    label: 'avatar-outline',
-  });
-  const avatarOutline = device.createRenderPipeline({
-    label: 'avatar-outline-pipeline',
-    layout: 'auto',
-    vertex: {
-      module: outlineModule,
-      entryPoint: 'vs',
-      buffers: [
-        {
-          arrayStride: SCENE_VERTEX_FLOATS * 4,
-          attributes: [
-            { shaderLocation: 0, offset: 0, format: 'float32x3' },
-            { shaderLocation: 1, offset: 12, format: 'float32x3' },
-          ],
-        },
-      ],
-    },
-    fragment: { module: outlineModule, entryPoint: 'fs', targets: [{ format }] },
-    primitive: { topology: 'triangle-list', cullMode: 'front' },
-    depthStencil,
-  });
-  const pipelines: RendererPipelines = {
-    normals,
-    cloth,
-    clothRibbon,
-    scene,
-    avatarOutline,
-  };
+  const pipelines: RendererPipelines = { normals, cloth, clothRibbon, scene, seam };
   rendererPipelineCache.set(device, pipelines);
   return pipelines;
 }
@@ -732,18 +664,18 @@ export class ClothRenderer {
   private readonly normalsBindGroup: GPUBindGroup;
   private readonly clothPipeline: GPURenderPipeline;
   private readonly clothRibbonPipeline: GPURenderPipeline;
+  private readonly seamPipeline: GPURenderPipeline;
+  private seamBindGroup: GPUBindGroup | null = null;
+  private seamVertexCount = 0;
+  private seamsVisible = true;
   private readonly clothRibbonBindGroup: GPUBindGroup;
   private readonly scenePipeline: GPURenderPipeline;
-  private readonly avatarOutlinePipeline: GPURenderPipeline;
   private spinBuffer!: GPUBuffer;
   private spinIdentityBuffer!: GPUBuffer;
-  private avatarAppearanceBuffer!: GPUBuffer;
-  private avatarStaticAppearanceBuffer!: GPUBuffer;
   private sceneStaticBindGroup!: GPUBindGroup;
   private sceneBodyIndexCount = 0;
   private readonly clothBindGroup: GPUBindGroup;
   private readonly sceneBindGroup: GPUBindGroup;
-  private readonly avatarOutlineBindGroup: GPUBindGroup;
   private readonly positionBuffer: GPUBuffer;
   private readonly normalsBuffer: GPUBuffer;
   private readonly gridInfoBuffer: GPUBuffer;
@@ -774,7 +706,6 @@ export class ClothRenderer {
   private readonly sceneIndexCount: number;
   private readonly count: number;
   private depthTexture: GPUTexture;
-  private avatarCelShaded = false;
 
   constructor(
     device: GPUDevice,
@@ -881,23 +812,6 @@ export class ClothRenderer {
     // turn cannot make the collider travel through a stationary garment.
     this.spinBuffer = createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(this.spinBuffer, 0, new Float32Array([1, 0, 0, 0]));
-    this.avatarAppearanceBuffer = createBuffer({
-      size: 32,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    this.avatarStaticAppearanceBuffer = createBuffer({
-      size: 32,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    this.setAvatarAppearance(DEFAULT_AVATAR_APPEARANCE);
-    device.queue.writeBuffer(
-      this.avatarStaticAppearanceBuffer,
-      0,
-      avatarAppearanceUniform(
-        DEFAULT_AVATAR_APPEARANCE,
-        false,
-      ) as unknown as BufferSource,
-    );
 
     // --- Normals compute pass ---
     this.normalsBuffer = createBuffer({
@@ -931,6 +845,7 @@ export class ClothRenderer {
     // --- Cloth surface pipeline (two-sided) ---
     this.clothPipeline = rp.cloth;
     this.clothRibbonPipeline = rp.clothRibbon;
+    this.seamPipeline = rp.seam;
     this.clothBindGroup = device.createBindGroup({
       layout: this.clothPipeline.getBindGroupLayout(0),
       entries: [
@@ -988,7 +903,6 @@ export class ClothRenderer {
 
     // --- Scene colliders (lit triangles) ---
     this.scenePipeline = rp.scene;
-    this.avatarOutlinePipeline = rp.avatarOutline;
     this.spinIdentityBuffer = createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(this.spinIdentityBuffer, 0, new Float32Array([1, 0, 0, 0]));
     this.sceneBindGroup = device.createBindGroup({
@@ -996,7 +910,6 @@ export class ClothRenderer {
       entries: [
         { binding: 0, resource: { buffer: this.cameraBuffer } },
         { binding: 1, resource: { buffer: this.spinBuffer } },
-        { binding: 2, resource: { buffer: this.avatarAppearanceBuffer } },
       ],
     });
     this.sceneStaticBindGroup = device.createBindGroup({
@@ -1004,14 +917,6 @@ export class ClothRenderer {
       entries: [
         { binding: 0, resource: { buffer: this.cameraBuffer } },
         { binding: 1, resource: { buffer: this.spinIdentityBuffer } },
-        { binding: 2, resource: { buffer: this.avatarStaticAppearanceBuffer } },
-      ],
-    });
-    this.avatarOutlineBindGroup = device.createBindGroup({
-      layout: this.avatarOutlinePipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.cameraBuffer } },
-        { binding: 1, resource: { buffer: this.spinBuffer } },
       ],
     });
 
@@ -1050,17 +955,6 @@ export class ClothRenderer {
   /** Live update of the body's interleaved vertices (skinned animation). */
   updateBodyVertices(data: Float32Array): void {
     this.device.queue.writeBuffer(this.sceneVertexBuffer, 0, data as unknown as BufferSource);
-  }
-
-  /** Live avatar styling: no scene rebuild and no texture upload required. */
-  setAvatarAppearance(value: Partial<AvatarAppearance>): void {
-    const appearance = normalizeAvatarAppearance(value);
-    this.avatarCelShaded = appearance.style === 'cel';
-    this.device.queue.writeBuffer(
-      this.avatarAppearanceBuffer,
-      0,
-      avatarAppearanceUniform(appearance) as unknown as BufferSource,
-    );
   }
 
   setFabric(style: FabricStyle): void {
@@ -1154,15 +1048,9 @@ export class ClothRenderer {
     });
 
     pass.setPipeline(this.scenePipeline);
+    pass.setBindGroup(0, this.sceneBindGroup);
     pass.setVertexBuffer(0, this.sceneVertexBuffer);
     pass.setIndexBuffer(this.sceneIndexBuffer, 'uint32');
-    if (this.avatarCelShaded && this.sceneBodyIndexCount > 0) {
-      pass.setPipeline(this.avatarOutlinePipeline);
-      pass.setBindGroup(0, this.avatarOutlineBindGroup);
-      pass.drawIndexed(this.sceneBodyIndexCount);
-      pass.setPipeline(this.scenePipeline);
-    }
-    pass.setBindGroup(0, this.sceneBindGroup);
     // Body first (podium spin), then the static remainder (ground, props).
     if (this.sceneBodyIndexCount > 0) pass.drawIndexed(this.sceneBodyIndexCount);
     if (this.sceneIndexCount > this.sceneBodyIndexCount) {
@@ -1184,10 +1072,44 @@ export class ClothRenderer {
         pass.setBindGroup(0, this.clothRibbonBindGroup);
         pass.draw(this.clothRibbonIndexCount);
       }
+      if (this.seamsVisible && this.seamVertexCount > 0 && this.seamBindGroup) {
+        pass.setPipeline(this.seamPipeline);
+        pass.setBindGroup(0, this.seamBindGroup);
+        pass.draw(this.seamVertexCount);
+      }
     }
 
     pass.end();
     this.device.queue.submit([encoder.finish()]);
+  }
+
+  /** v181 ⑥ : liserés de coutures — un tableau plat u32 [particule, rgba8, …]
+   *  par SOMMET de ligne (deux sommets = un segment). null = aucun. */
+  setSeamLines(data: Uint32Array | null): void {
+    this.seamBindGroup = null;
+    this.seamVertexCount = 0;
+    if (!data || data.length < 4) return;
+    const buffer = this.resources.trackBuffer(this.device.createBuffer({
+      size: data.byteLength,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      mappedAtCreation: true,
+    }));
+    new Uint32Array(buffer.getMappedRange()).set(data);
+    buffer.unmap();
+    this.seamVertexCount = data.length / 2;
+    this.seamBindGroup = this.device.createBindGroup({
+      layout: this.seamPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.cameraBuffer } },
+        { binding: 2, resource: { buffer: this.spinBuffer } },
+        { binding: 3, resource: { buffer: this.positionBuffer } },
+        { binding: 11, resource: { buffer } },
+      ],
+    });
+  }
+
+  setSeamsVisible(visible: boolean): void {
+    this.seamsVisible = visible;
   }
 
   setClothVisible(visible: boolean): void {

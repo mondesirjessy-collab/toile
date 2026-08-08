@@ -24,7 +24,7 @@ const GUTTER = 30;
 const MAX_ROW_W = 1500;
 
 export interface DraftPatternPieceLayout {
-  internal: Array<{ points: Array<[number, number]>; closed: boolean }>;
+  internal: Array<{ points: Array<[number, number]>; closed: boolean; hole: boolean }>;
   notches: Array<{ x1: number; y1: number; x2: number; y2: number }>;
   name: string;
   cut: number;
@@ -44,7 +44,7 @@ export interface DraftPatternLayout {
 
 const cutExtent = (piece: DraftPiece): {
   points: Array<[number, number]>;
-  internal: Array<{ points: Array<[number, number]>; closed: boolean }>;
+  internal: Array<{ points: Array<[number, number]>; closed: boolean; hole: boolean }>;
   notches: Array<{ x1: number; y1: number; x2: number; y2: number }>;
   width: number;
   height: number;
@@ -61,6 +61,7 @@ const cutExtent = (piece: DraftPiece): {
     // ▱ Lignes internes (style, pliure, repères) : même repère que le contour.
     internal: (piece.internalLines ?? []).map((line) => ({
       closed: line.closed === true,
+      hole: line.closed === true && line.hole === true,
       points: line.points.map(
         ([u, v]): [number, number] => [
           u * piece.width * 1000 - minX,
@@ -146,6 +147,7 @@ export function layoutDraftPattern(doc: DraftDoc): DraftPatternLayout {
       points: cut.points.map(([x, y]) => [x + rowX, y + rowY]),
       internal: cut.internal.map((line) => ({
         closed: line.closed,
+        hole: line.hole,
         points: line.points.map(([x, y]): [number, number] => [x + rowX, y + rowY]),
       })),
       notches: cut.notches.map((n) => ({
@@ -181,9 +183,12 @@ interface Segment {
 const layoutNotchSegments = (layout: DraftPatternLayout): Segment[] =>
   layout.pieces.flatMap((piece) => piece.notches.map((n) => ({ x1: n.x1, y1: n.y1, x2: n.x2, y2: n.y2 })));
 
-const layoutInternalSegments = (layout: DraftPatternLayout): Segment[] =>
+const internalLineSegments = (
+  layout: DraftPatternLayout,
+  keep: (line: { hole: boolean }) => boolean,
+): Segment[] =>
   layout.pieces.flatMap((piece) =>
-    piece.internal.flatMap((line) => {
+    piece.internal.filter(keep).flatMap((line) => {
       const segs: Segment[] = [];
       const n = line.closed ? line.points.length : line.points.length - 1;
       for (let i = 0; i < n; i++) {
@@ -194,6 +199,13 @@ const layoutInternalSegments = (layout: DraftPatternLayout): Segment[] =>
       return segs;
     }),
   );
+
+const layoutInternalSegments = (layout: DraftPatternLayout): Segment[] =>
+  internalLineSegments(layout, (line) => !line.hole);
+
+/** ⌾ Trous : arêtes en trait de COUPE plein sur le PDF (des ciseaux passent). */
+const layoutHoleSegments = (layout: DraftPatternLayout): Segment[] =>
+  internalLineSegments(layout, (line) => line.hole);
 
 const layoutSegments = (layout: DraftPatternLayout): Segment[] =>
   layout.pieces.flatMap((piece) =>
@@ -281,7 +293,7 @@ export function draftPatternSvg(
           const md = line.points
             .map(([x, y], index) => `${index ? 'L' : 'M'}${(x + PAD).toFixed(2)} ${(y + PAD + HEADER).toFixed(2)}`)
             .join(' ');
-          return `<path d="${md}${line.closed ? ' Z' : ''}" class="mark"/>`;
+          return `<path d="${md}${line.closed ? ' Z' : ''}" class="${line.hole ? 'cutout' : 'mark'}"/>`;
         })
         .join('');
       return (
@@ -296,7 +308,7 @@ export function draftPatternSvg(
   const squareY = layout.height + PAD + HEADER + 20;
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${totalW.toFixed(1)}mm" height="${totalH.toFixed(1)}mm" viewBox="0 0 ${totalW.toFixed(1)} ${totalH.toFixed(1)}">` +
-    `<style>.cut{fill:none;stroke:#111;stroke-width:.7;stroke-linejoin:round}.grain{stroke:#777;stroke-width:.45;stroke-dasharray:6 3}.mark{fill:none;stroke:#555;stroke-width:.4;stroke-dasharray:4 2.5}.notch{stroke:#111;stroke-width:.6}.piece{font:8px sans-serif;text-anchor:middle;fill:#222}.head{font:7px sans-serif;fill:#111}.note{font:5px sans-serif;fill:#333}.ctrl{fill:none;stroke:#111;stroke-width:.5}</style>` +
+    `<style>.cut{fill:none;stroke:#111;stroke-width:.7;stroke-linejoin:round}.grain{stroke:#777;stroke-width:.45;stroke-dasharray:6 3}.mark{fill:none;stroke:#555;stroke-width:.4;stroke-dasharray:4 2.5}.cutout{fill:none;stroke:#111;stroke-width:.7;stroke-linejoin:round}.notch{stroke:#111;stroke-width:.6}.piece{font:8px sans-serif;text-anchor:middle;fill:#222}.head{font:7px sans-serif;fill:#111}.note{font:5px sans-serif;fill:#333}.ctrl{fill:none;stroke:#111;stroke-width:.5}</style>` +
     `<text x="${PAD}" y="14" class="head">TOILE — ${escapeXml(garmentName)} · patron vectoriel 1:1 · imprimer à 100 %</text>` +
     `<text x="${PAD}" y="25" class="note">Trait plein = coupe · marge de couture ${seamAllowanceCm.toFixed(2).replace('.', ',')} cm déjà incluse · droit-fil pointillé</text>` +
     paths +
@@ -326,6 +338,7 @@ export function exportDraftPatternPdf(
   const layout = layoutDraftPattern(doc);
   const segments = layoutSegments(layout);
   const markSegments = layoutInternalSegments(layout);
+  const holeSegments = layoutHoleSegments(layout);
   const notchSegments = layoutNotchSegments(layout);
   if (!segments.length) return;
   const cellW = PAGE_W - 2 * MARGIN - OVERLAP;
@@ -429,6 +442,25 @@ export function exportDraftPatternPdf(
             pdf.line(clipped[0], clipped[1], clipped[2], clipped[3]);
         }
         pdf.setLineDashPattern([], 0);
+      }
+      // ⌾ Trous : trait de COUPE plein, comme le contour — des ciseaux passent.
+      if (holeSegments.length) {
+        pdf.setDrawColor(0);
+        pdf.setLineWidth(0.5);
+        for (const segment of holeSegments) {
+          const clipped = clipToRect(
+            segment.x1 - ox + MARGIN,
+            segment.y1 - oy + MARGIN,
+            segment.x2 - ox + MARGIN,
+            segment.y2 - oy + MARGIN,
+            MARGIN,
+            MARGIN,
+            PAGE_W - MARGIN,
+            PAGE_H - MARGIN,
+          );
+          if (clipped)
+            pdf.line(clipped[0], clipped[1], clipped[2], clipped[3]);
+        }
       }
       // ⌵ Crans : trait plein court, mêmes règles de découpe en tuiles.
       if (notchSegments.length) {

@@ -15,6 +15,7 @@
  * actually lands on a handle; everything else falls through untouched.
  */
 import type { ClothMeshData } from '../engine/cloth/ClothMesh';
+import { PAL, SEAM_COLORS } from './patternPalette';
 import {
   insertOutlineVertex,
   deleteOutlineVertex,
@@ -1140,7 +1141,7 @@ export function pointInPatternPolygon(
  * couleur (dans le plan 2D ET sur l'avatar en 3D) — le lien se lit d'un coup
  * d'œil. Palette lisible sur fond sombre, cyclée par index de couture.
  */
-export const SEAM_COLORS = ['#7fb2ff', '#7ddc96', '#ffd166', '#e08bff', '#6bdfdf', '#ff8fa3', '#c9d96b', '#ffb26b'] as const;
+export { SEAM_COLORS };
 
 /** Un lien SYSTÈME : les cellules réellement épinglées d'une pièce wrap
  * (bouche de manche, bas de col) et du corps (emmanchure, encolure) —
@@ -1183,6 +1184,7 @@ export function patternDrawingZonePrompt(pieceId: number): string {
 // rayon, et nearestEdge était déjà un plus-proche.
 const HIT_RADIUS = 14;
 const EDGE_HIT = 10; // click within this many px of an outline edge → add point / bend
+const PIECE_CLICK_PX = 5; // clic sec vs glisser (v177) : au-delà, le geste est un pan
 const DART_DRAG = 7; // drag farther than this from an edge → it's a bend (Alt: dart), not an add
 const PEN_FEEDBACK_MS = 2200;
 
@@ -1240,6 +1242,14 @@ export class PatternView {
   private viewZoom = 1;
   private viewCenter: [number, number] | null = null;
   private panDrag: { pointerId: number; lastX: number; lastY: number } | null = null;
+  /** Clic sec candidat sur une pièce (v177 « pas dépaysé » ②) : noté au
+   *  pointerdown, invalidé au premier écart > PIECE_CLICK_PX, décidé au
+   *  pointerup — le glisser reste un pan intact. */
+  private pieceClickPending: { pieceId: number; pointerId: number; cx: number; cy: number } | null = null;
+  /** Le bord MESURÉ au clic sec (v180 « pas dépaysé » ⑤) : surligné et coté en
+   *  place tant qu'il est sélectionné — Échap, un autre clic ou toute édition
+   *  du patron l'effacent (les indices de bord bougent avec le contour). */
+  private measuredEdge: { pieceId: number; edge: number } | null = null;
   // Side-by-side layout of a combined outfit's pieces: a per-garment x-offset
   // (layout meters) so overlapping fronts separate, plus each garment's y-range
   // for matching a handle back to its piece. Null for a single garment.
@@ -1346,7 +1356,7 @@ export class PatternView {
       Soie: [237, 222, 199],
     };
     const c = piece.fabricPreset ? rgb[piece.fabricPreset] : undefined;
-    return c ? `rgba(${c[0]}, ${c[1]}, ${c[2]}, ${alpha})` : `rgba(228, 222, 205, ${alpha})`;
+    return c ? `rgba(${c[0]}, ${c[1]}, ${c[2]}, ${alpha})` : `rgba(${PAL.tissuDefautRVB}, ${alpha})`;
   }
   private updateCanvasLabel(): void {
     const labels = this.pieces
@@ -1546,6 +1556,9 @@ export class PatternView {
   private internalHover: [number, number] | null = null;
   /** ⌵ Crans : outil armé. */
   private notchMode = false;
+  private mergeMode = false;
+  private holeMode = false;
+  private precisionMode = false;
   /** ⧢ Évasement : outil armé + pivot retenu + survol. */
   private fullnessMode = false;
   private fullnessPick: { pieceId: number; edge: number; t: number } | null = null;
@@ -1606,6 +1619,18 @@ export class PatternView {
   onNotchToggle: (pieceId: number, at: UV) => void = () => {};
   /** ⌵ Crans d'accord : générer les repères appariés d'une couture. */
   onNotchSeam: (seamIndex: number) => void = () => {};
+  /** ⧉ Fusion : fondre les deux pièces d'une couture en une seule. */
+  onMergeSeam: (seamIndex: number) => void = () => {};
+  /** ⌾ Évider : basculer une ligne interne fermée en trou (et retour). */
+  onHoleToggle: (pieceId: number, lineIndex: number) => void = () => {};
+  /** ⌖ Précision : un SOMMET cliqué — l'atelier choisit (équerre/alignement). */
+  onPrecisionVertex: (pieceId: number, vertex: number) => void = () => {};
+  /** ⌖ Précision : un BORD du contour cliqué (division en N parts égales). */
+  onDivideEdge: (pieceId: number, edge: number) => void = () => {};
+  /** ⌖ Précision : un BOUT de ligne interne ouverte (prolonger au contour). */
+  onExtendInternal: (pieceId: number, lineIndex: number, end: 0 | 1) => void = () => {};
+  /** ⌖ Précision : un MILIEU de ligne interne ouverte (scinder en deux). */
+  onDivideInternal: (pieceId: number, lineIndex: number, at: UV) => void = () => {};
   /** ⧢ Pivot et ouverture choisis : l'atelier demande les cm puis évase. */
   onFullnessPicked: (
     pieceId: number,
@@ -1884,6 +1909,9 @@ export class PatternView {
       this.dartMode ||
       this.curvePointMode ||
       this.notchMode ||
+      this.mergeMode ||
+      this.holeMode ||
+      this.precisionMode ||
       this.fullnessMode ||
       this.gatherMode ||
       this.mirrorMode ||
@@ -1935,6 +1963,8 @@ export class PatternView {
     else this.resetDraftTransient();
 
     this.panDrag = null;
+    this.pieceClickPending = null;
+    this.measuredEdge = null;
     this.drag = null;
     this.hover = null;
     this.graphicDrag = null;
@@ -1957,6 +1987,9 @@ export class PatternView {
     this.curvePointMode = false;
     this.curvePointDrag = null;
     this.notchMode = false;
+    this.mergeMode = false;
+    this.holeMode = false;
+    this.precisionMode = false;
     this.fullnessMode = false;
     this.fullnessPick = null;
     this.fullnessHover = null;
@@ -2028,6 +2061,7 @@ export class PatternView {
     );
     this.layoutKeys = nextKeys;
     this.pieces = nextPieces;
+    this.measuredEdge = null; // les indices de bord ne survivent pas au nouveau document
     // Keep the active column if it still holds a piece; else fall back to front.
     if (!this.pieceAt(this.activePiece)) this.activePiece = 0;
     this.emitActivePiece();
@@ -2200,6 +2234,9 @@ export class PatternView {
     this.curvePointMode = false;
     this.curvePointDrag = null;
     this.notchMode = false;
+    this.mergeMode = false;
+    this.holeMode = false;
+    this.precisionMode = false;
     this.fullnessMode = false;
     this.fullnessPick = null;
     this.fullnessHover = null;
@@ -2305,6 +2342,45 @@ export class PatternView {
 
   get notching(): boolean {
     return this.notchMode;
+  }
+
+  toggleMerge(): boolean {
+    const next = !this.mergeMode;
+    if (next) this.disarmToolsForExclusive();
+    this.mergeMode = next;
+    document.body.style.cursor = next ? 'crosshair' : '';
+    this.render();
+    return this.mergeMode;
+  }
+
+  get merging(): boolean {
+    return this.mergeMode;
+  }
+
+  toggleHole(): boolean {
+    const next = !this.holeMode;
+    if (next) this.disarmToolsForExclusive();
+    this.holeMode = next;
+    document.body.style.cursor = next ? 'crosshair' : '';
+    this.render();
+    return this.holeMode;
+  }
+
+  get holing(): boolean {
+    return this.holeMode;
+  }
+
+  togglePrecision(): boolean {
+    const next = !this.precisionMode;
+    if (next) this.disarmToolsForExclusive();
+    this.precisionMode = next;
+    document.body.style.cursor = next ? 'crosshair' : '';
+    this.render();
+    return this.precisionMode;
+  }
+
+  get precisioning(): boolean {
+    return this.precisionMode;
   }
 
   toggleCurvePoint(): boolean {
@@ -3563,6 +3639,100 @@ export class PatternView {
   }
 
   /** Suppress the browser menu only over the editable 2D pattern. */
+  /** Bord le plus proche d'un point écran SUR une pièce donnée (v180) —
+   *  contrairement à nearestEdge, qui ne connaît que la pièce active. */
+  private nearestEdgeOfPiece(
+    pid: number,
+    px: number,
+    py: number,
+  ): { edge: number; dist: number } | null {
+    const piece = this.pieceAt(pid);
+    if (!piece) return null;
+    const off = this.pieceOffset(pid);
+    const yOff = this.pieceYOffset(pid);
+    let best: { edge: number; dist: number } | null = null;
+    const n = piece.outline.length;
+    for (let e = 0; e < n; e++) {
+      const a = this.vertexScreen(piece.outline[e]!, piece, off, yOff);
+      const b = this.vertexScreen(piece.outline[(e + 1) % n]!, piece, off, yOff);
+      if (!a || !b) continue;
+      const abx = b[0] - a[0];
+      const aby = b[1] - a[1];
+      const len2 = abx * abx + aby * aby || 1;
+      const t = Math.max(0, Math.min(1, ((px - a[0]) * abx + (py - a[1]) * aby) / len2));
+      const d = Math.hypot(px - (a[0] + t * abx), py - (a[1] + t * aby));
+      if (!best || d < best.dist) best = { edge: e, dist: d };
+    }
+    return best;
+  }
+
+  /** Index de la couture (fermée) qui porte ce bord, ou null (v180) — la même
+   *  arithmétique de run que les liserés du plan. */
+  private seamIndexOfEdge(pid: number, edge: number): number | null {
+    const piece = this.pieceAt(pid);
+    if (!piece) return null;
+    const nV = piece.outline.length;
+    for (let i = 0; i < this.assembly.length; i++) {
+      const s = this.assembly[i]!;
+      if (!assemblySeamIsClosed(s)) continue;
+      for (const fr of [s.a, s.b]) {
+        if (pieceIdOf(fr) !== pid) continue;
+        let steps = ((fr.to - fr.from) + nV) % nV;
+        if (steps === 0) steps = 1;
+        for (let k = 0; k < steps; k++) {
+          if ((fr.from + k) % nV === edge) return i;
+        }
+      }
+    }
+    return null;
+  }
+
+  /** Sélection de pièce — le circuit UNIQUE du clic droit et du clic sec
+   *  gauche (v177) : même logique de groupe, mêmes effets de bord. */
+  private applyPieceSelection(pid: number | null, additive: boolean): void {
+    const next = nextPieceSelection([...this.selectedPieces], pid, additive);
+    this.selectedPieces = new Set(next.selected);
+    this.selectedPiece = next.primary;
+    if (this.selectedPiece !== null) this.activePiece = this.selectedPiece;
+    this.emitActivePiece();
+    this.resetDraftTransient();
+    this.updateCanvasLabel();
+    document.body.style.cursor = this.selectedPiece === null ? '' : 'move';
+    this.render();
+  }
+
+  /** Vrai quand aucun outil exclusif ne détourne le clic — le geste neutre. */
+  private neutralPieceGesture(): boolean {
+    return (
+      !this.drawing &&
+      !this.cutting &&
+      !this.merging &&
+      !this.holing &&
+      !this.precisioning &&
+      !this.internalDrawing &&
+      !this.fisheyeDrawing &&
+      !this.curvePointing &&
+      !this.notching &&
+      !this.fullnessing &&
+      !this.gathering &&
+      !this.mirroring &&
+      !this.sewing &&
+      !this.freeSewing &&
+      !this.zippering &&
+      !this.lengthEditing &&
+      !this.linkingSegments &&
+      this.seamPick === null &&
+      this.zipperPick === null
+    );
+  }
+
+  /** Bascule de thème (v179) : la couche statique (grille + silhouette) se
+   *  réinvalide, tout se repeint dans la palette courante. */
+  refreshTheme(): void {
+    this.staticDirty = true;
+    this.render();
+  }
+
   private readonly onContextMenu = (e: MouseEvent): void => {
     if (!this.inDraft || !this.canvasPoint(e)) return;
     e.preventDefault();
@@ -3641,21 +3811,9 @@ export class PatternView {
     // la pièce au groupe sans effacer les autres.
     if (this.inDraft && navPoint && e.button === 2 && !this.penMode) {
       const pid = this.pickPiece(navPoint[0], navPoint[1]);
-      const next = nextPieceSelection(
-        [...this.selectedPieces],
-        pid,
-        e.metaKey || e.ctrlKey,
-      );
-      this.selectedPieces = new Set(next.selected);
-      this.selectedPiece = next.primary;
-      if (this.selectedPiece !== null) this.activePiece = this.selectedPiece;
-      this.emitActivePiece();
-      this.resetDraftTransient();
-      this.updateCanvasLabel();
-      document.body.style.cursor = this.selectedPiece === null ? '' : 'move';
+      this.applyPieceSelection(pid, e.metaKey || e.ctrlKey);
       e.preventDefault();
       e.stopPropagation();
-      this.render();
       return;
     }
     // Freeform draft: grab an outline vertex; empty inset space falls through.
@@ -3807,6 +3965,78 @@ export class PatternView {
             this.render();
           }
         }
+        return;
+      }
+      // ⌖ PRÉCISION : le geste dépend de CE qu'on clique — un sommet (équerre
+      // ou alignement, l'atelier propose), un bord du contour (division en N),
+      // un bout de ligne interne (prolonger au contour), un milieu (scinder).
+      if (this.precisionMode) {
+        this.routePieceGesture(p[0], p[1]);
+        e.preventDefault();
+        e.stopPropagation();
+        const piece = this.pieceAt(this.activePiece);
+        if (!piece || piece.blank) return;
+        const v = this.pickVertex(p[0], p[1]);
+        if (v !== null) {
+          this.onPrecisionVertex(this.activePiece, v);
+          return;
+        }
+        if (piece.internalLines?.length) {
+          for (let i = 0; i < piece.internalLines.length; i++) {
+            const line = piece.internalLines[i]!;
+            if (line.closed || line.points.length < 2) continue;
+            const s0 = this.vertexScreen(line.points[0]!);
+            const s1 = this.vertexScreen(line.points[line.points.length - 1]!);
+            if (s0 && Math.hypot(p[0] - s0[0], p[1] - s0[1]) <= HIT_RADIUS * 1.4) {
+              this.onExtendInternal(this.activePiece, i, 0);
+              return;
+            }
+            if (s1 && Math.hypot(p[0] - s1[0], p[1] - s1[1]) <= HIT_RADIUS * 1.4) {
+              this.onExtendInternal(this.activePiece, i, 1);
+              return;
+            }
+          }
+          const li = this.internalLineAt(p[0], p[1]);
+          if (li !== null) {
+            this.onDivideInternal(this.activePiece, li, this.screenToUV(p[0], p[1]));
+            return;
+          }
+        }
+        const ne = this.nearestEdge(p[0], p[1]);
+        if (ne && ne.dist <= EDGE_HIT * 1.6) {
+          this.onDivideEdge(this.activePiece, ne.edge);
+        }
+        return;
+      }
+      // ⌾ ÉVIDER : cliquer une ligne interne FERMÉE (bord ou intérieur) la
+      // bascule en trou — le moteur vérifie et refuse en mots sinon.
+      if (this.holeMode) {
+        this.routePieceGesture(p[0], p[1]);
+        e.preventDefault();
+        e.stopPropagation();
+        const piece = this.pieceAt(this.activePiece);
+        if (!piece || piece.blank) return;
+        let idx = this.internalLineAt(p[0], p[1]);
+        if (idx === null && piece.internalLines?.length) {
+          const uv = this.screenToUV(p[0], p[1]);
+          for (let i = 0; i < piece.internalLines.length; i++) {
+            const line = piece.internalLines[i]!;
+            if (line.closed && line.points.length >= 3 && pointInPolygon(uv, line.points)) {
+              idx = i;
+              break;
+            }
+          }
+        }
+        if (idx !== null) this.onHoleToggle(this.activePiece, idx);
+        return;
+      }
+      // ⧉ FUSION : clic sur le LIEN d'une couture = fondre ses deux pièces
+      // en une seule (le moteur vérifie la congruence, refuse en mots sinon).
+      if (this.mergeMode) {
+        e.preventDefault();
+        e.stopPropagation();
+        const seamIdx = this.pickSeam(p[0], p[1]);
+        if (seamIdx !== null) this.onMergeSeam(seamIdx);
         return;
       }
       // ⌵ CRANS : clic sur le LIEN d'une couture = crans d'accord des deux
@@ -3978,11 +4208,34 @@ export class PatternView {
       // A background drag still pans an enlarged plan.
       if (this.selectedPiece !== null && !this.penMode) {
         const hit = this.pickPiece(p[0], p[1]);
+        // v177 : candidat clic-sec — un clic sec sur une pièce (membre du
+        // groupe ou non, contour compris) la sélectionne au pointerup, ⌘/Ctrl
+        // la bascule dans le groupe ; le glisser garde son sens (déplacer la
+        // sélection / pan). Le POSER du candidat goûte aussi le contour
+        // (pickPieceNearOutline) ; la décision déplacer-vs-pan reste stricte.
+        const tapHit = hit ?? this.pickPieceNearOutline(p[0], p[1]);
+        if (e.button === 0 && tapHit !== null && this.neutralPieceGesture()) {
+          this.pieceClickPending = { pieceId: tapHit, pointerId: e.pointerId, cx: e.clientX, cy: e.clientY };
+        } else {
+          this.pieceClickPending = null;
+        }
         if (hit !== null && this.selectedPieces.has(hit)) this.beginPieceMove(e, p);
         else this.beginPan(e);
         return;
       }
       if (!this.penMode) this.routePieceGesture(p[0], p[1]); // moved pieces remain editable outside their original column
+      // v177 : candidat clic-sec posé UNE fois pour toute la zone draft — la
+      // décision se prend au pointerup, quelle que soit la branche (pan, bord,
+      // sommet, graphique) qui réclame le geste ensuite.
+      if (e.button === 0 && !this.penMode && this.neutralPieceGesture()) {
+        const tapPid = this.pickPiece(p[0], p[1]) ?? this.pickPieceNearOutline(p[0], p[1]);
+        this.pieceClickPending =
+          tapPid === null
+            ? null
+            : { pieceId: tapPid, pointerId: e.pointerId, cx: e.clientX, cy: e.clientY };
+      } else {
+        this.pieceClickPending = null;
+      }
       if (!this.draftPiece) {
         this.beginPan(e);
         return;
@@ -4171,7 +4424,7 @@ export class PatternView {
         }
         // A plain left drag on the empty cutting table moves the plan, including
         // at 100%. Vertices, curves and selected pieces keep priority above.
-        this.beginPan(e);
+        this.beginPan(e); // le candidat clic-sec est déjà posé plus haut (v177)
         return;
       }
       const s = this.vertexScreen(this.draftPiece.outline[v]!)!;
@@ -4203,6 +4456,16 @@ export class PatternView {
   };
 
   private readonly onMove = (e: PointerEvent): void => {
+    if (
+      this.pieceClickPending &&
+      this.pieceClickPending.pointerId === e.pointerId &&
+      Math.hypot(
+        e.clientX - this.pieceClickPending.cx,
+        e.clientY - this.pieceClickPending.cy,
+      ) > PIECE_CLICK_PX
+    ) {
+      this.pieceClickPending = null; // le geste est un vrai glisser (v177)
+    }
     if (this.freeSewMode && this.freeSewTrace) {
       const p = this.canvasPoint(e);
       if (p && this.updateFreeSewTrace(p[0], p[1])) {
@@ -4666,6 +4929,36 @@ export class PatternView {
   };
 
   private readonly onUp = (e: PointerEvent): void => {
+    // v177 : LA décision du clic-sec — un seul endroit, toutes branches. La
+    // sélection part en microtâche pour laisser la branche du geste terminer
+    // son nettoyage (curve/pan/move sans mouvement = no-op) avant de commuter.
+    if (this.pieceClickPending && this.pieceClickPending.pointerId === e.pointerId) {
+      const pending = this.pieceClickPending;
+      this.pieceClickPending = null;
+      if (
+        Math.hypot(e.clientX - pending.cx, e.clientY - pending.cy) <= PIECE_CLICK_PX &&
+        this.neutralPieceGesture()
+      ) {
+        const additive = e.metaKey || e.ctrlKey;
+        // v180 : un clic sec près d'un BORD sélectionne la pièce ET cote le
+        // bord — la mesure au repos de Clo. Loin des bords : mesure effacée.
+        const local = this.canvasPoint(e);
+        const edgeHit = local
+          ? this.nearestEdgeOfPiece(pending.pieceId, local[0], local[1])
+          : null;
+        const measured =
+          edgeHit && edgeHit.dist <= EDGE_HIT * 1.4
+            ? { pieceId: pending.pieceId, edge: edgeHit.edge }
+            : null;
+        queueMicrotask(() => {
+          if (this.pieceAt(pending.pieceId)) {
+            this.applyPieceSelection(pending.pieceId, additive);
+            this.measuredEdge = measured; // après la sélection (reset transitoire)
+            this.render();
+          }
+        });
+      }
+    }
     if (this.curvePointDrag && e.pointerId === this.curvePointDrag.pointerId) {
       const d = this.curvePointDrag;
       this.curvePointDrag = null;
@@ -5040,6 +5333,10 @@ export class PatternView {
       this.staticDirty = false;
     }
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    if (PAL.fond !== 'transparent') {
+      ctx.fillStyle = PAL.fond; // thème papier : le canvas porte son propre jour
+      ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    }
     ctx.drawImage(this.staticLayer, 0, 0);
     if (this.inDraft && this.pristine) return; // page blanche : grille + silhouette
     this.renderHandles();
@@ -5124,14 +5421,14 @@ export class PatternView {
       ctx.closePath();
       ctx.fillStyle = this.pieceFabricFill(piece, 0.13);
       ctx.fill();
-      ctx.strokeStyle = 'rgba(230, 225, 210, 0.4)';
+      ctx.strokeStyle = PAL.contourPieceFaible;
       ctx.lineWidth = 1.5;
       ctx.setLineDash([]);
       ctx.stroke();
     }
     // ⌵ Crans de montage : trait perpendiculaire au bord, vers l'extérieur.
     if (piece.notches?.length && pts.length >= 3) {
-      ctx.strokeStyle = 'rgba(255, 214, 170, 0.95)';
+      ctx.strokeStyle = PAL.a01;
       ctx.lineWidth = 1.8;
       ctx.setLineDash([]);
       const W = piece.width;
@@ -5195,7 +5492,7 @@ export class PatternView {
     }
     // ▱ Lignes internes : style, pliures, repères — en pointillé fin.
     if (piece.internalLines?.length) {
-      ctx.strokeStyle = 'rgba(214, 222, 234, 0.6)';
+      ctx.strokeStyle = PAL.ligneInterne;
       ctx.lineWidth = 1.2;
       ctx.setLineDash([6, 4]);
       for (const line of piece.internalLines) {
@@ -5206,7 +5503,22 @@ export class PatternView {
         ctx.beginPath();
         lp.forEach((s, i) => (i === 0 ? ctx.moveTo(s[0], s[1]) : ctx.lineTo(s[0], s[1])));
         if (line.closed) ctx.closePath();
-        ctx.stroke();
+        if (line.hole && line.closed) {
+          // ⌾ TROU : évidé — fond sombre + trait de coupe PLEIN.
+          ctx.save();
+          ctx.fillStyle = PAL.a02;
+          ctx.fill();
+          ctx.setLineDash([]);
+          ctx.strokeStyle = PAL.ligneInterneForte;
+          ctx.lineWidth = 1.6;
+          ctx.stroke();
+          ctx.restore();
+          ctx.strokeStyle = PAL.ligneInterne;
+          ctx.lineWidth = 1.2;
+          ctx.setLineDash([6, 4]);
+        } else {
+          ctx.stroke();
+        }
       }
       ctx.setLineDash([]);
     }
@@ -5217,7 +5529,7 @@ export class PatternView {
       const s = pts[i]!;
       ctx.beginPath();
       ctx.arc(s[0], s[1], 3.5, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(210, 210, 210, 0.5)';
+      ctx.fillStyle = PAL.hachureTrou;
       ctx.fill();
     }
   }
@@ -5241,10 +5553,10 @@ export class PatternView {
       ctx.closePath();
       const under = surface.side === 'under';
       ctx.fillStyle = preview
-        ? 'rgba(107, 223, 223, 0.16)'
+        ? PAL.a03
         : under
-          ? 'rgba(158, 178, 214, 0.1)'
-          : 'rgba(255, 191, 96, 0.15)';
+          ? PAL.a04
+          : PAL.a05;
       ctx.fill();
       if (under && !preview) ctx.setLineDash([4, 4]); // sous le support : en creux
 
@@ -5256,10 +5568,10 @@ export class PatternView {
         ctx.moveTo(a[0], a[1]);
         ctx.lineTo(b[0], b[1]);
         ctx.strokeStyle = preview
-          ? 'rgba(107, 223, 223, 0.98)'
+          ? PAL.a06
           : sewn
-            ? 'rgba(255, 184, 84, 0.98)'
-            : 'rgba(180, 188, 198, 0.68)';
+            ? PAL.a07
+            : PAL.crochetNeutre;
         ctx.lineWidth = sewn ? 3 : 1.5;
         ctx.setLineDash(sewn ? [2, 3] : [7, 4]);
         ctx.stroke();
@@ -5267,8 +5579,8 @@ export class PatternView {
           const mx = (a[0] + b[0]) / 2;
           const my = (a[1] + b[1]) / 2;
           ctx.setLineDash([]);
-          ctx.fillStyle = 'rgba(24, 20, 15, 0.94)';
-          ctx.strokeStyle = 'rgba(255, 205, 135, 1)';
+          ctx.fillStyle = PAL.a08;
+          ctx.strokeStyle = PAL.a09;
           ctx.lineWidth = 1.2;
           ctx.beginPath();
           ctx.arc(mx, my, 6, 0, Math.PI * 2);
@@ -5295,9 +5607,9 @@ export class PatternView {
       const y = Math.min(...ys) - 5;
       const width = ctx.measureText(label).width + 10;
       ctx.setLineDash([]);
-      ctx.fillStyle = 'rgba(12, 16, 22, 0.92)';
+      ctx.fillStyle = PAL.a10;
       ctx.fillRect(x - width / 2, y - 12, width, 14);
-      ctx.fillStyle = preview ? 'rgba(160, 245, 245, 1)' : 'rgba(255, 211, 150, 1)';
+      ctx.fillStyle = preview ? PAL.a11 : PAL.a12;
       ctx.fillText(label, x, y - 1);
       ctx.restore();
     };
@@ -5351,14 +5663,14 @@ export class PatternView {
       index === 0 ? ctx.moveTo(point[0], point[1]) : ctx.lineTo(point[0], point[1]),
     );
     ctx.closePath();
-    ctx.fillStyle = primary ? 'rgba(90, 160, 255, 0.24)' : 'rgba(93, 211, 229, 0.17)';
+    ctx.fillStyle = primary ? PAL.a13 : PAL.a14;
     ctx.fill();
-    ctx.strokeStyle = primary ? 'rgba(127, 190, 255, 1)' : 'rgba(107, 223, 223, 0.95)';
+    ctx.strokeStyle = primary ? PAL.a15 : PAL.a16;
     ctx.lineWidth = primary ? 2.4 : 2;
     ctx.setLineDash([]);
     ctx.stroke();
 
-    ctx.strokeStyle = primary ? 'rgba(127, 190, 255, 0.9)' : 'rgba(107, 223, 223, 0.82)';
+    ctx.strokeStyle = primary ? PAL.a17 : PAL.a18;
     ctx.lineWidth = 1.4;
     ctx.setLineDash([6, 4]);
     ctx.strokeRect(left, top, right - left, bottom - top);
@@ -5371,12 +5683,12 @@ export class PatternView {
         this.pieceResizeHover?.pieceId === pid &&
         this.pieceResizeHover.corner === handle.corner;
       const size = active || hovered ? 11 : 9;
-      ctx.fillStyle = active ? 'rgba(255, 159, 107, 1)' : 'rgba(245, 248, 252, 1)';
+      ctx.fillStyle = active ? PAL.a19 : PAL.sommetNeutre;
       ctx.strokeStyle = active
-        ? 'rgba(255, 190, 150, 1)'
+        ? PAL.a20
         : primary
-          ? 'rgba(80, 154, 255, 1)'
-          : 'rgba(65, 190, 205, 1)';
+          ? PAL.a21
+          : PAL.a22;
       ctx.lineWidth = 2;
       ctx.fillRect(handle.screen[0] - size / 2, handle.screen[1] - size / 2, size, size);
       ctx.strokeRect(handle.screen[0] - size / 2, handle.screen[1] - size / 2, size, size);
@@ -5401,9 +5713,9 @@ export class PatternView {
       const labelW = ctx.measureText(label).width + 12;
       const labelX = (left + right) / 2;
       const labelY = Math.max(15, top - 7);
-      ctx.fillStyle = 'rgba(10, 15, 22, 0.94)';
+      ctx.fillStyle = PAL.a23;
       ctx.fillRect(labelX - labelW / 2, labelY - 14, labelW, 15);
-      ctx.fillStyle = 'rgba(177, 215, 255, 1)';
+      ctx.fillStyle = PAL.a24;
       ctx.fillText(label, labelX, labelY - 2);
     }
     ctx.restore();
@@ -5423,14 +5735,14 @@ export class PatternView {
     const active = this.penPointerInside === true;
     ctx.save();
     ctx.fillStyle = active
-      ? 'rgba(66, 143, 255, 0.18)'
-      : 'rgba(66, 143, 255, 0.12)';
+      ? PAL.a25
+      : PAL.a26;
     ctx.fillRect(left, top, right - left, bottom - top);
     ctx.strokeStyle = alert
-      ? 'rgba(255, 159, 107, 1)'
+      ? PAL.a19
       : active
-        ? 'rgba(137, 199, 255, 1)'
-        : 'rgba(101, 171, 255, 0.98)';
+        ? PAL.a27
+        : PAL.a28;
     ctx.lineWidth = alert ? 3 : 2.4;
     ctx.setLineDash([9, 5]);
     ctx.strokeRect(left + 1, top + 1, right - left - 2, bottom - top - 2);
@@ -5443,14 +5755,14 @@ export class PatternView {
     const titleWidth = Math.min(right - left - 12, ctx.measureText(title).width + 18);
     const titleX = (left + right) / 2;
     const titleY = top + 17;
-    ctx.fillStyle = alert ? 'rgba(92, 45, 30, 0.96)' : 'rgba(18, 55, 95, 0.96)';
+    ctx.fillStyle = alert ? PAL.a29 : PAL.a30;
     ctx.fillRect(titleX - titleWidth / 2, top + 5, titleWidth, 24);
-    ctx.fillStyle = alert ? 'rgba(255, 213, 190, 1)' : 'rgba(202, 230, 255, 1)';
+    ctx.fillStyle = alert ? PAL.a31 : PAL.a32;
     ctx.fillText(title, titleX, titleY);
 
     if (bottom - top > 85 && right - left > 170) {
       ctx.font = '600 9px ui-monospace, monospace';
-      ctx.fillStyle = 'rgba(190, 220, 249, 0.9)';
+      ctx.fillStyle = PAL.a33;
       ctx.fillText('Cliquez pour placer les points', titleX, top + 43);
     }
 
@@ -5466,12 +5778,12 @@ export class PatternView {
         Math.max(feedbackWidth / 2 + 10, titleX),
       );
       const feedbackY = Math.min(bottom - 24, Math.max(top + 72, this.canvas.height - 42));
-      ctx.fillStyle = 'rgba(74, 35, 24, 0.98)';
+      ctx.fillStyle = PAL.a34;
       ctx.fillRect(feedbackX - feedbackWidth / 2, feedbackY - 17, feedbackWidth, 34);
-      ctx.strokeStyle = 'rgba(255, 159, 107, 1)';
+      ctx.strokeStyle = PAL.a19;
       ctx.lineWidth = 2;
       ctx.strokeRect(feedbackX - feedbackWidth / 2, feedbackY - 17, feedbackWidth, 34);
-      ctx.fillStyle = 'rgba(255, 226, 210, 1)';
+      ctx.fillStyle = PAL.a35;
       ctx.fillText(message, feedbackX, feedbackY);
     }
     ctx.restore();
@@ -5525,7 +5837,7 @@ export class PatternView {
     ctx.save();
     // Effective axis: deliberately cyan, distinct from the yellow/violet/green
     // construction relations already used by the smart guides.
-    ctx.strokeStyle = 'rgba(107, 223, 223, 0.72)';
+    ctx.strokeStyle = PAL.a36;
     ctx.lineWidth = 1.6;
     ctx.setLineDash([7, 5]);
     ctx.beginPath();
@@ -5556,7 +5868,7 @@ export class PatternView {
 
     // Unconstrained ghost requested by the hand, then its rejected normal
     // component back to the effective projected endpoint.
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+    ctx.strokeStyle = PAL.pinceTrait;
     ctx.lineWidth = 1.4;
     ctx.setLineDash([4, 4]);
     ctx.beginPath();
@@ -5568,9 +5880,9 @@ export class PatternView {
     ctx.setLineDash([]);
     ctx.beginPath();
     ctx.arc(ghost[0], ghost[1], 5.5, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
+    ctx.fillStyle = PAL.pinceFond;
     ctx.fill();
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.65)';
+    ctx.strokeStyle = PAL.pinceTraitFort;
     ctx.stroke();
 
     if (gesture.intent.mostlyPerpendicular) {
@@ -5602,14 +5914,14 @@ export class PatternView {
         this.canvas.height - labelH / 2 - 4,
         Math.max(labelH / 2 + 4, preferredY),
       );
-      ctx.fillStyle = 'rgba(10, 12, 15, 0.95)';
+      ctx.fillStyle = PAL.a37;
       ctx.fillRect(
         labelX - labelW / 2,
         labelY - labelH / 2,
         labelW,
         labelH,
       );
-      ctx.fillStyle = 'rgba(188, 244, 244, 1)';
+      ctx.fillStyle = PAL.a38;
       lines.forEach((line, index) => {
         ctx.fillText(
           line,
@@ -5657,7 +5969,7 @@ export class PatternView {
         const a0 = this.vertexScreen([axisU, 0] as UV);
         const a1 = this.vertexScreen([axisU, 1] as UV);
         if (a0 && a1) {
-          ctx.strokeStyle = 'rgba(122, 226, 154, 0.55)';
+          ctx.strokeStyle = PAL.a39;
           ctx.lineWidth = 1;
           ctx.setLineDash([6, 5]);
           ctx.beginPath();
@@ -5673,7 +5985,7 @@ export class PatternView {
             .filter((s): s is [number, number] => s !== null)
             .reverse();
           if (echo.length) {
-            ctx.strokeStyle = 'rgba(127, 178, 255, 0.45)';
+            ctx.strokeStyle = PAL.a40;
             ctx.lineWidth = 1.5;
             ctx.setLineDash([4, 4]);
             ctx.beginPath();
@@ -5687,7 +5999,7 @@ export class PatternView {
         }
       }
       if (sp.length) {
-        ctx.strokeStyle = 'rgba(127, 178, 255, 0.9)';
+        ctx.strokeStyle = PAL.a41;
         ctx.lineWidth = 1.5;
         ctx.setLineDash([]);
         ctx.beginPath();
@@ -5697,7 +6009,7 @@ export class PatternView {
           const closable = i === 0 && sp.length >= (this.penMirror ? 2 : 3);
           ctx.beginPath();
           ctx.arc(sp[i]![0], sp[i]![1], closable ? 6 : 4, 0, Math.PI * 2);
-          ctx.fillStyle = closable ? 'rgba(255, 159, 107, 0.95)' : 'rgba(255, 255, 255, 0.92)';
+          ctx.fillStyle = closable ? PAL.a42 : PAL.pointNeutre;
           ctx.fill();
         }
       }
@@ -5722,12 +6034,12 @@ export class PatternView {
         ];
         const sp = this.vertexScreen(pivotUV);
         if (sp) {
-          ctx.fillStyle = 'rgba(122, 226, 154, 0.95)';
+          ctx.fillStyle = PAL.a43;
           ctx.beginPath();
           ctx.arc(sp[0], sp[1], 5, 0, Math.PI * 2);
           ctx.fill();
           if (this.fullnessHover) {
-            ctx.strokeStyle = 'rgba(122, 226, 154, 0.7)';
+            ctx.strokeStyle = PAL.a44;
             ctx.lineWidth = 1.5;
             ctx.setLineDash([7, 5]);
             ctx.beginPath();
@@ -5760,7 +6072,7 @@ export class PatternView {
           const r = Math.min(Math.max(rRaw, 0.003), 0.45 * Math.min(lenIn, lenOut));
           const start = [P[0] + ((A[0] - P[0]) * r) / lenIn, P[1] + ((A[1] - P[1]) * r) / lenIn];
           const end = [P[0] + ((B[0] - P[0]) * r) / lenOut, P[1] + ((B[1] - P[1]) * r) / lenOut];
-          ctx.strokeStyle = 'rgba(255, 159, 107, 0.95)';
+          ctx.strokeStyle = PAL.a42;
           ctx.lineWidth = 1.8;
           ctx.beginPath();
           let started = false;
@@ -5783,9 +6095,9 @@ export class PatternView {
             ctx.font = '600 11px Inter, ui-sans-serif, sans-serif';
             ctx.textAlign = 'center';
             const w = ctx.measureText(label).width;
-            ctx.fillStyle = 'rgba(14, 15, 18, 0.85)';
+            ctx.fillStyle = PAL.a45;
             ctx.fillRect(sc[0] - w / 2 - 5, sc[1] - 26, w + 10, 16);
-            ctx.fillStyle = 'rgba(255, 194, 150, 1)';
+            ctx.fillStyle = PAL.a46;
             ctx.fillText(label, sc[0], sc[1] - 14);
             ctx.textAlign = 'start';
           }
@@ -5797,13 +6109,13 @@ export class PatternView {
     if (this.dartMode && this.dartTop) {
       const sTop = this.vertexScreen(this.dartTop);
       if (sTop) {
-        ctx.fillStyle = 'rgba(255, 159, 107, 0.95)';
+        ctx.fillStyle = PAL.a42;
         ctx.beginPath();
         ctx.arc(sTop[0], sTop[1], 4.5, 0, Math.PI * 2);
         ctx.fill();
         const sBottom = this.dartBottom ? this.vertexScreen(this.dartBottom) : null;
         if (!this.dartBottom && this.dartHover) {
-          ctx.strokeStyle = 'rgba(255, 159, 107, 0.6)';
+          ctx.strokeStyle = PAL.a47;
           ctx.lineWidth = 1.4;
           ctx.setLineDash([6, 4]);
           ctx.beginPath();
@@ -5813,11 +6125,11 @@ export class PatternView {
           ctx.setLineDash([]);
         }
         if (sBottom) {
-          ctx.fillStyle = 'rgba(255, 159, 107, 0.95)';
+          ctx.fillStyle = PAL.a42;
           ctx.beginPath();
           ctx.arc(sBottom[0], sBottom[1], 4.5, 0, Math.PI * 2);
           ctx.fill();
-          ctx.strokeStyle = 'rgba(255, 159, 107, 0.75)';
+          ctx.strokeStyle = PAL.a48;
           ctx.lineWidth = 1.2;
           ctx.setLineDash([5, 4]);
           ctx.beginPath();
@@ -5847,7 +6159,7 @@ export class PatternView {
               const sl = this.vertexScreen(wl);
               const sr = this.vertexScreen(wr);
               if (sl && sr) {
-                ctx.strokeStyle = 'rgba(255, 159, 107, 0.95)';
+                ctx.strokeStyle = PAL.a42;
                 ctx.lineWidth = 1.5;
                 ctx.beginPath();
                 ctx.moveTo(sTop[0], sTop[1]);
@@ -5862,9 +6174,9 @@ export class PatternView {
                 const mid = this.vertexScreen([(wl[0] + wr[0]) / 2, (wl[1] + wr[1]) / 2]);
                 if (mid) {
                   const w = ctx.measureText(label).width;
-                  ctx.fillStyle = 'rgba(14, 15, 18, 0.85)';
+                  ctx.fillStyle = PAL.a45;
                   ctx.fillRect(mid[0] - w / 2 - 5, mid[1] - 22, w + 10, 16);
-                  ctx.fillStyle = 'rgba(255, 194, 150, 1)';
+                  ctx.fillStyle = PAL.a46;
                   ctx.fillText(label, mid[0], mid[1] - 10);
                 }
                 ctx.textAlign = 'start';
@@ -5882,14 +6194,14 @@ export class PatternView {
         .map((uv) => this.vertexScreen(uv))
         .filter((s): s is [number, number] => s !== null);
       if (sp.length) {
-        ctx.strokeStyle = 'rgba(214, 222, 234, 0.9)';
+        ctx.strokeStyle = PAL.ligneInterneVive;
         ctx.lineWidth = 1.4;
         ctx.setLineDash([6, 4]);
         ctx.beginPath();
         sp.forEach((s, i) => (i === 0 ? ctx.moveTo(s[0], s[1]) : ctx.lineTo(s[0], s[1])));
         ctx.stroke();
         if (this.internalHover) {
-          ctx.strokeStyle = 'rgba(214, 222, 234, 0.45)';
+          ctx.strokeStyle = PAL.ligneInterneDouce;
           ctx.beginPath();
           ctx.moveTo(sp[sp.length - 1]![0], sp[sp.length - 1]![1]);
           ctx.lineTo(this.internalHover[0], this.internalHover[1]);
@@ -5902,10 +6214,10 @@ export class PatternView {
           ctx.beginPath();
           ctx.arc(sp[i]![0], sp[i]![1], closable || endable ? 6 : 3.5, 0, Math.PI * 2);
           ctx.fillStyle = closable
-            ? 'rgba(255, 159, 107, 0.95)'
+            ? PAL.a42
             : endable
-              ? 'rgba(122, 226, 154, 0.95)'
-              : 'rgba(255, 255, 255, 0.92)';
+              ? PAL.a43
+              : PAL.pointNeutre;
           ctx.fill();
         }
       }
@@ -5917,7 +6229,7 @@ export class PatternView {
       const px = a[0] + (b[0] - a[0]) * this.cutPick.t;
       const py = a[1] + (b[1] - a[1]) * this.cutPick.t;
       if (this.cutHover) {
-        ctx.strokeStyle = 'rgba(255, 159, 107, 0.95)';
+        ctx.strokeStyle = PAL.a42;
         ctx.lineWidth = 1.6;
         ctx.setLineDash([7, 5]);
         ctx.beginPath();
@@ -5928,7 +6240,7 @@ export class PatternView {
       }
       ctx.beginPath();
       ctx.arc(px, py, 5, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255, 159, 107, 0.95)';
+      ctx.fillStyle = PAL.a42;
       ctx.fill();
     }
 
@@ -5938,10 +6250,10 @@ export class PatternView {
       pts.forEach((s, i) => (i === 0 ? ctx.moveTo(s[0], s[1]) : ctx.lineTo(s[0], s[1])));
       ctx.closePath();
       ctx.fillStyle = wholeSelected
-        ? 'rgba(90, 160, 255, 0.24)'
+        ? PAL.a13
         : this.pieceFabricFill(this.draftPiece, 0.2);
       ctx.fill();
-      ctx.strokeStyle = wholeSelected ? 'rgba(127, 190, 255, 1)' : 'rgba(230, 225, 210, 0.9)';
+      ctx.strokeStyle = wholeSelected ? PAL.a15 : PAL.contourPiece;
       ctx.lineWidth = wholeSelected ? 2.4 : 1.5;
       ctx.setLineDash([]);
       ctx.stroke();
@@ -5964,10 +6276,10 @@ export class PatternView {
       const r = active || hovered ? 6.5 : 4.5;
       ctx.beginPath();
       ctx.arc(s[0], s[1], r, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+      ctx.fillStyle = PAL.pointNeutre;
       ctx.fill();
       ctx.lineWidth = 2;
-      ctx.strokeStyle = active ? 'rgba(255, 159, 107, 0.95)' : 'rgba(127, 178, 255, 0.95)';
+      ctx.strokeStyle = active ? PAL.a42 : PAL.a49;
       ctx.stroke();
     }
     if (!wholeSelected) {
@@ -5981,8 +6293,8 @@ export class PatternView {
         ctx.save();
         ctx.translate(s[0], s[1]);
         ctx.rotate(Math.PI / 4);
-        ctx.fillStyle = active ? 'rgba(255, 159, 107, 1)' : 'rgba(127, 210, 255, 0.98)';
-        ctx.strokeStyle = 'rgba(15, 24, 34, 0.95)';
+        ctx.fillStyle = active ? PAL.a19 : PAL.a50;
+        ctx.strokeStyle = PAL.a51;
         ctx.lineWidth = 2;
         ctx.fillRect(-radius / 1.45, -radius / 1.45, (radius * 2) / 1.45, (radius * 2) / 1.45);
         ctx.strokeRect(-radius / 1.45, -radius / 1.45, (radius * 2) / 1.45, (radius * 2) / 1.45);
@@ -5993,9 +6305,9 @@ export class PatternView {
           ctx.textBaseline = 'bottom';
           const label = active ? 'courbe unique' : 'tirer la courbe';
           const w = ctx.measureText(label).width + 10;
-          ctx.fillStyle = 'rgba(10, 15, 22, 0.94)';
+          ctx.fillStyle = PAL.a23;
           ctx.fillRect(s[0] - w / 2, s[1] - 24, w, 15);
-          ctx.fillStyle = 'rgba(160, 225, 255, 1)';
+          ctx.fillStyle = PAL.a52;
           ctx.fillText(label, s[0], s[1] - 11);
         }
       }
@@ -6009,7 +6321,7 @@ export class PatternView {
       (this.lengthMode && this.curveHover !== null ? curves[this.curveHover] ?? null : null);
     if (!wholeSelected && lengthCurve) {
       ctx.save();
-      ctx.strokeStyle = 'rgba(255, 209, 102, 1)';
+      ctx.strokeStyle = PAL.a53;
       ctx.lineWidth = 3.2;
       ctx.setLineDash([]);
       ctx.beginPath();
@@ -6024,10 +6336,10 @@ export class PatternView {
         const moving = this.curveLengthDrag?.moving === idx;
         ctx.beginPath();
         ctx.arc(s[0], s[1], moving ? 7 : 5.5, 0, Math.PI * 2);
-        ctx.fillStyle = moving ? 'rgba(255, 159, 107, 1)' : 'rgba(255, 245, 210, 1)';
+        ctx.fillStyle = moving ? PAL.a19 : PAL.a54;
         ctx.fill();
         ctx.lineWidth = 2;
-        ctx.strokeStyle = 'rgba(255, 184, 80, 1)';
+        ctx.strokeStyle = PAL.a55;
         ctx.stroke();
       }
       const handle = logicalCurveHandle(lengthCurve);
@@ -6039,9 +6351,9 @@ export class PatternView {
       ctx.textBaseline = 'bottom';
       const w = ctx.measureText(label).width + 12;
       const y = Math.max(16, hs[1] - 16);
-      ctx.fillStyle = 'rgba(10, 15, 22, 0.95)';
+      ctx.fillStyle = PAL.a56;
       ctx.fillRect(hs[0] - w / 2, y - 14, w, 15);
-      ctx.fillStyle = 'rgba(255, 220, 145, 1)';
+      ctx.fillStyle = PAL.a57;
       ctx.fillText(label, hs[0], y - 2);
       ctx.restore();
     }
@@ -6168,8 +6480,8 @@ export class PatternView {
           })),
         };
 
-        const equalityColor = 'rgba(224, 139, 255, 0.98)';
-        const parallelColor = 'rgba(255, 209, 102, 0.95)';
+        const equalityColor = PAL.a58;
+        const parallelColor = PAL.a59;
         const drawEqualityTicks = (a: [number, number], b: [number, number]): void => {
           const dx = b[0] - a[0];
           const dy = b[1] - a[1];
@@ -6196,7 +6508,7 @@ export class PatternView {
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
           const w = ctx.measureText(label).width + 10;
-          ctx.fillStyle = 'rgba(10, 12, 15, 0.94)';
+          ctx.fillStyle = PAL.a60;
           ctx.fillRect(x - w / 2, y - 8, w, 16);
           ctx.fillStyle = color;
           ctx.fillText(label, x, y);
@@ -6213,7 +6525,7 @@ export class PatternView {
           const b = this.vertexScreen(candidateOutline[(match.edge + 1) % candidateOutline.length]!, piece, off, yOff);
           if (!a || !b) continue;
           if (match.parallel || match.nearParallel) {
-            ctx.strokeStyle = match.parallel ? parallelColor : 'rgba(255, 209, 102, 0.48)';
+            ctx.strokeStyle = match.parallel ? parallelColor : PAL.a61;
             ctx.lineWidth = match.parallel ? 2.4 : 1.5;
             ctx.setLineDash(match.parallel ? [6, 3] : [2, 5]);
             ctx.beginPath();
@@ -6239,13 +6551,13 @@ export class PatternView {
               (a[0] + b[0]) / 2 + (-dy / len) * 9,
               (a[1] + b[1]) / 2 + (dx / len) * 9,
               badge,
-              match.parallel ? parallelColor : 'rgba(255, 226, 156, 0.82)',
+              match.parallel ? parallelColor : PAL.a62,
               matchIndex === 0,
             );
           }
           if (match.equal) drawEqualityTicks(a, b);
           else if (match.nearEqual && !match.parallel && !match.nearParallel) {
-            ctx.strokeStyle = 'rgba(224, 139, 255, 0.5)';
+            ctx.strokeStyle = PAL.a63;
             ctx.lineWidth = 1.5;
             ctx.setLineDash([2, 5]);
             ctx.beginPath();
@@ -6253,7 +6565,7 @@ export class PatternView {
             ctx.lineTo(b[0], b[1]);
             ctx.stroke();
             ctx.setLineDash([]);
-            drawBadge((a[0] + b[0]) / 2, (a[1] + b[1]) / 2 - 9, 'longueur proche', 'rgba(224, 170, 255, 0.85)');
+            drawBadge((a[0] + b[0]) / 2, (a[1] + b[1]) / 2 - 9, 'longueur proche', PAL.a64);
           }
         }
         if (lengthGuides.equalCount > 0) {
@@ -6272,16 +6584,16 @@ export class PatternView {
           const cardY = 10;
           const cardW = Math.min(520, this.canvas.width - 20);
           const cardH = best ? (snap ? 94 : 78) : snap ? 64 : 44;
-          ctx.fillStyle = 'rgba(9, 12, 16, 0.94)';
+          ctx.fillStyle = PAL.a65;
           ctx.fillRect(cardX, cardY, cardW, cardH);
-          ctx.strokeStyle = 'rgba(180, 190, 205, 0.32)';
+          ctx.strokeStyle = PAL.a66;
           ctx.lineWidth = 1;
           ctx.strokeRect(cardX + 0.5, cardY + 0.5, cardW - 1, cardH - 1);
 
           ctx.textAlign = 'left';
           ctx.textBaseline = 'top';
           ctx.font = '700 11px ui-monospace, monospace';
-          ctx.fillStyle = 'rgba(237, 233, 223, 0.95)';
+          ctx.fillStyle = PAL.a67;
           ctx.fillText(
             `AIDE AU TRACÉ — SEGMENT ${targetEdge + 1} · ${(targetGeometry.lengthM * 100).toFixed(1).replace('.', ',')} cm${married ? ' · LIÉ' : ''}${this.lengthSnapEnabled ? ' · AUTO' : ''}`,
             cardX + 10,
@@ -6303,7 +6615,7 @@ export class PatternView {
               .filter(Boolean)
               .join(' · ');
             ctx.font = '10px ui-monospace, monospace';
-            ctx.fillStyle = 'rgba(237, 233, 223, 0.88)';
+            ctx.fillStyle = PAL.a68;
             ctx.fillText(
               `Meilleur repère : ${this.pieceLabel(best.pieceId).toUpperCase()} · bord ${best.edge + 1}`,
               cardX + 10,
@@ -6335,7 +6647,7 @@ export class PatternView {
                       : '',
                 ].filter(Boolean);
             ctx.font = '700 10px ui-monospace, monospace';
-            ctx.fillStyle = 'rgba(120, 220, 150, 0.98)';
+            ctx.fillStyle = PAL.a69;
             ctx.fillText(
               `${this.lengthDrag && this.lengthSnap ? 'AJUSTÉ' : 'PRÊT À AJUSTER'} · ${snapParts.join(' · ')}`,
               cardX + 10,
@@ -6347,7 +6659,7 @@ export class PatternView {
           ctx.fillText('JAUNE  parallèle', cardX + 10, cardY + cardH - 17);
           ctx.fillStyle = equalityColor;
           ctx.fillText('VIOLET  même longueur', cardX + 140, cardY + cardH - 17);
-          ctx.fillStyle = 'rgba(120, 220, 150, 0.98)';
+          ctx.fillStyle = PAL.a69;
           ctx.fillText('VERT  angle droit', cardX + 315, cardY + cardH - 17);
         }
         ctx.textAlign = 'left';
@@ -6377,7 +6689,7 @@ export class PatternView {
         const offset = 16;
         const da: [number, number] = [a[0] + nx * offset, a[1] + ny * offset];
         const db: [number, number] = [b[0] + nx * offset, b[1] + ny * offset];
-        const color = 'rgba(107, 223, 223, 0.98)';
+        const color = PAL.a06;
 
         ctx.setLineDash([]);
         ctx.strokeStyle = color;
@@ -6401,7 +6713,7 @@ export class PatternView {
           x2 /= l2;
           y2 /= l2;
           const s = Math.min(9, l1 * 0.28, l2 * 0.28);
-          ctx.strokeStyle = 'rgba(120, 220, 150, 0.98)';
+          ctx.strokeStyle = PAL.a69;
           ctx.lineWidth = 1.5;
           ctx.setLineDash([]);
           ctx.beginPath();
@@ -6450,7 +6762,7 @@ export class PatternView {
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         const labelW = ctx.measureText(label).width + 12;
-        ctx.fillStyle = 'rgba(10, 12, 15, 0.95)';
+        ctx.fillStyle = PAL.a37;
         ctx.fillRect(labelX - labelW / 2, labelY - 9, labelW, 18);
         ctx.fillStyle = color;
         ctx.fillText(label, labelX, labelY);
@@ -6461,7 +6773,7 @@ export class PatternView {
 
     // Darts: draw each as its two legs meeting at the apex (orange), plus the
     // live preview wedge while pulling one out.
-    ctx.strokeStyle = 'rgba(255, 159, 107, 0.9)';
+    ctx.strokeStyle = PAL.a70;
     ctx.lineWidth = 1.2;
     ctx.setLineDash([3, 2]);
     const drawDart = (apex: UV, legA: UV, legB: UV): void => {
@@ -6497,7 +6809,7 @@ export class PatternView {
       const b = this.vertexScreen(o[(this.draftEdge.edge + 1) % o.length]!);
       const arc = this.draftEdge.bend.map((uv) => this.vertexScreen(uv));
       if (a && b && arc.every((s) => s !== null)) {
-        ctx.strokeStyle = 'rgba(127, 178, 255, 0.95)';
+        ctx.strokeStyle = PAL.a49;
         ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.moveTo(a[0], a[1]);
@@ -6566,7 +6878,7 @@ export class PatternView {
       if (!pa || !pb) return;
       const ma: [number, number] = [(pa[0][0] + pa[1][0]) / 2, (pa[0][1] + pa[1][1]) / 2];
       const mb: [number, number] = [(pb[0][0] + pb[1][0]) / 2, (pb[0][1] + pb[1][1]) / 2];
-      ctx.strokeStyle = 'rgba(107, 223, 223, 0.96)';
+      ctx.strokeStyle = PAL.a71;
       ctx.lineWidth = 3;
       ctx.setLineDash([7, 3]);
       strokeRun(pidA, { from: link.a.from, to: link.a.to });
@@ -6584,14 +6896,14 @@ export class PatternView {
         ctx.font = '700 9px ui-monospace, monospace';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillStyle = 'rgba(107, 223, 223, 1)';
+        ctx.fillStyle = PAL.a72;
         ctx.fillText(`LIEN ${index + 1}`, (ma[0] + mb[0]) / 2, (ma[1] + mb[1]) / 2 - 7);
       }
     });
     const selectedLinkEdge = this.linkPickA ?? this.linkHover;
     if (selectedLinkEdge) {
       const selected = this.runForEdge(selectedLinkEdge.pieceId, selectedLinkEdge.edge);
-      ctx.strokeStyle = this.linkPickA ? 'rgba(255, 209, 102, 1)' : 'rgba(107, 223, 223, 0.9)';
+      ctx.strokeStyle = this.linkPickA ? PAL.a53 : PAL.a73;
       ctx.lineWidth = 4;
       ctx.setLineDash([]);
       strokeRun(selectedLinkEdge.pieceId, selected);
@@ -6623,7 +6935,7 @@ export class PatternView {
       if (!piece) return;
       const s = sewn.get(pid) ?? new Set<number>();
       const open = runSet(piece, piece.openEdges);
-      ctx.strokeStyle = 'rgba(233, 96, 70, 0.9)';
+      ctx.strokeStyle = PAL.a74;
       ctx.lineWidth = 2.5;
       for (let k = 0; k < piece.outline.length; k++) {
         if (s.has(k) || open.has(k)) continue;
@@ -6670,15 +6982,38 @@ export class PatternView {
       const lb = runLenCm(pidB, { from: s.b.from, to: s.b.to });
       const ratio = Math.max(la, lb) / (Math.min(la, lb) || 1);
       const gathered = ratio >= 1.12;
+      // v181 ⑥ : pastilles d'extrémités — les BOUTS de chaque run se voient,
+      // côté A et côté B (façon Clo, en discret).
+      if (s.kind !== 'zipper' && assemblySeamIsClosed(s)) {
+        const dotColor = SEAM_COLORS[k % SEAM_COLORS.length]!;
+        const dotRun = (pid: number, fr: { from: number; to: number }): void => {
+          const piece = this.pieceAt(pid);
+          if (!piece) return;
+          const nV = piece.outline.length;
+          let steps = ((fr.to - fr.from) + nV) % nV;
+          if (steps === 0) steps = 1;
+          const first = edgePts(pid, fr.from % nV);
+          const last = edgePts(pid, (fr.from + steps - 1) % nV);
+          ctx.fillStyle = dotColor;
+          for (const q of [first?.[0], last?.[1]]) {
+            if (!q) continue;
+            ctx.beginPath();
+            ctx.arc(q[0], q[1], 2.6, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        };
+        dotRun(pidA, s.a);
+        dotRun(pidB, s.b);
+      }
       if (s.kind === 'zipper') {
         const closed = assemblySeamIsClosed(s);
         const zipColor = closed
-          ? 'rgba(255, 202, 71, 1)'
-          : 'rgba(187, 178, 157, 0.9)';
+          ? PAL.a75
+          : PAL.a76;
         ctx.save();
         // Dark tape underneath + short bright dashes above = readable zipper
         // teeth even when the pattern is substantially zoomed out.
-        ctx.strokeStyle = 'rgba(38, 34, 29, 0.92)';
+        ctx.strokeStyle = PAL.a77;
         ctx.lineWidth = 7;
         ctx.setLineDash([]);
         strokeRun(pidA, { from: s.a.from, to: s.a.to });
@@ -6777,20 +7112,20 @@ export class PatternView {
     // First-picked edge, awaiting the second click.
     if (this.seamPickA) {
       ctx.lineWidth = 3.5;
-      ctx.strokeStyle = 'rgba(255, 159, 107, 0.98)';
+      ctx.strokeStyle = PAL.a78;
       strokeRun(this.seamPickA.pieceId, this.runForEdge(this.seamPickA.pieceId, this.seamPickA.edge));
     }
     const zipperTarget = this.zipperPickA ?? this.zipperHover;
     if (zipperTarget) {
       ctx.lineWidth = 6;
-      ctx.strokeStyle = 'rgba(38, 34, 29, 0.94)';
+      ctx.strokeStyle = PAL.a79;
       ctx.setLineDash([]);
       strokeRun(
         zipperTarget.pieceId,
         this.runForEdge(zipperTarget.pieceId, zipperTarget.edge),
       );
       ctx.lineWidth = 2.5;
-      ctx.strokeStyle = 'rgba(255, 202, 71, 1)';
+      ctx.strokeStyle = PAL.a75;
       ctx.setLineDash([2, 2]);
       strokeRun(
         zipperTarget.pieceId,
@@ -6848,13 +7183,13 @@ export class PatternView {
         ctx.save();
         ctx.translate(f.cx, f.cy);
         ctx.rotate(f.rot);
-        ctx.strokeStyle = 'rgba(107, 223, 223, 0.9)';
+        ctx.strokeStyle = PAL.a73;
         ctx.lineWidth = 1.2;
         ctx.setLineDash([5, 4]);
         ctx.strokeRect(-f.w / 2, -f.h / 2, f.w, f.h);
         ctx.setLineDash([]);
         // poignée de taille (coin bas-droit)
-        ctx.fillStyle = 'rgba(107, 223, 223, 0.95)';
+        ctx.fillStyle = PAL.a16;
         ctx.fillRect(f.w / 2 - 4, f.h / 2 - 4, 8, 8);
         // poignée de rotation (au-dessus, reliée)
         ctx.beginPath();
@@ -6880,7 +7215,7 @@ export class PatternView {
       ): void => {
         const arc = this.freeSewArcScreen(pieceId, sA, sB);
         if (!arc.length) return;
-        ctx.strokeStyle = 'rgba(255, 159, 107, 0.95)';
+        ctx.strokeStyle = PAL.a42;
         ctx.lineWidth = width;
         ctx.setLineDash(dash);
         ctx.beginPath();
@@ -6890,7 +7225,7 @@ export class PatternView {
         for (const end of [arc[0]!, arc[arc.length - 1]!]) {
           ctx.beginPath();
           ctx.arc(end[0], end[1], 4.5, 0, Math.PI * 2);
-          ctx.fillStyle = 'rgba(255, 159, 107, 0.95)';
+          ctx.fillStyle = PAL.a42;
           ctx.fill();
         }
       };
@@ -6918,7 +7253,7 @@ export class PatternView {
     ctx.textBaseline = 'bottom';
     if (this.surfacePlacementPieceId !== null) {
       ctx.font = '700 11px ui-monospace, monospace';
-      ctx.fillStyle = 'rgba(107, 223, 223, 0.98)';
+      ctx.fillStyle = PAL.a06;
       ctx.fillText(
         this.surfacePlacementHover
           ? `Cliquez ici pour poser ${this.pieceLabel(this.surfacePlacementPieceId)} · clic droit = annuler`
@@ -6928,7 +7263,7 @@ export class PatternView {
       );
     } else if (this.freeSewMode || this.freeSewTrace || this.freeSewRunA) {
       ctx.font = '700 11px ui-monospace, monospace';
-      ctx.fillStyle = 'rgba(255, 159, 107, 0.98)';
+      ctx.fillStyle = PAL.a78;
       const st = this.freeSewTrace;
       const cmOf = (m: number): string => `${Math.round(m * 100)} cm`;
       ctx.fillText(
@@ -6942,7 +7277,7 @@ export class PatternView {
       );
     } else if (this.linkMode) {
       ctx.font = '700 11px ui-monospace, monospace';
-      ctx.fillStyle = this.linkNotice ? 'rgba(255, 209, 102, 0.98)' : 'rgba(107, 223, 223, 0.98)';
+      ctx.fillStyle = this.linkNotice ? PAL.a80 : PAL.a06;
       ctx.fillText(
         this.linkNotice
           ? this.linkNotice
@@ -6954,7 +7289,7 @@ export class PatternView {
       );
     } else if (this.lengthMode) {
       ctx.font = '600 11px ui-monospace, monospace';
-      ctx.fillStyle = 'rgba(107, 223, 223, 0.98)';
+      ctx.fillStyle = PAL.a06;
       const cm =
         lengthTarget?.pieceId === this.activePiece
           ? this.edgeLenCm(this.activePiece, lengthTarget.edge, out)
@@ -6988,28 +7323,28 @@ export class PatternView {
         this.canvas.height - 20,
       );
     } else if (this.zipperPickA) {
-      ctx.fillStyle = 'rgba(255, 202, 71, 1)';
+      ctx.fillStyle = PAL.a75;
       ctx.fillText(
         `ZIP · 1er ruban : ${Math.round(this.edgeLenCm(this.zipperPickA.pieceId, this.zipperPickA.edge))} cm — cliquez le bord opposé`,
         8,
         this.canvas.height - 20,
       );
     } else if (this.zipperMode) {
-      ctx.fillStyle = 'rgba(255, 202, 71, 1)';
+      ctx.fillStyle = PAL.a75;
       ctx.fillText(
         'ZIP · cliquez le premier bord, puis son bord opposé',
         8,
         this.canvas.height - 20,
       );
     } else if (this.seamPickA) {
-      ctx.fillStyle = 'rgba(255, 159, 107, 0.98)';
+      ctx.fillStyle = PAL.a78;
       ctx.fillText(
         `bord : ${Math.round(this.edgeLenCm(this.seamPickA.pieceId, this.seamPickA.edge))} cm — cliquez maintenant le 2e bord, celui à assembler`,
         8,
         this.canvas.height - 20,
       );
     } else if (this.sewMode) {
-      ctx.fillStyle = 'rgba(255, 159, 107, 0.98)';
+      ctx.fillStyle = PAL.a78;
       const openSurface = this.pieces.some((piece) => {
         const surface = piece?.placement?.surface;
         return !!piece && !!surface && surface.stitchedEdges.length < piece.outline.length;
@@ -7022,7 +7357,7 @@ export class PatternView {
         this.canvas.height - 20,
       );
     } else {
-      ctx.fillStyle = freeCount === 0 ? 'rgba(120, 220, 150, 0.95)' : 'rgba(233, 96, 70, 0.9)';
+      ctx.fillStyle = freeCount === 0 ? PAL.a81 : PAL.a74;
       ctx.fillText(
         freeCount === 0
           ? `${this.assembly.length} coutures · tout est assemblé ✓`
@@ -7051,10 +7386,55 @@ export class PatternView {
       const wCm = Math.round((uMax - uMin) * ap.width * 100);
       const hCm = Math.round((vMax - vMin) * ap.height * 100);
       ctx.font = '10px ui-monospace, monospace';
-      ctx.fillStyle = 'rgba(237, 233, 223, 0.6)';
+      ctx.fillStyle = PAL.a82;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'bottom';
-      ctx.fillText(`${this.pieceLabel(this.activePiece)} ≈ ${wCm} × ${hCm} cm`, 8, this.canvas.height - 6);
+      let dimsLine = `${this.pieceLabel(this.activePiece)} ≈ ${wCm} × ${hCm} cm`;
+      const me = this.measuredEdge;
+      const mePiece = me ? this.pieceAt(me.pieceId) : null;
+      if (me && mePiece && me.edge < mePiece.outline.length) {
+        const lenCm = this.edgeLenCm(me.pieceId, me.edge);
+        const seam = this.seamIndexOfEdge(me.pieceId, me.edge);
+        const married = this.segmentLinkAt(me.pieceId, me.edge) !== null;
+        dimsLine += ` · bord ${lenCm.toFixed(1).replace('.', ',')} cm ${
+          seam !== null ? `(cousu · couture ${seam + 1})` : '(libre)'
+        }${married ? ' · marié' : ''}`;
+      }
+      ctx.fillText(dimsLine, 8, this.canvas.height - 6);
+    }
+    // v180 ⑤ « pas dépaysé » : le bord mesuré — surligné + coté EN PLACE,
+    // persistant tant que sélectionné (Échap, clic ailleurs ou édition = fin).
+    const me2 = this.measuredEdge;
+    if (me2) {
+      const piece = this.pieceAt(me2.pieceId);
+      if (piece && me2.edge < piece.outline.length) {
+        const off = this.pieceOffset(me2.pieceId);
+        const yOff = this.pieceYOffset(me2.pieceId);
+        const a = this.vertexScreen(piece.outline[me2.edge]!, piece, off, yOff);
+        const b = this.vertexScreen(piece.outline[(me2.edge + 1) % piece.outline.length]!, piece, off, yOff);
+        if (a && b) {
+          ctx.save();
+          ctx.strokeStyle = PAL.a42;
+          ctx.lineWidth = 3;
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          ctx.moveTo(a[0], a[1]);
+          ctx.lineTo(b[0], b[1]);
+          ctx.stroke();
+          const label = `${this.edgeLenCm(me2.pieceId, me2.edge).toFixed(1).replace('.', ',')} cm`;
+          const mx = (a[0] + b[0]) / 2;
+          const my = (a[1] + b[1]) / 2 - 12;
+          ctx.font = '650 10px ui-monospace, monospace';
+          const w = ctx.measureText(label).width + 12;
+          ctx.fillStyle = PAL.a23;
+          ctx.fillRect(mx - w / 2, my - 8, w, 16);
+          ctx.fillStyle = PAL.a46;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(label, mx, my);
+          ctx.restore();
+        }
+      }
     }
   }
 
@@ -7066,6 +7446,10 @@ export class PatternView {
     const W = this.staticLayer.width;
     const H = this.staticLayer.height;
     ctx.clearRect(0, 0, W, H);
+    if (PAL.fond !== 'transparent') {
+      ctx.fillStyle = PAL.fond;
+      ctx.fillRect(0, 0, W, H);
+    }
 
     // Atelier (freeform) mode: a fixed, mesh-independent transform (the full
     // width×height cutting field fits the panel) so vertices don't jump as the
@@ -7146,7 +7530,7 @@ export class PatternView {
           const b = this.layoutToScreen(x1 + offset, y0);
           ctx.rect(a[0], a[1], b[0] - a[0] + 0.7, b[1] - a[1] + 0.7);
         }
-        ctx.fillStyle = 'rgba(214, 205, 190, 0.16)';
+        ctx.fillStyle = PAL.silhouette;
         ctx.fill();
       };
       for (let k = 0; k < Math.min(nCols, 2); k++) {
@@ -7164,7 +7548,7 @@ export class PatternView {
         [0.1, 0.035],
         [0.5, 0.08],
       ] as const) {
-        ctx.strokeStyle = `rgba(237, 233, 223, ${alpha})`;
+        ctx.strokeStyle = `rgba(${PAL.grilleRVB}, ${alpha})`;
         ctx.beginPath();
         for (let gx = Math.ceil(minX / step) * step; gx <= maxX + 1e-6; gx += step) {
           const a = this.layoutToScreen(gx, minY);
@@ -7183,7 +7567,7 @@ export class PatternView {
       // Height ruler down the left edge, in real centimeters (0 = the floor) —
       // un chiffre tous les 20 cm suffit pour se repérer.
       ctx.font = '9px ui-monospace, monospace';
-      ctx.fillStyle = 'rgba(237, 233, 223, 0.28)';
+      ctx.fillStyle = PAL.axeLabelFaible;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       for (let gy = Math.ceil(minY / 0.2) * 0.2; gy <= maxY + 1e-6; gy += 0.2) {
@@ -7195,7 +7579,7 @@ export class PatternView {
       // than its (narrow) column wraps onto two lines at the first space, so
       // MANCHE D · MANCHE G · COL never overlap each other.
       ctx.font = '600 11px ui-monospace, monospace';
-      ctx.fillStyle = 'rgba(237, 233, 223, 0.5)';
+      ctx.fillStyle = PAL.axeLabelFort;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'bottom';
       const labY = this.layoutToScreen(0, maxY)[1] - 3;
@@ -7299,7 +7683,7 @@ export class PatternView {
     ];
 
     // Fabric fill from front-panel triangles.
-    ctx.fillStyle = 'rgba(228, 222, 205, 0.28)';
+    ctx.fillStyle = PAL.silhouetteTrace;
     ctx.beginPath();
     for (let t = 0; t < mesh.triangleIndices.length; t += 3) {
       const a = mesh.triangleIndices[t]!;
@@ -7330,7 +7714,7 @@ export class PatternView {
       addEdge(b, c);
       addEdge(a, c);
     }
-    ctx.strokeStyle = 'rgba(230, 225, 210, 0.9)';
+    ctx.strokeStyle = PAL.contourPiece;
     ctx.lineWidth = 1.2;
     ctx.beginPath();
     for (const [a, b] of edgeCount.values()) {
@@ -7344,8 +7728,8 @@ export class PatternView {
     // Seams: mirror seams (front↔back) become stitch dots on the outline;
     // island-to-island seams (armholes) become orange links between pieces.
     const dv = new DataView(mesh.constraintData);
-    ctx.fillStyle = 'rgba(127, 178, 255, 0.9)';
-    ctx.strokeStyle = 'rgba(255, 159, 107, 0.9)';
+    ctx.fillStyle = PAL.a41;
+    ctx.strokeStyle = PAL.a70;
     ctx.lineWidth = 1;
     ctx.setLineDash([3, 3]);
     ctx.beginPath();
@@ -7383,7 +7767,7 @@ export class PatternView {
 
       if (active) {
         // Axis guide through the dragged handle.
-        ctx.strokeStyle = 'rgba(127, 178, 255, 0.45)';
+        ctx.strokeStyle = PAL.a40;
         ctx.lineWidth = 1;
         ctx.setLineDash([4, 4]);
         ctx.beginPath();
@@ -7401,10 +7785,10 @@ export class PatternView {
       const r = active || this.hover === i ? 6.5 : 4.5;
       ctx.beginPath();
       ctx.arc(hx, hy, r, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+      ctx.fillStyle = PAL.pointNeutre;
       ctx.fill();
       ctx.lineWidth = 2;
-      ctx.strokeStyle = active ? 'rgba(255, 159, 107, 0.95)' : 'rgba(127, 178, 255, 0.95)';
+      ctx.strokeStyle = active ? PAL.a42 : PAL.a49;
       ctx.stroke();
     }
 
@@ -7413,7 +7797,7 @@ export class PatternView {
     if (shown) {
       const value = this.drag ? this.drag.value : shown.value;
       ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
-      ctx.fillStyle = 'rgba(237, 233, 223, 0.9)';
+      ctx.fillStyle = PAL.a83;
       ctx.fillText(`${shown.label} ${value.toFixed(shown.unit ? 2 : 3)}${shown.unit ?? ''}`, 8, 12);
     }
   }

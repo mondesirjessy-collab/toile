@@ -147,9 +147,21 @@ export interface InternalLine {
   points: UV[];
   /** true = polygone fermé (le dernier point rejoint le premier). */
   closed?: boolean;
+  /** ⌾ TROU : ce polygone FERMÉ évide la pièce — les cellules intérieures
+   * sortent du maillage, l'export l'imprime en trait de coupe plein.
+   * Ignoré sur une polyligne ouverte. */
+  hole?: boolean;
 }
 export const INTERNAL_LINES_MAX = 24;
 export const INTERNAL_LINE_POINTS_MAX = 64;
+
+/** ⌾ Les polygones-TROUS d'une pièce (lignes internes fermées marquées hole),
+ * prêts pour la soustraction du masque de rasterisation. */
+export function pieceHolePolygons(piece: Pick<DraftPiece, 'internalLines'>): UV[][] {
+  return (piece.internalLines ?? [])
+    .filter((line) => line.closed === true && line.hole === true && line.points.length >= 3)
+    .map((line) => line.points.map((p) => [...p] as UV));
+}
 
 /** ⌵ CRAN DE MONTAGE (le « Notch » de Clo) : un repère d'alignement sur le
  * bord — petit trait perpendiculaire, imprimé sur le patron. Ancré en UV
@@ -809,6 +821,7 @@ function projFrac(p: UV, a: UV, b: UV): number {
  */
 export function compileDraft(piece: DraftPiece, n: number): { extraSeams: { i: number; j: number }[]; openCells: Set<number> } {
   const { outline, darts, openEdges } = piece;
+  const holes = pieceHolePolygons(piece);
   const nV = outline.length;
   const uvOf = (u: number, v: number): UV => [u / (n - 1), v / (n - 1)];
 
@@ -819,6 +832,7 @@ export function compileDraft(piece: DraftPiece, n: number): { extraSeams: { i: n
       const p = uvOf(u, v);
       let inside = pointInPolygon(p, outline);
       if (inside) for (const d of darts) if (pointInTriangle(p, d.apex, d.legA, d.legB)) { inside = false; break; }
+      if (inside) for (const h of holes) if (pointInPolygon(p, h)) { inside = false; break; }
       kept[v * n + u] = inside;
     }
   const isBoundary = (u: number, v: number): boolean => {
@@ -908,11 +922,12 @@ export function compileDraft(piece: DraftPiece, n: number): { extraSeams: { i: n
  * outline resolves to at grid resolution n. Shared by hand-seams and manual
  * assembly seams to pair two edges cell-by-cell. */
 function boundaryRunCells(
-  piece: Pick<DraftPiece, 'outline' | 'darts' | 'width' | 'height'>,
+  piece: Pick<DraftPiece, 'outline' | 'darts' | 'width' | 'height' | 'internalLines'>,
   run: { from: number; to: number },
   n: number,
 ): { cell: number; t: number }[] {
   const { outline, darts } = piece;
+  const holes = pieceHolePolygons(piece);
   const nV = outline.length;
   const uvOf = (u: number, v: number): UV => [u / (n - 1), v / (n - 1)];
   const kept = new Array<boolean>(n * n);
@@ -921,6 +936,7 @@ function boundaryRunCells(
       const p = uvOf(u, v);
       let inside = pointInPolygon(p, outline);
       if (inside) for (const d of darts) if (pointInTriangle(p, d.apex, d.legA, d.legB)) { inside = false; break; }
+      if (inside) for (const h of holes) if (pointInPolygon(p, h)) { inside = false; break; }
       kept[v * n + u] = inside;
     }
   const isBoundary = (u: number, v: number): boolean => {
@@ -1140,13 +1156,19 @@ export function neckOpeningCells(piece: DraftPiece, n: number): number[] {
  * guard both-faces seams: the mirrored endpoint must land on an EDGE of its own
  * panel's mask — an independent back outline can leave the same (u,v) alive but
  * interior, and a seam into mid-fabric pinches a permanent tuft there. */
-function boundaryCellSet(outline: readonly UV[], darts: readonly Dart[], n: number): Set<number> {
+function boundaryCellSet(
+  outline: readonly UV[],
+  darts: readonly Dart[],
+  n: number,
+  holes: readonly (readonly UV[])[] = [],
+): Set<number> {
   const kept = new Array<boolean>(n * n);
   for (let v = 0; v < n; v++)
     for (let u = 0; u < n; u++) {
       const p: UV = [u / (n - 1), v / (n - 1)];
       let inside = pointInPolygon(p, outline);
       if (inside) for (const d of darts) if (pointInTriangle(p, d.apex, d.legA, d.legB)) { inside = false; break; }
+      if (inside) for (const h of holes) if (pointInPolygon(p, h)) { inside = false; break; }
       kept[v * n + u] = inside;
     }
   const out = new Set<number>();
@@ -1282,7 +1304,12 @@ export function pairOutlineRuns(
  * that touch a FREE piece (pieceId ≥ 2) are skipped here — they're compiled by
  * compileCrossSeams into the combined-mesh index space instead.
  */
-export function compileAssembly(doc: DraftDoc, n: number): { i: number; j: number }[] {
+// v181 ⑥ « pas dépaysé » : la même compilation, PAR couture — les liserés 3D
+// ont besoin de savoir quelle paire appartient à quelle couture (sa couleur).
+export function compileAssemblyGroups(
+  doc: DraftDoc,
+  n: number,
+): { seamIndex: number; pairs: { i: number; j: number }[] }[] {
   const panelSize = n * n;
   const pieces = docPieces(doc);
   const openCells = new Map<number, Set<number>>();
@@ -1298,19 +1325,20 @@ export function compileAssembly(doc: DraftDoc, n: number): { i: number; j: numbe
     openCells.set(pieceId, cells);
     return cells;
   };
-  const out: { i: number; j: number }[] = [];
-  for (const s of doc.seams ?? []) {
-    if (!assemblySeamIsClosed(s)) continue;
+  const groups: { seamIndex: number; pairs: { i: number; j: number }[] }[] = [];
+  (doc.seams ?? []).forEach((s, seamIndex) => {
+    if (!assemblySeamIsClosed(s)) return;
     const pidA = pieceIdOf(s.a);
     const pidB = pieceIdOf(s.b);
-    if (pidA > 1 || pidB > 1) continue; // a free piece is involved → compileCrossSeams
+    if (pidA > 1 || pidB > 1) return; // a free piece is involved → compileCrossSeams
     const pa = pieces[pidA];
     const pb = pieces[pidB];
-    if (!pa || !pb || pa.outline.length < 3 || pb.outline.length < 3) continue;
+    if (!pa || !pb || pa.outline.length < 3 || pb.outline.length < 3) return;
     const paired = pairRunCells(pa, pb, { from: s.a.from, to: s.a.to }, { from: s.b.from, to: s.b.to }, n);
-    if (!paired) continue;
+    if (!paired) return;
     const offA = pidA * panelSize;
     const offB = pidB * panelSize;
+    const pairs: { i: number; j: number }[] = [];
     const openA = explicitlyOpen(pidA, pa);
     const openB = explicitlyOpen(pidB, pb);
     for (let k = 0; k < paired.a.length; k++) {
@@ -1322,10 +1350,15 @@ export function compileAssembly(doc: DraftDoc, n: number): { i: number; j: numbe
       if (openA.has(paired.a[k]!) || openB.has(paired.b[k]!)) continue;
       const gi = offA + paired.a[k]!;
       const gj = offB + paired.b[k]!;
-      if (gi !== gj) out.push({ i: gi, j: gj });
+      if (gi !== gj) pairs.push({ i: gi, j: gj });
     }
-  }
-  return out;
+    if (pairs.length) groups.push({ seamIndex, pairs });
+  });
+  return groups;
+}
+
+export function compileAssembly(doc: DraftDoc, n: number): { i: number; j: number }[] {
+  return compileAssemblyGroups(doc, n).flatMap((g) => g.pairs);
 }
 
 /**
@@ -1367,7 +1400,7 @@ export function compileCrossSeams(
     const other = 1 - pid;
     baseBoundary[other] ??= (() => {
       const p = pieces[other] && pieces[other]!.outline.length >= 3 ? pieces[other]! : pieces[pid]!;
-      return boundaryCellSet(p.outline, p.darts, n);
+      return boundaryCellSet(p.outline, p.darts, n, pieceHolePolygons(p));
     })();
     return baseBoundary[other]!.has(local);
   };
@@ -2125,7 +2158,11 @@ export function sanitizeDraft(raw: unknown): DraftDoc {
             )
             .map((pt) => uv(pt));
           if (points.length < 2) continue;
-          lines.push({ points, ...(rl.closed === true ? { closed: true } : {}) });
+          lines.push({
+            points,
+            ...(rl.closed === true ? { closed: true } : {}),
+            ...(rl.closed === true && rl.hole === true && points.length >= 3 ? { hole: true } : {}),
+          });
         }
         return lines.length ? { internalLines: lines } : {};
       })(),
@@ -4341,4 +4378,897 @@ export function gatherSeamSide(
     topY: nextTopY,
   };
   return { ok: true, doc: replaceDocPiece(doc, pidG, nextPiece), achievedRatio: achieved };
+}
+
+/** Transformée rigide (directe OU réfléchie, la congruence mesurée tranche)
+ * posant le run de B sur celui de A, bouts en correspondance de couture
+ * (`reversed` au sens de runPairReversed). `lin` transporte un DELTA métrique
+ * de B vers A (partie linéaire, miroir compris). Partagé ⧉ / ⛓. */
+interface RunFit {
+  T: (p: [number, number]) => [number, number];
+  lin: (d: [number, number]) => [number, number];
+  dev: number;
+  th: number;
+  mirror: boolean;
+}
+function fitRunOntoRun(
+  A: DraftPiece,
+  runA: EdgeRun,
+  B: DraftPiece,
+  runB: EdgeRun,
+  reversed: boolean,
+): RunFit | null {
+  const NA = A.outline.length;
+  const NB = B.outline.length;
+  const mA = ([u, v]: UV): [number, number] => [u * A.width, v * A.height];
+  const mB = ([u, v]: UV): [number, number] => [u * B.width, v * B.height];
+  const aFrom = mA(A.outline[runA.from % NA]!);
+  const aTo = mA(A.outline[runA.to % NA]!);
+  const bFromIdx = (reversed ? runB.to : runB.from) % NB;
+  const bToIdx = (reversed ? runB.from : runB.to) % NB;
+  const chordA = Math.hypot(aTo[0] - aFrom[0], aTo[1] - aFrom[1]);
+  const K = 16;
+  const samplesA: [number, number][] = [];
+  for (let k = 0; k <= K; k++) samplesA.push(mA(runPointAtFraction(A, runA, k / K)));
+  const candidate = (mirror: boolean): RunFit | null => {
+    const pre = ([x, y]: [number, number]): [number, number] => (mirror ? [x, -y] : [x, y]);
+    const bf = pre(mB(B.outline[bFromIdx]!));
+    const bt = pre(mB(B.outline[bToIdx]!));
+    const chordB = Math.hypot(bt[0] - bf[0], bt[1] - bf[1]);
+    if (chordA < 1e-6 || chordB < 1e-6) return null;
+    const th =
+      Math.atan2(aTo[1] - aFrom[1], aTo[0] - aFrom[0]) - Math.atan2(bt[1] - bf[1], bt[0] - bf[0]);
+    const c = Math.cos(th);
+    const s = Math.sin(th);
+    const T = (p: [number, number]): [number, number] => {
+      const q = pre(p);
+      const dx = q[0] - bf[0];
+      const dy = q[1] - bf[1];
+      return [aFrom[0] + dx * c - dy * s, aFrom[1] + dx * s + dy * c];
+    };
+    const lin = (d: [number, number]): [number, number] => {
+      const q = pre(d);
+      return [q[0] * c - q[1] * s, q[0] * s + q[1] * c];
+    };
+    let dev = Math.abs(chordA - chordB);
+    for (let k = 0; k <= K; k++) {
+      const fB = reversed ? 1 - k / K : k / K;
+      const pB = T(mB(runPointAtFraction(B, runB, fB)));
+      const pA = samplesA[k]!;
+      dev = Math.max(dev, Math.hypot(pA[0] - pB[0], pA[1] - pB[1]));
+    }
+    return { T, lin, dev, th, mirror };
+  };
+  const cands = [candidate(false), candidate(true)].filter((x): x is RunFit => x !== null);
+  if (!cands.length) return null;
+  cands.sort((x, y) => x.dev - y.dev);
+  return cands[0]!;
+}
+
+/* ------------------------------------------------------------------------- *
+ * ⧉ FUSIONNER (le « Merge » de Clo) — deux pièces cousues deviennent UNE
+ * pièce, la couture s'efface. L'inverse exact du ✂ : la pièce absorbée est
+ * posée rigidement contre le bord de l'autre (alignement métrique des deux
+ * runs, sens de couture respecté), puis les contours se concatènent et tout
+ * le décor (pinces, lignes internes, crans, graphique) suit. HONNÊTETÉ : la
+ * fusion n'est acceptée que si les deux bords sont superposables à plat
+ * (congruents au millimètre près) — une couture qui porte du volume 3D
+ * (princesse, cintrage) ne peut PAS s'aplatir sans mentir : refus motivé,
+ * écart mesuré à l'appui.
+ * ------------------------------------------------------------------------- */
+
+/** Écart maxi toléré entre les deux bords superposés (m). */
+export const MERGE_TOL_M = 0.008;
+
+export type MergeSeamResult =
+  | {
+      ok: true;
+      doc: DraftDoc;
+      keptPieceId: number;
+      removedPieceId: number;
+      /** Écart maxi mesuré entre les deux bords superposés (m). */
+      seamGapMaxM: number;
+      /** Liens Marier abandonnés (leur bord a disparu dans la fusion). */
+      droppedLinks: number;
+      note?: string;
+    }
+  | { ok: false; reason: string };
+
+export function mergePiecesAlongSeam(doc: DraftDoc, seamIndex: number): MergeSeamResult {
+  const seams0 = doc.seams ?? [];
+  const seam = seams0[seamIndex];
+  if (!seam) return { ok: false, reason: 'Couture introuvable.' };
+  if (seam.kind === 'zipper') {
+    return { ok: false, reason: 'Une fermeture éclair est un ouvrant — elle ne se fond pas dans le patron.' };
+  }
+  if (doc.preset) {
+    return {
+      ok: false,
+      reason: 'Ce modèle intégré utilise un assemblage spécial — la fusion fonctionne sur le t-shirt et les pièces dessinées.',
+    };
+  }
+  const pidA0 = pieceIdOf(seam.a);
+  const pidB0 = pieceIdOf(seam.b);
+  if (pidA0 === pidB0) {
+    return { ok: false, reason: 'Cette couture relie la pièce à elle-même — rien à fondre.' };
+  }
+  const keep = Math.min(pidA0, pidB0);
+  const gone = Math.max(pidA0, pidB0);
+  if (gone <= 1) {
+    return {
+      ok: false,
+      reason: 'Devant et Dos restent les deux faces du patron — leur fusion viendra avec les grandes planches.',
+    };
+  }
+  const pieces0 = docPieces(doc);
+  const A = pieces0[keep];
+  const B = pieces0[gone];
+  if (!A || !B || A.outline.length < 3 || B.outline.length < 3) {
+    return { ok: false, reason: 'Pièce introuvable.' };
+  }
+  if (A.wrap || B.wrap) {
+    return { ok: false, reason: 'Cette pièce est enroulée (manche/col) — la fusion des tubes viendra plus tard.' };
+  }
+  if (A.blank || B.blank) return { ok: false, reason: 'Rien à fondre sur une face vide.' };
+  if (A.placement?.surface || B.placement?.surface) {
+    return { ok: false, reason: 'Une poche posée vit SUR sa pièce support — détachez-la avant de fusionner.' };
+  }
+  const runA: EdgeRun =
+    pidA0 === keep ? { from: seam.a.from, to: seam.a.to } : { from: seam.b.from, to: seam.b.to };
+  const runB: EdgeRun =
+    pidA0 === keep ? { from: seam.b.from, to: seam.b.to } : { from: seam.a.from, to: seam.a.to };
+  const NA = A.outline.length;
+  const NB = B.outline.length;
+  const spanA = (runA.to - runA.from + NA) % NA;
+  const spanB = (runB.to - runB.from + NB) % NB;
+  if (spanA === 0 || spanB === 0) return { ok: false, reason: 'Couture vide — rien à fondre.' };
+  if (NA - spanA < 1 || NB - spanB < 1) {
+    return { ok: false, reason: 'La couture fait tout le tour — il ne resterait pas de contour.' };
+  }
+
+  // 1 · Correspondance des bouts (sens de couture) + transformée rigide B → A,
+  //     en espace MÉTRIQUE (vrai sur pièces non carrées). Deux candidates :
+  //     directe et réfléchie — la congruence mesurée tranche.
+  const mB = ([u, v]: UV): [number, number] => [u * B.width, v * B.height];
+  const reversed = runPairReversed(A, B, runA, runB, doc.gridN);
+  const best = fitRunOntoRun(A, runA, B, runB, reversed);
+  if (!best) return { ok: false, reason: 'Couture dégénérée — rien à fondre.' };
+  const bFromIdx = (reversed ? runB.to : runB.from) % NB;
+  const bToIdx = (reversed ? runB.from : runB.to) % NB;
+  if (best.dev > MERGE_TOL_M) {
+    return {
+      ok: false,
+      reason: `Ces deux bords ne se superposent pas à plat (écart maxi ${(best.dev * 100).toFixed(1)} cm) — cette couture porte du volume ; la fondre mentirait sur le patron.`,
+    };
+  }
+
+  // 2 · Contour fusionné, en UV ÉTENDU du cadre de A (renormalisé par rebox à
+  //     la fin — ce qui remappe aussi tout le décor d'un seul geste).
+  const toExtA = (p: [number, number]): UV => [p[0] / A.width, p[1] / A.height];
+  interface SrcVert {
+    uv: UV;
+    aIdx?: number;
+    bIdx?: number;
+  }
+  const merged: SrcVert[] = [];
+  const compA = NA - spanA;
+  for (let k = 0; k <= compA; k++) {
+    const idx = (runA.to + k) % NA;
+    merged.push({ uv: [...A.outline[idx]!] as UV, aIdx: idx });
+  }
+  // Les deux bouts sont PARTAGÉS : premier sommet ≡ bout bToIdx de B, dernier
+  // sommet ≡ bFromIdx — annotés des deux identités pour les tables d'arêtes.
+  merged[0]!.bIdx = bToIdx;
+  merged[merged.length - 1]!.bIdx = bFromIdx;
+  const ascB: number[] = [];
+  for (let k = 0; k <= NB - spanB; k++) ascB.push((runB.to + k) % NB);
+  const pathB = reversed ? ascB : [...ascB].reverse();
+  for (let k = 1; k < pathB.length - 1; k++) {
+    const idx = pathB[k]!;
+    merged.push({ uv: toExtA(best.T(mB(B.outline[idx]!))), bIdx: idx });
+  }
+  const M = merged.length;
+  if (M > 128) return { ok: false, reason: 'Contour trop dense pour cette fusion (128 sommets max).' };
+  if (M < 3) return { ok: false, reason: 'Il ne resterait pas de contour après fusion.' };
+  const outlineExt = merged.map((v) => v.uv);
+  if (isSelfIntersecting(outlineExt)) {
+    return { ok: false, reason: 'La fusion croiserait le contour — décousez plutôt cette couture.' };
+  }
+  const areaOf = (poly: readonly UV[], w: number, h: number): number => {
+    let a2 = 0;
+    for (let i = 0; i < poly.length; i++) {
+      const p = poly[i]!;
+      const q = poly[(i + 1) % poly.length]!;
+      a2 += p[0] * w * (q[1] * h) - q[0] * w * (p[1] * h);
+    }
+    return Math.abs(a2) / 2;
+  };
+  const areaA = areaOf(A.outline, A.width, A.height);
+  const areaB = areaOf(B.outline, B.width, B.height);
+  const areaM = areaOf(outlineExt, A.width, A.height);
+  if (Math.abs(areaM - (areaA + areaB)) > Math.max(0.001, 0.02 * (areaA + areaB))) {
+    return { ok: false, reason: 'La fusion recouvrirait une pièce sur l’autre — décousez plutôt.' };
+  }
+
+  // 3 · Tables ancien → nouveau, sommets puis ARÊTES (les arêtes du run fondu
+  //     n'existent plus : toute couture/lien qui s'y accrochait le dira).
+  const inRunA = (u: number): boolean => (u - runA.from + NA) % NA < spanA;
+  const inRunB = (u: number): boolean => (u - runB.from + NB) % NB < spanB;
+  const edgeMapA = new Map<number, number>();
+  const edgeMapB = new Map<number, number>();
+  for (let i = 0; i < M; i++) {
+    const va = merged[i]!;
+    const vb = merged[(i + 1) % M]!;
+    if (
+      va.aIdx !== undefined &&
+      vb.aIdx !== undefined &&
+      (va.aIdx + 1) % NA === vb.aIdx &&
+      !inRunA(va.aIdx)
+    ) {
+      edgeMapA.set(va.aIdx, i);
+    }
+    if (va.bIdx !== undefined && vb.bIdx !== undefined) {
+      if ((va.bIdx + 1) % NB === vb.bIdx && !inRunB(va.bIdx)) edgeMapB.set(va.bIdx, i);
+      else if ((vb.bIdx + 1) % NB === va.bIdx && !inRunB(vb.bIdx)) edgeMapB.set(vb.bIdx, i);
+    }
+  }
+  type RunRemap = EdgeRun | 'lost' | null;
+  const remapRun = (pid: number, run: EdgeRun): RunRemap => {
+    const onA = pid === keep;
+    const onB = pid === gone;
+    if (!onA && !onB) return null;
+    const N = onA ? NA : NB;
+    const map = onA ? edgeMapA : edgeMapB;
+    const steps = (run.to - run.from + N) % N;
+    if (steps === 0) return 'lost';
+    const set = new Set<number>();
+    for (let k = 0; k < steps; k++) {
+      const e = map.get((run.from + k) % N);
+      if (e === undefined) return 'lost';
+      set.add(e);
+    }
+    if (set.size !== steps) return 'lost';
+    let start = -1;
+    for (const e of set) {
+      if (!set.has((e - 1 + M) % M)) {
+        if (start >= 0) return 'lost';
+        start = e;
+      }
+    }
+    if (start < 0) return 'lost';
+    for (let k = 0; k < set.size; k++) if (!set.has((start + k) % M)) return 'lost';
+    return { from: start, to: (start + set.size) % M };
+  };
+  const mkSide = (from: number, to: number): FaceRun =>
+    keep <= 1 ? { face: keep === 1 ? 'back' : 'front', from, to } : { pieceId: keep, from, to };
+
+  // 4 · Réécrire coutures d'assemblage, liens Marier, coutures main, bords
+  //     ouverts. Une COUTURE accrochée au bord fondu = refus (elle a un sens
+  //     physique) ; un LIEN accroché = abandonné (contrainte d'édition).
+  const outSeams: AssemblySeam[] = [];
+  for (let i = 0; i < seams0.length; i++) {
+    if (i === seamIndex) continue;
+    const s = seams0[i]!;
+    const sides: FaceRun[] = [];
+    for (const side of [s.a, s.b]) {
+      const rr = remapRun(pieceIdOf(side), { from: side.from, to: side.to });
+      if (rr === null) {
+        sides.push({ ...side });
+        continue;
+      }
+      if (rr === 'lost') {
+        return { ok: false, reason: 'Une autre couture passe sur le bord à fondre — décousez-la d’abord.' };
+      }
+      sides.push(mkSide(rr.from, rr.to));
+    }
+    outSeams.push({ ...s, a: sides[0]!, b: sides[1]! });
+  }
+  let droppedLinks = 0;
+  const outLinks: AssemblySeam[] = [];
+  for (const link of doc.segmentLinks ?? []) {
+    const ra = remapRun(pieceIdOf(link.a), { from: link.a.from, to: link.a.to });
+    const rb = remapRun(pieceIdOf(link.b), { from: link.b.from, to: link.b.to });
+    if (ra === 'lost' || rb === 'lost') {
+      droppedLinks++;
+      continue;
+    }
+    outLinks.push({
+      ...link,
+      a: ra === null ? { ...link.a } : mkSide(ra.from, ra.to),
+      b: rb === null ? { ...link.b } : mkSide(rb.from, rb.to),
+    });
+  }
+  const handSeams: HandSeam[] = [];
+  for (const [piece, pid] of [
+    [A, keep],
+    [B, gone],
+  ] as const) {
+    for (const hs of piece.seams) {
+      const ra = remapRun(pid, hs.a);
+      const rb = remapRun(pid, hs.b);
+      if (ra === 'lost' || rb === 'lost' || ra === null || rb === null) {
+        return { ok: false, reason: 'Une couture main passe sur le bord à fondre — décousez-la d’abord.' };
+      }
+      handSeams.push({ a: ra, b: rb });
+    }
+  }
+  const openEdgesNew: number[] = [];
+  for (const [piece, N, map] of [
+    [A, NA, edgeMapA],
+    [B, NB, edgeMapB],
+  ] as const) {
+    for (const run of piece.openEdges) {
+      const steps = (run.to - run.from + N) % N;
+      for (let k = 0; k < steps; k++) {
+        const e = map.get((run.from + k) % N);
+        if (e !== undefined) openEdgesNew.push(e);
+      }
+    }
+  }
+  const openSet = [...new Set(openEdgesNew)].sort((x, y) => x - y);
+  const groupedOpen: EdgeRun[] = [];
+  {
+    const isOpen = new Set(openSet);
+    for (const e of openSet) {
+      if (isOpen.has((e - 1 + M) % M) && openSet.length < M) continue; // pas un début de groupe
+      let len = 1;
+      while (len < openSet.length && isOpen.has((e + len) % M)) len++;
+      groupedOpen.push({ from: e, to: (e + len) % M });
+      if (openSet.length >= M) break; // tout le tour ouvert (théorique)
+    }
+  }
+
+  // 5 · Décor réuni : celui de A reste en place, celui de B suit la
+  //     transformée rigide. Plafonds de la maison respectés.
+  const mapBext = (p: UV): UV => toExtA(best.T(mB(p)));
+  const darts: Dart[] = [
+    ...A.darts.map((d) => ({ apex: [...d.apex] as UV, legA: [...d.legA] as UV, legB: [...d.legB] as UV })),
+    ...B.darts.map((d) => ({ apex: mapBext(d.apex), legA: mapBext(d.legA), legB: mapBext(d.legB) })),
+  ];
+  if (darts.length > 16) return { ok: false, reason: 'Trop de pinces réunies (16 max par pièce).' };
+  const internalLines: InternalLine[] = [
+    ...(A.internalLines ?? []).map((line) => ({ ...line, points: line.points.map((p) => [...p] as UV) })),
+    ...(B.internalLines ?? []).map((line) => ({ ...line, points: line.points.map(mapBext) })),
+  ];
+  if (internalLines.length > INTERNAL_LINES_MAX) {
+    return { ok: false, reason: `Trop de lignes internes réunies (${INTERNAL_LINES_MAX} max par pièce).` };
+  }
+  const notches: PieceNotch[] = [
+    ...(A.notches ?? []).map((n) => ({ at: [...n.at] as UV })),
+    ...(B.notches ?? []).map((n) => ({ at: mapBext(n.at) })),
+  ];
+  if (notches.length > NOTCHES_MAX) {
+    return { ok: false, reason: `Trop de crans réunis (${NOTCHES_MAX} max par pièce).` };
+  }
+  let note: string | undefined;
+  let graphic = A.graphic;
+  if (!graphic && B.graphic) {
+    if (best.mirror) {
+      note = 'Le graphique de la pièce absorbée ne pouvait pas suivre la réflexion — reposez-le.';
+    } else {
+      graphic = {
+        ...B.graphic,
+        anchor: mapBext(B.graphic.anchor),
+        rotationRad: (B.graphic.rotationRad ?? 0) + best.th,
+      };
+    }
+  } else if (A.graphic && B.graphic) {
+    note = 'Deux graphiques pour une seule pièce fusionnée — celui de la pièce conservée reste, reposez l’autre.';
+  }
+
+  // 6 · La pièce fusionnée : cadre de A étendu puis renormalisé (rebox — qui
+  //     remappe contour, pinces et décor d'un seul geste, sans toucher aux
+  //     index), coutures réécrites, pièce absorbée retirée (compactage des
+  //     pieceId par la mécanique du ✂).
+  const preRebox: DraftPiece = {
+    ...A,
+    outline: outlineExt.map((p) => [...p] as UV),
+    darts,
+    seams: handSeams,
+    openEdges: groupedOpen,
+  };
+  if (internalLines.length) preRebox.internalLines = internalLines;
+  else delete preRebox.internalLines;
+  if (notches.length) preRebox.notches = notches;
+  else delete preRebox.notches;
+  if (graphic) preRebox.graphic = graphic;
+  else delete preRebox.graphic;
+  const mergedPiece = reboxPiece(preRebox, A.gap);
+  let next = replaceDocPiece(doc, keep, mergedPiece);
+  const removed = removeFreePiece(next.pieces ?? [], outSeams, gone);
+  const bumpPid = (r: FaceRun): FaceRun => {
+    const pid = pieceIdOf(r);
+    return pid > gone ? { pieceId: pid - 1, from: r.from, to: r.to } : { ...r };
+  };
+  const linksOut = outLinks.map((l) => ({ ...l, a: bumpPid(l.a), b: bumpPid(l.b) }));
+  next = { ...next, pieces: removed.pieces, seams: removed.seams };
+  if (linksOut.length) next.segmentLinks = linksOut;
+  else delete next.segmentLinks;
+  return {
+    ok: true,
+    doc: next,
+    keptPieceId: keep,
+    removedPieceId: gone,
+    seamGapMaxM: best.dev,
+    droppedLinks,
+    ...(note ? { note } : {}),
+  };
+}
+
+/* ------------------------------------------------------------------------- *
+ * ⌾ ÉVIDER (le « Convert to Hole/Internal Shape » de Clo) — une ligne interne
+ * FERMÉE devient un TROU : ses cellules intérieures sortent du maillage (le
+ * même test point-dans-polygone que le contour, nié), l'export l'imprime en
+ * trait de coupe plein, le plan la montre évidée. Re-basculer rebouche : le
+ * trou redevient une forme de style. Aucune couture nouvelle — le bord du
+ * trou est un bord brut, comme un contour.
+ * ------------------------------------------------------------------------- */
+
+export type HoleToggleResult =
+  | { ok: true; doc: DraftDoc; holed: boolean }
+  | { ok: false; reason: string };
+
+export function toggleInternalHole(
+  doc: DraftDoc,
+  pieceId: number,
+  lineIndex: number,
+): HoleToggleResult {
+  const piece = docPieces(doc)[pieceId];
+  if (!piece || piece.outline.length < 3) return { ok: false, reason: 'Pièce introuvable.' };
+  const line = piece.internalLines?.[lineIndex];
+  if (!line) return { ok: false, reason: 'Ligne interne introuvable.' };
+  const commit = (nextLine: InternalLine, holed: boolean): HoleToggleResult => {
+    const internalLines = piece.internalLines!.map((l, i) => (i === lineIndex ? nextLine : l));
+    return { ok: true, doc: replaceDocPiece(doc, pieceId, { ...piece, internalLines }), holed };
+  };
+  if (line.hole) {
+    const { hole: _off, ...rest } = line;
+    return commit({ ...rest, points: line.points.map((p) => [...p] as UV) }, false);
+  }
+  if (doc.preset) {
+    return {
+      ok: false,
+      reason: 'Ce modèle intégré utilise un assemblage spécial — les trous fonctionnent sur le t-shirt et les pièces dessinées.',
+    };
+  }
+  if (piece.blank) return { ok: false, reason: 'Rien à évider sur une face vide.' };
+  if (line.closed !== true || line.points.length < 3) {
+    return {
+      ok: false,
+      reason: 'Une polyligne n’évide rien — fermez le tracé (re-clic au 1er point du ▱) pour faire un trou.',
+    };
+  }
+  if (isSelfIntersecting(line.points)) {
+    return { ok: false, reason: 'Ce tracé se croise — il ne peut pas devenir un trou.' };
+  }
+  // Le trou doit vivre STRICTEMENT dans la pièce : chaque sommet dedans, et
+  // aucune arête du trou ne croise le contour.
+  for (const pt of line.points) {
+    if (!pointInPolygon(pt, piece.outline)) {
+      return { ok: false, reason: 'Le trou doit rester DANS la pièce — éloignez-le du contour.' };
+    }
+  }
+  const cross = (a: UV, b: UV, c: UV, d: UV): boolean => {
+    const o = (p: UV, q: UV, r: UV): number => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+    const o1 = o(a, b, c);
+    const o2 = o(a, b, d);
+    const o3 = o(c, d, a);
+    const o4 = o(c, d, b);
+    return o1 * o2 < 0 && o3 * o4 < 0;
+  };
+  const NH = line.points.length;
+  const NO = piece.outline.length;
+  for (let i = 0; i < NH; i++) {
+    const a = line.points[i]!;
+    const b = line.points[(i + 1) % NH]!;
+    for (let j = 0; j < NO; j++) {
+      if (cross(a, b, piece.outline[j]!, piece.outline[(j + 1) % NO]!)) {
+        return { ok: false, reason: 'Le trou doit rester DANS la pièce — éloignez-le du contour.' };
+      }
+    }
+  }
+  for (const d of piece.darts) {
+    if (
+      pointInPolygon(d.apex, line.points) ||
+      pointInPolygon(d.legA, line.points) ||
+      pointInPolygon(d.legB, line.points)
+    ) {
+      return { ok: false, reason: 'Une pince tombe dans le trou — déplacez-la d’abord.' };
+    }
+  }
+  return commit(
+    { ...line, points: line.points.map((p) => [...p] as UV), hole: true },
+    true,
+  );
+}
+
+/* ------------------------------------------------------------------------- *
+ * ⛓ ÉDITION LIÉE (le « Linked Editing » de Clo) — retoucher un sommet posé
+ * sur un bord COUSU déplace aussi son vis-à-vis sur la pièce partenaire,
+ * FORME comprise : le delta est transporté par la transformée rigide qui pose
+ * un run sur l'autre (fraction d'arc + sens de couture respectés — la même
+ * géométrie que ⧉ Fusionner). Si le partenaire n'a pas de sommet au point
+ * correspondant, il en gagne un (insertion réindexée). Un niveau seulement —
+ * le suivi ne cascade pas. Les coutures d'une pièce sur elle-même sont
+ * laissées de côté (v1).
+ * ------------------------------------------------------------------------- */
+
+export type LinkedEditResult =
+  | {
+      ok: true;
+      doc: DraftDoc;
+      /** Pièces partenaires qui ont suivi (id + sommet inséré ou non). */
+      followed: Array<{ pieceId: number; inserted: boolean }>;
+    }
+  | { ok: false; reason: string };
+
+export function linkedVertexEdit(
+  doc: DraftDoc,
+  pieceId: number,
+  vertex: number,
+  toUV: UV,
+): LinkedEditResult {
+  const pieces0 = docPieces(doc);
+  const source0 = pieces0[pieceId];
+  if (!source0 || source0.outline.length < 3) return { ok: false, reason: 'Pièce introuvable.' };
+  const N0 = source0.outline.length;
+  const v0 = ((Math.round(vertex) % N0) + N0) % N0;
+  const fromUV = source0.outline[v0]!;
+  const deltaM: [number, number] = [
+    (toUV[0] - fromUV[0]) * source0.width,
+    (toUV[1] - fromUV[1]) * source0.height,
+  ];
+  if (Math.hypot(deltaM[0], deltaM[1]) < 1e-6) {
+    return { ok: true, doc, followed: [] };
+  }
+
+  // 1 · Les coutures dont un côté, posé sur CETTE pièce, contient le sommet.
+  const inRun = (v: number, run: EdgeRun, N: number): boolean =>
+    (v - run.from + N) % N <= (run.to - run.from + N) % N;
+  const jobs: Array<{ seamIndex: number; sourceSide: 'a' | 'b' }> = [];
+  (doc.seams ?? []).forEach((seam, i) => {
+    const pa = pieceIdOf(seam.a);
+    const pb = pieceIdOf(seam.b);
+    if (pa === pb) return; // self-seam : hors périmètre v1
+    if (pa === pieceId && inRun(v0, { from: seam.a.from, to: seam.a.to }, N0)) {
+      jobs.push({ seamIndex: i, sourceSide: 'a' });
+    } else if (pb === pieceId && inRun(v0, { from: seam.b.from, to: seam.b.to }, N0)) {
+      jobs.push({ seamIndex: i, sourceSide: 'b' });
+    }
+  });
+  if (!jobs.length) return { ok: true, doc, followed: [] };
+
+  // 2 · Fraction d'arc du sommet le long de chaque run (géométrie AVANT geste),
+  //     fit rigide source → partenaire, transport du delta, sommet partenaire
+  //     assuré (insertion réindexée) puis déplacé. Relecture de la couture
+  //     depuis l'état courant après chaque insertion (les index bougent).
+  let work = doc;
+  const followed: Array<{ pieceId: number; inserted: boolean }> = [];
+  const moves: Array<{ pieceId: number; vertex: number; toUV: UV }> = [];
+  for (const job of jobs) {
+    const seam = (work.seams ?? [])[job.seamIndex]!;
+    const sourceRunRaw = job.sourceSide === 'a' ? seam.a : seam.b;
+    const partnerRunRaw = job.sourceSide === 'a' ? seam.b : seam.a;
+    const partnerPid = pieceIdOf(partnerRunRaw);
+    const source = docPieces(work)[pieceId]!;
+    const partner = docPieces(work)[partnerPid];
+    if (!partner || partner.outline.length < 3) continue;
+    const sourceRun: EdgeRun = { from: sourceRunRaw.from, to: sourceRunRaw.to };
+    const partnerRun: EdgeRun = { from: partnerRunRaw.from, to: partnerRunRaw.to };
+    const NS = source.outline.length;
+    // Fraction d'arc de v0 sur le run source.
+    const steps = (sourceRun.to - sourceRun.from + NS) % NS;
+    const total = runLengthM(source, sourceRun);
+    if (total < 1e-9 || steps === 0) continue;
+    let walked = 0;
+    let found = v0 === sourceRun.from % NS;
+    for (let k = 0; k < steps && !found; k++) {
+      const ia = (sourceRun.from + k) % NS;
+      const ib = (sourceRun.from + k + 1) % NS;
+      const a = source.outline[ia]!;
+      const b = source.outline[ib]!;
+      walked += Math.hypot((b[0] - a[0]) * source.width, (b[1] - a[1]) * source.height);
+      if (ib === v0) found = true;
+    }
+    if (!found) continue;
+    const f = Math.min(1, Math.max(0, walked / total));
+    const reversed = runPairReversed(source, partner, sourceRun, partnerRun, work.gridN);
+    const fit = fitRunOntoRun(partner, partnerRun, source, sourceRun, reversed);
+    if (!fit) continue;
+    const fPartner = reversed ? 1 - f : f;
+    const partnerN0 = partner.outline.length;
+    const ensured = ensureVertexAtRunFraction(work, partnerPid, partnerRun, fPartner);
+    work = ensured.doc;
+    const partnerNow = docPieces(work)[partnerPid]!;
+    const inserted = partnerNow.outline.length !== partnerN0;
+    const dPartner = fit.lin(deltaM);
+    const pv = partnerNow.outline[ensured.vertex]!;
+    moves.push({
+      pieceId: partnerPid,
+      vertex: ensured.vertex,
+      toUV: [
+        pv[0] + dPartner[0] / partnerNow.width,
+        pv[1] + dPartner[1] / partnerNow.height,
+      ],
+    });
+    followed.push({ pieceId: partnerPid, inserted });
+  }
+  if (!moves.length) return { ok: true, doc, followed: [] };
+
+  // 3 · Appliquer : source puis partenaires. Chaque contour doit rester simple,
+  //     sinon TOUT le geste est refusé (rien n'est committé à moitié). Un point
+  //     qui sort du cadre [0,1]² renormalise sa pièce (rebox — décor compris).
+  const applyMove = (
+    d: DraftDoc,
+    pid: number,
+    v: number,
+    uv: UV,
+  ): { doc: DraftDoc } | { reason: string } => {
+    const piece = docPieces(d)[pid]!;
+    const outline = piece.outline.map((p, i) => (i === v ? ([uv[0], uv[1]] as UV) : ([...p] as UV)));
+    if (isSelfIntersecting(outline)) {
+      return {
+        reason: `Le suivi croiserait le contour de « ${draftPieceLabel(piece, pid)} » — geste abandonné.`,
+      };
+    }
+    let next: DraftPiece = { ...piece, outline };
+    const out = outline.some(([u2, v2]) => u2 < 0 || u2 > 1 || v2 < 0 || v2 > 1);
+    if (out) next = reboxPiece(next, piece.gap);
+    return { doc: replaceDocPiece(d, pid, next) };
+  };
+  // Le sommet SOURCE n'a pas bougé d'index : les insertions ne touchent que
+  // les partenaires (les self-seams sont exclus).
+  const srcApplied = applyMove(work, pieceId, v0, toUV);
+  if ('reason' in srcApplied) return { ok: false, reason: srcApplied.reason };
+  work = srcApplied.doc;
+  for (const mv of moves) {
+    const applied = applyMove(work, mv.pieceId, mv.vertex, mv.toUV);
+    if ('reason' in applied) return { ok: false, reason: applied.reason };
+    work = applied.doc;
+  }
+  return { ok: true, doc: work, followed };
+}
+
+/* ------------------------------------------------------------------------- *
+ * ⌖ ÉTABLI DE PRÉCISION (v175) — les gestes « au chiffre » de Clo, en quatre
+ * outils d'un seul bouton : diviser un bord en N parts égales (Add Point/
+ * Split Line), aligner un sommet sur un autre (Align Points), équerrer un
+ * angle (Perpendicular Pattern Corner), prolonger une ligne interne jusqu'au
+ * contour et la scinder en deux (Extend/Trim, Divide Internal Lines).
+ * ------------------------------------------------------------------------- */
+
+export type PrecisionResult = { ok: true; doc: DraftDoc; note?: string } | { ok: false; reason: string };
+
+/** ◫ Diviser un bord du contour en N parts d'égale longueur (N−1 sommets). */
+export function divideOutlineEdge(
+  doc: DraftDoc,
+  pieceId: number,
+  edge: number,
+  parts: number,
+): PrecisionResult {
+  if (doc.preset) {
+    return { ok: false, reason: 'Modèle intégré : la division fonctionne sur le t-shirt et les pièces dessinées.' };
+  }
+  const source = docPieces(doc)[pieceId];
+  if (!source || source.outline.length < 3) return { ok: false, reason: 'Pièce introuvable.' };
+  if (source.blank) return { ok: false, reason: 'Dessinez d’abord une pièce.' };
+  const n = Math.round(parts);
+  if (n < 2 || n > 8) return { ok: false, reason: 'Divisez en 2 à 8 parts.' };
+  const N0 = source.outline.length;
+  if (N0 + n - 1 > 128) return { ok: false, reason: 'Contour trop dense pour cette division (128 sommets max).' };
+  const e = ((Math.round(edge) % N0) + N0) % N0;
+  const a = source.outline[e]!;
+  const b = source.outline[(e + 1) % N0]!;
+  const lenM = Math.hypot((b[0] - a[0]) * source.width, (b[1] - a[1]) * source.height);
+  if (lenM < 0.02) return { ok: false, reason: 'Bord trop court à diviser (moins de 2 cm).' };
+  const target = pieceId === 0 ? ('front' as const) : pieceId === 1 ? ('back' as const) : pieceId;
+  let piece = source;
+  let seams = doc.seams ?? [];
+  let links = doc.segmentLinks ?? [];
+  // Un bord est un segment DROIT : parts égales = fractions égales de t.
+  for (let k = n - 1; k >= 1; k--) {
+    const t = k / n;
+    const uv: UV = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    const nBefore = piece.outline.length;
+    piece = insertOutlineVertex(piece, e, uv);
+    seams = reindexAssemblySeams(seams, target, 'insert', e + 1, nBefore);
+    links = reindexAssemblySeams(links, target, 'insert', e + 1, nBefore);
+  }
+  let out = replaceDocPiece(doc, pieceId, piece);
+  out = { ...out, seams, segmentLinks: links.length ? links : undefined };
+  return { ok: true, doc: out, note: `${(lenM / n * 100).toFixed(1).replace('.', ',')} cm par part` };
+}
+
+/** ⌗ Aligner un sommet sur un autre de la MÊME pièce : même verticale ('x')
+ * ou même horizontale ('y'). Rend aussi la cible pour l'édition liée. */
+export function alignOutlineVertex(
+  doc: DraftDoc,
+  pieceId: number,
+  vertex: number,
+  refVertex: number,
+  axis: 'x' | 'y',
+): { ok: true; doc: DraftDoc; target: UV } | { ok: false; reason: string } {
+  const source = docPieces(doc)[pieceId];
+  if (!source || source.outline.length < 3) return { ok: false, reason: 'Pièce introuvable.' };
+  if (source.blank) return { ok: false, reason: 'Dessinez d’abord une pièce.' };
+  const N0 = source.outline.length;
+  const v = ((Math.round(vertex) % N0) + N0) % N0;
+  const r = ((Math.round(refVertex) % N0) + N0) % N0;
+  if (v === r) return { ok: false, reason: 'Choisissez deux sommets différents.' };
+  const p = source.outline[v]!;
+  const ref = source.outline[r]!;
+  const targetUV: UV = axis === 'x' ? [ref[0], p[1]] : [p[0], ref[1]];
+  const dM = Math.hypot((targetUV[0] - p[0]) * source.width, (targetUV[1] - p[1]) * source.height);
+  if (dM < 0.0005) return { ok: false, reason: 'Ces deux sommets sont déjà alignés (moins d’½ mm).' };
+  const outline = source.outline.map((q, i) => (i === v ? ([...targetUV] as UV) : ([...q] as UV)));
+  if (isSelfIntersecting(outline)) {
+    return { ok: false, reason: 'Cet alignement croiserait le contour — geste abandonné.' };
+  }
+  return { ok: true, doc: replaceDocPiece(doc, pieceId, { ...source, outline }), target: targetUV };
+}
+
+/** ∟ Équerrer un angle : le bord choisi arrive PERPENDICULAIRE à l'autre au
+ * sommet cliqué — arc quadratique échantillonné, pour les ourlets et les
+ * milieux au pli. */
+export function squareCorner(
+  doc: DraftDoc,
+  pieceId: number,
+  vertex: number,
+  side: 'prev' | 'next',
+): PrecisionResult {
+  if (doc.preset) {
+    return { ok: false, reason: 'Modèle intégré : l’équerre fonctionne sur le t-shirt et les pièces dessinées.' };
+  }
+  const source = docPieces(doc)[pieceId];
+  if (!source || source.outline.length < 3) return { ok: false, reason: 'Pièce introuvable.' };
+  if (source.blank) return { ok: false, reason: 'Dessinez d’abord une pièce.' };
+  const N0 = source.outline.length;
+  const K = CURVE_POINT_SAMPLES;
+  if (N0 + K - 1 > 128) return { ok: false, reason: 'Contour trop dense pour une équerre de plus (128 sommets max).' };
+  const vIdx = ((Math.round(vertex) % N0) + N0) % N0;
+  const W = source.width;
+  const H = source.height;
+  const M = ([u, v]: UV): [number, number] => [u * W, v * H];
+  const V = M(source.outline[vIdx]!);
+  const U = M(source.outline[(vIdx - 1 + N0) % N0]!);
+  const Wn = M(source.outline[(vIdx + 1) % N0]!);
+  const other = side === 'next' ? Wn : U; // bout du bord qui se COURBE
+  const refPt = side === 'next' ? U : Wn; // le bord de référence reste droit
+  const lenCurve = Math.hypot(other[0] - V[0], other[1] - V[1]);
+  const lenRef = Math.hypot(refPt[0] - V[0], refPt[1] - V[1]);
+  if (Math.min(lenCurve, lenRef) < 0.01) {
+    return { ok: false, reason: 'Les bords autour de ce sommet sont trop courts pour une équerre.' };
+  }
+  const d1: [number, number] = [(other[0] - V[0]) / lenCurve, (other[1] - V[1]) / lenCurve];
+  const d2: [number, number] = [(refPt[0] - V[0]) / lenRef, (refPt[1] - V[1]) / lenRef];
+  const angle = (Math.acos(Math.min(1, Math.max(-1, d1[0] * d2[0] + d1[1] * d2[1]))) * 180) / Math.PI;
+  if (Math.abs(angle - 90) < 3) {
+    return { ok: false, reason: `Déjà d’équerre (${angle.toFixed(1).replace('.', ',')}°).` };
+  }
+  // Perpendiculaire au bord de référence, orientée vers le bord à courber.
+  let perp: [number, number] = [-d2[1], d2[0]];
+  if (perp[0] * d1[0] + perp[1] * d1[1] < 0) perp = [-perp[0], -perp[1]];
+  const C: [number, number] = [V[0] + perp[0] * 0.4 * lenCurve, V[1] + perp[1] * 0.4 * lenCurve];
+  // Quadratique du sommet V vers l'autre bout — tangente en V le long de perp.
+  const eIdx = side === 'next' ? vIdx : (vIdx - 1 + N0) % N0;
+  const S = M(source.outline[eIdx]!);
+  const E = M(source.outline[(eIdx + 1) % N0]!);
+  const samples: UV[] = [];
+  for (let j = 1; j < K; j++) {
+    const t = j / K;
+    const x = (1 - t) * (1 - t) * S[0] + 2 * (1 - t) * t * C[0] + t * t * E[0];
+    const y = (1 - t) * (1 - t) * S[1] + 2 * (1 - t) * t * C[1] + t * t * E[1];
+    samples.push([x / W, y / H]);
+  }
+  const target = pieceId === 0 ? ('front' as const) : pieceId === 1 ? ('back' as const) : pieceId;
+  let piece = source;
+  let seams = doc.seams ?? [];
+  let links = doc.segmentLinks ?? [];
+  for (let j = samples.length - 1; j >= 0; j--) {
+    const nBefore = piece.outline.length;
+    piece = insertOutlineVertex(piece, eIdx, samples[j]!);
+    seams = reindexAssemblySeams(seams, target, 'insert', eIdx + 1, nBefore);
+    links = reindexAssemblySeams(links, target, 'insert', eIdx + 1, nBefore);
+  }
+  if (isSelfIntersecting(piece.outline)) {
+    return { ok: false, reason: 'Cette équerre croiserait le contour — geste abandonné.' };
+  }
+  let out = replaceDocPiece(doc, pieceId, piece);
+  out = { ...out, seams, segmentLinks: links.length ? links : undefined };
+  return { ok: true, doc: out, note: `angle ${angle.toFixed(1).replace('.', ',')}° → 90°` };
+}
+
+/** ⇥ Prolonger un BOUT de ligne interne ouverte jusqu'au contour, dans la
+ * direction de son dernier segment (la géométrie du ✂ sur ligne interne). */
+export function extendInternalLineEnd(
+  doc: DraftDoc,
+  pieceId: number,
+  lineIndex: number,
+  end: 0 | 1,
+): PrecisionResult {
+  const source = docPieces(doc)[pieceId];
+  if (!source || source.outline.length < 3) return { ok: false, reason: 'Pièce introuvable.' };
+  const line = source.internalLines?.[lineIndex];
+  if (!line || line.points.length < 2) return { ok: false, reason: 'Ligne interne introuvable.' };
+  if (line.closed) return { ok: false, reason: 'Un polygone fermé n’a pas de bout à prolonger.' };
+  if (line.points.length + 1 > INTERNAL_LINE_POINTS_MAX) {
+    return { ok: false, reason: `Ligne pleine (${INTERNAL_LINE_POINTS_MAX} points max).` };
+  }
+  const P = end === 0 ? line.points[0]! : line.points[line.points.length - 1]!;
+  const Q = end === 0 ? line.points[1]! : line.points[line.points.length - 2]!;
+  const dir: [number, number] = [P[0] - Q[0], P[1] - Q[1]];
+  const hit = castRayToOutline(source, P, dir);
+  if (!hit) return { ok: false, reason: 'Ce bout ne pointe vers aucun bord de la pièce.' };
+  const a = source.outline[hit.edge % source.outline.length]!;
+  const b = source.outline[(hit.edge + 1) % source.outline.length]!;
+  const onEdge: UV = [a[0] + (b[0] - a[0]) * hit.t, a[1] + (b[1] - a[1]) * hit.t];
+  const distM = Math.hypot((onEdge[0] - P[0]) * source.width, (onEdge[1] - P[1]) * source.height);
+  if (distM < 0.002) return { ok: false, reason: 'Ce bout touche déjà le contour.' };
+  const points = end === 0 ? [onEdge, ...line.points.map((p) => [...p] as UV)] : [...line.points.map((p) => [...p] as UV), onEdge];
+  const internalLines = source.internalLines!.map((l, i) => (i === lineIndex ? { ...l, points } : l));
+  return {
+    ok: true,
+    doc: replaceDocPiece(doc, pieceId, { ...source, internalLines }),
+    note: `prolongée de ${(distM * 100).toFixed(1).replace('.', ',')} cm`,
+  };
+}
+
+/** ⇥ Scinder une ligne interne OUVERTE en deux au point cliqué. */
+export function divideInternalLineAt(
+  doc: DraftDoc,
+  pieceId: number,
+  lineIndex: number,
+  at: UV,
+): PrecisionResult {
+  const source = docPieces(doc)[pieceId];
+  if (!source || source.outline.length < 3) return { ok: false, reason: 'Pièce introuvable.' };
+  const line = source.internalLines?.[lineIndex];
+  if (!line || line.points.length < 2) return { ok: false, reason: 'Ligne interne introuvable.' };
+  if (line.closed) {
+    return { ok: false, reason: 'Un polygone fermé ne se scinde pas ici — le ✂ scinde la pièce, ⌾ fait les trous.' };
+  }
+  if ((source.internalLines?.length ?? 0) + 1 > INTERNAL_LINES_MAX) {
+    return { ok: false, reason: `Trop de lignes internes (${INTERNAL_LINES_MAX} max par pièce).` };
+  }
+  // Projeter le clic sur la ligne (métrique, 8 mm de tolérance).
+  const W = source.width;
+  const H = source.height;
+  let best: { seg: number; t: number; d: number } | null = null;
+  for (let s = 0; s < line.points.length - 1; s++) {
+    const a = line.points[s]!;
+    const b = line.points[s + 1]!;
+    const abx = (b[0] - a[0]) * W;
+    const aby = (b[1] - a[1]) * H;
+    const len2 = abx * abx + aby * aby || 1e-12;
+    const t = Math.min(1, Math.max(0, (((at[0] - a[0]) * W) * abx + ((at[1] - a[1]) * H) * aby) / len2));
+    const d = Math.hypot((at[0] - a[0]) * W - t * abx, (at[1] - a[1]) * H - t * aby);
+    if (!best || d < best.d) best = { seg: s, t, d };
+  }
+  if (!best || best.d > 0.008) return { ok: false, reason: 'Cliquez SUR la ligne à scinder.' };
+  let partA: UV[];
+  let partB: UV[];
+  const cp = (p: UV): UV => [...p] as UV;
+  if (best.t < 0.15 && best.seg >= 1) {
+    partA = line.points.slice(0, best.seg + 1).map(cp);
+    partB = line.points.slice(best.seg).map(cp);
+  } else if (best.t > 0.85 && best.seg + 1 <= line.points.length - 2) {
+    partA = line.points.slice(0, best.seg + 2).map(cp);
+    partB = line.points.slice(best.seg + 1).map(cp);
+  } else {
+    const a = line.points[best.seg]!;
+    const b = line.points[best.seg + 1]!;
+    const P: UV = [a[0] + (b[0] - a[0]) * best.t, a[1] + (b[1] - a[1]) * best.t];
+    partA = [...line.points.slice(0, best.seg + 1).map(cp), [...P] as UV];
+    partB = [[...P] as UV, ...line.points.slice(best.seg + 1).map(cp)];
+  }
+  if (partA.length < 2 || partB.length < 2) {
+    return { ok: false, reason: 'Scindez plus loin des bouts — chaque moitié doit garder au moins un segment.' };
+  }
+  const internalLines = [
+    ...source.internalLines!.slice(0, lineIndex),
+    { points: partA },
+    { points: partB },
+    ...source.internalLines!.slice(lineIndex + 1),
+  ];
+  return { ok: true, doc: replaceDocPiece(doc, pieceId, { ...source, internalLines }) };
 }

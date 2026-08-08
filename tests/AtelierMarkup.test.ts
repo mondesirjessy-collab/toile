@@ -237,6 +237,67 @@ describe('atelier workspace markup', () => {
     );
   });
 
+  it('exposes the 3D seam toggle (v181) in the view tools and cheat-sheet', () => {
+    expect(html).toMatch(/<button id="at-seams3d"[^>]*aria-pressed="true"/);
+    expect(html).toContain('🪡 Coutures');
+    expect(html).toContain('<dt>🪡 Coutures en 3D</dt>');
+    expect(html).toContain('du brief au patron · v181');
+  });
+
+  it('teaches the measured-edge tap (v180) in the cheat-sheet', () => {
+    expect(html).toContain('<dt>Clic sec sur un bord</dt>');
+  });
+
+  it('exposes the paper plan theme toggle (v179) in the plan header and cheat-sheet', () => {
+    expect(html).toMatch(/<button id="at-plan-theme"[^>]*aria-pressed="false"/);
+    expect(html).toContain('◐ Papier');
+    expect(html).toContain('<dt>◐ Papier</dt>');
+  });
+
+  it('exposes the Clo layout toggle (v178) in the plan header and cheat-sheet', () => {
+    expect(html).toMatch(/<button id="at-layout-clo"[^>]*aria-pressed="false"/);
+    expect(html).toContain('⇄ 3D à gauche');
+    expect(html).toContain('body.layout-3d-left #patternBox.big');
+    expect(html).toContain('<dt>⇄ 3D à gauche</dt>');
+  });
+
+  it('teaches the click piece selection (v177) in rail, canvas title and cheat-sheet', () => {
+    expect(html).toContain('Un clic sur une pièce la sélectionne (gauche ou droit)');
+    expect(html).toContain('<dt>Clic sur une pièce</dt>');
+    expect(html).toContain('un clic (gauche ou droit) : sélectionner une pièce');
+    expect(html).not.toContain('Clic droit sur une pièce pour la sélectionner');
+  });
+
+  it('exposes the Clo keyboard palette (v176) in the cheat-sheet', () => {
+    expect(html).toContain('Si tu viens de Clo');
+    expect(html).toContain('<dt>Espace</dt>');
+    expect(html).toContain('<dt>B ou N</dt>');
+    expect(html).toContain('<dt>A ou Z</dt>');
+  });
+
+  it('exposes the ⌖ precision bench (v175) with its choosers and cheat-sheet entry', () => {
+    expect(html).toMatch(/<button id="at-precision"[^>]*title="[^"]*ÉTABLI DE PRÉCISION[^"]*"/);
+    expect(html).toContain('<dt>⌖ Précision</dt>');
+    expect(html).toContain('id="precision-corner-chooser"');
+    expect(html).toContain('id="precision-axis-chooser"');
+    expect(html).toContain('id="divide-chooser"');
+  });
+
+  it('exposes the ⛓ linked-editing button (v174) with its cheat-sheet entry', () => {
+    expect(html).toMatch(/<button id="at-linkedit"[^>]*title="[^"]*ÉDITION LIÉE[^"]*"/);
+    expect(html).toContain('<dt>⛓ Édition liée</dt>');
+  });
+
+  it('exposes the ⌾ hole button (v173) with its cheat-sheet entry', () => {
+    expect(html).toMatch(/<button id="at-hole"[^>]*title="[^"]*ÉVIDER[^"]*"/);
+    expect(html).toContain('<dt>⌾ Évider</dt>');
+  });
+
+  it('exposes the ⧉ merge button (v172) with its cheat-sheet entry', () => {
+    expect(html).toMatch(/<button id="at-merge"[^>]*title="[^"]*FUSIONNER[^"]*"/);
+    expect(html).toContain('<dt>⧉ Fusionner</dt>');
+  });
+
   it('exposes the ⛶ sketch-on-body button (v171) with its cheat-sheet entry', () => {
     expect(html).toMatch(/<button id="at-sketch3d"[^>]*title="[^"]*CROQUIS SUR LE CORPS[^"]*"/);
     expect(html).toContain('<dt>⛶ Croquis sur corps</dt>');

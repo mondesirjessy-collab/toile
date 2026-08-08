@@ -450,7 +450,12 @@ export interface SeamedPanelsOptions {
    * the same kept-mask every archetype produces, so all downstream machinery
    * (edge-snap, mirror seams, seamDist, triangulation) is reused unchanged.
    */
-  mask?: { outline: UV[]; darts: { apex: UV; legA: UV; legB: UV }[] };
+  mask?: {
+    outline: UV[];
+    darts: { apex: UV; legA: UV; legB: UV }[];
+    /** ⌾ Trous : polygones fermés soustraits du masque (cellules évidées). */
+    holes?: readonly (readonly UV[])[];
+  };
   /**
    * Extra front↔back Seam edges beyond the automatic mirror seams: LOCAL
    * front-panel cell indices (v·n+u), mirrored to the back panel internally.
@@ -471,7 +476,11 @@ export interface SeamedPanelsOptions {
    * single-face freeform piece is byte-for-byte unchanged). Only consulted when
    * shape==='freeform'.
    */
-  maskBack?: { outline: UV[]; darts: { apex: UV; legA: UV; legB: UV }[] };
+  maskBack?: {
+    outline: UV[];
+    darts: { apex: UV; legA: UV; legB: UV }[];
+    holes?: readonly (readonly UV[])[];
+  };
   extraSeamsBack?: readonly { i: number; j: number }[];
   extraOpeningsBack?: (uu: number, vv: number) => boolean;
   /**
@@ -985,6 +994,8 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
       if (!pointInPolygon(p, opts.mask.outline)) return false;
       // Subtract each dart wedge — a V-notch that closes when its legs are sewn.
       for (const d of opts.mask.darts) if (pointInTriangle(p, d.apex, d.legA, d.legB)) return false;
+      // ⌾ Subtract each hole polygon — cells inside leave the garment.
+      for (const h of opts.mask.holes ?? []) if (pointInPolygon(p, h)) return false;
       return true;
     }
     return true;
@@ -1080,6 +1091,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
       const p: UV = [uu, vv];
       if (!pointInPolygon(p, mb.outline)) return false;
       for (const d of mb.darts) if (pointInTriangle(p, d.apex, d.legA, d.legB)) return false;
+      for (const h of mb.holes ?? []) if (pointInPolygon(p, h)) return false;
       return true;
     };
     for (let v = 0; v < n; v++) for (let u = 0; u < n; u++) keptB[v * n + u] = insideB(u / (n - 1), v / (n - 1));

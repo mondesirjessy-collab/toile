@@ -25,7 +25,7 @@ import {
   type FabricDynamics,
 } from './engine/solver/FabricMaterial';
 import { generateClothGrid, generateSeamedPanels, combineClothMeshes, scaleMeshInverseMassesToReferenceCellArea, type CrossSeam, type ClothMeshData } from './engine/cloth/ClothMesh';
-import { defaultDraft, blankBaseDraft, tshirtDraft, compileDraft, compileAssembly, compileCrossSeams, compileSurfaceContacts, compileSurfaceSeams, crossSewnOpenCells, cutPieceAlongChord, docPieces, freeSeamBetween, mirrorDuplicatePiece, graphicLocalUV, GRAPHIC_IMAGE_MAX_CHARS, INTERNAL_LINES_MAX, offsetPieceOutline, generateFittedSleeves, addFisheyeDart, roundOutlineCorner, cutPieceAlongInternalLine, toggleNotchAt, addSeamNotches, slashSpreadFullness, isSelfIntersecting, fitCapWidthToArmhole, draftPieceLabel, gatherSeamSide, neckOpeningCells, removeFreePiece, reboxPiece, pieceIdOf, nearestOutlineEdgeInfo, syncPieceFrames, sanitizeDraft, pointInPolygon, pointInTriangle, surfaceAttachmentUV, type DraftDoc, type AssemblySeam, type DraftPiece, type PieceGraphic, type UV } from './engine/pattern/Draft';
+import { defaultDraft, blankBaseDraft, tshirtDraft, compileDraft, compileAssembly, compileAssemblyGroups, compileCrossSeams, compileSurfaceContacts, compileSurfaceSeams, crossSewnOpenCells, cutPieceAlongChord, docPieces, freeSeamBetween, mirrorDuplicatePiece, graphicLocalUV, GRAPHIC_IMAGE_MAX_CHARS, INTERNAL_LINES_MAX, offsetPieceOutline, generateFittedSleeves, addFisheyeDart, roundOutlineCorner, cutPieceAlongInternalLine, toggleNotchAt, addSeamNotches, slashSpreadFullness, mergePiecesAlongSeam, toggleInternalHole, linkedVertexEdit, divideOutlineEdge, alignOutlineVertex, squareCorner, extendInternalLineEnd, divideInternalLineAt, pieceHolePolygons, isSelfIntersecting, fitCapWidthToArmhole, draftPieceLabel, gatherSeamSide, neckOpeningCells, removeFreePiece, reboxPiece, pieceIdOf, nearestOutlineEdgeInfo, syncPieceFrames, sanitizeDraft, pointInPolygon, pointInTriangle, surfaceAttachmentUV, type DraftDoc, type AssemblySeam, type DraftPiece, type PieceGraphic, type UV } from './engine/pattern/Draft';
 import {
   applyStagingOffset,
   autoPlaceMeshFromCrossSeams,
@@ -96,6 +96,7 @@ import { claimFirstUseTip } from './app/FirstUseTip';
 import { selectBriefBackend } from './app/brief/BriefBackend';
 import { executeBrief, type BriefHooks } from './app/brief/BriefExecutor';
 import { PatternView, SEAM_COLORS, type PatternHandleSpec, type SystemLink } from './app/PatternView';
+import { setPatternTheme, type PatternTheme } from './app/patternPalette';
 import { exportDraftPatternPdf, exportDraftPatternSvg } from './app/draftPatternExport';
 import { exportPatternPdf } from './app/patternPdf';
 import { exportPatternSvg } from './app/patternSvg';
@@ -455,6 +456,9 @@ async function main(): Promise<void> {
       .join('|');
   // Dragging a handle in the 2D layout edits the measurement: update the
   // pattern state, mirror it into the panel sliders, then re-cut and re-sew.
+  // ⛓ ÉDITION LIÉE (préférence collante, comme ⋈) : retoucher un sommet
+  // posé sur un bord COUSU déplace aussi son vis-à-vis, forme comprise.
+  let linkedEditPref = false;
   const patternView = new PatternView(
     document.getElementById('pattern') as HTMLCanvasElement,
     (id, value) => applyHandle(id, value),
@@ -463,28 +467,86 @@ async function main(): Promise<void> {
       // the current draft — front (0), the côte-à-côte back (1), or a FREE piece
       // (≥ 2) — and re-cut. Editing returns to the flat design view (physics
       // paused) so the change shows without the piece draping away.
+      // ⛓ ÉDITION LIÉE : si le geste est le déplacement d'UN sommet (même
+      // cadre, même nombre de points) posé sur un bord cousu, le moteur rend
+      // le document ENTIER — source + vis-à-vis + coutures réindexées. Refus
+      // (contour croisé chez un suivi) = geste abandonné AVANT l'historique.
+      let linkedDoc: DraftDoc | null = null;
+      let linkedFollowNote: string | null = null;
+      if (linkedEditPref && draft && !linkedPieces?.length && !seams && !segmentLinks) {
+        const prev =
+          pieceId === 0 ? draft.piece : pieceId === 1 ? draft.back : draft.pieces?.[pieceId - 2];
+        if (
+          prev &&
+          prev.outline.length === piece.outline.length &&
+          prev.width === piece.width &&
+          prev.height === piece.height &&
+          Math.abs(prev.topY - piece.topY) < 1e-9
+        ) {
+          let moved = -1;
+          let count = 0;
+          for (let i = 0; i < prev.outline.length; i++) {
+            const a = prev.outline[i]!;
+            const b = piece.outline[i]!;
+            if (Math.abs(a[0] - b[0]) > 1e-7 || Math.abs(a[1] - b[1]) > 1e-7) {
+              moved = i;
+              count++;
+            }
+          }
+          if (count === 1) {
+            const res = linkedVertexEdit(draft, pieceId, moved, piece.outline[moved]!);
+            if (!res.ok) {
+              showToast(res.reason);
+              refreshPatternDoc();
+              refreshHint();
+              return;
+            }
+            if (res.followed.length) {
+              linkedDoc = res.doc;
+              linkedFollowNote = res.followed
+                .map(
+                  (f) =>
+                    draftPieceLabel(docPieces(res.doc)[f.pieceId] ?? null, f.pieceId) +
+                    (f.inserted ? ' (point d’accord inséré)' : ''),
+                )
+                .join(' · ');
+            }
+          }
+        }
+      }
       pushHistory(); // un cran d'annulation par geste
       if (draft?.preset === 'lucas-hoodie') hoodieFitPristine = false;
       teePreset = false; // a manual edit ⇒ freeform mode; keep the edit (stop re-drafting)
       const gridN = resolution as 32 | 64 | 128;
       if (!draft) draft = { format: 'toile-draft', version: 1, gridN, piece: defaultDraft(gridN).piece };
       draft.gridN = gridN;
-      const updates = [{ pieceId, piece }, ...(linkedPieces ?? [])];
-      for (const update of updates) {
-        if (update.pieceId >= 2) {
-          (draft.pieces ??= [])[update.pieceId - 2] = update.piece;
-        } else if (update.pieceId === 1) {
-          draft.back = update.piece;
-        } else {
-          draft.piece = update.piece;
+      if (linkedDoc) {
+        // ⛓ le moteur a tout rendu d'un bloc (source, vis-à-vis, coutures).
+        draft = linkedDoc;
+        draft.gridN = gridN;
+        if (draft.back) {
+          const synced = syncPieceFrames(draft.piece, draft.back);
+          draft.piece = synced.front;
+          draft.back = synced.back;
         }
-      }
-      // Front and back share one physical cutting frame. Synchronise once after
-      // every linked update has landed, without stretching either outline.
-      if (draft.back && updates.some((update) => update.pieceId === 0 || update.pieceId === 1)) {
-        const synced = syncPieceFrames(draft.piece, draft.back);
-        draft.piece = synced.front;
-        draft.back = synced.back;
+      } else {
+        const updates = [{ pieceId, piece }, ...(linkedPieces ?? [])];
+        for (const update of updates) {
+          if (update.pieceId >= 2) {
+            (draft.pieces ??= [])[update.pieceId - 2] = update.piece;
+          } else if (update.pieceId === 1) {
+            draft.back = update.piece;
+          } else {
+            draft.piece = update.piece;
+          }
+        }
+        // Front and back share one physical cutting frame. Synchronise once after
+        // every linked update has landed, without stretching either outline.
+        if (draft.back && updates.some((update) => update.pieceId === 0 || update.pieceId === 1)) {
+          const synced = syncPieceFrames(draft.piece, draft.back);
+          draft.piece = synced.front;
+          draft.back = synced.back;
+        }
       }
       if (pieceId >= 2) {
         // ZONE DE CONFECTION LIBRE : une pièce fraîchement fermée à la plume
@@ -505,6 +567,18 @@ async function main(): Promise<void> {
       atelierDesign = true;
       document.getElementById('at-sim')?.classList.remove('running');
       build();
+      if (linkedFollowNote) {
+        const note = linkedFollowNote;
+        void lifecycle.whenIdle().then(() => {
+          showPlacementStatus(
+            [
+              `Édition LIÉE — le vis-à-vis a suivi, forme comprise : ${note}.`,
+              'Les coutures recousent aux nouvelles formes · Ctrl+Z annule tout le geste d’un coup.',
+            ],
+            true,
+          );
+        });
+      }
       const surface = piece.placement?.role === 'pocket' ? piece.placement.surface : null;
       if (surface) {
         pocketPlacementPid = null; // ancrage réussi : la poche n'est plus révocable comme « en attente »
@@ -917,6 +991,10 @@ async function main(): Promise<void> {
     setPressed('at-dart', patternView.fisheyeDrawing);
     setPressed('at-curvepoint', patternView.curvePointing);
     setPressed('at-notch', patternView.notching);
+    setPressed('at-merge', patternView.merging);
+    setPressed('at-hole', patternView.holing);
+    setPressed('at-linkedit', linkedEditPref);
+    setPressed('at-precision', patternView.precisioning);
     setPressed('at-fullness', patternView.fullnessing);
     setPressed('at-mirror', patternView.mirroring);
     setPressed('at-gather', patternView.gathering);
@@ -946,6 +1024,9 @@ async function main(): Promise<void> {
     if (patternView.fisheyeDrawing) patternView.toggleFisheyeDart();
     if (patternView.curvePointing) patternView.toggleCurvePoint();
     if (patternView.notching) patternView.toggleNotch();
+    if (patternView.merging) patternView.toggleMerge();
+    if (patternView.holing) patternView.toggleHole();
+    if (patternView.precisioning) patternView.togglePrecision();
     if (patternView.fullnessing) patternView.toggleFullness();
     if (patternView.mirroring) patternView.toggleMirror();
     if (patternView.gathering) patternView.toggleGather();
@@ -1006,6 +1087,17 @@ async function main(): Promise<void> {
     splitButton.setAttribute('aria-expanded', String(on));
     applySplit();
   };
+  // v178 ③ « pas dépaysé » — disposition Clo : la 3D à gauche, le plan à
+  // droite. Un clic, mémorisé ; les largeurs ne bougent pas, les côtés
+  // s'échangent (CSS body.layout-3d-left). Chargée AVANT le séparateur, dont
+  // la géométrie dépend du côté du plan.
+  const LAYOUT_CLO_KEY = 'toile.layout3dLeft';
+  let layout3dLeft = false;
+  try {
+    layout3dLeft = window.localStorage.getItem(LAYOUT_CLO_KEY) === '1';
+  } catch {
+    /* stockage indisponible : la préférence vaudra pour la session */
+  }
   // Séparateur : glisser = ajuster le partage en direct (2D et 3D suivent).
   {
     const divider = document.getElementById('split-divider') as HTMLElement;
@@ -1018,7 +1110,11 @@ async function main(): Promise<void> {
     });
     divider.addEventListener('pointermove', (e) => {
       if (!dragging) return;
-      splitPx = e.clientX - atelierRailWidth();
+      // Plan à droite (disposition Clo) : sa largeur se mesure depuis le bord
+      // droit de la fenêtre, le séparateur vivant à son flanc gauche.
+      splitPx = layout3dLeft
+        ? window.innerWidth - e.clientX
+        : e.clientX - atelierRailWidth();
       applySplit();
     });
     const end = (): void => {
@@ -1031,6 +1127,139 @@ async function main(): Promise<void> {
       if (bigPanel) applySplit();
     });
   }
+  const layoutCloButton = document.getElementById('at-layout-clo') as HTMLButtonElement;
+  const applyLayoutClo = (resize: boolean): void => {
+    document.body.classList.toggle('layout-3d-left', layout3dLeft);
+    layoutCloButton.classList.toggle('active', layout3dLeft);
+    layoutCloButton.setAttribute('aria-pressed', String(layout3dLeft));
+    // Au boot, applySplit est encore hors de portée (sceneMode plus bas) — et
+    // inutile : la séquence normale le fait. Au clic, on recadre en direct.
+    if (resize) applySplit();
+  };
+  layoutCloButton.addEventListener('click', () => {
+    layout3dLeft = !layout3dLeft;
+    try {
+      window.localStorage.setItem(LAYOUT_CLO_KEY, layout3dLeft ? '1' : '0');
+    } catch {
+      /* stockage indisponible : la préférence vaut pour la session */
+    }
+    applyLayoutClo(true);
+    showToast(
+      layout3dLeft
+        ? 'Disposition Clo — la 3D à gauche, le plan 2D à droite. Mémorisé.'
+        : 'Disposition TOILE — le plan 2D à gauche. Mémorisé.',
+    );
+  });
+  applyLayoutClo(false);
+  // v179 ④ « pas dépaysé » — thème du plan : NUIT (défaut) ou PAPIER, la
+  // table de coupe au jour. Persisté ; seule la surface du plan change — la
+  // 3D et les pastilles gardent leur encre.
+  const PLAN_THEME_KEY = 'toile.planTheme';
+  const themeButton = document.getElementById('at-plan-theme') as HTMLButtonElement;
+  let planTheme: PatternTheme = 'nuit';
+  try {
+    if (window.localStorage.getItem(PLAN_THEME_KEY) === 'papier') planTheme = 'papier';
+  } catch {
+    /* stockage indisponible : nuit par défaut */
+  }
+  const applyPlanTheme = (repaint: boolean): void => {
+    setPatternTheme(planTheme);
+    themeButton.classList.toggle('active', planTheme === 'papier');
+    themeButton.setAttribute('aria-pressed', String(planTheme === 'papier'));
+    if (repaint) patternView.refreshTheme();
+  };
+  themeButton.addEventListener('click', () => {
+    planTheme = planTheme === 'papier' ? 'nuit' : 'papier';
+    try {
+      window.localStorage.setItem(PLAN_THEME_KEY, planTheme);
+    } catch {
+      /* stockage indisponible : la préférence vaut pour la session */
+    }
+    applyPlanTheme(true);
+    showToast(
+      planTheme === 'papier'
+        ? 'Plan PAPIER — la table de coupe passe au jour. Mémorisé.'
+        : 'Plan NUIT — le plan retrouve son encre claire. Mémorisé.',
+    );
+  });
+  applyPlanTheme(planTheme === 'papier');
+  // v181 ⑥ « pas dépaysé » — 🪡 les coutures sur le vêtement 3D : liserés aux
+  // couleurs du plan posés sur les particules (drapé compris), fils tendus
+  // entre pièces écartées. Interrupteur indépendant de l'outil, mémorisé.
+  const SEAMS3D_KEY = 'toile.seams3d';
+  let seams3dOn = true;
+  try {
+    if (window.localStorage.getItem(SEAMS3D_KEY) === '0') seams3dOn = false;
+  } catch {
+    /* stockage indisponible : visible par défaut */
+  }
+  const seamOverlayVerts = (doc: DraftDoc, n: number): Uint32Array | null => {
+    const groups = compileAssemblyGroups(doc, n);
+    if (!groups.length) return null;
+    const packed = (hex: string, alpha: number): number => {
+      const v = parseInt(hex.slice(1), 16);
+      return (
+        ((alpha & 255) << 24) |
+        ((v & 255) << 16) |
+        (((v >> 8) & 255) << 8) |
+        ((v >> 16) & 255)
+      );
+    };
+    const verts: number[] = [];
+    const panelSize = n * n;
+    // pairRunCells ne garantit PAS l'ordre le long du bord — relier les
+    // cellules par ADJACENCE DE GRILLE rend l'ordre indifférent : chaque
+    // cellule se lie à sa voisine (+1 en u, +n en v) si elle est du même run.
+    const strip = (cells: readonly number[], color: number): void => {
+      const set = new Set(cells);
+      for (const c of cells) {
+        const base = Math.floor(c / panelSize) * panelSize;
+        const local = c - base;
+        const u = local % n;
+        const v = Math.floor(local / n);
+        if (u < n - 1 && set.has(c + 1)) verts.push(c, color, c + 1, color);
+        if (v < n - 1 && set.has(c + n)) verts.push(c, color, c + n, color);
+      }
+    };
+    for (const g of groups) {
+      const hex = SEAM_COLORS[g.seamIndex % SEAM_COLORS.length]!;
+      const color = packed(hex, 235);
+      const rung = packed(hex, 140);
+      const pairs = g.pairs;
+      strip(pairs.map((q) => q.i), color);
+      strip(pairs.map((q) => q.j), color);
+      // Les FILS : une paire cousue écartée se tend, une paire soudée est un
+      // segment de longueur nulle — l'affichage se règle tout seul.
+      const step = Math.max(1, Math.floor(pairs.length / 9));
+      for (let k = 0; k < pairs.length; k += step) {
+        verts.push(pairs[k]!.i, rung, pairs[k]!.j, rung);
+      }
+      const last = pairs[pairs.length - 1]!;
+      verts.push(last.i, rung, last.j, rung);
+    }
+    return new Uint32Array(verts);
+  };
+  const seams3dButton = document.getElementById('at-seams3d') as HTMLButtonElement;
+  const applySeams3d = (): void => {
+    seams3dButton.classList.toggle('active', seams3dOn);
+    seams3dButton.setAttribute('aria-pressed', String(seams3dOn));
+  };
+  seams3dButton.addEventListener('click', () => {
+    seams3dOn = !seams3dOn;
+    try {
+      window.localStorage.setItem(SEAMS3D_KEY, seams3dOn ? '1' : '0');
+    } catch {
+      /* stockage indisponible : la préférence vaut pour la session */
+    }
+    applySeams3d();
+    renderer.setSeamsVisible(seams3dOn);
+    showToast(
+      seams3dOn
+        ? '🪡 Coutures VISIBLES sur le vêtement 3D — drapé compris, fils tendus entre pièces écartées.'
+        : '🪡 Coutures masquées en 3D — le plan garde ses liserés.',
+    );
+  });
+  applySeams3d();
   // Back to the drawing board: re-freeze flat (a rebuild re-spawns the piece at
   // its flat rest pose) so it can be edited without physics moving it.
   const enterDesign = (): void => {
@@ -2022,6 +2251,224 @@ async function main(): Promise<void> {
     syncAtelierControls();
     refreshHint();
   });
+  // ⧉ FUSIONNER : l'inverse du ✂ — cliquer une couture fond ses deux pièces
+  // en une seule (congruence des bords vérifiée par le moteur, refus en mots).
+  (document.getElementById('at-merge') as HTMLElement | null)?.addEventListener('click', (e) => {
+    const on = patternView.toggleMerge();
+    (e.currentTarget as HTMLElement).classList.toggle('active', on);
+    syncAtelierControls();
+    refreshHint();
+  });
+  // ⛓ ÉDITION LIÉE : préférence collante — pas un mode, un comportement.
+  (document.getElementById('at-linkedit') as HTMLElement | null)?.addEventListener('click', (e) => {
+    linkedEditPref = !linkedEditPref;
+    (e.currentTarget as HTMLElement).classList.toggle('active', linkedEditPref);
+    setPressed('at-linkedit', linkedEditPref);
+    showToast(
+      linkedEditPref
+        ? '⛓ Édition liée ACTIVE : déplacer un sommet posé sur un bord cousu déplace aussi son vis-à-vis, forme comprise.'
+        : '⛓ Édition liée désactivée : les sommets bougent seuls, les coutures recousent aux longueurs.',
+    );
+    refreshHint();
+  });
+  // ⌖ ÉTABLI DE PRÉCISION : un outil, quatre gestes — le clic dit lequel.
+  const cornerChooser = document.getElementById('precision-corner-chooser') as HTMLElement | null;
+  const axisChooser = document.getElementById('precision-axis-chooser') as HTMLElement | null;
+  const divideChooser = document.getElementById('divide-chooser') as HTMLElement | null;
+  let cornerPending: { pid: number; vertex: number } | null = null;
+  let axisPending: { pid: number; vertex: number; ref: number } | null = null;
+  let dividePending: { pid: number; edge: number } | null = null;
+  let precisionAlign: { pid: number; vertex: number } | null = null;
+  const closePrecisionChoosers = (): void => {
+    if (cornerChooser) cornerChooser.hidden = true;
+    if (axisChooser) axisChooser.hidden = true;
+    if (divideChooser) divideChooser.hidden = true;
+    cornerPending = null;
+    axisPending = null;
+    dividePending = null;
+  };
+  const commitPrecision = (
+    res: { ok: true; doc: DraftDoc; note?: string } | { ok: false; reason: string },
+    lines: (note: string | undefined) => string[],
+    rebuild: boolean,
+  ): void => {
+    if (!draft) return;
+    if (!res.ok) {
+      showToast(res.reason);
+      syncAtelierControls();
+      refreshHint();
+      return;
+    }
+    pushHistory();
+    draft = res.doc;
+    draftTouched = true;
+    teePreset = false;
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    if (rebuild) {
+      build();
+      void lifecycle.whenIdle().then(() => showPlacementStatus(lines(res.note), true));
+    } else {
+      refreshPatternDoc();
+      showPlacementStatus(lines(res.note), true);
+    }
+  };
+  (document.getElementById('at-precision') as HTMLElement | null)?.addEventListener('click', (e) => {
+    closePrecisionChoosers();
+    precisionAlign = null;
+    const on = patternView.togglePrecision();
+    (e.currentTarget as HTMLElement).classList.toggle('active', on);
+    syncAtelierControls();
+    refreshHint();
+  });
+  patternView.onPrecisionVertex = (pid, vertex) => {
+    if (!draft) return;
+    if (precisionAlign) {
+      if (precisionAlign.pid !== pid) {
+        showToast('Alignez deux sommets de la MÊME pièce.');
+        precisionAlign = null;
+        refreshHint();
+        return;
+      }
+      if (precisionAlign.vertex === vertex) {
+        showToast('Cliquez un AUTRE sommet comme référence.');
+        return;
+      }
+      const mover = precisionAlign.vertex;
+      precisionAlign = null;
+      closePrecisionChoosers();
+      axisPending = { pid, vertex: mover, ref: vertex };
+      if (axisChooser) axisChooser.hidden = false;
+      refreshHint();
+      return;
+    }
+    cornerPending = { pid, vertex };
+    if (cornerChooser) cornerChooser.hidden = false;
+    refreshHint();
+  };
+  cornerChooser?.addEventListener('click', (event) => {
+    const btn = (event.target as Element | null)?.closest<HTMLButtonElement>('button[data-act]');
+    if (!btn) return;
+    const act = btn.dataset.act;
+    const pending = cornerPending;
+    closePrecisionChoosers();
+    if (!pending || !draft) return;
+    if (act === 'align') {
+      precisionAlign = pending;
+      showToast('⌗ Cliquez maintenant le sommet de RÉFÉRENCE (même pièce).');
+      refreshHint();
+      return;
+    }
+    if (act === 'sq-prev' || act === 'sq-next') {
+      commitPrecision(
+        squareCorner(draft, pending.pid, pending.vertex, act === 'sq-prev' ? 'prev' : 'next'),
+        (note) => [
+          `Angle ÉQUERRÉ${note ? ` — ${note}` : ''} : le bord arrive perpendiculaire au sommet (le geste des ourlets et des milieux au pli).`,
+          'Les coutures suivent leurs sommets · Ctrl+Z annule.',
+        ],
+        true,
+      );
+    }
+  });
+  axisChooser?.addEventListener('click', (event) => {
+    const btn = (event.target as Element | null)?.closest<HTMLButtonElement>('button[data-axis]');
+    if (!btn) return;
+    const axis = btn.dataset.axis === 'y' ? 'y' : 'x';
+    const pending = axisPending;
+    closePrecisionChoosers();
+    if (!pending || !draft) return;
+    const res = alignOutlineVertex(draft, pending.pid, pending.vertex, pending.ref, axis);
+    if (!res.ok) {
+      showToast(res.reason);
+      refreshHint();
+      return;
+    }
+    // ⛓ armée : le vis-à-vis cousu suit aussi l'alignement.
+    if (linkedEditPref) {
+      const linked = linkedVertexEdit(draft, pending.pid, pending.vertex, res.target);
+      if (!linked.ok) {
+        showToast(linked.reason);
+        refreshHint();
+        return;
+      }
+      if (linked.followed.length) {
+        commitPrecision(
+          { ok: true, doc: linked.doc },
+          () => [
+            `Sommets ALIGNÉS (${axis === 'x' ? 'même verticale' : 'même horizontale'}) — et le vis-à-vis cousu a suivi (⛓).`,
+            'Ctrl+Z annule tout le geste d’un coup.',
+          ],
+          true,
+        );
+        return;
+      }
+    }
+    commitPrecision(
+      { ok: true, doc: res.doc },
+      () => [
+        `Sommets ALIGNÉS — ${axis === 'x' ? 'même verticale (X de la référence)' : 'même horizontale (Y de la référence)'}.`,
+        'Ctrl+Z annule.',
+      ],
+      true,
+    );
+  });
+  patternView.onDivideEdge = (pid, edge) => {
+    if (!draft) return;
+    dividePending = { pid, edge };
+    if (divideChooser) divideChooser.hidden = false;
+    refreshHint();
+  };
+  divideChooser?.addEventListener('click', (event) => {
+    const btn = (event.target as Element | null)?.closest<HTMLButtonElement>('button[data-parts]');
+    if (!btn) return;
+    const parts = Number(btn.dataset.parts) || 0;
+    const pending = dividePending;
+    closePrecisionChoosers();
+    if (!pending || !draft || !parts) return;
+    commitPrecision(
+      divideOutlineEdge(draft, pending.pid, pending.edge, parts),
+      (note) => [
+        `Bord DIVISÉ en ${parts} parts égales${note ? ` — ${note}` : ''} : des sommets prêts pour coutures, crans et alignements.`,
+        'La géométrie ne bouge pas d’un millimètre · Ctrl+Z retire les points.',
+      ],
+      false,
+    );
+  });
+  for (const cancelId of ['precision-corner-cancel', 'precision-axis-cancel', 'divide-cancel']) {
+    document.getElementById(cancelId)?.addEventListener('click', () => {
+      closePrecisionChoosers();
+      refreshHint();
+    });
+  }
+  patternView.onExtendInternal = (pid, lineIndex, end) => {
+    if (!draft) return;
+    commitPrecision(
+      extendInternalLineEnd(draft, pid, lineIndex, end),
+      (note) => [
+        `Ligne interne PROLONGÉE jusqu’au contour${note ? ` — ${note}` : ''}, dans la direction de son dernier segment.`,
+        'Prête pour le ✂ (scission le long de la ligne) · Ctrl+Z annule.',
+      ],
+      false,
+    );
+  };
+  patternView.onDivideInternal = (pid, lineIndex, at) => {
+    if (!draft) return;
+    commitPrecision(
+      divideInternalLineAt(draft, pid, lineIndex, at),
+      () => [
+        'Ligne interne SCINDÉE en deux au point cliqué — le point de scission est partagé, exact.',
+        'Chaque moitié vit sa vie (supprimable, prolongeable) · Ctrl+Z recolle.',
+      ],
+      false,
+    );
+  };
+  // ⌾ ÉVIDER : une ligne interne fermée devient un trou du maillage (et retour).
+  (document.getElementById('at-hole') as HTMLElement | null)?.addEventListener('click', (e) => {
+    const on = patternView.toggleHole();
+    (e.currentTarget as HTMLElement).classList.toggle('active', on);
+    syncAtelierControls();
+    refreshHint();
+  });
   // ⧢ ÉVASEMENT : deux clics (pivot, ouverture) → choix des cm → couper-pivoter.
   const fullnessChooser = document.getElementById('fullness-chooser') as HTMLElement | null;
   let fullnessPending: { pid: number; pivot: { edge: number; t: number }; opening: { edge: number; t: number } } | null = null;
@@ -2226,6 +2673,60 @@ async function main(): Promise<void> {
       ],
       true,
     );
+  };
+  patternView.onMergeSeam = (seamIndex) => {
+    if (!draft) return;
+    const res = mergePiecesAlongSeam(draft, seamIndex);
+    if (!res.ok) {
+      showToast(res.reason);
+      return;
+    }
+    pushHistory();
+    draft = res.doc;
+    draftTouched = true;
+    teePreset = false;
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    build();
+    void lifecycle.whenIdle().then(() => {
+      const gapMm = res.seamGapMaxM * 1000;
+      showPlacementStatus(
+        [
+          `Pièces FUSIONNÉES en une seule — la couture s'efface, bords superposés ${gapMm < 0.05 ? 'à l’identique' : `à ${gapMm.toFixed(1)} mm près`}.`,
+          `Pinces, lignes internes et crans des deux côtés ont suivi${res.droppedLinks ? ` · ${res.droppedLinks} lien(s) Marier abandonné(s)` : ''}${res.note ? ` · ${res.note}` : ''} · Ctrl+Z sépare à nouveau.`,
+        ],
+        true,
+      );
+    });
+  };
+  patternView.onHoleToggle = (pid, lineIndex) => {
+    if (!draft) return;
+    const res = toggleInternalHole(draft, pid, lineIndex);
+    if (!res.ok) {
+      showToast(res.reason);
+      return;
+    }
+    pushHistory();
+    draft = res.doc;
+    draftTouched = true;
+    teePreset = false;
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    build();
+    void lifecycle.whenIdle().then(() => {
+      showPlacementStatus(
+        res.holed
+          ? [
+              'Pièce ÉVIDÉE — la zone est un TROU : découpée du maillage 3D, imprimée en trait de coupe PLEIN aux exports.',
+              'Re-clic au ⌾ dessus pour la reboucher (elle redevient ligne de style) · Ctrl+Z annule.',
+            ]
+          : [
+              'Trou REBOUCHÉ — la forme redevient une ligne de style (pointillés, aucune découpe).',
+              'Ctrl+Z annule.',
+            ],
+        true,
+      );
+    });
   };
   /** Scinder le long d'une ligne interne — partagé entre le clic ✂ au plan
    * et le « Scinder maintenant ? » qui suit un tracé ✎3D. */
@@ -2455,7 +2956,7 @@ async function main(): Promise<void> {
     const cutLabel = draftPieceLabel(docPieces(draft)[res.newPieceId] ?? null, res.newPieceId);
     const notes: string[] = [
       `Pièce scindée — la couture est posée le long de la découpe (« ${cutLabel} »).`,
-      'Chaque moitié a maintenant son propre tissu : clic droit sur une moitié, puis « Tissu de la sélection ».',
+      'Chaque moitié a maintenant son propre tissu : un clic sur une moitié, puis « Tissu de la sélection ».',
     ];
     if (res.splitSeams) notes.push(`${res.splitSeams} couture(s) traversée(s) : point d'accord posé sur le bord partenaire.`);
     if (res.droppedLinks) notes.push(`${res.droppedLinks} lien(s)/couture(s) non transposables ont été défaits — recousez si besoin.`);
@@ -2553,7 +3054,7 @@ async function main(): Promise<void> {
     }
     const ids = selectedFabricPieceIds();
     if (!draft || !ids.length) {
-      showToast('Sélectionnez d’abord une pièce (clic droit).');
+      showToast('Sélectionnez d’abord une pièce — un clic dessus suffit.');
       return;
     }
     deactivateEditingTools();
@@ -3217,7 +3718,7 @@ async function main(): Promise<void> {
     }
     const piece = draftPieceAt(patternView.activeDraftPieceId);
     if (!draft || !piece) {
-      showToast('Sélectionnez d’abord une pièce (clic droit).');
+      showToast('Sélectionnez d’abord une pièce — un clic dessus suffit.');
       return;
     }
     motifChooser.hidden = false;
@@ -4287,12 +4788,12 @@ async function main(): Promise<void> {
               gap: atelierDesign ? d.gap : Math.min(d.gap, bodyWrapGap),
               topY: d.topY,
               shape: 'freeform',
-              mask: { outline: d.outline, darts: d.darts },
+              mask: { outline: d.outline, darts: d.darts, holes: pieceHolePolygons(d) },
               extraSeams,
               extraOpenings: cellOpen(openCells),
               ...(back && bc
                 ? {
-                    maskBack: { outline: back.outline, darts: back.darts },
+                    maskBack: { outline: back.outline, darts: back.darts, holes: pieceHolePolygons(back) },
                     extraSeamsBack: bc.extraSeams,
                     extraOpeningsBack: cellOpen(bc.openCells),
                   }
@@ -4382,7 +4883,7 @@ async function main(): Promise<void> {
                 gap: fp.gap,
                 topY: fp.topY,
                 shape: 'freeform',
-                mask: { outline: fp.outline, darts: fp.darts },
+                mask: { outline: fp.outline, darts: fp.darts, holes: pieceHolePolygons(fp) },
                 extraSeams: fpc.extraSeams,
                 extraOpenings: cellOpen(openAll),
                 maskBack: surfacePiece
@@ -4887,6 +5388,12 @@ async function main(): Promise<void> {
       throw error;
     }
     system = nextSystem;
+    // v181 ⑥ : les liserés de coutures posés sur le tissu — pièces de base
+    // (Devant/Dos) en v1, les pièces libres suivront avec compileCrossSeams.
+    nextRenderer.setSeamLines(
+      sceneMode === 'atelier' && draft ? seamOverlayVerts(draft, mesh.resolution) : null,
+    );
+    nextRenderer.setSeamsVisible(seams3dOn);
     renderer = nextRenderer;
     posCache = null; // stale cache belongs to the previous system
     dragIndex = null;
@@ -5149,6 +5656,16 @@ async function main(): Promise<void> {
       message = patternView.fullnessArmed
         ? '⧢ pivot posé (point vert) — cliquez maintenant le bord qui doit S’OUVRIR (l’ourlet pour un évasé), puis choisissez les cm · Échap annule'
         : '⧢ évasement : cliquez le PIVOT sur le contour (le bord qui reste fermé), puis le bord qui gagne l’ampleur — couper-pivoter du patronage · Échap désarme';
+    } else if (patternView.precisioning) {
+      message = precisionAlign
+        ? '⌗ alignement — cliquez le sommet de RÉFÉRENCE (même pièce) : le premier sommet prendra sa verticale ou son horizontale'
+        : '⌖ précision : un SOMMET = équerre ou alignement · un BORD = diviser en N parts égales · un BOUT de ligne interne = prolonger au contour · un MILIEU = scinder en deux · Échap désarme';
+    } else if (patternView.holing) {
+      message =
+        '⌾ évider : cliquez une ligne interne FERMÉE (dessinée au ▱) — elle devient un TROU, découpé du maillage 3D et imprimé en trait plein · re-clic dessus = rebouchée · Échap désarme';
+    } else if (patternView.merging) {
+      message =
+        '⧉ fusionner : cliquez le LIEN d’une couture — ses deux pièces se fondent en une seule, décor compris · seuls des bords superposables à plat fusionnent (refus motivé sinon) · Échap désarme';
     } else if (patternView.notching) {
       message =
         '⌵ crans : clic près d’un bord = cran posé (re-clic dessus = retiré) · clic sur le LIEN d’une couture = crans d’accord appariés des deux côtés · imprimés sur le patron · Échap désarme';
@@ -5201,7 +5718,7 @@ async function main(): Promise<void> {
         '✥ déplacement 3D : glissez l’exemplaire voulu, ou cliquez-le — trièdre X·Y·Z, tirer une flèche = déplacement précis sur cet axe, en cm · Échap range le trièdre · patron et coutures inchangés · ▶ Simuler recale automatiquement';
     } else {
       message =
-        'atelier : clic droit pièce 2D = sélectionner · Cmd/Ctrl + clic droit = groupe · tirer un coin = taille commune · Poche / applique = cliquer son support puis retirer les × voulus';
+        'atelier : un clic pièce 2D = sélectionner (gauche ou droit) · Cmd/Ctrl + clic = groupe · tirer un coin = taille commune · Poche / applique = cliquer son support puis retirer les × voulus';
     }
     hintEl.textContent = message;
     guidanceEl.textContent = message;
@@ -6513,14 +7030,18 @@ async function main(): Promise<void> {
     return false; // fabric grabbed — the camera stays put
   };
   camera.attach(canvas, tryOrbit);
-  window.addEventListener('keydown', (event) => {
-    if (sceneMode !== 'atelier' || event.key !== 'Escape') return;
+  // Le corps du geste Échap, partagé avec les touches A/Z du clavier Clo
+  // (v176) : « revenir au geste de base ». Retourne true si quelque chose a
+  // été fermé/annulé (→ preventDefault chez l'appelant clavier).
+  const atelierEscapeGesture = (): boolean => {
     const helpWasOpen = !atelierHelpPanel.hidden;
     if (helpWasOpen) setAtelierHelpOpen(false);
 
     const chooserWasOpen = !placeChooser.hidden;
     const gatherWasOpen = !gatherChooser.hidden;
     if (gatherWasOpen) closeGatherChooser();
+    closePrecisionChoosers();
+    precisionAlign = null;
     // Une poche en cours de placement doit être RÉVERTIE (commit annulé), pas
     // seulement désarmée — avant que cancelInteractions ne nettoie l'état.
     const pocketReverted = revertPendingPocket({ rebuild: true });
@@ -6589,14 +7110,64 @@ async function main(): Promise<void> {
       gatherWasOpen ||
       placementWasPending ||
       pocketReverted;
-    if (!cancelled) {
-      if (helpWasOpen) event.preventDefault();
-      return;
-    }
-    event.preventDefault();
+    if (!cancelled) return helpWasOpen;
     syncAtelierControls();
     refreshHint();
     showToast('Outil annulé · navigation libre');
+    return true;
+  };
+  window.addEventListener('keydown', (event) => {
+    if (sceneMode !== 'atelier' || event.key !== 'Escape') return;
+    if (atelierEscapeGesture()) event.preventDefault();
+  });
+  // ————— Le clavier Clo (v176). Les lettres de CLO posées sur nos outils, à
+  // sens égal — correspondance par LETTRE (event.key), donc identique en
+  // AZERTY. Jamais de combinaison : un modificateur rend la touche au
+  // navigateur ; un champ de saisie garde ses lettres. Espace = leur Simuler.
+  const CLO_KEY_TOOLS: Readonly<Record<string, string>> = {
+    x: 'at-precision', // Ajouter un point / Diviser la ligne -> l'établi
+    g: 'at-internal', // Polygone / Ligne interne
+    b: 'at-sew', // Modifier la couture (le lien se re-clique)
+    n: 'at-sew', // Couture de segment
+    m: 'at-sew-free', // Couture libre
+    c: 'at-curvepoint', // Modifier la courbure
+    v: 'at-curvepoint', // Modifier un point de courbe
+  };
+  window.addEventListener('keydown', (event) => {
+    if (sceneMode !== 'atelier') return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    const target = event.target;
+    if (
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLSelectElement ||
+      target instanceof HTMLTextAreaElement ||
+      (target instanceof HTMLElement && target.isContentEditable)
+    ) {
+      return;
+    }
+    if (event.key === ' ') {
+      // Espace = Simuler, le geste le plus ancré de Clo. preventDefault :
+      // sinon Espace « clique » aussi le bouton encore focalisé, et le plan
+      // défilerait. Le bouton at-sim porte déjà les deux sens du toggle.
+      event.preventDefault();
+      if (event.repeat) return;
+      if (target instanceof HTMLElement) target.blur();
+      if (!sceneTransitionBusy()) simBtn().click();
+      return;
+    }
+    const key = event.key.toLowerCase();
+    if (key === 'a' || key === 'z') {
+      // A (Transformer) et Z (Modifier) de Clo = revenir au geste de base —
+      // chez nous, éditer le contour n'a pas besoin d'outil.
+      event.preventDefault();
+      atelierEscapeGesture();
+      return;
+    }
+    const toolId = CLO_KEY_TOOLS[key];
+    if (toolId === undefined) return;
+    event.preventDefault();
+    if (event.repeat) return;
+    document.getElementById(toolId)?.click();
   });
   // Double-click: tack the fabric in place right where you aim (pin/unpin).
   canvas.addEventListener('dblclick', (e) => {
@@ -7766,6 +8337,15 @@ async function main(): Promise<void> {
   // never steps to show it.
   window.addEventListener('keydown', (e) => {
     if (sceneTransitionBusy()) return;
+    const rpTarget = e.target;
+    if (
+      rpTarget instanceof HTMLInputElement ||
+      rpTarget instanceof HTMLSelectElement ||
+      rpTarget instanceof HTMLTextAreaElement ||
+      (rpTarget instanceof HTMLElement && rpTarget.isContentEditable)
+    ) {
+      return; // v176 : taper « r » dans le brief ne réinitialise plus le tissu
+    }
     if (e.key === 'r' || e.key === 'R') {
       system.reset();
       panel.syncPins(false);
@@ -7969,11 +8549,18 @@ async function main(): Promise<void> {
           const distM = Math.hypot((d.uv[0] - prev[0]) * piece.width, (d.uv[1] - prev[1]) * piece.height);
           if (distM >= 0.002) {
             const outline = piece.outline.map((pt, i) => (i === d.vertex ? ([d.uv[0], d.uv[1]] as UV) : pt));
+            const linked3d =
+              linkedEditPref && draft
+                ? linkedVertexEdit(draft, d.pid, d.vertex, [d.uv[0], d.uv[1]] as UV)
+                : null;
             if (isSelfIntersecting(outline)) {
               showToast('Ce déplacement croiserait le contour — geste abandonné.');
+            } else if (linked3d && !linked3d.ok) {
+              showToast(linked3d.reason);
             } else {
               pushHistory();
-              replaceDraftPiece(d.pid, { ...piece, outline });
+              if (linked3d && linked3d.ok && linked3d.followed.length) draft = linked3d.doc;
+              else replaceDraftPiece(d.pid, { ...piece, outline });
               draftTouched = true;
               teePreset = false;
               atelierDesign = true;
@@ -7983,7 +8570,7 @@ async function main(): Promise<void> {
                 showPlacementStatus(
                   [
                     `Sommet du contour DÉPLACÉ depuis la 3D sur « ${draftPieceLabel(draftPieceOf(d.pid), d.pid)} » — ${(distM * 100).toFixed(1).replace('.', ',')} cm.`,
-                    'Le patron 2D a suivi · les coutures recousent aux nouvelles longueurs · Ctrl+Z annule.',
+                    `${linked3d && linked3d.ok && linked3d.followed.length ? '⛓ le vis-à-vis a suivi, forme comprise · ' : ''}Le patron 2D a suivi · les coutures recousent aux nouvelles longueurs · Ctrl+Z annule.`,
                   ],
                   true,
                 );

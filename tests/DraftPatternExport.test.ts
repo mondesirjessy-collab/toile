@@ -54,6 +54,31 @@ describe('lignes internes exportées (v162)', () => {
   });
 });
 
+describe('trous exportés (v173)', () => {
+  it('un trou sort en classe cutout (trait plein), une ligne de style reste mark', () => {
+    const p0 = piece();
+    p0.internalLines = [
+      { points: [[0.2, 0.2], [0.5, 0.2], [0.5, 0.5], [0.2, 0.5]], closed: true, hole: true },
+      { points: [[0.6, 0.6], [0.8, 0.8]], closed: false },
+    ];
+    const draft: DraftDoc = {
+      format: 'toile-draft',
+      version: 1,
+      gridN: 64,
+      piece: p0,
+      manual: true,
+      seams: [],
+    };
+    const layout = layoutDraftPattern(draft);
+    expect(layout.pieces[0]!.internal[0]!.hole).toBe(true);
+    expect(layout.pieces[0]!.internal[1]!.hole).toBe(false);
+    const svg = draftPatternSvg(draft, 'Tee');
+    expect(svg).toContain('class="cutout"');
+    expect(svg).toContain('class="mark"');
+    expect(svg).toMatch(/\.cutout\{[^}]*stroke:#111/);
+  });
+});
+
 describe('numérotation du patron exporté', () => {
   it('conserve le pieceId lorsqu’un slot intermédiaire est absent', () => {
     const draft: DraftDoc = {

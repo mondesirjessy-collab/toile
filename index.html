@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TOILE — du brief au patron · v171</title>
+  <title>TOILE — du brief au patron · v181</title>
   <style>
     :root {
       color-scheme: dark;
@@ -564,6 +564,9 @@
     #offset-chooser,
     #fullness-chooser,
     #draw3d-chooser,
+    #precision-corner-chooser,
+    #precision-axis-chooser,
+    #divide-chooser,
     #gather-chooser {
       position: absolute;
       z-index: 5;
@@ -584,6 +587,9 @@
     #offset-chooser[hidden],
     #fullness-chooser[hidden],
     #draw3d-chooser[hidden],
+    #precision-corner-chooser[hidden],
+    #precision-axis-chooser[hidden],
+    #divide-chooser[hidden],
     #gather-chooser[hidden] { display: none; }
     #motif-chooser .q,
     #offset-chooser .q,
@@ -623,6 +629,9 @@
     }
     #motif-chooser button,
     #offset-chooser button,
+    #precision-corner-chooser button,
+    #precision-axis-chooser button,
+    #divide-chooser button,
     #gather-chooser button {
       min-height: 32px;
       font: 650 11px/1.2 Inter, ui-sans-serif, sans-serif;
@@ -1048,6 +1057,28 @@
       background: rgba(237, 233, 223, 0.2);
     }
     #split-divider:hover::after, #split-divider.dragging::after { width: 3px; left: 3px; background: rgba(255, 159, 107, 0.7); }
+    /* v178 ③ « pas dépaysé » — disposition Clo : la 3D à gauche, le plan 2D à
+       droite. Mêmes largeurs (--plan2d), seuls les côtés s'échangent ; le rail
+       reste à sa place. */
+    body.layout-3d-left #patternBox.big {
+      left: auto;
+      right: 0;
+      border-left: 1px solid rgba(237, 233, 223, 0.1);
+    }
+    body.layout-3d-left.atelier-active.plan-split #view,
+    body.layout-3d-left.atelier-active.plan-split #mirror {
+      left: var(--atelier-rail-w);
+    }
+    body.layout-3d-left.atelier-active.plan-split #atelier-view3d-tools {
+      left: calc(var(--atelier-rail-w) + 10px);
+    }
+    body.layout-3d-left #split-divider {
+      left: calc(100vw - var(--plan2d) - 4px);
+    }
+    body.layout-3d-left.atelier-active #patternBox:not(.big) {
+      left: auto;
+      right: 12px;
+    }
     @media (max-height: 760px) {
       body.atelier-active #atelier-bar.on {
         gap: 5px;
@@ -1135,7 +1166,7 @@
   <canvas id="view" tabindex="-1" aria-label="Vue 3D du vêtement et du mannequin"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 5 — du brief au patron · v171</small></span>
+    <span class="title">TOILE<small>phase 5 — du brief au patron · v181</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
       <span id="resolution-rebuild-status" role="status" aria-live="polite" hidden></span>
@@ -1228,6 +1259,8 @@
           <button id="at-length" data-first-tip aria-pressed="false" title="Modifier un bord sans limite. Sur une courbe jaune, tirer près d’une extrémité change la longueur totale en gardant l’autre extrémité fixe.">↔ Longueur</button>
           <button id="at-snap" data-first-tip aria-pressed="false" title="Option du mode Longueur : près de la bonne valeur, ajuste exactement la longueur, le parallélisme ou l’angle droit.">🧲 Ajustement auto</button>
           <button id="at-cut" data-first-tip aria-pressed="false" title="Couper & Coudre : cliquez deux points sur le contour d’une pièce — elle se scinde le long de la ligne et la couture se pose toute seule. Idéal pour un empiècement ou un colorblock.">✂ Découper</button>
+          <button id="at-merge" aria-pressed="false" title="FUSIONNER deux pièces (l’inverse de ✂) : cliquez le lien d’une couture — ses deux pièces se fondent en une seule, la couture s’efface, pinces/lignes internes/crans suivent. Honnête : seuls des bords superposables à plat fusionnent, sinon refus motivé (une couture qui porte du volume ne s’aplatit pas).">⧉ Fusionner</button>
+          <button id="at-hole" aria-pressed="false" title="ÉVIDER (le « Convert to Hole » de Clo) : cliquez une ligne interne FERMÉE (dessinée au ▱) — elle devient un TROU : découpée du maillage 3D à l’essayage, imprimée en trait de coupe plein aux exports. Re-clic dessus : rebouchée en ligne de style. Dos nu, cutouts, œillets.">⌾ Évider</button>
           <button id="at-internal" aria-pressed="false" title="Dessiner des LIGNES INTERNES dans une pièce : ligne de style, pliure, surpiqûre, repère de placement. Cliquez point par point dans la pièce — re-clic sur le premier point ferme un polygone, sur le dernier termine la polyligne. Visibles au plan, sur la préparation 3D et dans les exports PDF/SVG. Cliquer une ligne existante (outil armé) la supprime.">▱ Ligne interne</button>
           <button id="at-dart" aria-pressed="false" title="Pince LOSANGE (fisheye) : trois clics dans une pièce — pointe haute, pointe basse, puis largeur de taille. Le losange se coud fermé à l’essayage et cintre le tissu (taille, poitrine). La pince de bord classique reste au Alt + glisser sur un bord.">◆ Pince losange</button>
           <button id="at-curvepoint" aria-pressed="false" title="POINT COURBE : saisissez un sommet du contour et glissez — le coin s’arrondit en arc au rayon choisi (cm en direct) ; un clic simple arrondit à 40 % du bord voisin. Les coutures restent posées, les points de l’arc restent réglables un à un.">∿ Point courbe</button>
@@ -1250,6 +1283,8 @@
         </div>
         <div class="tgrp">
           <button id="at-link" data-first-tip aria-pressed="false" title="Marier deux segments : cliquez le premier bord puis le second. Leurs longueurs évolueront ensemble. Cliquez un bord déjà lié pour le dissocier.">🔗 Marier</button>
+          <button id="at-linkedit" aria-pressed="false" title="ÉDITION LIÉE (le « Linked Editing » de Clo) : quand elle est active, déplacer un sommet posé sur un bord COUSU déplace aussi son vis-à-vis sur la pièce partenaire — forme comprise, sens de couture respecté (marche aussi depuis ⬦ Retoucher contour). S’il n’y a pas de sommet en face, un point d’accord s’insère. Préférence conservée d’un geste à l’autre.">⛓ Édition liée</button>
+          <button id="at-precision" aria-pressed="false" title="ÉTABLI DE PRÉCISION — quatre gestes « au chiffre » : cliquez un SOMMET (équerrer l’angle à 90° ou aligner sur un autre sommet), un BORD du contour (le diviser en 2/3/4/6 parts égales), le BOUT d’une ligne interne (la prolonger jusqu’au contour) ou son MILIEU (la scinder en deux).">⌖ Précision</button>
           <button id="at-sew" data-first-tip aria-pressed="false" title="Coudre deux bords : cliquez le bouton, puis le premier bord et le second. Pour une poche posée, cliquez directement un côté pointillé.">🪡 Coudre</button>
           <button id="at-sew-free" data-first-tip aria-pressed="false" title="Couture libre : cliquez un point de départ sur un contour (même au milieu d’un bord), suivez le bord — les coins passent —, cliquez la fin. Puis tracez pareil le bord à assembler. Les points d’accord s’ajoutent tout seuls.">🧵 Couture libre</button>
           <button id="at-zipper" data-first-tip aria-pressed="false" title="Ajouter une fermeture éclair : cliquez le premier bord, puis le bord opposé. Les deux rubans restent identifiables dans le patron et sont fermés au premier essayage.">⚡ Fermeture éclair</button>
@@ -1261,7 +1296,7 @@
           <span id="atelier-selection-title" class="selection-kicker">Pièce active</span>
           <strong id="atelier-selection-name">Pièce 1</strong>
         </div>
-        <span class="selection-help">Clic droit sur une pièce pour la sélectionner · ⌘/Ctrl + clic droit pour un groupe.</span>
+        <span class="selection-help">Un clic sur une pièce la sélectionne (gauche ou droit) · ⌘/Ctrl + clic pour un groupe.</span>
         <label class="field-label" for="at-fabric">
           Tissu de la sélection
           <select id="at-fabric" aria-label="Tissu de la sélection" title="Affecter un tissu visuel et physique à la pièce active ou au groupe sélectionné">
@@ -1360,7 +1395,9 @@
         <dt>Fond 2D + glisser</dt><dd>Déplacer le plan sans modifier les pièces.</dd>
         <dt>Molette</dt><dd>Zoomer précisément sous le pointeur.</dd>
         <dt>Point + glisser</dt><dd>Déplacer un sommet du patron et ajuster directement sa forme.</dd>
-        <dt>Clic droit</dt><dd>Sélectionner toute une pièce ; avec ⌘/Ctrl, former un groupe.</dd>
+        <dt>Clic sur une pièce</dt><dd>Un clic sec la sélectionne — gauche ou droit ; avec ⌘/Ctrl, former un groupe. Le glisser, lui, déplace plan ou sélection.</dd>
+        <dt>🪡 Coutures en 3D</dt><dd>Interrupteur de la vue 3D : les liserés du plan se posent sur le tissu — drapé compris — et une pièce écartée reste reliée par ses FILS. Indépendant de l’outil armé, mémorisé.</dd>
+        <dt>Clic sec sur un bord</dt><dd>Le bord se COTE : longueur en place et au statut, couture et mariage indiqués — persistant jusqu’à Échap ou un autre clic. Le glisser bombe toujours le bord.</dd>
         <dt>Coin + glisser</dt><dd>Redimensionner la pièce ou tout le groupe sélectionné.</dd>
         <dt>Alt + glisser un bord</dt><dd>Créer une pince ; un glisser simple bombe le bord.</dd>
         <dt>⛶ Croquis sur corps</dt><dd>De face, cliquez des points sur le mannequin — la zone fermée devient une pièce (⋈ la symétrise sur l’axe du corps), placée où vous voulez. Le patron naît sur le corps.</dd>
@@ -1372,6 +1409,10 @@
         <dt>◆ Pince losange</dt><dd>Trois clics dans la pièce : pointe haute, pointe basse, largeur — le losange se coud fermé à l’essayage et cintre taille ou poitrine. Pince de bord = Alt + glisser.</dd>
         <dt>▱ Ligne interne</dt><dd>Cliquez point par point DANS une pièce : re-clic au 1er point = polygone fermé, au dernier = polyligne — style, pliure ou repère, imprimé en pointillé sur le patron. Avec ✂ armé, cliquer une ligne SCINDE la pièce le long de son tracé.</dd>
         <dt>✂ Découper</dt><dd>Deux clics sur le contour d’une pièce : elle se scinde, la couture se pose seule — empiècement ou colorblock en un geste.</dd>
+        <dt>⧉ Fusionner</dt><dd>L’inverse du ✂ : cliquez le lien d’une couture — ses deux pièces se fondent en une seule, décor compris. Seuls des bords superposables à plat fusionnent.</dd>
+        <dt>⌾ Évider</dt><dd>Cliquez une ligne interne fermée : elle devient un trou — découpé du maillage 3D, en trait de coupe plein aux exports. Re-clic : rebouchée.</dd>
+        <dt>⛓ Édition liée</dt><dd>Préférence : un sommet déplacé sur un bord cousu entraîne son vis-à-vis, forme comprise — la symétrie vivante des coutures.</dd>
+        <dt>⌖ Précision</dt><dd>Sommet = équerrer (90°) ou aligner · bord = diviser en N parts égales · bout de ligne interne = prolonger au contour · milieu = scinder en deux.</dd>
         <dt>⧎ Miroir</dt><dd>Cliquez le bord-axe d’une pièce : sa jumelle symétrique apparaît, cousue le long de l’axe — un demi-devant se déplie en entier.</dd>
         <dt>⋈ Miroir au tracé</dt><dd>À la plume : le 1er point pose l’axe vertical, dessinez UNE moitié — l’autre s’écrit en direct et la fermeture donne la pièce symétrique entière.</dd>
         <dt>⌒ Manche adaptée</dt><dd>Un clic : chaque emmanchure libre est mesurée et sa manche générée à la cote — une pièce posée « Bras » à la main s’ajuste de même.</dd>
@@ -1387,6 +1428,18 @@
         <dt>Échap</dt><dd>Annuler le geste ou désarmer l’outil actif.</dd>
         <dt>⌘/Ctrl + Z</dt><dd>Annuler la dernière modification validée.</dd>
       </dl>
+      <p class="cheatsheet-note"><strong>Si tu viens de Clo</strong> — les lettres de CLO gardent leur sens ici :</p>
+      <dl class="cheatsheet-gestures">
+        <dt>Espace</dt><dd>Essayer en 3D / Revenir au patron — le Simuler de Clo.</dd>
+        <dt>X</dt><dd>⌖ Précision — leur Ajouter un point / Diviser la ligne.</dd>
+        <dt>G</dt><dd>▱ Ligne interne.</dd>
+        <dt>B ou N</dt><dd>╱ Coudre — modifier ou créer une couture.</dd>
+        <dt>M</dt><dd>🧵 Couture libre.</dd>
+        <dt>C ou V</dt><dd>∿ Point courbe — courbure et points de courbe.</dd>
+        <dt>A ou Z</dt><dd>Revenir au geste de base — ici, éditer le contour n’a pas besoin d’outil : glisser un point suffit.</dd>
+        <dt>⇄ 3D à gauche</dt><dd>La disposition Clo : vue 3D à gauche, plan à droite — bouton dans l’en-tête du plan, mémorisé d’une session à l’autre.</dd>
+        <dt>◐ Papier</dt><dd>Le plan 2D au jour — fond papier, encre marine, la table de coupe de Clo. La 3D reste la nôtre. Mémorisé.</dd>
+      </dl>
       <p class="cheatsheet-note">Astuce : la position libre des pièces en 2D ou en préparation 3D ne remplace jamais les coutures. Au lancement de l’essayage, TOILE reconstruit leur pose d’assemblage.</p>
     </section>
 
@@ -1397,6 +1450,8 @@
         <span class="pane-shortcut">Glisser le fond pour se déplacer · molette pour zoomer</span>
       </div>
       <div class="zoom-tools" aria-label="Zoom du plan de coupe">
+        <button id="at-layout-clo" aria-pressed="false" title="Disposition Clo : la vue 3D à gauche, le plan 2D à droite — re-cliquez pour revenir au plan à gauche. Préférence mémorisée.">⇄ 3D à gauche</button>
+        <button id="at-plan-theme" aria-pressed="false" title="Thème du plan 2D : PAPIER = la table de coupe au jour (fond papier, encre marine), re-clic = NUIT. La 3D ne change pas. Préférence mémorisée.">◐ Papier</button>
         <button id="at-reset2d" title="Réinitialiser l’arrangement 2D : chaque pièce déplacée dans le plan retrouve sa colonne — patron, coutures et essayage inchangés." aria-label="Réinitialiser l’arrangement 2D du plan">⌖ Ranger</button>
         <button id="at-zoom-out" title="Réduire le plan de coupe" aria-label="Réduire le plan de coupe">−</button>
         <button id="at-zoom-reset" title="Afficher toutes les pièces du patron" aria-label="Réinitialiser le zoom du plan">100%</button>
@@ -1456,6 +1511,27 @@
       <button id="draw3d-split-now">✂ Scinder maintenant</button>
       <button id="draw3d-split-keep">Garder la ligne</button>
     </div>
+    <div id="precision-corner-chooser" hidden>
+      <span>⌖ Ce sommet :</span>
+      <button data-act="sq-prev">∟ Équerrer vers le bord précédent</button>
+      <button data-act="sq-next">∟ Équerrer vers le bord suivant</button>
+      <button data-act="align">⌗ Aligner sur un autre sommet (cliquez-le ensuite)</button>
+      <button id="precision-corner-cancel">Annuler</button>
+    </div>
+    <div id="precision-axis-chooser" hidden>
+      <span>⌗ Aligner sur la référence :</span>
+      <button data-axis="x">Même verticale (X)</button>
+      <button data-axis="y">Même horizontale (Y)</button>
+      <button id="precision-axis-cancel">Annuler</button>
+    </div>
+    <div id="divide-chooser" hidden>
+      <span>◫ Diviser ce bord en :</span>
+      <button data-parts="2">2 parts</button>
+      <button data-parts="3">3 parts</button>
+      <button data-parts="4">4 parts</button>
+      <button data-parts="6">6 parts</button>
+      <button id="divide-cancel">Annuler</button>
+    </div>
     <div id="fullness-chooser" hidden>
       <span>⧢ Ampleur à ouvrir :</span>
       <button data-open-cm="2">+2 cm</button>
@@ -1508,7 +1584,7 @@
         <button id="at-empty-piece" type="button">✎ Tracer une pièce</button>
       </div>
     </section>
-    <canvas id="pattern" width="250" height="290" title="Navigation : glisser le fond pour déplacer le plan · bouton central : déplacer depuis n’importe où · molette : zoomer sous le pointeur · clic droit : sélectionner une pièce · Commande/Ctrl + clic droit : ajouter ou retirer du groupe · tirer un coin : redimensionner le groupe · glisser une pièce sélectionnée : l’organiser sans changer la simulation"></canvas>
+    <canvas id="pattern" width="250" height="290" title="Navigation : glisser le fond pour déplacer le plan · bouton central : déplacer depuis n’importe où · molette : zoomer sous le pointeur · un clic (gauche ou droit) : sélectionner une pièce · Commande/Ctrl + clic : ajouter ou retirer du groupe · tirer un coin : redimensionner le groupe · glisser une pièce sélectionnée : l’organiser sans changer la simulation"></canvas>
   </div>
   <div id="atelier-view3d-tools" aria-label="Outils de la vue 3D">
     <div class="view3d-title">
@@ -1520,6 +1596,7 @@
     <button id="at-draw3d" aria-pressed="false" title="Dessiner SUR LE TISSU de la préparation 3D : cliquez des points sur une pièce plate — re-clic sur le premier point ferme un polygone, sur le dernier termine la polyligne. Le tracé retombe en ligne interne du patron 2D, scindable avec ✂ Découper, imprimée aux exports.">✎ Dessiner sur tissu</button>
     <button id="at-edit3d" aria-pressed="false" title="ÉDITER LE CONTOUR EN 3D : les sommets du patron s’allument sur le tissu de la préparation — tirez-en un directement, il suit sur le plan de sa pièce. Au relâcher le patron 2D suit et les coutures recousent aux nouvelles longueurs.">⬦ Retoucher contour</button>
     <button id="at-sketch3d" aria-pressed="false" title="CROQUIS SUR LE CORPS : de face, cliquez des points directement sur le mannequin — même depuis la page blanche. La zone fermée devient une pièce du patron (⋈ la symétrise sur l’axe du corps) et passe au choix de placement : Devant, Dos, Bras avec manche adaptée…">⛶ Croquis sur corps</button>
+    <button id="at-seams3d" aria-pressed="true" title="VOIR LES COUTURES sur le vêtement 3D : les liserés du plan se posent sur le tissu — drapé compris — et une pièce écartée reste reliée par ses fils. Indépendant de l’outil armé, mémorisé.">🪡 Coutures</button>
     <button id="at-reset3d" title="Annuler uniquement le déplacement manuel de préparation de la pièce active. Son placement final sera toujours reconstruit depuis les coutures au lancement de l’essayage.">⌖ Annuler le déplacement manuel</button>
   </div>
   <div id="atelier-statusbar" role="status">

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { outlineEdgeLengthCm } from '../src/app/PatternView';
 import {
+  compileAssembly,
+  compileAssemblyGroups,
+  tshirtDraft,
   cutPieceAlongChord,
   graphicLocalUV,
   offsetPieceOutline,
@@ -17,6 +21,16 @@ import {
   addSeamNotches,
   runPointAtFraction,
   slashSpreadFullness,
+  mergePiecesAlongSeam,
+  linkedVertexEdit,
+  toggleInternalHole,
+  divideOutlineEdge,
+  alignOutlineVertex,
+  squareCorner,
+  extendInternalLineEnd,
+  divideInternalLineAt,
+  pieceHolePolygons,
+  docPieces,
   CURVE_POINT_SAMPLES,
   compileDraft,
   INTERNAL_LINES_MAX,
@@ -29,6 +43,7 @@ import {
   type DraftPiece,
   type UV,
 } from '../src/engine/pattern/Draft';
+import { generateSeamedPanels } from '../src/engine/cloth/ClothMesh';
 
 const rectPiece = (over: Partial<DraftPiece> = {}): DraftPiece => ({
   outline: [
@@ -1257,5 +1272,601 @@ describe('miroir cousu (v157) — dupliquer en symétrie et coudre l’axe', () 
     const clean = sanitizeDraft(JSON.parse(JSON.stringify(res.doc)));
     expect(clean!.pieces).toHaveLength(1);
     expect(clean!.seams).toHaveLength(1);
+  });
+});
+
+describe('fusion (v172) — mergePiecesAlongSeam, l’inverse du ✂', () => {
+  const docPiece = (d: DraftDoc, pid: number): DraftPiece => docPieces(d)[pid]!;
+  const wpt = (piece: DraftPiece, [u, v]: UV): [number, number] => [
+    (u - 0.5) * piece.width,
+    piece.topY - v * piece.height,
+  ];
+  const areaM = (p: DraftPiece): number => {
+    let a = 0;
+    for (let i = 0; i < p.outline.length; i++) {
+      const [x1, y1] = [p.outline[i]![0] * p.width, p.outline[i]![1] * p.height];
+      const j = (i + 1) % p.outline.length;
+      const [x2, y2] = [p.outline[j]![0] * p.width, p.outline[j]![1] * p.height];
+      a += x1 * y2 - x2 * y1;
+    }
+    return Math.abs(a / 2);
+  };
+  const cutSeamIndex = (d: DraftDoc, pidNew: number): number =>
+    (d.seams ?? []).findIndex(
+      (s) =>
+        (pieceIdOf(s.a) === 0 && pieceIdOf(s.b) === pidNew) ||
+        (pieceIdOf(s.b) === 0 && pieceIdOf(s.a) === pidNew),
+    );
+
+  it('aller-retour : couper puis fondre rend la pièce d’origine (aire et monde exacts)', () => {
+    const d = doc();
+    const before = d.piece;
+    const cut = cutPieceAlongChord(d, 0, { edge: 3, t: 0.5 }, { edge: 1, t: 0.5 });
+    expect(cut.ok).toBe(true);
+    if (!cut.ok) return;
+    const si = cutSeamIndex(cut.doc, cut.newPieceId);
+    expect(si).toBeGreaterThanOrEqual(0);
+    const merged = mergePiecesAlongSeam(cut.doc, si);
+    expect(merged.ok).toBe(true);
+    if (!merged.ok) return;
+    expect(merged.keptPieceId).toBe(0);
+    expect(merged.doc.pieces ?? []).toHaveLength(0);
+    // La couture de découpe a disparu, rien d'autre n'est apparu.
+    expect(merged.doc.seams ?? []).toHaveLength(0);
+    // L'écart mesuré est quasi nul : les deux bords viennent du même trait.
+    expect(merged.seamGapMaxM).toBeLessThan(1e-6);
+    // Aire métrique conservée.
+    expect(areaM(merged.doc.piece)).toBeCloseTo(areaM(before), 6);
+    // Chaque coin d'origine existe encore, au même point MONDE.
+    for (const corner of before.outline) {
+      const [wx, wy] = wpt(before, corner);
+      const hit = merged.doc.piece.outline.some((p) => {
+        const [mx, my] = wpt(merged.doc.piece, p);
+        return Math.hypot(mx - wx, my - wy) < 0.001;
+      });
+      expect(hit).toBe(true);
+    }
+  });
+
+  it('le décor des DEUX côtés suit : ligne interne, cran, pince gardent leur point monde', () => {
+    const d = doc();
+    const cut = cutPieceAlongChord(d, 0, { edge: 3, t: 0.5 }, { edge: 1, t: 0.5 });
+    expect(cut.ok).toBe(true);
+    if (!cut.ok) return;
+    let d2 = cut.doc;
+    const pidB = cut.newPieceId;
+    // Décor posé APRÈS la découpe : une ligne interne sur la moitié gardée,
+    // un cran + une pince sur la moitié absorbée.
+    const A0 = d2.piece;
+    const B0 = docPiece(d2, pidB);
+    const lineA: InternalLine = { points: [[0.3, 0.3], [0.6, 0.35]] as UV[] };
+    d2 = { ...d2, piece: { ...A0, internalLines: [lineA] } };
+    const withDecor = {
+      ...B0,
+      notches: [{ at: [...B0.outline[0]!] as UV }],
+      darts: [
+        {
+          apex: [
+            (B0.outline[0]![0] + B0.outline[1]![0] + B0.outline[2]![0]) / 3,
+            (B0.outline[0]![1] + B0.outline[1]![1] + B0.outline[2]![1]) / 3,
+          ] as UV,
+          legA: [...B0.outline[0]!] as UV,
+          legB: [...B0.outline[1]!] as UV,
+        },
+      ],
+    };
+    const pieces = [...(d2.pieces ?? [])];
+    pieces[pidB - 2] = withDecor;
+    d2 = { ...d2, pieces };
+    const wNotch = wpt(withDecor, withDecor.notches![0]!.at);
+    const wLine0 = wpt(d2.piece, lineA.points[0]!);
+    const si = cutSeamIndex(d2, pidB);
+    const merged = mergePiecesAlongSeam(d2, si);
+    expect(merged.ok).toBe(true);
+    if (!merged.ok) return;
+    const P = merged.doc.piece;
+    expect(P.internalLines).toHaveLength(1);
+    expect(P.notches).toHaveLength(1);
+    expect(P.darts).toHaveLength(1);
+    const wNotch2 = wpt(P, P.notches![0]!.at);
+    expect(Math.hypot(wNotch2[0] - wNotch[0], wNotch2[1] - wNotch[1])).toBeLessThan(0.001);
+    const wLine2 = wpt(P, P.internalLines![0]!.points[0]!);
+    expect(Math.hypot(wLine2[0] - wLine0[0], wLine2[1] - wLine0[1])).toBeLessThan(0.001);
+  });
+
+  it('fusionner la paire ⧎ = DÉPLIER en une seule pièce symétrique, sans couture', () => {
+    const d = doc();
+    d.piece.outline = [
+      [0.2, 0.1],
+      [0.6, 0.1],
+      [0.6, 0.8],
+      [0.35, 0.9],
+      [0.2, 0.6],
+    ] as UV[];
+    const halfArea = areaM(d.piece);
+    const mir = mirrorDuplicatePiece(d, 0, 1); // axe = arête 1 (bord droit)
+    expect(mir.ok).toBe(true);
+    if (!mir.ok) return;
+    const merged = mergePiecesAlongSeam(mir.doc, mir.seamIndex);
+    expect(merged.ok).toBe(true);
+    if (!merged.ok) return;
+    expect(merged.doc.pieces ?? []).toHaveLength(0);
+    expect(merged.doc.seams ?? []).toHaveLength(0);
+    const P = merged.doc.piece;
+    // Aire doublée (le déplié).
+    expect(areaM(P)).toBeCloseTo(2 * halfArea, 6);
+    // Symétrie exacte autour de l'axe MONDE de la couture fondue : chaque
+    // sommet a son jumeau réfléchi.
+    // rebox recentre le cadre sur la boîte englobante du déplié : l'axe de
+    // pliure est donc exactement x=0 monde dans le nouveau cadre.
+    const axisX = 0;
+    for (const p of P.outline) {
+      const [x, y] = wpt(P, p);
+      const twinHit = P.outline.some((q) => {
+        const [qx, qy] = wpt(P, q);
+        return Math.hypot(2 * axisX - x - qx, y - qy) < 0.001;
+      });
+      expect(twinHit).toBe(true);
+    }
+  });
+
+  it('refus motivés : volume 3D (bords non congruents), faces, même pièce, zip', () => {
+    // Bords non congruents : le bord de B est BOMBÉ (même corde, arc plus long).
+    const d = doc();
+    const free = rectPiece({
+      outline: [
+        [0.2, 0.2],
+        [0.5, 0.35], // bosse au milieu du "bord de couture"
+        [0.8, 0.2],
+        [0.8, 0.8],
+        [0.2, 0.8],
+      ] as UV[],
+    });
+    const d2: DraftDoc = {
+      ...d,
+      pieces: [free],
+      seams: [
+        { a: { face: 'front', from: 0, to: 1 }, b: { pieceId: 2, from: 0, to: 2 } },
+        { a: { face: 'front', from: 1, to: 2 }, b: { face: 'back', from: 1, to: 2 } },
+        { a: { face: 'front', from: 2, to: 3 }, b: { pieceId: 2, from: 2, to: 3 }, kind: 'zipper' },
+      ],
+    };
+    const r1 = mergePiecesAlongSeam(d2, 0);
+    expect(r1.ok).toBe(false);
+    if (!r1.ok) expect(r1.reason).toContain('superposent');
+    const r2 = mergePiecesAlongSeam(d2, 1); // devant ↔ dos
+    expect(r2.ok).toBe(false);
+    const r3 = mergePiecesAlongSeam(d2, 2); // zip
+    expect(r3.ok).toBe(false);
+    const selfDoc: DraftDoc = {
+      ...d,
+      seams: [{ a: { face: 'front', from: 0, to: 1 }, b: { face: 'front', from: 2, to: 3 } }],
+    };
+    expect(mergePiecesAlongSeam(selfDoc, 0).ok).toBe(false);
+    expect(mergePiecesAlongSeam(d, 99).ok).toBe(false);
+  });
+
+  it('les liens tiers survivent, réindexés sur la pièce fusionnée, au monde près', () => {
+    const d = doc();
+    const cut = cutPieceAlongChord(d, 0, { edge: 3, t: 0.5 }, { edge: 1, t: 0.5 });
+    expect(cut.ok).toBe(true);
+    if (!cut.ok) return;
+    const pidB = cut.newPieceId;
+    const B = docPiece(cut.doc, pidB);
+    // Une arête de B loin de la couture de découpe : ses deux bouts sur le
+    // bord bas (v≈0.8) du rectangle d'origine.
+    const NB = B.outline.length;
+    let edgeB = -1;
+    for (let i = 0; i < NB; i++) {
+      const p = B.outline[i]!;
+      const q = B.outline[(i + 1) % NB]!;
+      if (p[1] > 0.75 && q[1] > 0.75) {
+        edgeB = i;
+        break;
+      }
+    }
+    expect(edgeB).toBeGreaterThanOrEqual(0);
+    const wFrom = wpt(B, B.outline[edgeB]!);
+    const wTo = wpt(B, B.outline[(edgeB + 1) % NB]!);
+    const d2: DraftDoc = {
+      ...cut.doc,
+      segmentLinks: [
+        { a: { pieceId: pidB, from: edgeB, to: (edgeB + 1) % NB }, b: { face: 'back', from: 0, to: 1 } },
+      ],
+    };
+    const si = cutSeamIndex(d2, pidB);
+    const merged = mergePiecesAlongSeam(d2, si);
+    expect(merged.ok).toBe(true);
+    if (!merged.ok) return;
+    expect(merged.droppedLinks).toBe(0);
+    const links = merged.doc.segmentLinks ?? [];
+    expect(links).toHaveLength(1);
+    const side = pieceIdOf(links[0]!.a) === 0 ? links[0]!.a : links[0]!.b;
+    expect(pieceIdOf(side)).toBe(0);
+    const P = merged.doc.piece;
+    const nFrom = wpt(P, P.outline[side.from]!);
+    const nTo = wpt(P, P.outline[side.to % P.outline.length]!);
+    // Mêmes deux bouts MONDE, dans un sens ou dans l'autre (les runs sont non
+    // orientés — l'anti-vrillage choisit à la couture).
+    const straight = Math.hypot(nFrom[0] - wFrom[0], nFrom[1] - wFrom[1]) < 0.001 &&
+      Math.hypot(nTo[0] - wTo[0], nTo[1] - wTo[1]) < 0.001;
+    const flipped = Math.hypot(nFrom[0] - wTo[0], nFrom[1] - wTo[1]) < 0.001 &&
+      Math.hypot(nTo[0] - wFrom[0], nTo[1] - wFrom[1]) < 0.001;
+    expect(straight || flipped).toBe(true);
+  });
+});
+
+describe('trous (v173) — toggleInternalHole, l’« évider » de Clo', () => {
+  const holeSquare: UV[] = [
+    [0.4, 0.4],
+    [0.6, 0.4],
+    [0.6, 0.6],
+    [0.4, 0.6],
+  ];
+
+  it('bascule fermée → trou, re-clic → style ; sanitize round-trip ; filtre des polygones', () => {
+    const d = doc();
+    d.piece.internalLines = [
+      { points: holeSquare.map((p) => [...p] as UV), closed: true },
+      { points: [[0.25, 0.7], [0.35, 0.75]] as UV[] },
+    ];
+    const r1 = toggleInternalHole(d, 0, 0);
+    expect(r1.ok).toBe(true);
+    if (!r1.ok) return;
+    expect(r1.holed).toBe(true);
+    expect(r1.doc.piece.internalLines![0]!.hole).toBe(true);
+    // pieceHolePolygons ne retient QUE les fermées marquées trou.
+    expect(pieceHolePolygons(r1.doc.piece)).toHaveLength(1);
+    // Round-trip sanitize : le flag survit — et jamais sur une polyligne.
+    const clean = sanitizeDraft(JSON.parse(JSON.stringify(r1.doc)))!;
+    expect(clean.piece.internalLines![0]!.hole).toBe(true);
+    const dirty = JSON.parse(JSON.stringify(r1.doc));
+    dirty.piece.internalLines[1].hole = true; // corrompu : trou sur POLYLIGNE
+    const clean2 = sanitizeDraft(dirty)!;
+    expect(clean2.piece.internalLines![1]!.hole).toBeUndefined();
+    // Re-clic : rebouché.
+    const r2 = toggleInternalHole(r1.doc, 0, 0);
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) return;
+    expect(r2.holed).toBe(false);
+    expect(r2.doc.piece.internalLines![0]!.hole).toBeUndefined();
+    expect(pieceHolePolygons(r2.doc.piece)).toHaveLength(0);
+  });
+
+  it('le maillage s’évide réellement : particule morte au centre du trou', () => {
+    const n = 24;
+    const outline: UV[] = [
+      [0.05, 0.05],
+      [0.95, 0.05],
+      [0.95, 0.95],
+      [0.05, 0.95],
+    ];
+    const base = { resolution: n, shape: 'freeform' as const, width: 0.6, height: 0.8, gap: 0.3, topY: 1.5 };
+    const plain = generateSeamedPanels({ ...base, mask: { outline, darts: [] } });
+    const holed = generateSeamedPanels({ ...base, mask: { outline, darts: [], holes: [holeSquare] } });
+    const center = Math.round((n - 1) / 2) * n + Math.round((n - 1) / 2);
+    expect(plain.invMasses[center]).toBeGreaterThan(0);
+    expect(holed.invMasses[center]).toBe(0);
+    const alive = (m: Float32Array): number => {
+      let k = 0;
+      for (let i = 0; i < n * n; i++) if (m[i]! > 0) k++;
+      return k;
+    };
+    const lost = alive(plain.invMasses) - alive(holed.invMasses);
+    expect(lost).toBeGreaterThan(10); // ~4 % de la grille pour un carré de 20 %
+    // Et un point HORS du trou vit toujours (coin haut-gauche de l'étoffe).
+    const corner = 3 * n + 3;
+    expect(holed.invMasses[corner]).toBeGreaterThan(0);
+  });
+
+  it('refus motivés : polyligne, tracé hors pièce, pince dans le trou', () => {
+    const d = doc();
+    d.piece.internalLines = [
+      { points: [[0.3, 0.3], [0.6, 0.35]] as UV[] }, // polyligne
+      { points: [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]] as UV[], closed: true }, // sort du contour (0.2–0.8)
+      { points: holeSquare.map((p) => [...p] as UV), closed: true },
+    ];
+    const r1 = toggleInternalHole(d, 0, 0);
+    expect(r1.ok).toBe(false);
+    if (!r1.ok) expect(r1.reason).toContain('polyligne');
+    const r2 = toggleInternalHole(d, 0, 1);
+    expect(r2.ok).toBe(false);
+    if (!r2.ok) expect(r2.reason).toContain('DANS la pièce');
+    d.piece.darts = [{ apex: [0.5, 0.5], legA: [0.45, 0.55], legB: [0.55, 0.55] }];
+    const r3 = toggleInternalHole(d, 0, 2);
+    expect(r3.ok).toBe(false);
+    if (!r3.ok) expect(r3.reason).toContain('pince');
+    // Reboucher reste TOUJOURS permis, même si la géométrie a bougé depuis.
+    d.piece.darts = [];
+    const ok = toggleInternalHole(d, 0, 2);
+    expect(ok.ok).toBe(true);
+    expect(toggleInternalHole(d, 0, 99).ok).toBe(false);
+  });
+});
+
+describe('édition liée (v174) — linkedVertexEdit, le « Linked Editing » de Clo', () => {
+  const wpt = (piece: DraftPiece, [u, v]: UV): [number, number] => [
+    (u - 0.5) * piece.width,
+    piece.topY - v * piece.height,
+  ];
+  const cutSeamOf = (d: DraftDoc, pidNew: number): number =>
+    (d.seams ?? []).findIndex(
+      (s) =>
+        (pieceIdOf(s.a) === 0 && pieceIdOf(s.b) === pidNew) ||
+        (pieceIdOf(s.b) === 0 && pieceIdOf(s.a) === pidNew),
+    );
+
+  it('le vis-à-vis suit, forme comprise : après l’édition liée, ⧉ fusionne encore', () => {
+    const d = doc();
+    const cut = cutPieceAlongChord(d, 0, { edge: 3, t: 0.5 }, { edge: 1, t: 0.5 });
+    expect(cut.ok).toBe(true);
+    if (!cut.ok) return;
+    const si = cutSeamOf(cut.doc, cut.newPieceId);
+    const seam = cut.doc.seams![si]!;
+    const srcSide = pieceIdOf(seam.a) === 0 ? seam.a : seam.b;
+    const v = srcSide.from % cut.doc.piece.outline.length;
+    const from = cut.doc.piece.outline[v]!;
+    const target: UV = [from[0] + 0.05, from[1] + 0.03]; // 3 cm × 2,7 cm métriques
+    // SANS suivi : le déplacement du seul côté source rend les bords non
+    // congruents — la fusion refuse (contre-épreuve).
+    const lone = JSON.parse(JSON.stringify(cut.doc)) as DraftDoc;
+    lone.piece.outline[v] = [...target] as UV;
+    const refuse = mergePiecesAlongSeam(lone, si);
+    expect(refuse.ok).toBe(false);
+    // AVEC l'édition liée : le partenaire suit, la congruence tient, ⧉ accepte.
+    const res = linkedVertexEdit(cut.doc, 0, v, target);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.followed).toHaveLength(1);
+    expect(res.followed[0]!.pieceId).toBe(cut.newPieceId);
+    expect(res.followed[0]!.inserted).toBe(false); // le point d'accord existait (découpe)
+    expect(res.doc.piece.outline[v]![0]).toBeCloseTo(target[0], 9);
+    const merged = mergePiecesAlongSeam(res.doc, si);
+    expect(merged.ok).toBe(true);
+    if (!merged.ok) return;
+    expect(merged.seamGapMaxM).toBeLessThan(0.001);
+  });
+
+  it('la symétrie vivante : la paire ⧎ éditée liée reste un miroir parfait', () => {
+    const d = doc();
+    d.piece.outline = [
+      [0.2, 0.1],
+      [0.6, 0.1],
+      [0.6, 0.8],
+      [0.35, 0.9],
+      [0.2, 0.6],
+    ] as UV[];
+    const mir = mirrorDuplicatePiece(d, 0, 1); // axe = arête 1 (bord droit)
+    expect(mir.ok).toBe(true);
+    if (!mir.ok) return;
+    const seam = mir.doc.seams![mir.seamIndex]!;
+    const v = (pieceIdOf(seam.a) === 0 ? seam.a : seam.b).from % mir.doc.piece.outline.length;
+    const from = mir.doc.piece.outline[v]!;
+    // Le long de l'AXE (u constant) : l'axe de pliure reste la même droite,
+    // le miroir global doit donc survivre au geste. (Un delta perpendiculaire
+    // déplacerait l'axe lui-même — congruence gardée mais symétrie déplacée.)
+    const res = linkedVertexEdit(mir.doc, 0, v, [from[0], from[1] + 0.05]);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.followed).toHaveLength(1);
+    expect(res.followed[0]!.pieceId).toBe(2);
+    // La preuve par la fusion : le déplié reste possible ET symétrique.
+    const merged = mergePiecesAlongSeam(res.doc, mir.seamIndex);
+    expect(merged.ok).toBe(true);
+    if (!merged.ok) return;
+    const P = merged.doc.piece;
+    for (const p of P.outline) {
+      const [x, y] = wpt(P, p);
+      const twinHit = P.outline.some((q) => {
+        const [qx, qy] = wpt(P, q);
+        return Math.hypot(-x - qx, y - qy) < 0.001; // axe du déplié = x=0 (rebox)
+      });
+      expect(twinHit).toBe(true);
+    }
+  });
+
+  it('sommet hors couture : rien à lier, le doc rendu est celui d’entrée', () => {
+    const d = doc();
+    const cut = cutPieceAlongChord(d, 0, { edge: 3, t: 0.5 }, { edge: 1, t: 0.5 });
+    expect(cut.ok).toBe(true);
+    if (!cut.ok) return;
+    // Un coin du bas du devant, loin de la couture de découpe.
+    const N = cut.doc.piece.outline.length;
+    let corner = -1;
+    for (let i = 0; i < N; i++) {
+      const q = cut.doc.piece.outline[i]!;
+      if (Math.abs(q[0] - 0.2) < 1e-6 && Math.abs(q[1] - 0.2) < 1e-6) corner = i;
+    }
+    if (corner < 0) {
+      for (let i = 0; i < N; i++) {
+        const q = cut.doc.piece.outline[i]!;
+        if (Math.abs(q[0] - 0.2) < 1e-6 && Math.abs(q[1] - 0.8) < 1e-6) corner = i;
+      }
+    }
+    expect(corner).toBeGreaterThanOrEqual(0);
+    const res = linkedVertexEdit(cut.doc, 0, corner, [0.15, 0.55]);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.followed).toHaveLength(0);
+    expect(res.doc).toBe(cut.doc); // contrat : au caller de committer normalement
+  });
+
+  it('refus net : un suivi qui croiserait un contour abandonne TOUT le geste', () => {
+    const d = doc();
+    const cut = cutPieceAlongChord(d, 0, { edge: 3, t: 0.5 }, { edge: 1, t: 0.5 });
+    expect(cut.ok).toBe(true);
+    if (!cut.ok) return;
+    const si = cutSeamOf(cut.doc, cut.newPieceId);
+    const seam = cut.doc.seams![si]!;
+    const srcSide = pieceIdOf(seam.a) === 0 ? seam.a : seam.b;
+    const v = srcSide.from % cut.doc.piece.outline.length;
+    // Traverser toute la pièce : le contour source se croiserait.
+    const res = linkedVertexEdit(cut.doc, 0, v, [0.95, 0.95]);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toContain('geste abandonné');
+  });
+});
+
+describe('établi de précision (v175) — diviser, aligner, équerrer, prolonger, scinder', () => {
+  it('◫ divise un bord en 3 parts égales MÉTRIQUES, coutures réindexées au monde près', () => {
+    const d = doc();
+    // Une couture sur le bord 2 (bas → sera décalé par les insertions du bord 0).
+    d.seams = [{ a: { face: 'front', from: 2, to: 3 }, b: { face: 'back', from: 2, to: 3 } }];
+    const before = d.piece.outline[2]!;
+    const res = divideOutlineEdge(d, 0, 0, 3);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const P = res.doc.piece;
+    expect(P.outline).toHaveLength(6);
+    // Tiers exacts sur le bord 0 (0.2,0.2)→(0.8,0.2).
+    expect(P.outline[1]![0]).toBeCloseTo(0.4, 9);
+    expect(P.outline[2]![0]).toBeCloseTo(0.6, 9);
+    expect(P.outline[1]![1]).toBeCloseTo(0.2, 9);
+    // La couture suit ses sommets d'origine (décalés de +2).
+    const s = res.doc.seams![0]!;
+    expect(s.a.from).toBe(4);
+    expect(res.doc.piece.outline[s.a.from]![0]).toBeCloseTo(before[0], 9);
+    // Refus : bord minuscule / trop de parts.
+    expect(divideOutlineEdge(d, 0, 0, 9).ok).toBe(false);
+  });
+
+  it('⌗ aligne un sommet sur un autre (même verticale), refuse le déjà-aligné', () => {
+    const d = doc();
+    d.piece.outline = [
+      [0.2, 0.2],
+      [0.8, 0.25],
+      [0.78, 0.8],
+      [0.2, 0.8],
+    ] as UV[];
+    const res = alignOutlineVertex(d, 0, 2, 1, 'x');
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.doc.piece.outline[2]![0]).toBeCloseTo(0.8, 9); // même X que la référence
+    expect(res.doc.piece.outline[2]![1]).toBeCloseTo(0.8, 9); // Y inchangé
+    expect(res.target[0]).toBeCloseTo(0.8, 9);
+    const again = alignOutlineVertex(res.doc, 0, 2, 1, 'x');
+    expect(again.ok).toBe(false);
+    if (!again.ok) expect(again.reason).toContain('alignés');
+    expect(alignOutlineVertex(d, 0, 1, 1, 'x').ok).toBe(false);
+  });
+
+  it('∟ équerre un angle : la tangente au sommet devient perpendiculaire à 1° près', () => {
+    const d = doc();
+    // Coin très ouvert au sommet 1 : (0.2,0.2)→(0.8,0.2) puis (0.8,0.2)→(0.9,0.8).
+    d.piece.outline = [
+      [0.2, 0.2],
+      [0.8, 0.2],
+      [0.9, 0.8],
+      [0.2, 0.8],
+    ] as UV[];
+    const N0 = d.piece.outline.length;
+    const res = squareCorner(d, 0, 1, 'next');
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const P = res.doc.piece;
+    expect(P.outline.length).toBeGreaterThan(N0);
+    // Tangente au sommet 1 (vers le point inséré suivant), en MÉTRIQUE.
+    const M = ([u, v]: UV): [number, number] => [u * P.width, v * P.height];
+    const V = M(P.outline[1]!);
+    const T = M(P.outline[2]!);
+    const Uprev = M(P.outline[0]!);
+    const tan = [T[0] - V[0], T[1] - V[1]];
+    const ref = [Uprev[0] - V[0], Uprev[1] - V[1]];
+    const cos =
+      (tan[0] * ref[0] + tan[1] * ref[1]) /
+      (Math.hypot(tan[0], tan[1]) * Math.hypot(ref[0], ref[1]));
+    // L'arc est ÉCHANTILLONNÉ (K=6) : la corde vers le 1er échantillon dévie
+    // d'~1,3° de la tangente vraie — la perpendiculaire s'entend à l'échantillon.
+    expect(Math.abs((Math.acos(Math.min(1, Math.max(-1, cos))) * 180) / Math.PI - 90)).toBeLessThan(2.5);
+    // Le bout du bord courbé n'a pas bougé.
+    expect(P.outline[1 + CURVE_POINT_SAMPLES]![0]).toBeCloseTo(0.9, 9);
+    // Déjà d'équerre → refus motivé avec l'angle.
+    const rect = doc();
+    const r2 = squareCorner(rect, 0, 1, 'next');
+    expect(r2.ok).toBe(false);
+    if (!r2.ok) expect(r2.reason).toContain('équerre');
+  });
+
+  it('⇥ prolonge un bout de ligne interne jusqu’au contour, refuse les fermées', () => {
+    const d = doc();
+    d.piece.internalLines = [
+      { points: [[0.5, 0.5], [0.5, 0.4]] as UV[] }, // pointe vers le haut → bord 0 (y=0.2)
+      { points: [[0.3, 0.3], [0.6, 0.3], [0.6, 0.6], [0.3, 0.6]] as UV[], closed: true },
+    ];
+    const res = extendInternalLineEnd(d, 0, 0, 1);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const line = res.doc.piece.internalLines![0]!;
+    expect(line.points).toHaveLength(3);
+    expect(line.points[2]![1]).toBeCloseTo(0.2, 6); // posé SUR le bord haut
+    expect(line.points[2]![0]).toBeCloseTo(0.5, 6);
+    expect(extendInternalLineEnd(d, 0, 1, 0).ok).toBe(false); // fermée
+    // Re-prolonger le même bout : déjà au contour → refus.
+    expect(extendInternalLineEnd(res.doc, 0, 0, 1).ok).toBe(false);
+  });
+
+  it('⇥ scinde une ligne interne en deux au point cliqué (point partagé exact)', () => {
+    const d = doc();
+    d.piece.internalLines = [
+      { points: [[0.3, 0.3], [0.5, 0.3], [0.7, 0.5]] as UV[] },
+    ];
+    const res = divideInternalLineAt(d, 0, 0, [0.6, 0.4]);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const lines = res.doc.piece.internalLines!;
+    expect(lines).toHaveLength(2);
+    const endA = lines[0]!.points[lines[0]!.points.length - 1]!;
+    const startB = lines[1]!.points[0]!;
+    expect(endA[0]).toBeCloseTo(startB[0], 9);
+    expect(endA[1]).toBeCloseTo(startB[1], 9);
+    expect(lines[0]!.points.length).toBeGreaterThanOrEqual(2);
+    expect(lines[1]!.points.length).toBeGreaterThanOrEqual(2);
+    // Clic loin de la ligne → refus.
+    expect(divideInternalLineAt(d, 0, 0, [0.2, 0.7]).ok).toBe(false);
+  });
+});
+
+describe('bord mesuré (v180)', () => {
+  it('cote un bord en centimètres réels depuis le cadre métrique de la pièce', () => {
+    const doc = blankBaseDraft();
+    const piece = {
+      ...doc.piece,
+      width: 0.6,
+      height: 0.8,
+      outline: [
+        [0.25, 0.25],
+        [0.75, 0.25],
+        [0.75, 0.75],
+        [0.25, 0.75],
+      ] as [number, number][],
+    };
+    // bord haut : 0,5 u × 0,6 m = 30 cm · bord droit : 0,5 v × 0,8 m = 40 cm
+    expect(outlineEdgeLengthCm(piece, piece.outline, 0)).toBeCloseTo(30, 5);
+    expect(outlineEdgeLengthCm(piece, piece.outline, 1)).toBeCloseTo(40, 5);
+    // la diagonale d'un cadre anisotrope : hypoténuse métrique, pas UV
+    const diag = { ...piece, outline: [[0, 0], [1, 1], [0, 1]] as [number, number][] };
+    expect(outlineEdgeLengthCm(diag, diag.outline, 0)).toBeCloseTo(100, 5);
+  });
+});
+
+describe('liserés 3D (v181)', () => {
+  it('groupe les paires par couture — à plat, identique au compilateur historique', () => {
+    const doc = tshirtDraft();
+    const n = 24;
+    const groups = compileAssemblyGroups(doc, n);
+    // Le tee : épaules + flancs joignent Devant↔Dos (socle, couvert) ; les
+    // MANCHES sont des pièces libres (coutures croisées, hors périmètre v1).
+    expect(groups.length).toBeGreaterThanOrEqual(1);
+    expect(groups.flatMap((g) => g.pairs)).toEqual(compileAssembly(doc, n));
+    for (const g of groups) {
+      expect(g.seamIndex).toBeGreaterThanOrEqual(0);
+      expect(g.seamIndex).toBeLessThan((doc.seams ?? []).length);
+      expect(g.pairs.length).toBeGreaterThan(2);
+      for (const q of g.pairs) {
+        expect(q.i).not.toBe(q.j);
+        expect(q.i).toBeLessThan(2 * n * n);
+        expect(q.j).toBeLessThan(2 * n * n);
+      }
+    }
   });
 });
