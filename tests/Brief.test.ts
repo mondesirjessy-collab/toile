@@ -365,6 +365,32 @@ describe('backends du Brief', () => {
     expect(r.intent).toBe('create');
   });
 
+  it('le fetch PAR DÉFAUT survit à un fetch sensible au this (Illegal invocation, Chrome)', async () => {
+    // Régression v192 : `fetchImpl = fetch` non lié → `this.fetchImpl(...)`
+    // invoquait fetch avec this = l'instance → TypeError dans Chrome → repli
+    // silencieux sur les règles à CHAQUE brief. On simule la sensibilité au
+    // this du fetch navigateur, puis on vérifie que la réponse DISTANTE gagne.
+    const original = globalThis.fetch;
+    function strictFetch(this: unknown): Promise<Response> {
+      if (this !== undefined && this !== globalThis) {
+        throw new TypeError("Failed to execute 'fetch': Illegal invocation");
+      }
+      return Promise.resolve(
+        okJson({ intent: 'clarify', resumeFr: 'Réponse distante (fetch lié correctement).' }),
+      );
+    }
+    globalThis.fetch = strictFetch as unknown as typeof fetch;
+    try {
+      const remote = new RemoteBackend('https://exemple.test/brief'); // fetchImpl PAR DÉFAUT
+      const r = await remote.interpret('hoodie en maille');
+      // Avant le correctif : Illegal invocation → règles locales (intent create).
+      expect(r.intent).toBe('clarify');
+      expect(r.resumeFr).toContain('distante');
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
   it('choisit le backend selon l’endpoint configuré', () => {
     expect(selectBriefBackend(null).label).toBe('règles locales');
     expect(selectBriefBackend({ getItem: () => null }).label).toBe('règles locales');

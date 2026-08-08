@@ -1,0 +1,5 @@
+# Proxy Brief→LLM de TOILE — configuration Wrangler (Cloudflare Workers).
+# Déploiement : npx wrangler deploy --config server/wrangler.toml
+name = "toile-brief"
+main = "brief-worker.ts"
+compatibility_date = "2026-01-01"

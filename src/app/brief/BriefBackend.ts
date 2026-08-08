@@ -34,7 +34,12 @@ export class RemoteBackend implements BriefBackend {
   constructor(
     private readonly endpoint: string,
     private readonly fallback: BriefBackend = new RulesBackend(),
-    private readonly fetchImpl: typeof fetch = fetch,
+    // Lié explicitement : `this.fetchImpl(...)` invoquerait sinon fetch avec
+    // `this` = l'instance → « Illegal invocation » dans Chrome, et le backend
+    // distant retomberait silencieusement sur les règles à CHAQUE brief.
+    // (Trouvé en validation live v192 — les mocks de test, des fonctions
+    // fléchées, ne détectaient pas la sensibilité au `this`.)
+    private readonly fetchImpl: typeof fetch = (...args) => fetch(...args),
     private readonly timeoutMs: number = BRIEF_REMOTE_TIMEOUT_MS,
   ) {}
 

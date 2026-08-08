@@ -4,3 +4,7 @@ dist/
 .claude/
 tmp/
 __pycache__/
+
+# Secrets locaux (clé API du Studio IA) — jamais commités.
+.env.local
+.env.*.local
