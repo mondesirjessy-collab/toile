@@ -9,6 +9,7 @@
 import {
   BRIEF_BOXY_SIZES,
   BRIEF_HOODIE_SIZES,
+  BRIEF_JUPE_SIZES,
   BRIEF_PANTS_SIZES,
   clampStature,
   type BriefArchetype,
@@ -57,13 +58,7 @@ const UNSUPPORTED_GARMENTS: Array<{ pattern: RegExp; nameFr: string; suggestionF
     pattern: /\brobes?\b/,
     nameFr: 'robe',
     suggestionFr:
-      'Le plus proche aujourd’hui : un t-shirt BOXY allongé — charge « T-shirt », puis étire l’ourlet avec l’outil Longueur.',
-  },
-  {
-    pattern: /\bjupes?\b/,
-    nameFr: 'jupe',
-    suggestionFr:
-      'En attendant : trace-la avec « Nouvelle pièce » (deux rectangles cousus), ou pars du pantalon large.',
+      'Le plus proche aujourd’hui : un t-shirt BOXY allongé — charge « T-shirt », puis étire l’ourlet avec l’outil Longueur. La jupe trapèze, elle, existe déjà.',
   },
   {
     pattern: /\bchemises?\b|\bchemisiers?\b/,
@@ -91,6 +86,9 @@ interface ArchetypeMatch {
 function detectArchetype(t: string): ArchetypeMatch | null {
   if (/\bhoodies?\b|\bhoody\b|sweat(shirt)?s? (a|à) capuche|sweat zipp|capuches?\b/.test(t)) {
     return { archetype: 'hoodie_zip', labelFr: 'hoodie zippé' };
+  }
+  if (/\bjupes?\b|\bskirts?\b/.test(t)) {
+    return { archetype: 'jupe', labelFr: 'jupe trapèze' };
   }
   if (/\bpantalons?\b|\bpants\b|\bjoggers?\b/.test(t)) {
     return { archetype: 'pantalon', labelFr: 'pantalon large' };
@@ -131,6 +129,12 @@ function detectSize(t: string, archetype: BriefArchetype | null): string | undef
   if (archetype === 'pantalon') {
     const eu = t.match(/\b(?:taille|eu)\s?(2[68]|3[02468]|4[0246]|26|46)\b/)?.[1];
     if (eu && (BRIEF_PANTS_SIZES as readonly string[]).includes(eu)) return eu;
+    return undefined;
+  }
+  if (archetype === 'jupe') {
+    if (/ajust(e|ee)? au mannequin|sur[- ]mesure|a mes mesures/.test(t)) return 'avatar';
+    const eu = t.match(/\b(?:taille|eu)\s?(3[468]|4[0246])\b/)?.[1];
+    if (eu && (BRIEF_JUPE_SIZES as readonly string[]).includes(eu)) return eu;
     return undefined;
   }
   if (archetype === 'hoodie_zip' && /ajust(e|ee)? au mannequin|sur[- ]mesure|a mes mesures/.test(t)) {

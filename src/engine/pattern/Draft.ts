@@ -290,7 +290,7 @@ export interface DraftDoc {
   pieces?: DraftPiece[];
   /** Optional built-in construction whose assembly needs more than the generic
    * front/back tube (currently the mirrored two-leg loose-pants assembly). */
-  preset?: 'loose-pants' | 'lucas-hoodie';
+  preset?: 'loose-pants' | 'lucas-hoodie' | 'jupe';
   presetSize?: string;
 }
 

@@ -10,8 +10,8 @@
 import type { BriefResult } from './BriefContract';
 
 export interface BriefHooks {
-  /** Charge un template (clic sur at-tshirt / at-pants / at-hoodie). */
-  loadArchetype(archetype: 'tshirt_boxy' | 'pantalon' | 'hoodie_zip'): boolean;
+  /** Charge un template (clic sur at-tshirt / at-pants / at-hoodie / at-jupe). */
+  loadArchetype(archetype: 'tshirt_boxy' | 'pantalon' | 'hoodie_zip' | 'jupe'): boolean;
   /** Ne pose la valeur que si l'option existe réellement dans le sélecteur. */
   setSize(size: string): boolean;
   setFabric(preset: string): boolean;

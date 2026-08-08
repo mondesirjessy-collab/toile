@@ -242,7 +242,12 @@ describe('atelier workspace markup', () => {
     expect(countId('at-import-body-file')).toBe(1);
     expect(html).toMatch(/<input id="at-import-body-file"[^>]*type="file"[^>]*accept="[^"]*\.obj/);
     expect(html).toContain('<dt>⬆ Importer un corps</dt>');
-    expect(html).toContain('du brief au patron · v191');
+    expect(html).toContain('du brief au patron · v193');
+  });
+
+  it('exposes the jupe archetype button (v193)', () => {
+    expect(countId('at-jupe')).toBe(1);
+    expect(html).toMatch(/<button id="at-jupe"[^>]*>. Jupe<\/button>/);
   });
 
   it('exposes the essayage pose selector (v189)', () => {

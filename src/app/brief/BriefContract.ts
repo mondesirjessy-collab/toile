@@ -9,7 +9,7 @@
  * jamais un à-peu-près silencieux.
  */
 
-export const BRIEF_ARCHETYPES = ['tshirt_boxy', 'pantalon', 'hoodie_zip'] as const;
+export const BRIEF_ARCHETYPES = ['tshirt_boxy', 'pantalon', 'hoodie_zip', 'jupe'] as const;
 export type BriefArchetype = (typeof BRIEF_ARCHETYPES)[number];
 
 export const BRIEF_FABRICS = [
@@ -32,6 +32,8 @@ export const BRIEF_PANTS_SIZES = [
 ] as const;
 /** Le hoodie accepte en plus l'ajustement dynamique au mannequin. */
 export const BRIEF_HOODIE_SIZES = ['avatar', 'XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL'] as const;
+/** La jupe : tailles EU + coupe aux mensurations du corps courant. */
+export const BRIEF_JUPE_SIZES = ['avatar', '34', '36', '38', '40', '42', '44', '46'] as const;
 
 export type BriefBodyKind = 'scan femme' | 'scan homme';
 

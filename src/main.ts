@@ -41,6 +41,7 @@ import {
   simulationPlacementIssues,
 } from './engine/pattern/PatternPlacement';
 import { boxyTee, boxyChestCm, BOXY_SIZES, type BoxySize } from './engine/pattern/draftTee';
+import { draftJupe, jupeCm, JUPE_SIZES, type JupeSize } from './engine/pattern/jupe';
 import {
   loosePants,
   loosePantsSizeLabel,
@@ -1953,8 +1954,9 @@ async function main(): Promise<void> {
   // closest supplied pattern. Starting on 32 made an intentionally oversized
   // waistband look as though it needed an invisible suspension.
   let pantsSize: LoosePantsSize = '26';
+  let jupeSize: JupeSize | 'avatar' = '38';
   let hoodieSize: LucasHoodieSize = 'S';
-  let loadedPattern: 'boxy' | 'pants' | 'hoodie' = 'boxy';
+  let loadedPattern: 'boxy' | 'pants' | 'hoodie' | 'jupe' = 'boxy';
   const sizeSel = document.getElementById('at-size') as HTMLSelectElement | null;
   const syncAvatarStatureHelp = (): void => {
     if (sizeSel) sizeSel.disabled = !draftTouched;
@@ -2006,12 +2008,20 @@ async function main(): Promise<void> {
     avatarStatureHelp.textContent =
       `Redimensionne le mannequin et ses collisions. ${fixedGarmentSizeMessage(selectedSize)}`;
   };
-  const showSizes = (kind: 'boxy' | 'pants' | 'hoodie'): void => {
+  const showSizes = (kind: 'boxy' | 'pants' | 'hoodie' | 'jupe'): void => {
     if (!sizeSel) return;
     loadedPattern = kind;
     if (kind === 'boxy') {
       sizeSel.innerHTML = BOXY_SIZES.map((s) => `<option value="${s}">${s} · poitrine ${boxyChestCm(s)} cm</option>`).join('');
       sizeSel.value = boxySize;
+    } else if (kind === 'jupe') {
+      sizeSel.innerHTML = [
+        `<option value="avatar">Ajustée au mannequin · taille ${(lastMeasure.waist.circ * 100).toFixed(0)} · hanches ${(lastMeasure.hip.circ * 100).toFixed(0)} cm</option>`,
+        ...JUPE_SIZES.map(
+          (s) => `<option value="${s}">${s} · taille ${jupeCm(s).tailleCm} · hanches ${jupeCm(s).hanchesCm} cm</option>`,
+        ),
+      ].join('');
+      sizeSel.value = jupeSize;
     } else if (kind === 'pants') {
       sizeSel.innerHTML = LOOSE_PANTS_SIZES.map((s) => `<option value="${s}">${loosePantsSizeLabel(s)}</option>`).join('');
       sizeSel.value = pantsSize;
@@ -2096,6 +2106,14 @@ async function main(): Promise<void> {
       showSizes('pants');
       return true;
     }
+    if (source.preset === 'jupe') {
+      const savedSize = source.presetSize;
+      if (savedSize === 'avatar' || (JUPE_SIZES as readonly string[]).includes(savedSize ?? '')) {
+        jupeSize = savedSize as JupeSize | 'avatar';
+      }
+      showSizes('jupe');
+      return true;
+    }
     if (source.preset === 'lucas-hoodie') {
       const sourceSize = lucasHoodieSourceSize(source);
       hoodieFitMode = source.presetSize?.startsWith('fit-')
@@ -2145,6 +2163,26 @@ async function main(): Promise<void> {
   };
   (document.getElementById('at-pants') as HTMLElement).addEventListener('click', loadLoosePants);
 
+  // v193 : la JUPE — le premier patron gradable né après le Studio IA. Même
+  // liturgie que les autres archétypes ; le bloc vit dans engine/pattern/jupe.
+  const loadJupe = (): void => {
+    if (!bigPanel) setBig(true);
+    patternView.resetView();
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    resetPlacement();
+    pushHistory();
+    showSizes('jupe');
+    teePreset = false;
+    draft = draftJupe(jupeSize, lastMeasure, REF);
+    draftTouched = true;
+    atelierSleeves = false;
+    atelierCollar = false;
+    document.getElementById('at-sleeves')?.classList.remove('active');
+    build();
+  };
+  (document.getElementById('at-jupe') as HTMLElement | null)?.addEventListener('click', loadJupe);
+
   const loadLucasHoodie = (): void => {
     if (!bigPanel) setBig(true);
     patternView.resetView();
@@ -2190,6 +2228,9 @@ async function main(): Promise<void> {
       if (loadedPattern === 'pants') {
         pantsSize = sizeSel.value as LoosePantsSize;
         if (sceneMode === 'atelier') loadLoosePants();
+      } else if (loadedPattern === 'jupe') {
+        jupeSize = sizeSel.value as JupeSize | 'avatar';
+        if (sceneMode === 'atelier') loadJupe();
       } else if (loadedPattern === 'hoodie') {
         if (sizeSel.value === 'avatar-frozen') return;
         if (sizeSel.value === 'avatar') {
@@ -4886,6 +4927,22 @@ async function main(): Promise<void> {
                     assemblySeams: compileAssembly(simulationDoc, resolution),
                   }
                 : {}),
+              ...(simulationDoc.preset === 'jupe'
+                ? {
+                    // Jupe : une taille sans bretelles glisse le long d'un corps
+                    // qui s'affine sous elle PENDANT que pinces et côtés se
+                    // cousent — le piège documenté du pantalon (LoosePantsAssembly).
+                    // La ceinture est donc RETENUE à sa hauteur le temps du
+                    // montage, puis l'aide s'efface (anchorReleaseSeconds).
+                    anchorTop: true,
+                    // Léger embu de ceinture : la couture veut être un peu plus
+                    // courte que la coupe et agrippe le creux de la taille.
+                    elasticTop: 0.97,
+                    // Ceinture entoilée : sa longueur est celle de la couture,
+                    // pas celle du tissu du preset (un jersey ne la détend pas).
+                    reinforceTop: true,
+                  }
+                : {}),
             });
             if (!atelierDesign && loadedPattern === 'boxy') {
               prepareCanonicalMirrorSeams(body);
@@ -5174,6 +5231,12 @@ async function main(): Promise<void> {
                 col,
                 seams,
               );
+            }
+            if (simulationDoc.preset === 'jupe') {
+              // La jupe tient ensuite PAR LE PATRON : taille cousue (pinces
+              // fermées) < tour de hanches, elle ne peut pas les franchir.
+              // Même durée d'aide au montage que le pantalon.
+              return { ...garment, anchorReleaseSeconds: 3 };
             }
             return garment;
           })()
@@ -8535,7 +8598,13 @@ async function main(): Promise<void> {
     const briefHooks: BriefHooks = {
       loadArchetype: (archetype) => {
         const id =
-          archetype === 'tshirt_boxy' ? 'at-tshirt' : archetype === 'pantalon' ? 'at-pants' : 'at-hoodie';
+          archetype === 'tshirt_boxy'
+            ? 'at-tshirt'
+            : archetype === 'pantalon'
+              ? 'at-pants'
+              : archetype === 'jupe'
+                ? 'at-jupe'
+                : 'at-hoodie';
         const btn = document.getElementById(id);
         if (!(btn instanceof HTMLElement)) return false;
         btn.click();

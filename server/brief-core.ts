@@ -26,6 +26,7 @@ const CATALOG = `ARCHÉTYPES CONSTRUCTIBLES (les seuls) :
 - "tshirt_boxy" — t-shirt boxy. Tailles : XS, S, M, L, XL, XXL.
 - "pantalon" — pantalon large. Tailles EU : 26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46.
 - "hoodie_zip" — hoodie zippé (7 pièces). Tailles : avatar (ajusté au mannequin), XS, S, M, L, XL, XXL, XXXL.
+- "jupe" — jupe trapèze à pinces (mi-genou). Tailles : avatar (coupée aux mensurations du corps), 34, 36, 38, 40, 42, 44, 46.
 
 TISSUS (presets calibrés) : Jersey, Maille, Popeline, Denim, Lin, Laine, Soie.
 MOTIFS : uni, rayures, vichy, pois.
@@ -33,8 +34,7 @@ CORPS : "scan femme", "scan homme". Stature : 140 à 210 cm.
 OPS DE RETOUCHE (intent "modify") : resize{size}, change_fabric{preset}, change_motif{motif}, set_body{kind}, set_stature{statureCm}, set_sleeves{on}, try_on{}.
 
 NON CONSTRUCTIBLES aujourd'hui (⇒ intent "refuse" + suggestionFr) :
-- robe → suggérer : « Le plus proche aujourd'hui : un t-shirt BOXY allongé — charge « T-shirt », puis étire l'ourlet avec l'outil Longueur. »
-- jupe → suggérer : « En attendant : trace-la avec « Nouvelle pièce » (deux rectangles cousus), ou pars du pantalon large. »
+- robe → suggérer : « Le plus proche aujourd'hui : un t-shirt BOXY allongé — ou la jupe trapèze, qui existe déjà, avec un haut. »
 - chemise/chemisier → suggérer : « Le plus proche : le t-shirt BOXY en popeline. »
 - veste/manteau/blouson → suggérer : « Le plus proche aujourd'hui : le Hoodie zippé (7 pièces, fermeture séparable). »
 - corset/traîne/baleines/dentelle → suggérer : « Constructible aujourd'hui : t-shirt, pantalon large, hoodie zippé — et toute pièce tracée à la main. »
@@ -76,6 +76,16 @@ export const BRIEF_FEW_SHOT: ReadonlyArray<{ user: string; assistant: string }> 
     user: 'un pantalon large en laine à rayures',
     assistant:
       '{"intent":"create","garment":{"archetype":"pantalon"},"fabric":"Laine","motif":"rayures","tryOn":true,"resumeFr":"Pantalon large en laine rayée — essayage lancé."}',
+  },
+  {
+    user: 'jupe en denim, longueur genou',
+    assistant:
+      '{"intent":"create","garment":{"archetype":"jupe"},"fabric":"Denim","tryOn":true,"resumeFr":"Jupe trapèze en denim, mi-genou par construction — essayage lancé. (La longueur se retouche à l\'outil Longueur.)"}',
+  },
+  {
+    user: 'une jupe sur mesure pour ma cliente',
+    assistant:
+      '{"intent":"create","garment":{"archetype":"jupe","size":"avatar"},"tryOn":true,"resumeFr":"Jupe trapèze coupée aux mensurations du mannequin courant — essayage lancé."}',
   },
   {
     user: 'tee-shirt oversize en popeline avec une poche poitrine gauche',
