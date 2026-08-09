@@ -302,7 +302,7 @@ describe('compileAssembly (manual seams)', () => {
     expect(out[0]!.b).toEqual({ face: 'back', from: 0, to: 1 }); // back face untouched
   });
 
-  it('préserve une fermeture éclair et ne la compile physiquement que fermée', () => {
+  it('préserve une fermeture éclair et l’émet TOUJOURS, marquée zipper (zip à chaud v198)', () => {
     const doc = defaultDraft(32);
     doc.seams = [{
       a: { face: 'front', from: 0, to: 1 },
@@ -311,10 +311,17 @@ describe('compileAssembly (manual seams)', () => {
       closed: false,
     }];
     expect(assemblySeamIsClosed(doc.seams[0]!)).toBe(false);
-    expect(compileAssembly(doc, 32)).toHaveLength(0);
+    // v198 : les épingles d'un zip existent MÊME ouvert — c'est l'uniform du
+    // solveur qui débraye (l'état porté est préservé), plus la compilation.
+    // Elles restent identifiables par leur marque `zipper`.
+    const open = compileAssembly(doc, 32);
+    expect(open.length).toBeGreaterThan(0);
+    expect(open.every((p) => p.zipper === true)).toBe(true);
 
     doc.seams[0]!.closed = true;
-    expect(compileAssembly(doc, 32).length).toBeGreaterThan(0);
+    const closed = compileAssembly(doc, 32);
+    expect(closed.length).toBe(open.length);
+    expect(closed.every((p) => p.zipper === true)).toBe(true);
     const round = sanitizeDraft(JSON.parse(JSON.stringify(doc)));
     expect(round.seams![0]).toMatchObject({ kind: 'zipper', closed: true });
 

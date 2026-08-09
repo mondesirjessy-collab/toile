@@ -168,8 +168,11 @@ export interface SolverOptions {
 //  160 layer_gap (couches), 164 anchor_stiffness (ceinture : rappel Y/substep), 168 max_layer,
 //  172 compliance_bend_warp, 176 friction_dynamic, 180 air_drag,
 //  184 stretch_limit, 188 shear_limit, 192 crease_yield, 196 crease_memory,
-//  200 crease_recovery, 204 seam_dressing_progress.
-const UNIFORM_SIZE = 208;
+//  200 crease_recovery, 204 seam_dressing_progress,
+//  208 zip_open (v198 — seul distance.wgsl déclare la struct longue ; le
+//  buffer élargi reste liable aux structs 208 octets des autres passes),
+//  212-220 réservés.
+const UNIFORM_SIZE = 224;
 const BATCH_SIZE = 16;
 const WORKGROUP = 256;
 const DRAG_NONE = 0xffffffff;
@@ -277,6 +280,10 @@ export class ParticleSystem {
   private readonly anchorBuffer: GPUBuffer;
   private readonly anchorReleaseSeconds: number;
   private readonly seamDressingSeconds: number;
+  /** v198 — état vivant de la fermeture (true = ZipperSeam débrayées). */
+  private zipperOpen = false;
+  /** Débrayage automatique après montage quand le doc porte un zip ouvert. */
+  private zipperAutoOpenSeconds = Infinity;
   private simulatedSeconds = 0;
   private readonly constraintBuffer: GPUBuffer;
   private readonly quadBuffer: GPUBuffer | null;
@@ -542,6 +549,9 @@ export class ParticleSystem {
     this.anchorBuffer = this.createBuffer(mesh.anchorY ?? new Float32Array(this.count).fill(-1e9), storage);
     this.anchorReleaseSeconds = mesh.anchorReleaseSeconds ?? Infinity;
     this.seamDressingSeconds = Math.max(0, mesh.seamDressingSeconds ?? 0);
+    // v198 — un document au zip OUVERT s'habille quand même FERMÉ (stable),
+    // puis la fermeture se débraye une fois le montage posé (~3 s simulées).
+    this.zipperAutoOpenSeconds = mesh.zipperInitiallyOpen ? 3 : Infinity;
     this.constraintBuffer = this.createBufferRaw(mesh.constraintData, storage);
     this.quadColorCounts = mesh.quadColorCounts;
     this.initialQuadData = mesh.quadData.slice(0);
@@ -982,6 +992,17 @@ export class ParticleSystem {
 
   setWind(strength: number): void {
     this.windStrength = strength;
+  }
+
+  /**
+   * v198 — ouvrir/fermer la fermeture éclair À CHAUD : bascule l'uniform que
+   * le pass distance consulte pour les coutures ZipperSeam. Aucun rebuild,
+   * l'état porté est préservé ; refermer re-tend les mêmes épingles. Annule
+   * aussi tout débrayage automatique programmé (le geste manuel décide).
+   */
+  setZipperOpen(open: boolean): void {
+    this.zipperOpen = open;
+    this.zipperAutoOpenSeconds = Infinity;
   }
 
   /** Toggle cloth self-collision live. */
@@ -1555,6 +1576,15 @@ export class ParticleSystem {
         : 1,
       LE,
     );
+    // v198 — zip à chaud : un doc au zip ouvert s'habille fermé, puis la
+    // fermeture se débraye une fois le montage posé. Le tir automatique ne
+    // part qu'une fois (Infinity ensuite) pour ne pas rouvrir après un
+    // « Fermer la fermeture » manuel.
+    if (this.simulatedSeconds > this.zipperAutoOpenSeconds) {
+      this.zipperOpen = true;
+      this.zipperAutoOpenSeconds = Infinity;
+    }
+    dv.setFloat32(208, this.zipperOpen ? 1 : 0, LE);
     this.device.queue.writeBuffer(this.uniformBuffer, 0, this.uniformData);
   }
 

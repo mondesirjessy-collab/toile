@@ -242,7 +242,7 @@ describe('atelier workspace markup', () => {
     expect(countId('at-import-body-file')).toBe(1);
     expect(html).toMatch(/<input id="at-import-body-file"[^>]*type="file"[^>]*accept="[^"]*\.obj/);
     expect(html).toContain('<dt>⬆ Importer un corps</dt>');
-    expect(html).toContain('du brief au patron · v196');
+    expect(html).toContain('du brief au patron · v198');
   });
 
   it('exposes the jupe archetype button (v193)', () => {
@@ -259,6 +259,11 @@ describe('atelier workspace markup', () => {
   it('exposes the veste archetype button (v196)', () => {
     expect(countId('at-veste')).toBe(1);
     expect(html).toMatch(/<button id="at-veste"[^>]*>..? Veste doublée<\/button>/);
+  });
+
+  it('exposes the zip open/close toggle, hidden by default (v197)', () => {
+    expect(countId('at-zip-open')).toBe(1);
+    expect(html).toMatch(/<button id="at-zip-open" hidden[^>]*>..? Ouvrir la fermeture<\/button>/);
   });
 
   it('exposes the essayage pose selector (v189)', () => {

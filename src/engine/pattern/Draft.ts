@@ -1206,7 +1206,9 @@ export function crossSewnOpenCells(doc: DraftDoc, pid: number, n: number): numbe
   if (!piece || piece.outline.length < 3) return [];
   const cells = new Set<number>();
   for (const s of doc.seams ?? []) {
-    if (!assemblySeamIsClosed(s)) continue;
+    // Un zip même OUVERT reste une couture MONTÉE : ses épingles existent
+    // (émission permanente v198) et ses bords restent des rims libres — les
+    // rubans doivent pouvoir s'écarter, pas se souder au panneau jumeau.
     const run = pieceIdOf(s.a) === pid ? s.a : pieceIdOf(s.b) === pid ? s.b : null;
     if (!run) continue;
     for (const c of boundaryRunCells(piece, { from: run.from, to: run.to }, n)) cells.add(c.cell);
@@ -1317,7 +1319,7 @@ export function pairOutlineRuns(
 export function compileAssemblyGroups(
   doc: DraftDoc,
   n: number,
-): { seamIndex: number; pairs: { i: number; j: number }[] }[] {
+): { seamIndex: number; pairs: { i: number; j: number; zipper?: boolean }[] }[] {
   const panelSize = n * n;
   const pieces = docPieces(doc);
   const openCells = new Map<number, Set<number>>();
@@ -1333,9 +1335,13 @@ export function compileAssemblyGroups(
     openCells.set(pieceId, cells);
     return cells;
   };
-  const groups: { seamIndex: number; pairs: { i: number; j: number }[] }[] = [];
+  const groups: { seamIndex: number; pairs: { i: number; j: number; zipper?: boolean }[] }[] = [];
   (doc.seams ?? []).forEach((s, seamIndex) => {
-    if (!assemblySeamIsClosed(s)) return;
+    // ZIP À CHAUD (v198) : les épingles d'une fermeture sont émises MÊME
+    // ouverte, marquées `zipper` — le solveur les active/ignore par un uniform
+    // sans reconstruire (l'état porté est préservé). `closed` ne pilote plus
+    // l'existence des épingles, seulement l'état initial de l'uniform.
+    const zip = s.kind === 'zipper';
     const pidA = pieceIdOf(s.a);
     const pidB = pieceIdOf(s.b);
     if (pidA > 1 || pidB > 1) return; // a free piece is involved → compileCrossSeams
@@ -1346,7 +1352,7 @@ export function compileAssemblyGroups(
     if (!paired) return;
     const offA = pidA * panelSize;
     const offB = pidB * panelSize;
-    const pairs: { i: number; j: number }[] = [];
+    const pairs: { i: number; j: number; zipper?: boolean }[] = [];
     const openA = explicitlyOpen(pidA, pa);
     const openB = explicitlyOpen(pidB, pb);
     for (let k = 0; k < paired.a.length; k++) {
@@ -1358,14 +1364,17 @@ export function compileAssemblyGroups(
       if (openA.has(paired.a[k]!) || openB.has(paired.b[k]!)) continue;
       const gi = offA + paired.a[k]!;
       const gj = offB + paired.b[k]!;
-      if (gi !== gj) pairs.push({ i: gi, j: gj });
+      if (gi !== gj) pairs.push({ i: gi, j: gj, ...(zip ? { zipper: true } : {}) });
     }
     if (pairs.length) groups.push({ seamIndex, pairs });
   });
   return groups;
 }
 
-export function compileAssembly(doc: DraftDoc, n: number): { i: number; j: number }[] {
+export function compileAssembly(
+  doc: DraftDoc,
+  n: number,
+): { i: number; j: number; zipper?: boolean }[] {
   return compileAssemblyGroups(doc, n).flatMap((g) => g.pairs);
 }
 
@@ -1386,7 +1395,7 @@ export function compileCrossSeams(
   n: number,
   offsets: number[],
   enteringPid: number,
-): { i: number; j: number }[] {
+): { i: number; j: number; zipper?: boolean }[] {
   const panelSize = n * n;
   const pieces = docPieces(doc);
   const globalOf = (pid: number, local: number): number => (offsets[pid] ?? pid * panelSize) + local;
@@ -1415,9 +1424,12 @@ export function compileCrossSeams(
   // The twin always stays panel-to-panel (front↔front + back↔back). Sending a
   // piece's back panel to the body's FRONT cell pulls the tube through the body
   // instead of joining corresponding fabric faces.
-  const out: { i: number; j: number }[] = [];
+  const out: { i: number; j: number; zipper?: boolean }[] = [];
   for (const s of doc.seams ?? []) {
-    if (!assemblySeamIsClosed(s)) continue;
+    // ZIP À CHAUD (v198) : émission permanente, marquée `zipper` — voir
+    // compileAssemblyGroups. L'habillage se fait toujours fermé ; l'uniform
+    // du solveur ouvre/ferme sans reconstruire.
+    const zip = s.kind === 'zipper';
     const pidA = pieceIdOf(s.a);
     const pidB = pieceIdOf(s.b);
     const hi = Math.max(pidA, pidB);
@@ -1440,7 +1452,7 @@ export function compileCrossSeams(
       const lj = enteringCells[k]!;
       const gi = globalOf(pidI, li);
       const gj = globalOf(pidJ, lj);
-      if (gi !== gj) out.push({ i: gi, j: gj });
+      if (gi !== gj) out.push({ i: gi, j: gj, ...(zip ? { zipper: true } : {}) });
       // Sew BOTH faces: the same seam repeated on the back panels, so the
       // piece HUGS the body instead of flapping (before, only the front rim
       // was sewn — the root cause of « pièces ouvertes »). Guards: the twin
@@ -1450,7 +1462,9 @@ export function compileCrossSeams(
       // so a twin can't weld the body's open edge shut through the body.
       const mi = mirrorOf(pidI, li);
       const mj = mirrorOf(pidJ, lj);
-      if (mi !== mj && twinOnEdge(pidI, li) && twinOnEdge(pidJ, lj)) out.push({ i: mi, j: mj });
+      if (mi !== mj && twinOnEdge(pidI, li) && twinOnEdge(pidJ, lj)) {
+        out.push({ i: mi, j: mj, ...(zip ? { zipper: true } : {}) });
+      }
     }
   }
   return out;

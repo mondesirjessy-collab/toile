@@ -32,6 +32,13 @@ export enum ConstraintKind {
    * preventing a collar born inside the neck from dragging the torso inward.
    */
   AttachmentSeam = 6,
+  /**
+   * Couture de FERMETURE ÉCLAIR (v198) : même rigidité qu'une couture
+   * d'assemblage, mais débrayable À CHAUD par l'uniform `zip_open` du pass
+   * distance — ouvrir/fermer ne reconstruit rien, l'état porté est préservé
+   * et les rubans s'écartent ou se rejoignent en direct.
+   */
+  ZipperSeam = 7,
 }
 
 export interface Edge {
@@ -192,7 +199,8 @@ export function colorConstraints(edges: Edge[], particleCount: number): Coloring
     if (
       edge.kind === ConstraintKind.Seam ||
       edge.kind === ConstraintKind.AttachmentSeam ||
-      edge.kind === ConstraintKind.SurfaceSeam
+      edge.kind === ConstraintKind.SurfaceSeam ||
+      edge.kind === ConstraintKind.ZipperSeam
     ) {
       stitches.push(edge);
     } else {

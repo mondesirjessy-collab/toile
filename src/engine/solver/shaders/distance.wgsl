@@ -49,13 +49,20 @@ struct SimParams {
   crease_memory: f32,
   crease_recovery: f32,
   seam_dressing_progress: f32,
+  // v198 — extension au-delà des 208 octets historiques : seuls les shaders
+  // qui lisent ces champs déclarent la struct longue (le buffer, plus grand,
+  // reste liable aux structs courtes des autres passes).
+  zip_open: f32, // 1 = les coutures ZipperSeam sont débrayées (fermeture ouverte)
+  _z1: f32,
+  _z2: f32,
+  _z3: f32,
 };
 
 struct Constraint {
   i: u32,
   j: u32,
   rest: f32,
-  kind: u32, // 0 weft, 1 shear, 2 bending, 3 seam, 4 warp, 5 surface, 6 attachment
+  kind: u32, // 0 weft, 1 shear, 2 bending, 3 seam, 4 warp, 5 surface, 6 attachment, 7 zipper
 };
 
 struct Batch {
@@ -97,6 +104,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   if (k >= batch.count) { return; }
 
   let c = constraints[batch.offset + k];
+  // v198 — fermeture éclair débrayée : la couture existe dans le buffer mais
+  // ne projette rien tant que le zip est ouvert. Refermer réactive les mêmes
+  // épingles : les rubans se rejoignent depuis l'état porté, sans rebuild.
+  if (c.kind == 7u && params.zip_open > 0.5) { return; }
   let material = materials[material_ids[c.i]];
   let wi = inv_masses[c.i];
   let wj = inv_masses[c.j];
@@ -120,12 +131,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // rigid rather than letting it inherit the fabric's stretch — otherwise a
   // knit preset makes every seam elastic and the panels gape at the stitch
     // line. Stiffer than the stiffest fabric setting (min stretch slider = 1e-8).
-  else if (c.kind == 3u) {
+  else if (c.kind == 3u || c.kind == 7u) {
     // Multi-piece garments start in a collision-safe dressing pose, but a
     // rigid panel fit cannot make every curved seam coincident. Tighten the
     // stitch over its requested dressing interval instead of converting that
     // residual into a violent first-frame impulse. The final lockstitch is
-    // byte-for-byte as rigid as before once progress reaches one.
+    // byte-for-byte as rigid as before once progress reaches one. A zipper
+    // (kind 7) is the same lockstitch — just switchable via zip_open above.
     let p = smoothstep(0.0, 1.0, params.seam_dressing_progress);
     compliance = mix(5e-4, 1e-9, p);
   }

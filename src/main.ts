@@ -2258,6 +2258,51 @@ async function main(): Promise<void> {
   };
   (document.getElementById('at-veste') as HTMLElement | null)?.addEventListener('click', loadVeste);
 
+  // v197 : OUVRIR / FERMER la fermeture du patron — le geste de démo (ouverte,
+  // la veste s'écarte sur sa doublure à l'essayage). La bascule vit dans le
+  // DOCUMENT (`closed` des coutures zipper) ; la reconstruction rejoue
+  // l'essayage avec ou sans les épingles du zip — même chemin que l'undo.
+  const zipToggleBtn = document.getElementById('at-zip-open') as HTMLButtonElement | null;
+  const draftZipSeams = (): AssemblySeam[] =>
+    (draft?.seams ?? []).filter((s) => s.kind === 'zipper');
+  const syncZipToggle = (): void => {
+    if (!zipToggleBtn) return;
+    const zips = draftZipSeams();
+    // Le hoodie monte sa fermeture dans son assembleur spécialisé, qui ne lit
+    // pas `closed` : la bascule n'y ferait rien — réservée au chemin générique
+    // (veste, fermetures posées à la main avec ⚡).
+    const usable = zips.length > 0 && draft?.preset !== 'lucas-hoodie';
+    zipToggleBtn.hidden = !usable;
+    if (!usable) return;
+    const anyClosed = zips.some((s) => s.closed !== false);
+    zipToggleBtn.textContent = anyClosed ? '🤐 Ouvrir la fermeture' : '⚡ Fermer la fermeture';
+  };
+  zipToggleBtn?.addEventListener('click', () => {
+    if (!draft || !draftZipSeams().length) return;
+    const anyClosed = draftZipSeams().some((s) => s.closed !== false);
+    pushHistory();
+    draft.seams = draft.seams!.map((s) =>
+      s.kind === 'zipper' ? { ...s, closed: !anyClosed } : s,
+    );
+    draftTouched = true;
+    if (!atelierDesign) {
+      // v198 — À CHAUD : l'essayage tourne, la veste est PORTÉE. On ne
+      // reconstruit rien : les épingles ZipperSeam sont déjà dans le maillage,
+      // l'uniform du solveur les débraye (ou les re-tend) et le tissu répond
+      // depuis son état porté — le geste réel d'ouvrir une veste sur soi.
+      system.setZipperOpen(anyClosed);
+      refreshPatternDoc(); // le plan 2D affiche OUVERT/fermé sans rebuild
+    } else {
+      build();
+    }
+    syncZipToggle();
+    showToast(
+      anyClosed
+        ? 'Fermeture ouverte — les devants s’écartent.'
+        : 'Fermeture fermée — les rubans se rejoignent.',
+    );
+  });
+
   const loadLucasHoodie = (): void => {
     if (!bigPanel) setBig(true);
     patternView.resetView();
@@ -5031,7 +5076,17 @@ async function main(): Promise<void> {
                     // pas celle du tissu du preset (un jersey ne la détend pas).
                     reinforceTop: true,
                   }
-                : {}),
+                : simulationDoc.preset === 'veste'
+                  ? {
+                      // Veste : la LIGNE D'ÉPAULE (rangs hauts, épaules + hauts
+                      // de manches kimono) est retenue le temps du montage —
+                      // FERMETURE OUVERTE, rien ne joint les devants pendant
+                      // que épaules et côtés se cousent, et le vêtement entier
+                      // glissait du corps (observé v197). Pas d'élastique ni
+                      // d'entoilage : une épaule n'est pas une ceinture.
+                      anchorTop: true,
+                    }
+                  : {}),
             });
             if (!atelierDesign && loadedPattern === 'boxy') {
               prepareCanonicalMirrorSeams(body);
@@ -5326,11 +5381,23 @@ async function main(): Promise<void> {
                 seams,
               );
             }
-            if (simulationDoc.preset === 'jupe') {
-              // La jupe tient ensuite PAR LE PATRON : taille cousue (pinces
-              // fermées) < tour de hanches, elle ne peut pas les franchir.
-              // Même durée d'aide au montage que le pantalon.
-              return { ...garment, anchorReleaseSeconds: 3 };
+            // v198 — un zip OUVERT dans le document : l'habillage se fait
+            // quand même FERMÉ (les épingles ZipperSeam existent toujours),
+            // puis le solveur les débraye une fois le montage posé.
+            const zipOpenDoc = (simulationDoc.seams ?? []).some(
+              (s) => s.kind === 'zipper' && s.closed === false,
+            );
+            if (simulationDoc.preset === 'jupe' || simulationDoc.preset === 'veste' || zipOpenDoc) {
+              // La jupe tient ensuite PAR LE PATRON (taille cousue < hanches),
+              // la veste PAR LES ÉPAULES (kimono cousu au dos) — l'aide au
+              // montage s'efface après la même durée que le pantalon.
+              return {
+                ...garment,
+                ...(simulationDoc.preset === 'jupe' || simulationDoc.preset === 'veste'
+                  ? { anchorReleaseSeconds: 3 }
+                  : {}),
+                ...(zipOpenDoc ? { zipperInitiallyOpen: true } : {}),
+              };
             }
             return garment;
           })()
@@ -5862,6 +5929,9 @@ async function main(): Promise<void> {
     // was first populated. Re-assert its enabled state and honest M4 wording
     // with the same transaction that refreshes the workspace guidance.
     syncAvatarStatureHelp();
+    // La bascule de fermeture suit le document courant (chargement, undo,
+    // restauration) dans la même transaction de resynchronisation.
+    syncZipToggle();
     let message: string;
     if (sceneMode !== 'atelier') {
       message =

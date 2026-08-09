@@ -8,6 +8,8 @@ import {
   pieceIdOf,
   sanitizeDraft,
 } from '../src/engine/pattern/Draft';
+import { combineClothMeshes, generateSeamedPanels } from '../src/engine/cloth/ClothMesh';
+import { ConstraintKind } from '../src/engine/solver/ConstraintGraph';
 import {
   VESTE_AVATAR_EASE_CM,
   VESTE_LINING_COLOR,
@@ -140,18 +142,61 @@ describe('la veste zippée doublée (v196)', () => {
     }
     // Coutures de base (devant G ↔ dos) : épaule + côté gauches.
     expect(compileAssembly(doc, n).length).toBeGreaterThan(30);
-    // Coutures croisées du devant droit : épaule D, côté D et le ZIP fermé.
+    // Coutures croisées du devant droit : épaule D, côté D et le ZIP, marqué.
     const crossClosed = compileCrossSeams(doc, n, [], 2);
     expect(crossClosed.length).toBeGreaterThan(50);
-    // Zip ouvert → le devant droit perd les épingles du milieu devant.
+    expect(crossClosed.filter((p) => p.zipper).length).toBeGreaterThan(10);
+    // ZIP À CHAUD (v198) : ouvert, les épingles existent TOUJOURS (mêmes
+    // paires, toujours marquées) — c'est l'uniform du solveur qui débraye,
+    // pas la compilation. L'habillage se fait donc toujours fermé.
     const open = draftVeste('M', BODY, REF);
     open.seams = open.seams!.map((s) => (s.kind === 'zipper' ? { ...s, closed: false } : s));
     const crossOpen = compileCrossSeams(open, n, [], 2);
-    expect(crossOpen.length).toBeLessThan(crossClosed.length);
+    expect(crossOpen.length).toBe(crossClosed.length);
+    expect(crossOpen.filter((p) => p.zipper).length).toBe(
+      crossClosed.filter((p) => p.zipper).length,
+    );
     // Chaque doublure a ses épingles de pourtour sur son support.
     for (const pid of [3, 4, 5]) {
       expect(compileSurfaceSeams(doc, n, [], pid).length).toBeGreaterThan(20);
     }
+  });
+
+  it('les épingles de zip portent ConstraintKind.ZipperSeam de bout en bout (v198)', () => {
+    // Chemin combineClothMeshes (le zip de la veste : devant G ↔ devant D).
+    const a = generateSeamedPanels({ resolution: 8, width: 0.4, height: 0.4, gap: 0.3, topY: 1.5 });
+    const b = generateSeamedPanels({ resolution: 8, width: 0.4, height: 0.4, gap: 0.3, topY: 1.5 });
+    const combined = combineClothMeshes(a, b, [
+      { i: 3, j: a.count + 3, zipper: true },
+      { i: 4, j: a.count + 4 },
+    ]);
+    const kinds = (mesh: { constraintData: ArrayBuffer; constraintCount: number }): number[] => {
+      const dv = new DataView(mesh.constraintData);
+      const out: number[] = [];
+      for (let k = 0; k < mesh.constraintCount; k++) out.push(dv.getUint32(k * 16 + 12, true));
+      return out;
+    };
+    expect(kinds(combined).filter((k) => k === ConstraintKind.ZipperSeam)).toHaveLength(1);
+    // Chemin generateSeamedPanels (un zip manuel entre panneaux de base).
+    const withZip = generateSeamedPanels({
+      resolution: 8,
+      width: 0.4,
+      height: 0.4,
+      gap: 0.3,
+      topY: 1.5,
+      manualAssembly: true,
+      assemblySeams: [
+        { i: 2, j: 64 + 2, zipper: true },
+        { i: 5, j: 64 + 5 },
+      ],
+    });
+    expect(kinds(withZip).filter((k) => k === ConstraintKind.ZipperSeam)).toHaveLength(1);
+    // Le coloriage range le zip dans la phase des coutures (rejouée après
+    // l'auto-collision) — jamais dans la phase ordinaire.
+    const zipEdges = kinds(withZip)
+      .map((k, idx) => ({ k, idx }))
+      .filter((e) => e.k === ConstraintKind.ZipperSeam);
+    expect(zipEdges.length).toBe(1);
   });
 
   it('la veste tient par les épaules : encolure bien en dedans du corps, cadre gradé', () => {

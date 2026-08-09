@@ -140,10 +140,17 @@ export interface ClothMeshData {
   /**
    * Optional soft-start duration for regular assembly seams. During this
    * dressing interval the solver tightens stitches progressively, preventing
-   * a multi-piece garment from converting its residual placement distance
+   * a multi-piece garment from converting that residual placement distance
    * into a first-frame impact. Surface top-stitches are unaffected.
    */
   readonly seamDressingSeconds?: number;
+  /**
+   * v198 — le document porte une fermeture éclair OUVERTE : l'habillage se
+   * fait toujours FERMÉ (stable), puis le solveur débraye les coutures
+   * ZipperSeam une fois le montage posé (~3 s simulées) et les rubans
+   * s'écartent depuis l'état porté.
+   */
+  readonly zipperInitiallyOpen?: boolean;
 }
 
 const CONSTRAINT_STRIDE = 16; // bytes: 2×u32 + 2×f32
@@ -490,7 +497,7 @@ export interface SeamedPanelsOptions {
    * offset: front = panel 0, back = panel 1), from compileAssembly().
    */
   manualAssembly?: boolean;
-  assemblySeams?: readonly { i: number; j: number }[];
+  assemblySeams?: readonly { i: number; j: number; zipper?: boolean }[];
   /**
    * Elastic band at the top edge: rest-length ratio (< 1) applied to the
    * horizontal weave in the top rows — the fabric gathers and GRIPS whatever
@@ -1469,7 +1476,14 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
   // manually-assembled garment together.
   if (opts.assemblySeams) {
     for (const s of opts.assemblySeams) {
-      seams.push({ i: s.i, j: s.j, rest: seamRest, kind: ConstraintKind.Seam });
+      seams.push({
+        i: s.i,
+        j: s.j,
+        rest: seamRest,
+        // Une épingle de fermeture garde la rigidité d'une couture mais reste
+        // débrayable à chaud par l'uniform zip_open du solveur (v198).
+        kind: s.zipper ? ConstraintKind.ZipperSeam : ConstraintKind.Seam,
+      });
       seamLocalCells.add(s.i % panelSize);
       seamLocalCells.add(s.j % panelSize);
     }
@@ -1683,6 +1697,12 @@ export interface CrossSeam {
    * newly attached part and must absorb almost all of the dressing correction.
    */
   attachment?: true;
+  /**
+   * Épingle de FERMETURE ÉCLAIR (v198) : cousue comme une couture rigide mais
+   * portée par ConstraintKind.ZipperSeam — débrayable à chaud par l'uniform
+   * `zip_open` du solveur, sans reconstruire la simulation.
+   */
+  zipper?: boolean;
 }
 
 export interface AttachmentSeam extends CrossSeam {
@@ -1909,9 +1929,11 @@ export function combineClothMeshes(
       rest: surfaceSeam ? surfaceSeamRest : seamRest,
       kind: surfaceSeam
         ? ConstraintKind.SurfaceSeam
-        : cs.attachment
-          ? ConstraintKind.AttachmentSeam
-          : ConstraintKind.Seam,
+        : cs.zipper
+          ? ConstraintKind.ZipperSeam
+          : cs.attachment
+            ? ConstraintKind.AttachmentSeam
+            : ConstraintKind.Seam,
     });
   }
   const { ordered, colorOffsets, colorCounts, phaseColorRanges } = colorConstraints(all, count);

@@ -73,6 +73,15 @@ export const VESTE_LINING_COLOR = '#7a2733';
  * bordeaux observées à 2 cm, aux flancs et sous la poitrine).
  */
 const LINING_INSET = 0.035;
+/**
+ * PAREMENT du milieu devant : comme sur une vraie veste, la doublure ne va
+ * jamais au ras de la fermeture — elle s'arrête à la largeur du parement.
+ * Sans lui, la doublure s'échappait par la fente pendant l'ouverture à chaud
+ * et la refermeture la piégeait du mauvais côté du tissu (observé v198).
+ */
+const FACING_W = 0.06;
+/** La doublure flotte au-dessus de l'ourlet, comme sur une vraie veste. */
+const HEM_RISE = 0.05;
 
 /**
  * La veste complète. `ref` cale la pièce en hauteur (convention du tee) ; le
@@ -148,45 +157,53 @@ export function draftVeste(
   });
 
   // DOUBLURE d'un panneau de torse : un rectangle propre, cousu au pourtour,
-  // glissé SOUS son support (entre corps et tissu), bordeaux.
+  // glissé SOUS son support (entre corps et tissu), bordeaux. Comme une vraie
+  // doublure, elle FLOTTE au-dessus de l'ourlet (HEM_RISE) : au ras du bas,
+  // son bord s'échappait sous l'ourlet dans le brassage ouvrir/fermer (v198).
   const lining = (
     supportPieceId: number,
     widthM: number,
     anchorU: number,
     dropM: number,
-  ): DraftPiece => ({
-    outline: [
-      [0.02, 0.02],
-      [0.98, 0.02],
-      [0.98, 0.98],
-      [0.02, 0.98],
-    ],
-    darts: [],
-    seams: [],
-    openEdges: [],
-    width: widthM,
-    height: LEN - dropM - 2 * LINING_INSET,
-    topY: topY - dropM - LINING_INSET,
-    gap: 0.2,
-    color: VESTE_LINING_COLOR,
-    // Une doublure se coupe dans la soie — physique plus fine que la laine
-    // du dessus, et la vraie construction d'une veste doublée. Le grammage
-    // reste celui du preset : alourdie à 120 g/m² (essai), la doublure
-    // s'affaissait dans les creux du drapé et perçait DAVANTAGE.
-    fabricPreset: 'Soie',
-    placement: {
-      role: 'pocket',
-      surface: {
-        supportPieceId,
-        anchor: [anchorU, v(dropM + LINING_INSET) + v(LEN - dropM - 2 * LINING_INSET) / 2],
-        rotationRad: 0,
-        stitchedEdges: [0, 1, 2, 3],
-        side: 'under',
+  ): DraftPiece => {
+    const heightM = LEN - dropM - LINING_INSET - HEM_RISE;
+    return {
+      outline: [
+        [0.02, 0.02],
+        [0.98, 0.02],
+        [0.98, 0.98],
+        [0.02, 0.98],
+      ],
+      darts: [],
+      seams: [],
+      openEdges: [],
+      width: widthM,
+      height: heightM,
+      topY: topY - dropM - LINING_INSET,
+      gap: 0.2,
+      color: VESTE_LINING_COLOR,
+      // Une doublure se coupe dans la soie — physique plus fine que la laine
+      // du dessus, et la vraie construction d'une veste doublée. Le grammage
+      // reste celui du preset : alourdie à 120 g/m² (essai), la doublure
+      // s'affaissait dans les creux du drapé et perçait DAVANTAGE.
+      fabricPreset: 'Soie',
+      placement: {
+        role: 'pocket',
+        surface: {
+          supportPieceId,
+          anchor: [anchorU, v(dropM + LINING_INSET) + v(heightM) / 2],
+          rotationRad: 0,
+          stitchedEdges: [0, 1, 2, 3],
+          side: 'under',
+        },
       },
-    },
-  });
+    };
+  };
 
-  const liningHalfW = halfBody - CF_GAP - 2 * LINING_INSET;
+  // Doublure de devant : du PAREMENT (côté fermeture) au retrait latéral.
+  const liningHalfW = halfBody - CF_GAP - FACING_W - LINING_INSET;
+  // Centre physique de cette bande, pour l'ancre de surface.
+  const liningHalfX = CF_GAP + FACING_W + liningHalfW / 2;
   const frontL = frontHalf(-1);
   // Le devant droit renonce à son panneau jumeau : chacun de ses bords est
   // soit ouvert (encolure, poignet, ourlet) soit cousu ailleurs (épaule,
@@ -218,9 +235,10 @@ export function draftVeste(
       // pid 2 — devant droit : pièce libre auto-placée par ses coutures
       // (la topologie du colorblock ✂, éprouvée en essayage).
       frontR,
-      // pid 3/4/5 — doublures devant G, devant D, dos (sous leurs supports).
-      lining(0, liningHalfW, u(-(CF_GAP + halfBody) / 2), DROP_NECK_F),
-      lining(2, liningHalfW, u((CF_GAP + halfBody) / 2), DROP_NECK_F),
+      // pid 3/4/5 — doublures devant G, devant D, dos (sous leurs supports),
+      // ancrées au centre de la bande parement→retrait latéral.
+      lining(0, liningHalfW, u(-liningHalfX), DROP_NECK_F),
+      lining(2, liningHalfW, u(liningHalfX), DROP_NECK_F),
       lining(1, 2 * halfBody - 2 * LINING_INSET, 0.5, DROP_NECK_B),
     ],
     seams: [
