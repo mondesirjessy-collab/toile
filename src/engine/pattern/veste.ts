@@ -65,7 +65,14 @@ const RATIO_NECK = 0.033; // demi-encolure ≈ 0,033·tour fini
 const SIDE_MARGIN = 0.02;
 /** La doublure bordeaux — le flash de couleur qui dit « doublée » en 3D. */
 export const VESTE_LINING_COLOR = '#7a2733';
-const LINING_INSET = 0.02; // retrait de la doublure sur le pourtour du support
+/**
+ * Retrait de la doublure sur le pourtour du support. GÉNÉREUX à dessein :
+ * dans les plis profonds du surplus blouson, le tissu extérieur plonge et la
+ * doublure — cousue au pourtour, libre au milieu — ponte le pli en ligne
+ * droite ; un bord trop près des flancs affleure au fond des vagues (percées
+ * bordeaux observées à 2 cm, aux flancs et sous la poitrine).
+ */
+const LINING_INSET = 0.035;
 
 /**
  * La veste complète. `ref` cale la pièce en hauteur (convention du tee) ; le
@@ -163,7 +170,9 @@ export function draftVeste(
     gap: 0.2,
     color: VESTE_LINING_COLOR,
     // Une doublure se coupe dans la soie — physique plus fine que la laine
-    // du dessus, et la vraie construction d'une veste doublée.
+    // du dessus, et la vraie construction d'une veste doublée. Le grammage
+    // reste celui du preset : alourdie à 120 g/m² (essai), la doublure
+    // s'affaissait dans les creux du drapé et perçait DAVANTAGE.
     fabricPreset: 'Soie',
     placement: {
       role: 'pocket',
