@@ -12,6 +12,7 @@ import {
   BRIEF_JUPE_SIZES,
   BRIEF_PANTS_SIZES,
   BRIEF_ROBE_SIZES,
+  BRIEF_VESTE_SIZES,
   clampStature,
   type BriefArchetype,
   type BriefBodyKind,
@@ -61,9 +62,10 @@ const UNSUPPORTED_GARMENTS: Array<{ pattern: RegExp; nameFr: string; suggestionF
     suggestionFr: 'Le plus proche : le t-shirt BOXY en popeline.',
   },
   {
-    pattern: /\bvestes?\b|\bmanteaux?\b|\bblousons?\b|\bparkas?\b/,
-    nameFr: 'veste/manteau',
-    suggestionFr: 'Le plus proche aujourd’hui : le Hoodie zippé (7 pièces, fermeture séparable).',
+    pattern: /\bmanteaux?\b|\bparkas?\b|\btrenchs?\b/,
+    nameFr: 'manteau long',
+    suggestionFr:
+      'Le plus proche aujourd’hui : la veste zippée doublée (blouson, doublure bordeaux) — ou le Hoodie zippé.',
   },
 ];
 
@@ -77,7 +79,7 @@ const ADVANCED_COUTURE = {
   pattern: /\bcorsets?\b|\btraines?\b|\bbaleine(e|es)?\b|\bcrinolines?\b|\bsmokings?\b|\bdentelles?\b/,
   nameFr: 'pièce de couture avancée',
   suggestionFr:
-    'Corset baleiné, traîne ou dentelle demandent des techniques que TOILE ne simule pas encore. Constructible aujourd’hui : t-shirt, pantalon large, hoodie zippé, jupe trapèze, robe cintrée — et toute pièce tracée à la main.',
+    'Corset baleiné, traîne ou dentelle demandent des techniques que TOILE ne simule pas encore. Constructible aujourd’hui : t-shirt, pantalon large, hoodie zippé, jupe trapèze, robe cintrée, veste doublée — et toute pièce tracée à la main.',
 };
 
 interface ArchetypeMatch {
@@ -88,6 +90,9 @@ interface ArchetypeMatch {
 function detectArchetype(t: string): ArchetypeMatch | null {
   if (/\bhoodies?\b|\bhoody\b|sweat(shirt)?s? (a|à) capuche|sweat zipp|capuches?\b/.test(t)) {
     return { archetype: 'hoodie_zip', labelFr: 'hoodie zippé' };
+  }
+  if (/\bvestes?\b|\bblousons?\b|\bjackets?\b|\bbombers?\b/.test(t)) {
+    return { archetype: 'veste', labelFr: 'veste zippée doublée' };
   }
   if (/\brobes?\b|\bdress(es)?\b/.test(t)) {
     return { archetype: 'robe', labelFr: 'robe cintrée' };
@@ -143,7 +148,10 @@ function detectSize(t: string, archetype: BriefArchetype | null): string | undef
     if (eu && (pool as readonly string[]).includes(eu)) return eu;
     return undefined;
   }
-  if (archetype === 'hoodie_zip' && /ajust(e|ee)? au mannequin|sur[- ]mesure|a mes mesures/.test(t)) {
+  if (
+    (archetype === 'hoodie_zip' || archetype === 'veste') &&
+    /ajust(e|ee)? au mannequin|sur[- ]mesure|a mes mesures/.test(t)
+  ) {
     return 'avatar';
   }
   // XS/XL/XXL/XXXL sont sans ambiguïté ; S, M, L exigent le mot « taille »
@@ -152,7 +160,12 @@ function detectSize(t: string, archetype: BriefArchetype | null): string | undef
   const loose = explicit ?? t.match(/\ben\s+(xxxl|xxl|xl|xs)\b/) ?? t.match(/\b(xxxl|xxl|xl|xs)\b/);
   const raw = loose?.[1]?.toUpperCase();
   if (!raw) return undefined;
-  const pool = archetype === 'hoodie_zip' ? BRIEF_HOODIE_SIZES : BRIEF_BOXY_SIZES;
+  const pool =
+    archetype === 'hoodie_zip'
+      ? BRIEF_HOODIE_SIZES
+      : archetype === 'veste'
+        ? BRIEF_VESTE_SIZES
+        : BRIEF_BOXY_SIZES;
   return (pool as readonly string[]).includes(raw) ? raw : undefined;
 }
 
@@ -236,7 +249,7 @@ export function interpretBrief(rawText: string): BriefResult {
       intent: 'clarify',
       resumeFr: 'Je n’ai pas reconnu de vêtement constructible dans ce brief.',
       suggestionFr:
-        'L’atelier patronne aujourd’hui : t-shirt boxy, pantalon large, hoodie zippé, jupe trapèze, robe cintrée. Exemple : « robe cintrée en lin, taille 38 ».',
+        'L’atelier patronne aujourd’hui : t-shirt boxy, pantalon large, hoodie zippé, jupe trapèze, robe cintrée, veste zippée doublée. Exemple : « veste doublée en laine, taille L ».',
     };
   }
 

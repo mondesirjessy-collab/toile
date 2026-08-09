@@ -242,7 +242,7 @@ describe('atelier workspace markup', () => {
     expect(countId('at-import-body-file')).toBe(1);
     expect(html).toMatch(/<input id="at-import-body-file"[^>]*type="file"[^>]*accept="[^"]*\.obj/);
     expect(html).toContain('<dt>⬆ Importer un corps</dt>');
-    expect(html).toContain('du brief au patron · v195');
+    expect(html).toContain('du brief au patron · v196');
   });
 
   it('exposes the jupe archetype button (v193)', () => {
@@ -254,6 +254,11 @@ describe('atelier workspace markup', () => {
     expect(countId('at-robe')).toBe(1);
     // 👗 est une paire de substitution UTF-16 : deux unités de code, d'où `..?`.
     expect(html).toMatch(/<button id="at-robe"[^>]*>..? Robe<\/button>/);
+  });
+
+  it('exposes the veste archetype button (v196)', () => {
+    expect(countId('at-veste')).toBe(1);
+    expect(html).toMatch(/<button id="at-veste"[^>]*>..? Veste doublée<\/button>/);
   });
 
   it('exposes the essayage pose selector (v189)', () => {

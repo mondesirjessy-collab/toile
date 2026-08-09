@@ -28,6 +28,7 @@ const CATALOG = `ARCHÉTYPES CONSTRUCTIBLES (les seuls) :
 - "hoodie_zip" — hoodie zippé (7 pièces). Tailles : avatar (ajusté au mannequin), XS, S, M, L, XL, XXL, XXXL.
 - "jupe" — jupe trapèze à pinces (mi-genou). Tailles : avatar (coupée aux mensurations du corps), 34, 36, 38, 40, 42, 44, 46.
 - "robe" — robe cintrée sans manches (au-dessus du genou, ligne A). Tailles : avatar (coupée aux mensurations du corps), 34, 36, 38, 40, 42, 44, 46.
+- "veste" — veste zippée DOUBLÉE (blouson kimono, fermeture milieu devant, doublure bordeaux). Tailles : avatar (poitrine mesurée + aisance blouson), XS, S, M, L, XL, XXL.
 
 TISSUS (presets calibrés) : Jersey, Maille, Popeline, Denim, Lin, Laine, Soie.
 MOTIFS : uni, rayures, vichy, pois.
@@ -36,8 +37,8 @@ OPS DE RETOUCHE (intent "modify") : resize{size}, change_fabric{preset}, change_
 
 NON CONSTRUCTIBLES aujourd'hui (⇒ intent "refuse" + suggestionFr) :
 - chemise/chemisier → suggérer : « Le plus proche : le t-shirt BOXY en popeline. »
-- veste/manteau/blouson → suggérer : « Le plus proche aujourd'hui : le Hoodie zippé (7 pièces, fermeture séparable). »
-- corset/traîne/baleines/dentelle — même portés par une robe → suggérer : « Constructible aujourd'hui : t-shirt, pantalon large, hoodie zippé, jupe trapèze, robe cintrée — et toute pièce tracée à la main. »
+- manteau long/parka/trench → suggérer : « Le plus proche aujourd'hui : la veste zippée doublée — ou le Hoodie zippé. »
+- corset/traîne/baleines/dentelle — même portés par une robe → suggérer : « Constructible aujourd'hui : t-shirt, pantalon large, hoodie zippé, jupe trapèze, robe cintrée, veste doublée — et toute pièce tracée à la main. »
 - retouche de longueur (« allonge de 10 cm ») → intent "clarify" : « La retouche de longueur reste manuelle pour l'instant. » + suggestionFr sur l'outil Longueur.`;
 
 const CONTRACT = `CONTRAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON, sans texte autour, d'une des formes :
@@ -120,7 +121,12 @@ export const BRIEF_FEW_SHOT: ReadonlyArray<{ user: string; assistant: string }> 
   {
     user: 'une robe de bal avec corset baleiné et traîne de 2 m',
     assistant:
-      '{"intent":"refuse","resumeFr":"Corset baleiné et traîne demandent des techniques que TOILE ne simule pas encore.","suggestionFr":"Constructible aujourd\'hui : t-shirt, pantalon large, hoodie zippé, jupe trapèze, robe cintrée — et toute pièce tracée à la main."}',
+      '{"intent":"refuse","resumeFr":"Corset baleiné et traîne demandent des techniques que TOILE ne simule pas encore.","suggestionFr":"Constructible aujourd\'hui : t-shirt, pantalon large, hoodie zippé, jupe trapèze, robe cintrée, veste doublée — et toute pièce tracée à la main."}',
+  },
+  {
+    user: 'une veste doublée en laine, taille L',
+    assistant:
+      '{"intent":"create","garment":{"archetype":"veste","size":"L"},"fabric":"Laine","tryOn":true,"resumeFr":"Veste zippée doublée en laine, taille L — doublure bordeaux, essayage lancé."}',
   },
   {
     user: 'allonge-la de 10 cm',

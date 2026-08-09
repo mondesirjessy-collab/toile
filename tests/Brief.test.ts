@@ -105,6 +105,31 @@ describe('interpretBrief (règles françaises)', () => {
     expect(r.garment.size).toBe('avatar');
   });
 
+  it('comprend la veste doublée en taille lettre (v196 — la veste n’est plus un refus)', () => {
+    const r = interpretBrief('une veste doublée en laine, taille L');
+    expect(r.intent).toBe('create');
+    if (r.intent !== 'create') return;
+    expect(r.garment.archetype).toBe('veste');
+    expect(r.garment.size).toBe('L');
+    expect(r.fabric).toBe('Laine');
+  });
+
+  it('coupe la veste au mannequin sur « sur mesure », et comprend « blouson »', () => {
+    const r = interpretBrief('un blouson sur mesure en denim');
+    expect(r.intent).toBe('create');
+    if (r.intent !== 'create') return;
+    expect(r.garment.archetype).toBe('veste');
+    expect(r.garment.size).toBe('avatar');
+    expect(r.fabric).toBe('Denim');
+  });
+
+  it('refuse encore le manteau long, en pointant vers la veste doublée', () => {
+    const r = interpretBrief('un manteau long en laine pour l’hiver');
+    expect(r.intent).toBe('refuse');
+    if (r.intent !== 'refuse') return;
+    expect(r.suggestionFr).toContain('veste zippée doublée');
+  });
+
   it('refuse proprement la couture avancée MÊME portée par une robe (corset, traîne)', () => {
     const r = interpretBrief('une robe de bal avec corset baleiné et traîne de 2 mètres');
     expect(r.intent).toBe('refuse');

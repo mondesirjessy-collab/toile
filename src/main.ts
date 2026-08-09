@@ -43,6 +43,7 @@ import {
 import { boxyTee, boxyChestCm, BOXY_SIZES, type BoxySize } from './engine/pattern/draftTee';
 import { draftJupe, jupeCm, JUPE_SIZES, type JupeSize } from './engine/pattern/jupe';
 import { draftRobe, robeCm, ROBE_SIZES, type RobeSize } from './engine/pattern/robe';
+import { draftVeste, vesteCm, VESTE_AVATAR_EASE_CM, VESTE_SIZES, type VesteSize } from './engine/pattern/veste';
 import {
   loosePants,
   loosePantsSizeLabel,
@@ -1957,8 +1958,9 @@ async function main(): Promise<void> {
   let pantsSize: LoosePantsSize = '26';
   let jupeSize: JupeSize | 'avatar' = '38';
   let robeSize: RobeSize | 'avatar' = '38';
+  let vesteSize: VesteSize | 'avatar' = 'M';
   let hoodieSize: LucasHoodieSize = 'S';
-  let loadedPattern: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' = 'boxy';
+  let loadedPattern: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' = 'boxy';
   const sizeSel = document.getElementById('at-size') as HTMLSelectElement | null;
   const syncAvatarStatureHelp = (): void => {
     if (sizeSel) sizeSel.disabled = !draftTouched;
@@ -2010,12 +2012,18 @@ async function main(): Promise<void> {
     avatarStatureHelp.textContent =
       `Redimensionne le mannequin et ses collisions. ${fixedGarmentSizeMessage(selectedSize)}`;
   };
-  const showSizes = (kind: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe'): void => {
+  const showSizes = (kind: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste'): void => {
     if (!sizeSel) return;
     loadedPattern = kind;
     if (kind === 'boxy') {
       sizeSel.innerHTML = BOXY_SIZES.map((s) => `<option value="${s}">${s} · poitrine ${boxyChestCm(s)} cm</option>`).join('');
       sizeSel.value = boxySize;
+    } else if (kind === 'veste') {
+      sizeSel.innerHTML = [
+        `<option value="avatar">Ajustée au mannequin · poitrine ${(lastMeasure.chest.circ * 100).toFixed(0)} + ${VESTE_AVATAR_EASE_CM} cm d'aisance</option>`,
+        ...VESTE_SIZES.map((s) => `<option value="${s}">${s} · vêtement ${vesteCm(s)} cm</option>`),
+      ].join('');
+      sizeSel.value = vesteSize;
     } else if (kind === 'robe') {
       sizeSel.innerHTML = [
         `<option value="avatar">Ajustée au mannequin · poitrine ${(lastMeasure.chest.circ * 100).toFixed(0)} · taille ${(lastMeasure.waist.circ * 100).toFixed(0)} · hanches ${(lastMeasure.hip.circ * 100).toFixed(0)} cm</option>`,
@@ -2133,6 +2141,14 @@ async function main(): Promise<void> {
       showSizes('robe');
       return true;
     }
+    if (source.preset === 'veste') {
+      const savedSize = source.presetSize;
+      if (savedSize === 'avatar' || (VESTE_SIZES as readonly string[]).includes(savedSize ?? '')) {
+        vesteSize = savedSize as VesteSize | 'avatar';
+      }
+      showSizes('veste');
+      return true;
+    }
     if (source.preset === 'lucas-hoodie') {
       const sourceSize = lucasHoodieSourceSize(source);
       hoodieFitMode = source.presetSize?.startsWith('fit-')
@@ -2222,6 +2238,26 @@ async function main(): Promise<void> {
   };
   (document.getElementById('at-robe') as HTMLElement | null)?.addEventListener('click', loadRobe);
 
+  // v196 : la VESTE zippée doublée — six pièces sur le chemin générique
+  // (devant scindé + zip + doublures de surface), épaulée comme le tee.
+  const loadVeste = (): void => {
+    if (!bigPanel) setBig(true);
+    patternView.resetView();
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    resetPlacement();
+    pushHistory();
+    showSizes('veste');
+    teePreset = false;
+    draft = draftVeste(vesteSize, lastMeasure, REF);
+    draftTouched = true;
+    atelierSleeves = false;
+    atelierCollar = false;
+    document.getElementById('at-sleeves')?.classList.remove('active');
+    build();
+  };
+  (document.getElementById('at-veste') as HTMLElement | null)?.addEventListener('click', loadVeste);
+
   const loadLucasHoodie = (): void => {
     if (!bigPanel) setBig(true);
     patternView.resetView();
@@ -2273,6 +2309,9 @@ async function main(): Promise<void> {
       } else if (loadedPattern === 'robe') {
         robeSize = sizeSel.value as RobeSize | 'avatar';
         if (sceneMode === 'atelier') loadRobe();
+      } else if (loadedPattern === 'veste') {
+        vesteSize = sizeSel.value as VesteSize | 'avatar';
+        if (sceneMode === 'atelier') loadVeste();
       } else if (loadedPattern === 'hoodie') {
         if (sizeSel.value === 'avatar-frozen') return;
         if (sizeSel.value === 'avatar') {
@@ -5025,6 +5064,11 @@ async function main(): Promise<void> {
               if (!fp || fp.outline.length < 3 || fp.patternOnly) continue;
               const fpc = compileDraft(fp, resolution);
               const surfacePiece = fp.placement?.role === 'pocket';
+              // UNE FEUILLE : pièce de surface (poche/doublure) OU pièce plate
+              // qui renonce à son jumeau (singlePanel — sinon le panneau
+              // arrière d'un demi-devant, ouvert ou cousu ailleurs sur tous
+              // ses bords, n'est retenu par rien et tombe en fantôme).
+              const soloSheet = surfacePiece || fp.singlePanel === true;
               const firstPhysicalPanel = Math.floor(garment.count / panelSize);
               if (fp.wrap || fp.placement?.role === 'free') {
                 rigidFixedPanels.add(firstPhysicalPanel);
@@ -5075,11 +5119,11 @@ async function main(): Promise<void> {
                 mask: { outline: fp.outline, darts: fp.darts, holes: pieceHolePolygons(fp) },
                 extraSeams: fpc.extraSeams,
                 extraOpenings: cellOpen(openAll),
-                maskBack: surfacePiece
+                maskBack: soloSheet
                   ? { outline: [], darts: [] }
                   : { outline: fp.outline, darts: fp.darts },
-                extraSeamsBack: surfacePiece ? [] : fpc.extraSeams,
-                extraOpeningsBack: surfacePiece ? undefined : cellOpen(openAll),
+                extraSeamsBack: soloSheet ? [] : fpc.extraSeams,
+                extraOpeningsBack: soloSheet ? undefined : cellOpen(openAll),
                 // A wrap piece is a TUBE: its side seams must fold freely
                 // around the arm — the flatten rings would pin it shut.
                 flattenSeams: fp.wrap ? false : undefined,
@@ -8656,7 +8700,9 @@ async function main(): Promise<void> {
                 ? 'at-jupe'
                 : archetype === 'robe'
                   ? 'at-robe'
-                  : 'at-hoodie';
+                  : archetype === 'veste'
+                    ? 'at-veste'
+                    : 'at-hoodie';
         const btn = document.getElementById(id);
         if (!(btn instanceof HTMLElement)) return false;
         btn.click();

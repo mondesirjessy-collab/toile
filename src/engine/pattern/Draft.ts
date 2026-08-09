@@ -210,6 +210,14 @@ export interface DraftPiece {
    * excluded from cloth simulation (pocket bags, fly pieces, waistband…). */
   patternOnly?: boolean;
   /**
+   * UNE SEULE FEUILLE physique : la pièce libre renonce à son panneau jumeau
+   * (le mécanisme du masque arrière vide des poches). Pour une pièce PLATE
+   * dont chaque bord est soit ouvert soit cousu ailleurs (le demi-devant
+   * droit d'une veste), le jumeau ne serait cousu à rien et tomberait au sol
+   * en fantôme — observé sur la veste v196.
+   */
+  singlePanel?: boolean;
+  /**
    * SOCLE VIDE : cette face de base n'existe pas encore — contour sentinelle
    * minuscule qui ne rasterise AUCUNE cellule, invisible dans le plan et la 3D.
    * C'est l'état « je pars de zéro » : l'utilisateur trace ses pièces libres
@@ -290,7 +298,7 @@ export interface DraftDoc {
   pieces?: DraftPiece[];
   /** Optional built-in construction whose assembly needs more than the generic
    * front/back tube (currently the mirrored two-leg loose-pants assembly). */
-  preset?: 'loose-pants' | 'lucas-hoodie' | 'jupe' | 'robe';
+  preset?: 'loose-pants' | 'lucas-hoodie' | 'jupe' | 'robe' | 'veste';
   presetSize?: string;
 }
 
@@ -2089,6 +2097,7 @@ export function sanitizeDraft(raw: unknown): DraftDoc {
         : {}),
       ...(pp.onFold === true ? { onFold: true } : {}),
       ...(pp.patternOnly === true ? { patternOnly: true } : {}),
+      ...(pp.singlePanel === true ? { singlePanel: true } : {}),
       ...(pp.blank === true ? { blank: true } : {}),
       ...((): Pick<DraftPiece, 'fabricPreset'> => {
         const allowed = ['Jersey', 'Maille', 'Popeline', 'Denim', 'Lin', 'Laine', 'Soie'] as const;
