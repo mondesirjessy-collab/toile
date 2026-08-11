@@ -45,6 +45,7 @@ import { draftJupe, jupeCm, JUPE_SIZES, type JupeSize } from './engine/pattern/j
 import { draftRobe, robeCm, ROBE_SIZES, type RobeSize } from './engine/pattern/robe';
 import { draftVeste, vesteCm, VESTE_AVATAR_EASE_CM, VESTE_SIZES, type VesteSize } from './engine/pattern/veste';
 import { draftDoudoune, doudouneCm, DOUDOUNE_AVATAR_EASE_CM, DOUDOUNE_SIZES, type DoudouneSize } from './engine/pattern/doudoune';
+import { cloTee, cloPants } from './engine/pattern/cloBlocks';
 import {
   loosePants,
   loosePantsSizeLabel,
@@ -1962,7 +1963,7 @@ async function main(): Promise<void> {
   let vesteSize: VesteSize | 'avatar' = 'M';
   let doudouneSize: DoudouneSize | 'avatar' = 'M';
   let hoodieSize: LucasHoodieSize = 'S';
-  let loadedPattern: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' = 'boxy';
+  let loadedPattern: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' = 'boxy';
   const sizeSel = document.getElementById('at-size') as HTMLSelectElement | null;
   const syncAvatarStatureHelp = (): void => {
     if (sizeSel) sizeSel.disabled = !draftTouched;
@@ -2014,10 +2015,16 @@ async function main(): Promise<void> {
     avatarStatureHelp.textContent =
       `Redimensionne le mannequin et ses collisions. ${fixedGarmentSizeMessage(selectedSize)}`;
   };
-  const showSizes = (kind: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune'): void => {
+  const showSizes = (kind: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants'): void => {
     if (!sizeSel) return;
     loadedPattern = kind;
-    if (kind === 'boxy') {
+    if (kind === 'clo-tee') {
+      sizeSel.innerHTML = `<option value="avatar">Bloc CLO ajusté au mannequin · poitrine ${(lastMeasure.chest.circ * 100).toFixed(0)} cm</option>`;
+      sizeSel.value = 'avatar';
+    } else if (kind === 'clo-pants') {
+      sizeSel.innerHTML = `<option value="avatar">Bloc CLO ajusté au mannequin · taille ${(lastMeasure.waist.circ * 100).toFixed(0)} · bassin ${(lastMeasure.hip.circ * 100).toFixed(0)} cm</option>`;
+      sizeSel.value = 'avatar';
+    } else if (kind === 'boxy') {
       sizeSel.innerHTML = BOXY_SIZES.map((s) => `<option value="${s}">${s} · poitrine ${boxyChestCm(s)} cm</option>`).join('');
       sizeSel.value = boxySize;
     } else if (kind === 'doudoune') {
@@ -2294,6 +2301,45 @@ async function main(): Promise<void> {
   };
   (document.getElementById('at-doudoune') as HTMLElement | null)?.addEventListener('click', loadDoudoune);
 
+  // Blocs de CLO reconstruits (tee Set-In + pantalon Trousers), lus au DXF et
+  // gradés sur l'avatar. Le tee passe par l'assemblage générique (comme boxy) ;
+  // le pantalon réutilise le châssis loose-pants (buildLoosePantsMesh).
+  const loadCloTee = (): void => {
+    if (!bigPanel) setBig(true);
+    patternView.resetView();
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    resetPlacement();
+    pushHistory();
+    showSizes('clo-tee');
+    teePreset = false;
+    draft = cloTee(lastMeasure, REF);
+    draftTouched = true;
+    atelierSleeves = false;
+    atelierCollar = false;
+    document.getElementById('at-sleeves')?.classList.remove('active');
+    build();
+  };
+  (document.getElementById('at-clo-tee') as HTMLElement | null)?.addEventListener('click', loadCloTee);
+
+  const loadCloPants = (): void => {
+    if (!bigPanel) setBig(true);
+    patternView.resetView();
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    resetPlacement();
+    pushHistory();
+    showSizes('clo-pants');
+    teePreset = false;
+    draft = cloPants(lastMeasure, REF);
+    draftTouched = true;
+    atelierSleeves = false;
+    atelierCollar = false;
+    document.getElementById('at-sleeves')?.classList.remove('active');
+    build();
+  };
+  (document.getElementById('at-clo-pants') as HTMLElement | null)?.addEventListener('click', loadCloPants);
+
   // v197 : OUVRIR / FERMER la fermeture du patron — le geste de démo (ouverte,
   // la veste s'écarte sur sa doublure à l'essayage). La bascule vit dans le
   // DOCUMENT (`closed` des coutures zipper) ; la reconstruction rejoue
@@ -2396,6 +2442,10 @@ async function main(): Promise<void> {
       } else if (loadedPattern === 'doudoune') {
         doudouneSize = sizeSel.value as DoudouneSize | 'avatar';
         if (sceneMode === 'atelier') loadDoudoune();
+      } else if (loadedPattern === 'clo-tee') {
+        if (sceneMode === 'atelier') loadCloTee();
+      } else if (loadedPattern === 'clo-pants') {
+        if (sceneMode === 'atelier') loadCloPants();
       } else if (loadedPattern === 'hoodie') {
         if (sizeSel.value === 'avatar-frozen') return;
         if (sizeSel.value === 'avatar') {
