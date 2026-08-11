@@ -1418,11 +1418,24 @@ function withHoodCollisionLayers(
  * (y, theta) preserves the panel side and exits whichever body component
  * actually contains the point (torso, head or deltoid).
  */
+// v200 : l'enveloppe radiale de placement pousse chaque cellule juste hors du
+// corps le long d'un rayon. Sur un corps en T-POSE, à hauteur d'épaule, cette
+// marche peut ENTRER dans le bras horizontal et ressortir de l'autre côté : la
+// cellule du torse atterrit sur la face externe du bras, à 30-70× la maille de
+// ses voisines restées sur le torse — le vêtement naît disloqué et convulse en
+// « cape » au premier pas de simulation (incident Mia FV2_T). On NE plafonne
+// PAS la marche (l'éjection légitime du trapèze sur un corps naturel la dépasse
+// largement, et la borner casse l'embu du col de capuche) : la téléportation
+// est neutralisée APRÈS coup, dans makePolarBodyPlacementSafe, en annulant les
+// seules cellules isolées de leurs voisines de grille.
 function hoodRadialEnvelope(
   sd: Sd,
   point: readonly [number, number, number],
   clearance: number,
   fallbackSign: -1 | 1,
+  // Défaut = 0,4 m, la portée de recherche historique (capuche + col) : le
+  // torse passe explicitement le plafond serré de 0,045 m.
+  maxTravel = 0.4,
 ): Point3 {
   const y = point[1];
   const radius = Math.hypot(point[0], point[2]);
@@ -1440,7 +1453,7 @@ function hoodRadialEnvelope(
 
   let lower = radius;
   let upper = 0;
-  for (let radial = radius + 0.004; radial <= radius + 0.4; radial += 0.004) {
+  for (let radial = radius + 0.004; radial <= radius + maxTravel; radial += 0.004) {
     if (distanceAt(radial) >= clearance) {
       upper = radial;
       break;
@@ -1455,6 +1468,7 @@ function hoodRadialEnvelope(
     else upper = middle;
   }
   const safeRadius = (lower + upper) / 2;
+  if (safeRadius - radius > maxTravel) return [point[0], point[1], point[2]];
   return [directionX * safeRadius, y, directionZ * safeRadius];
 }
 
@@ -1543,11 +1557,29 @@ function hoodFirstRadialEnvelope(
   return [directionX * safeRadius, point[1], directionZ * safeRadius];
 }
 
+// Au-delà de cette distance à un voisin de grille vivant, une cellule n'a pas
+// été « ajustée » mais TÉLÉPORTÉE : l'embu du col ou d'une pince reste bien en
+// deçà (< 6 cm), une cellule projetée à travers un bras en T saute 30 cm et
+// plus. Seuil sous le plafond du test de non-régression (12 cm) pour qu'après
+// annulation aucune arête de torse ne le dépasse.
+const TORSO_TELEPORT_STRAND_M = 0.1;
+
 function makePolarBodyPlacementSafe(
   mesh: ClothMeshData,
   sd: Sd,
+  body: BodyMeasure,
   clearance = HOOD_CONTACT_THICKNESS_M + HOOD_CONTACT_SAFETY_M,
 ): void {
+  // v200 : mémorise la pose cohérente d'AVANT l'enveloppe, applique l'enveloppe,
+  // puis n'ANNULE que les cellules téléportées — celles qui atterrissent à plus
+  // de TORSO_TELEPORT_STRAND_M d'un voisin de grille vivant (la marche radiale a
+  // traversé un bras horizontal). L'embu cohérent du col reste intact.
+  //
+  // Sans bras mesuré (corps bras baissés — jericho natif), aucune
+  // téléportation n'est possible : on ne lance même pas l'annulation, et le
+  // placement est rigoureusement identique à l'historique.
+  const before = mesh.positions.slice();
+  const moved = new Uint8Array(mesh.count);
   for (let particle = 0; particle < mesh.count; particle++) {
     if (mesh.invMasses[particle]! <= 0) continue;
     const offset = particle * 4;
@@ -1558,9 +1590,62 @@ function makePolarBodyPlacementSafe(
       clearance,
       x < 0 ? -1 : 1,
     );
+    if (
+      safe[0] !== mesh.positions[offset]! ||
+      safe[1] !== mesh.positions[offset + 1]! ||
+      safe[2] !== mesh.positions[offset + 2]!
+    ) {
+      moved[particle] = 1;
+    }
     mesh.positions[offset] = safe[0];
     mesh.positions[offset + 1] = safe[1];
     mesh.positions[offset + 2] = safe[2];
+  }
+  // Pas de bras horizontal = pas de traversée possible : on n'annule rien.
+  if (!body.arm) return;
+  const n = mesh.resolution;
+  const panelSize = n * n;
+  const strandLimit2 = TORSO_TELEPORT_STRAND_M * TORSO_TELEPORT_STRAND_M;
+  const strandedNeighbour = (particle: number): boolean => {
+    const local = particle % panelSize;
+    const base = particle - local;
+    const u = local % n;
+    const v = Math.floor(local / n);
+    const px = mesh.positions[particle * 4]!;
+    const py = mesh.positions[particle * 4 + 1]!;
+    const pz = mesh.positions[particle * 4 + 2]!;
+    const neighbours: [number, number][] = [
+      [u - 1, v],
+      [u + 1, v],
+      [u, v - 1],
+      [u, v + 1],
+    ];
+    for (const [nu, nv] of neighbours) {
+      if (nu < 0 || nu >= n || nv < 0 || nv >= n) continue;
+      const other = base + nv * n + nu;
+      if (mesh.invMasses[other]! <= 0) continue;
+      const dx = px - mesh.positions[other * 4]!;
+      const dy = py - mesh.positions[other * 4 + 1]!;
+      const dz = pz - mesh.positions[other * 4 + 2]!;
+      if (dx * dx + dy * dy + dz * dz > strandLimit2) return true;
+    }
+    return false;
+  };
+  // Le retrait d'une éjection peut en isoler une autre : itère jusqu'au point
+  // fixe (borné — chaque passe ne fait que restaurer des cellules déplacées).
+  for (let sweep = 0; sweep < 4; sweep++) {
+    let reverted = 0;
+    for (let particle = 0; particle < mesh.count; particle++) {
+      if (!moved[particle]) continue;
+      if (!strandedNeighbour(particle)) continue;
+      const offset = particle * 4;
+      mesh.positions[offset] = before[offset]!;
+      mesh.positions[offset + 1] = before[offset + 1]!;
+      mesh.positions[offset + 2] = before[offset + 2]!;
+      moved[particle] = 0;
+      reverted++;
+    }
+    if (reverted === 0) break;
   }
 }
 
@@ -2443,7 +2528,7 @@ export function buildLucasHoodieMesh(
     // attached. In particular, the scanned trapezius rises inside the flat
     // pattern neckline; moving the complete polar shell here gives the hood a
     // collision-safe seam target without tearing either mesh afterwards.
-    makePolarBodyPlacementSafe(garment, bodySd);
+    makePolarBodyPlacementSafe(garment, bodySd, body);
   }
   const ranges: LucasHoodieParticleRange[] = [
     { pieceId: 0, first: 0, count: panelSize, instance: 0 },
