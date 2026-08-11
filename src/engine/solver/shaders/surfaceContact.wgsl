@@ -110,9 +110,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // material, while this pass only prevents pocket/support interpenetration.
   let support_thickness = materials[material_ids[contact.support]].contact_motion.x;
   let overlay_thickness = materials[material_ids[overlay]].contact_motion.x;
+  // v199 — plancher relevé (1,5 → 2,5 mm) : deux tissus fins (soie sous
+  // laine) ne laissaient qu'une barrière symbolique, et le sandwich comprimé
+  // par le corps ou pincé par le matelassage perçait par intermittence.
   let separation = clamp(
     0.5 * (support_thickness + overlay_thickness),
-    0.0015,
+    0.0025,
     params.max_separation,
   );
   let signed_distance = dot(x - support_point, normal);

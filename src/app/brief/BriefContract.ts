@@ -9,7 +9,15 @@
  * jamais un à-peu-près silencieux.
  */
 
-export const BRIEF_ARCHETYPES = ['tshirt_boxy', 'pantalon', 'hoodie_zip', 'jupe', 'robe', 'veste'] as const;
+export const BRIEF_ARCHETYPES = [
+  'tshirt_boxy',
+  'pantalon',
+  'hoodie_zip',
+  'jupe',
+  'robe',
+  'veste',
+  'doudoune',
+] as const;
 export type BriefArchetype = (typeof BRIEF_ARCHETYPES)[number];
 
 export const BRIEF_FABRICS = [
@@ -38,6 +46,8 @@ export const BRIEF_JUPE_SIZES = ['avatar', '34', '36', '38', '40', '42', '44', '
 export const BRIEF_ROBE_SIZES = ['avatar', '34', '36', '38', '40', '42', '44', '46'] as const;
 /** La veste zippée doublée : lettres + coupe aux mensurations. */
 export const BRIEF_VESTE_SIZES = ['avatar', 'XS', 'S', 'M', 'L', 'XL', 'XXL'] as const;
+/** La doudoune matelassée : mêmes lettres + coupe aux mensurations. */
+export const BRIEF_DOUDOUNE_SIZES = ['avatar', 'XS', 'S', 'M', 'L', 'XL', 'XXL'] as const;
 
 export type BriefBodyKind = 'scan femme' | 'scan homme';
 

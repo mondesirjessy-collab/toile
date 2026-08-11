@@ -123,6 +123,14 @@ describe('interpretBrief (règles françaises)', () => {
     expect(r.fabric).toBe('Denim');
   });
 
+  it('comprend la doudoune en taille lettre (v199)', () => {
+    const r = interpretBrief('une doudoune bien chaude, taille M');
+    expect(r.intent).toBe('create');
+    if (r.intent !== 'create') return;
+    expect(r.garment.archetype).toBe('doudoune');
+    expect(r.garment.size).toBe('M');
+  });
+
   it('refuse encore le manteau long, en pointant vers la veste doublée', () => {
     const r = interpretBrief('un manteau long en laine pour l’hiver');
     expect(r.intent).toBe('refuse');

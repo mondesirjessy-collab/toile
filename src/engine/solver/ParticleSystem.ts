@@ -541,8 +541,12 @@ export class ParticleSystem {
     const surfaceParamsView = new DataView(surfaceParams);
     surfaceParamsView.setUint32(0, this.surfaceContactCount, true);
     surfaceParamsView.setFloat32(4, 0.0002, true); // 0.2 mm chatter slop
-    surfaceParamsView.setFloat32(8, 0.0015, true); // bounded projection/substep
-    surfaceParamsView.setFloat32(12, 0.003, true); // below authored 4 mm clearance
+    // v199 — barrière des couches ÉPAISSIE : à 1,5 mm de pas et 3 mm de
+    // plafond, le sandwich doublure/tissu comprimé par le corps (veste) ou
+    // pincé par le matelassage (doudoune) perçait par intermittence. Le
+    // plafond monte au ras de la clearance de pose (4 mm), le pas suit.
+    surfaceParamsView.setFloat32(8, 0.002, true); // bounded projection/substep
+    surfaceParamsView.setFloat32(12, 0.0038, true); // just below authored 4 mm clearance
     surfaceParamsView.setUint32(16, this.count, true);
     device.queue.writeBuffer(this.surfaceParamsBuffer, 0, surfaceParams);
     // Waistband anchor: target world-Y per particle (sentinel = free).

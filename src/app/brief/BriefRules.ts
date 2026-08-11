@@ -10,6 +10,7 @@ import {
   BRIEF_BOXY_SIZES,
   BRIEF_HOODIE_SIZES,
   BRIEF_JUPE_SIZES,
+  BRIEF_DOUDOUNE_SIZES,
   BRIEF_PANTS_SIZES,
   BRIEF_ROBE_SIZES,
   BRIEF_VESTE_SIZES,
@@ -91,6 +92,9 @@ function detectArchetype(t: string): ArchetypeMatch | null {
   if (/\bhoodies?\b|\bhoody\b|sweat(shirt)?s? (a|à) capuche|sweat zipp|capuches?\b/.test(t)) {
     return { archetype: 'hoodie_zip', labelFr: 'hoodie zippé' };
   }
+  if (/\bdoudounes?\b|\bpuffers?\b|\bmatelass(e|ee)s?\b/.test(t)) {
+    return { archetype: 'doudoune', labelFr: 'doudoune matelassée' };
+  }
   if (/\bvestes?\b|\bblousons?\b|\bjackets?\b|\bbombers?\b/.test(t)) {
     return { archetype: 'veste', labelFr: 'veste zippée doublée' };
   }
@@ -149,7 +153,7 @@ function detectSize(t: string, archetype: BriefArchetype | null): string | undef
     return undefined;
   }
   if (
-    (archetype === 'hoodie_zip' || archetype === 'veste') &&
+    (archetype === 'hoodie_zip' || archetype === 'veste' || archetype === 'doudoune') &&
     /ajust(e|ee)? au mannequin|sur[- ]mesure|a mes mesures/.test(t)
   ) {
     return 'avatar';
@@ -165,7 +169,9 @@ function detectSize(t: string, archetype: BriefArchetype | null): string | undef
       ? BRIEF_HOODIE_SIZES
       : archetype === 'veste'
         ? BRIEF_VESTE_SIZES
-        : BRIEF_BOXY_SIZES;
+        : archetype === 'doudoune'
+          ? BRIEF_DOUDOUNE_SIZES
+          : BRIEF_BOXY_SIZES;
   return (pool as readonly string[]).includes(raw) ? raw : undefined;
 }
 
@@ -249,7 +255,7 @@ export function interpretBrief(rawText: string): BriefResult {
       intent: 'clarify',
       resumeFr: 'Je n’ai pas reconnu de vêtement constructible dans ce brief.',
       suggestionFr:
-        'L’atelier patronne aujourd’hui : t-shirt boxy, pantalon large, hoodie zippé, jupe trapèze, robe cintrée, veste zippée doublée. Exemple : « veste doublée en laine, taille L ».',
+        'L’atelier patronne aujourd’hui : t-shirt boxy, pantalon large, hoodie zippé, jupe trapèze, robe cintrée, veste doublée, doudoune matelassée. Exemple : « une doudoune, taille M ».',
     };
   }
 

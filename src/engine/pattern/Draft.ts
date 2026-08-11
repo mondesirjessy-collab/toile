@@ -298,7 +298,7 @@ export interface DraftDoc {
   pieces?: DraftPiece[];
   /** Optional built-in construction whose assembly needs more than the generic
    * front/back tube (currently the mirrored two-leg loose-pants assembly). */
-  preset?: 'loose-pants' | 'lucas-hoodie' | 'jupe' | 'robe' | 'veste';
+  preset?: 'loose-pants' | 'lucas-hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune';
   presetSize?: string;
 }
 
@@ -1736,6 +1736,108 @@ export function compileSurfaceSeams(
       if (emitted.has(key)) continue;
       emitted.add(key);
       out.push({ i: supportOffset + supportCell, j: enteringOffset + cell });
+    }
+  }
+  return out;
+}
+
+/**
+ * MATELASSAGE (v199) : épingles INTÉRIEURES entre une pièce de surface (la
+ * doublure) et son support, appariées LIGNE DE CANAL à LIGNE DE CANAL — la
+ * k-ième ligne interne ouverte (ni fermée ni trou) de la doublure se pique
+ * sur la k-ième du support, cellule à cellule le long des deux polylignes.
+ *
+ * Le gonflant d'une doudoune naît de là, SANS moteur de pression : le support
+ * (tissu extérieur) est dessiné avec ses canaux PLUS ESPACÉS que ceux de la
+ * doublure — un extérieur coupé plus long, comme en vraie couture. Les
+ * épingles le compriment à l'espacement de la doublure et l'excès BOUDINE
+ * entre les piqûres, poussé vers l'extérieur par le corps et la doublure.
+ *
+ * Émises comme des coutures ORDINAIRES (bilatérales, kind Seam au montage) :
+ * le support doit se laisser comprimer — la réponse asymétrique des
+ * surpiqûres de poche (SurfaceSeam) étirerait la doublure au lieu de
+ * froisser le tissu du dessus. Les deux couches se piquent l'une à l'autre.
+ * Auteur : tracer les lignes homologues DANS LE MÊME SENS sur les deux
+ * pièces (l'appariement suit l'ordre des points, sans anti-twist).
+ */
+export function compileQuiltSeams(
+  doc: DraftDoc,
+  n: number,
+  offsets: number[],
+  enteringPid: number,
+): { i: number; j: number }[] {
+  const panelSize = n * n;
+  const pieces = docPieces(doc);
+  const overlay = pieces[enteringPid];
+  const surface = overlay?.placement?.surface;
+  if (!overlay || !surface) return [];
+  const support = pieces[surface.supportPieceId];
+  if (!support || support.outline.length < 3 || overlay.outline.length < 3) return [];
+  const channels = (piece: DraftPiece): InternalLine[] =>
+    (piece.internalLines ?? []).filter(
+      (line) => !line.closed && !line.hole && line.points.length >= 2,
+    );
+  const linesOverlay = channels(overlay);
+  const linesSupport = channels(support);
+  const lineCount = Math.min(linesOverlay.length, linesSupport.length);
+  if (!lineCount) return [];
+  const supportOffset = offsets[surface.supportPieceId] ?? surface.supportPieceId * panelSize;
+  const enteringOffset = offsets[enteringPid] ?? enteringPid * panelSize;
+  const keptIn = (piece: DraftPiece): ((uu: number, vv: number) => boolean) => {
+    const holes = pieceHolePolygons(piece);
+    return (uu, vv) => {
+      if (!pointInPolygon([uu, vv], piece.outline)) return false;
+      for (const dart of piece.darts) {
+        if (pointInTriangle([uu, vv], dart.apex, dart.legA, dart.legB)) return false;
+      }
+      for (const hole of holes) if (pointInPolygon([uu, vv], hole)) return false;
+      return true;
+    };
+  };
+  const keptSupport = keptIn(support);
+  const keptOverlay = keptIn(overlay);
+  // Cellules VIVANTES le long d'une polyligne, échantillonnée sous la cellule.
+  const cellsAlong = (
+    line: InternalLine,
+    kept: (uu: number, vv: number) => boolean,
+  ): number[] => {
+    const out: number[] = [];
+    let last = -1;
+    const pts = line.points;
+    for (let s = 0; s + 1 < pts.length; s++) {
+      const [ax, ay] = pts[s]!;
+      const [bx, by] = pts[s + 1]!;
+      const steps = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) * (n - 1) * 2));
+      for (let q = 0; q <= steps; q++) {
+        const t = q / steps;
+        const uu = ax + (bx - ax) * t;
+        const vv = ay + (by - ay) * t;
+        if (uu < 0 || uu > 1 || vv < 0 || vv > 1) continue;
+        const cell = Math.round(vv * (n - 1)) * n + Math.round(uu * (n - 1));
+        if (cell === last) continue;
+        if (!kept(uu, vv)) continue;
+        out.push(cell);
+        last = cell;
+      }
+    }
+    return out;
+  };
+  const out: { i: number; j: number }[] = [];
+  const emitted = new Set<string>();
+  for (let k = 0; k < lineCount; k++) {
+    const cellsS = cellsAlong(linesSupport[k]!, keptSupport);
+    const cellsO = cellsAlong(linesOverlay[k]!, keptOverlay);
+    if (!cellsS.length || !cellsO.length) continue;
+    // Fermeture éclair sur la plus longue des deux listes : chaque cellule des
+    // deux canaux est piquée (la plus courte se répète — l'embu du matelassage).
+    const m = Math.max(cellsS.length, cellsO.length);
+    for (let q = 0; q < m; q++) {
+      const cs = cellsS[Math.min(cellsS.length - 1, Math.floor((q * cellsS.length) / m))]!;
+      const co = cellsO[Math.min(cellsO.length - 1, Math.floor((q * cellsO.length) / m))]!;
+      const key = `${cs}:${co}`;
+      if (emitted.has(key)) continue;
+      emitted.add(key);
+      out.push({ i: supportOffset + cs, j: enteringOffset + co });
     }
   }
   return out;

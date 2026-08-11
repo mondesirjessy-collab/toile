@@ -29,6 +29,7 @@ const CATALOG = `ARCHÉTYPES CONSTRUCTIBLES (les seuls) :
 - "jupe" — jupe trapèze à pinces (mi-genou). Tailles : avatar (coupée aux mensurations du corps), 34, 36, 38, 40, 42, 44, 46.
 - "robe" — robe cintrée sans manches (au-dessus du genou, ligne A). Tailles : avatar (coupée aux mensurations du corps), 34, 36, 38, 40, 42, 44, 46.
 - "veste" — veste zippée DOUBLÉE (blouson kimono, fermeture milieu devant, doublure bordeaux). Tailles : avatar (poitrine mesurée + aisance blouson), XS, S, M, L, XL, XXL.
+- "doudoune" — doudoune MATELASSÉE (le châssis de la veste + canaux de matelassage, le tissu extérieur boudine entre les piqûres). Tailles : avatar (poitrine mesurée + aisance doudoune), XS, S, M, L, XL, XXL.
 
 TISSUS (presets calibrés) : Jersey, Maille, Popeline, Denim, Lin, Laine, Soie.
 MOTIFS : uni, rayures, vichy, pois.
@@ -127,6 +128,11 @@ export const BRIEF_FEW_SHOT: ReadonlyArray<{ user: string; assistant: string }> 
     user: 'une veste doublée en laine, taille L',
     assistant:
       '{"intent":"create","garment":{"archetype":"veste","size":"L"},"fabric":"Laine","tryOn":true,"resumeFr":"Veste zippée doublée en laine, taille L — doublure bordeaux, essayage lancé."}',
+  },
+  {
+    user: 'une doudoune bien gonflée pour l\'hiver, taille M',
+    assistant:
+      '{"intent":"create","garment":{"archetype":"doudoune","size":"M"},"tryOn":true,"resumeFr":"Doudoune matelassée taille M — le tissu extérieur boudine entre les piqûres, essayage lancé."}',
   },
   {
     user: 'allonge-la de 10 cm',

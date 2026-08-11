@@ -25,7 +25,7 @@ import {
   type FabricDynamics,
 } from './engine/solver/FabricMaterial';
 import { generateClothGrid, generateSeamedPanels, combineClothMeshes, scaleMeshInverseMassesToReferenceCellArea, type CrossSeam, type ClothMeshData } from './engine/cloth/ClothMesh';
-import { defaultDraft, blankBaseDraft, tshirtDraft, compileDraft, compileAssembly, compileAssemblyGroups, compileCrossSeams, compileSurfaceContacts, compileSurfaceSeams, crossSewnOpenCells, cutPieceAlongChord, docPieces, freeSeamBetween, mirrorDuplicatePiece, graphicLocalUV, GRAPHIC_IMAGE_MAX_CHARS, INTERNAL_LINES_MAX, offsetPieceOutline, generateFittedSleeves, addFisheyeDart, roundOutlineCorner, cutPieceAlongInternalLine, toggleNotchAt, addSeamNotches, slashSpreadFullness, mergePiecesAlongSeam, toggleInternalHole, linkedVertexEdit, divideOutlineEdge, alignOutlineVertex, squareCorner, extendInternalLineEnd, divideInternalLineAt, pieceHolePolygons, isSelfIntersecting, fitCapWidthToArmhole, draftPieceLabel, gatherSeamSide, neckOpeningCells, removeFreePiece, reboxPiece, pieceIdOf, nearestOutlineEdgeInfo, syncPieceFrames, sanitizeDraft, pointInPolygon, pointInTriangle, surfaceAttachmentUV, type DraftDoc, type AssemblySeam, type DraftPiece, type PieceGraphic, type UV } from './engine/pattern/Draft';
+import { defaultDraft, blankBaseDraft, tshirtDraft, compileDraft, compileAssembly, compileAssemblyGroups, compileCrossSeams, compileQuiltSeams, compileSurfaceContacts, compileSurfaceSeams, crossSewnOpenCells, cutPieceAlongChord, docPieces, freeSeamBetween, mirrorDuplicatePiece, graphicLocalUV, GRAPHIC_IMAGE_MAX_CHARS, INTERNAL_LINES_MAX, offsetPieceOutline, generateFittedSleeves, addFisheyeDart, roundOutlineCorner, cutPieceAlongInternalLine, toggleNotchAt, addSeamNotches, slashSpreadFullness, mergePiecesAlongSeam, toggleInternalHole, linkedVertexEdit, divideOutlineEdge, alignOutlineVertex, squareCorner, extendInternalLineEnd, divideInternalLineAt, pieceHolePolygons, isSelfIntersecting, fitCapWidthToArmhole, draftPieceLabel, gatherSeamSide, neckOpeningCells, removeFreePiece, reboxPiece, pieceIdOf, nearestOutlineEdgeInfo, syncPieceFrames, sanitizeDraft, pointInPolygon, pointInTriangle, surfaceAttachmentUV, type DraftDoc, type AssemblySeam, type DraftPiece, type PieceGraphic, type UV } from './engine/pattern/Draft';
 import {
   applyStagingOffset,
   autoPlaceMeshFromCrossSeams,
@@ -44,6 +44,7 @@ import { boxyTee, boxyChestCm, BOXY_SIZES, type BoxySize } from './engine/patter
 import { draftJupe, jupeCm, JUPE_SIZES, type JupeSize } from './engine/pattern/jupe';
 import { draftRobe, robeCm, ROBE_SIZES, type RobeSize } from './engine/pattern/robe';
 import { draftVeste, vesteCm, VESTE_AVATAR_EASE_CM, VESTE_SIZES, type VesteSize } from './engine/pattern/veste';
+import { draftDoudoune, doudouneCm, DOUDOUNE_AVATAR_EASE_CM, DOUDOUNE_SIZES, type DoudouneSize } from './engine/pattern/doudoune';
 import {
   loosePants,
   loosePantsSizeLabel,
@@ -1959,8 +1960,9 @@ async function main(): Promise<void> {
   let jupeSize: JupeSize | 'avatar' = '38';
   let robeSize: RobeSize | 'avatar' = '38';
   let vesteSize: VesteSize | 'avatar' = 'M';
+  let doudouneSize: DoudouneSize | 'avatar' = 'M';
   let hoodieSize: LucasHoodieSize = 'S';
-  let loadedPattern: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' = 'boxy';
+  let loadedPattern: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' = 'boxy';
   const sizeSel = document.getElementById('at-size') as HTMLSelectElement | null;
   const syncAvatarStatureHelp = (): void => {
     if (sizeSel) sizeSel.disabled = !draftTouched;
@@ -2012,12 +2014,18 @@ async function main(): Promise<void> {
     avatarStatureHelp.textContent =
       `Redimensionne le mannequin et ses collisions. ${fixedGarmentSizeMessage(selectedSize)}`;
   };
-  const showSizes = (kind: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste'): void => {
+  const showSizes = (kind: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune'): void => {
     if (!sizeSel) return;
     loadedPattern = kind;
     if (kind === 'boxy') {
       sizeSel.innerHTML = BOXY_SIZES.map((s) => `<option value="${s}">${s} · poitrine ${boxyChestCm(s)} cm</option>`).join('');
       sizeSel.value = boxySize;
+    } else if (kind === 'doudoune') {
+      sizeSel.innerHTML = [
+        `<option value="avatar">Ajustée au mannequin · poitrine ${(lastMeasure.chest.circ * 100).toFixed(0)} + ${DOUDOUNE_AVATAR_EASE_CM} cm d'aisance</option>`,
+        ...DOUDOUNE_SIZES.map((s) => `<option value="${s}">${s} · vêtement ${doudouneCm(s)} cm</option>`),
+      ].join('');
+      sizeSel.value = doudouneSize;
     } else if (kind === 'veste') {
       sizeSel.innerHTML = [
         `<option value="avatar">Ajustée au mannequin · poitrine ${(lastMeasure.chest.circ * 100).toFixed(0)} + ${VESTE_AVATAR_EASE_CM} cm d'aisance</option>`,
@@ -2149,6 +2157,14 @@ async function main(): Promise<void> {
       showSizes('veste');
       return true;
     }
+    if (source.preset === 'doudoune') {
+      const savedSize = source.presetSize;
+      if (savedSize === 'avatar' || (DOUDOUNE_SIZES as readonly string[]).includes(savedSize ?? '')) {
+        doudouneSize = savedSize as DoudouneSize | 'avatar';
+      }
+      showSizes('doudoune');
+      return true;
+    }
     if (source.preset === 'lucas-hoodie') {
       const sourceSize = lucasHoodieSourceSize(source);
       hoodieFitMode = source.presetSize?.startsWith('fit-')
@@ -2258,6 +2274,26 @@ async function main(): Promise<void> {
   };
   (document.getElementById('at-veste') as HTMLElement | null)?.addEventListener('click', loadVeste);
 
+  // v199 : la DOUDOUNE matelassée — le châssis de la veste plus le gonflant
+  // (l'excès du tissu extérieur boudine entre les épingles de canal).
+  const loadDoudoune = (): void => {
+    if (!bigPanel) setBig(true);
+    patternView.resetView();
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    resetPlacement();
+    pushHistory();
+    showSizes('doudoune');
+    teePreset = false;
+    draft = draftDoudoune(doudouneSize, lastMeasure, REF);
+    draftTouched = true;
+    atelierSleeves = false;
+    atelierCollar = false;
+    document.getElementById('at-sleeves')?.classList.remove('active');
+    build();
+  };
+  (document.getElementById('at-doudoune') as HTMLElement | null)?.addEventListener('click', loadDoudoune);
+
   // v197 : OUVRIR / FERMER la fermeture du patron — le geste de démo (ouverte,
   // la veste s'écarte sur sa doublure à l'essayage). La bascule vit dans le
   // DOCUMENT (`closed` des coutures zipper) ; la reconstruction rejoue
@@ -2357,6 +2393,9 @@ async function main(): Promise<void> {
       } else if (loadedPattern === 'veste') {
         vesteSize = sizeSel.value as VesteSize | 'avatar';
         if (sceneMode === 'atelier') loadVeste();
+      } else if (loadedPattern === 'doudoune') {
+        doudouneSize = sizeSel.value as DoudouneSize | 'avatar';
+        if (sceneMode === 'atelier') loadDoudoune();
       } else if (loadedPattern === 'hoodie') {
         if (sizeSel.value === 'avatar-frozen') return;
         if (sizeSel.value === 'avatar') {
@@ -5076,14 +5115,15 @@ async function main(): Promise<void> {
                     // pas celle du tissu du preset (un jersey ne la détend pas).
                     reinforceTop: true,
                   }
-                : simulationDoc.preset === 'veste'
+                : simulationDoc.preset === 'veste' || simulationDoc.preset === 'doudoune'
                   ? {
-                      // Veste : la LIGNE D'ÉPAULE (rangs hauts, épaules + hauts
-                      // de manches kimono) est retenue le temps du montage —
-                      // FERMETURE OUVERTE, rien ne joint les devants pendant
-                      // que épaules et côtés se cousent, et le vêtement entier
-                      // glissait du corps (observé v197). Pas d'élastique ni
-                      // d'entoilage : une épaule n'est pas une ceinture.
+                      // Veste et doudoune : la LIGNE D'ÉPAULE (rangs hauts,
+                      // épaules + hauts de manches kimono) est retenue le
+                      // temps du montage — FERMETURE OUVERTE, rien ne joint
+                      // les devants pendant que épaules et côtés se cousent,
+                      // et le vêtement entier glissait du corps (observé
+                      // v197). Pas d'élastique ni d'entoilage : une épaule
+                      // n'est pas une ceinture.
                       anchorTop: true,
                     }
                   : {}),
@@ -5232,6 +5272,14 @@ async function main(): Promise<void> {
               const surfacePins = surfacePiece
                 ? compileSurfaceSeams(simulationDoc, resolution, offsets, pid)
                 : [];
+              // MATELASSAGE (v199) : les épingles de canal doublure↔support.
+              // Coutures BILATÉRALES ordinaires (le support se laisse
+              // comprimer — le boudinage vit là), jamais des surpiqûres de
+              // surface ; elles n'entrent pas dans le placement (le pourtour
+              // suffit à poser la pièce, les canaux créent l'embu ensuite).
+              const quiltPins = surfacePiece
+                ? compileQuiltSeams(simulationDoc, resolution, offsets, pid)
+                : [];
               const pins =
                 fp.wrap === 'armL' || fp.wrap === 'armR'
                   ? sleeveCrossSeams(
@@ -5325,7 +5373,7 @@ async function main(): Promise<void> {
               garment = combineClothMeshes(
                 garment,
                 pieceMesh,
-                pins,
+                [...pins, ...quiltPins],
                 // A pocket is part of the SAME garment layer as its support.
                 // Its triangle-aware one-sided pass blocks penetration without
                 // tethering an open edge; treating it as a second outfit layer
@@ -5387,15 +5435,18 @@ async function main(): Promise<void> {
             const zipOpenDoc = (simulationDoc.seams ?? []).some(
               (s) => s.kind === 'zipper' && s.closed === false,
             );
-            if (simulationDoc.preset === 'jupe' || simulationDoc.preset === 'veste' || zipOpenDoc) {
+            const anchoredPreset =
+              simulationDoc.preset === 'jupe' ||
+              simulationDoc.preset === 'veste' ||
+              simulationDoc.preset === 'doudoune';
+            if (anchoredPreset || zipOpenDoc) {
               // La jupe tient ensuite PAR LE PATRON (taille cousue < hanches),
-              // la veste PAR LES ÉPAULES (kimono cousu au dos) — l'aide au
-              // montage s'efface après la même durée que le pantalon.
+              // la veste et la doudoune PAR LES ÉPAULES (kimono cousu au dos)
+              // — l'aide au montage s'efface après la même durée que le
+              // pantalon.
               return {
                 ...garment,
-                ...(simulationDoc.preset === 'jupe' || simulationDoc.preset === 'veste'
-                  ? { anchorReleaseSeconds: 3 }
-                  : {}),
+                ...(anchoredPreset ? { anchorReleaseSeconds: 3 } : {}),
                 ...(zipOpenDoc ? { zipperInitiallyOpen: true } : {}),
               };
             }
@@ -8772,7 +8823,9 @@ async function main(): Promise<void> {
                   ? 'at-robe'
                   : archetype === 'veste'
                     ? 'at-veste'
-                    : 'at-hoodie';
+                    : archetype === 'doudoune'
+                      ? 'at-doudoune'
+                      : 'at-hoodie';
         const btn = document.getElementById(id);
         if (!(btn instanceof HTMLElement)) return false;
         btn.click();
