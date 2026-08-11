@@ -5424,11 +5424,16 @@ async function main(): Promise<void> {
                 garment,
                 pieceMesh,
                 [...pins, ...quiltPins],
-                // A pocket is part of the SAME garment layer as its support.
-                // Its triangle-aware one-sided pass blocks penetration without
-                // tethering an open edge; treating it as a second outfit layer
-                // makes body collision push it farther out than its stitches.
-                0,
+                // Une POCHE (side 'over') reste au MÊME niveau que son support —
+                // elle est posée dessus, fine. Mais une DOUBLURE (side 'under')
+                // doit vivre SOUS la coque : au même niveau, le décalage de
+                // couche du corps (thick = épaisseur + niveau × gap) ne les
+                // sépare jamais, et la doublure perce la coque dans le gonflant
+                // libre (v201 — les grandes plaques bordeaux de la doudoune).
+                // La mettre au niveau −1 fait que le corps la garde une épaisseur
+                // DEDANS la coque : l'ordre est ancré au contact du corps et
+                // tient jusque dans le boudin.
+                fp.placement?.surface?.side === 'under' ? -1 : 0,
                 surfaceContacts,
                 surfacePins,
               );

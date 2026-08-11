@@ -102,6 +102,18 @@ struct Fabric {
 @group(0) @binding(8) var<storage, read> ribbonGraphicUVs: array<vec4f>;
 @group(0) @binding(9) var graphicTex: texture_2d<f32>;
 @group(0) @binding(10) var graphicSamp: sampler;
+// v201 — RENTRÉ DE RENDU : niveau d'habillage par particule (0 = coque, −1 =
+// doublure sous la coque). Une doublure est rentrée le long de sa normale au
+// rendu, si bien qu'un résiduel de percée < ~7 mm reste caché derrière la
+// coque sans changer la silhouette visible. La collision physique n'y touche
+// pas — c'est purement le tombé perçu.
+@group(0) @binding(11) var<storage, read> particleLayers: array<f32>;
+const LAYER_TUCK_M: f32 = 0.007;
+fn layer_tuck(vid: u32) -> f32 {
+  // Seules les couches SOUS la coque (niveau négatif) rentrent ; la coque et
+  // les poches (niveau ≥ 0) ne bougent pas.
+  return min(0.0, particleLayers[vid]) * LAYER_TUCK_M;
+}
 
 fn turn_cloth(v: vec3f) -> vec3f {
   return vec3f(spin.x * v.x - spin.y * v.z, v.y, spin.y * v.x + spin.x * v.z);
@@ -122,7 +134,8 @@ fn cloth_vertex(vid: u32, pos: vec4f, nrm: vec4f, material: u32, graphicUV: vec4
   var out: VSOut;
   let worldPosition = turn_cloth(pos.xyz);
   let worldNormal = turn_cloth(nrm.xyz);
-  out.clip = camera.viewProj * vec4f(worldPosition, 1.0);
+  // Rentré de rendu : la doublure recule le long de sa normale (v201).
+  out.clip = camera.viewProj * vec4f(worldPosition + worldNormal * layer_tuck(vid), 1.0);
   out.normal = worldNormal;
   // A cap interpolates normals from two independently parameterised panels.
   // Put every endpoint in one deterministic light hemisphere BEFORE
@@ -245,7 +258,7 @@ fn vsRibbon(@builtin(vertex_index) drawVertex: u32) -> VSOut {
     ribbonWeights[drawVertex];
   let worldPosition = turn_cloth(ribbonPositions[particle].xyz);
   out.clip = camera.viewProj * vec4f(
-    worldPosition + out.ribbonNormal * visualOffset,
+    worldPosition + out.ribbonNormal * (visualOffset + layer_tuck(particle)),
     1.0
   );
   return out;
@@ -867,6 +880,20 @@ export class ClothRenderer {
     this.clothPipeline = rp.cloth;
     this.clothRibbonPipeline = rp.clothRibbon;
     this.seamPipeline = rp.seam;
+    // Niveau d'habillage par particule pour le rentré de rendu (v201). Absent
+    // (vêtement mono-couche) → tout à 0, aucun décalage.
+    const layerBuffer = createBuffer({
+      size: Math.max(4, count * 4),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      mappedAtCreation: true,
+    });
+    {
+      const layerData = new Float32Array(layerBuffer.getMappedRange());
+      if (layers) {
+        for (let i = 0; i < count; i++) layerData[i] = Number(layers[i] ?? 0);
+      }
+      layerBuffer.unmap();
+    }
     this.clothBindGroup = device.createBindGroup({
       layout: this.clothPipeline.getBindGroupLayout(0),
       entries: [
@@ -875,6 +902,7 @@ export class ClothRenderer {
         { binding: 2, resource: { buffer: this.spinBuffer } },
         { binding: 9, resource: this.graphicTexture.createView() },
         { binding: 10, resource: this.graphicSampler },
+        { binding: 11, resource: { buffer: layerBuffer } },
       ],
     });
     const partition = partitionClothTriangles(triangleIndices, resolution);
@@ -919,6 +947,7 @@ export class ClothRenderer {
         { binding: 8, resource: { buffer: this.graphicUVBuffer } },
         { binding: 9, resource: this.graphicTexture.createView() },
         { binding: 10, resource: this.graphicSampler },
+        { binding: 11, resource: { buffer: layerBuffer } },
       ],
     });
 
