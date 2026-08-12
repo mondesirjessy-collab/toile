@@ -177,7 +177,15 @@ function runLenM(piece: DraftPiece, run: EdgeRun): number {
  * taillée au tour d'encolure réel. Largeur ← poitrine, hauteur ← stature.
  */
 export function cloTee(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
-  const sx = (m.chest.circ * 100) / CLO_BODY.chestCm; // grade largeur ← poitrine
+  // Grade largeur : par la POITRINE, mais remonté vers la CARRURE quand les
+  // épaules sont larges par rapport à la poitrine (corps disproportionné, ex.
+  // l’avatar femme à 70 de poitrine / 40 de carrure) — sinon le tee sort trop
+  // étroit aux épaules et tire. Échelle UNIFORME : préserve l’appariement des
+  // coutures devant↔dos et le calage manche↔emmanchure ; nulle si le corps est
+  // proportionné (max(0,…) → shoulderSx ≤ chestSx ⇒ aucun changement).
+  const chestSx = (m.chest.circ * 100) / CLO_BODY.chestCm;
+  const shoulderSx = m.shoulderHalfW / 0.175; // 0,175 m ≈ demi-carrure de réf. du bloc CLO
+  const sx = chestSx + 0.5 * Math.max(0, shoulderSx - chestSx); // grade largeur
   const sy = (m.height * 100) / CLO_BODY.heightCm; // grade hauteur ← stature
   const topY = 1.52 + (m.shoulderY - ref.shoulderY);
   const F = CLO_BLOCKS.teeFront;
