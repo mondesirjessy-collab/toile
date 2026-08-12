@@ -2002,6 +2002,60 @@ export function combineClothMeshes(
     undefined,
     (index) => { seamFree[index] = 1; },
   );
+  // Bouchage des petits trous (v205) : apres les rubans de couture, il reste de
+  // petites boucles de bord que le zip laisse entre deux epingles (echelle de
+  // trous le long de la couture manche<->emmanchure, et aux pointes d epaule).
+  // On les ferme au niveau TOPOLOGIQUE : toute boucle de bord courte (<= HOLE_MAX
+  // aretes) est triangulee en eventail. Les grandes ouvertures legitimes
+  // (encolure, ourlet, poignets ~ 88-132 aretes) restent ouvertes. Robuste pour
+  // tous les vetements : seules les vraies petites fuites sont comblees.
+  {
+    const HOLE_MAX = 24; // aretes : au dela = ouverture legitime (encolure/ourlet/poignet)
+    const ec = new Map<string, number>();
+    const ek = (x: number, y: number) => (x < y ? x + '|' + y : y + '|' + x);
+    for (let t = 0; t < triangles.length; t += 3) {
+      const t0 = triangles[t]!, t1 = triangles[t + 1]!, t2 = triangles[t + 2]!;
+      for (const [x, y] of [[t0, t1], [t1, t2], [t2, t0]] as [number, number][]) {
+        const k = ek(x, y); ec.set(k, (ec.get(k) ?? 0) + 1);
+      }
+    }
+    // Aretes de bord (utilisees 1x) + adjacence.
+    const bedgeList: [number, number][] = [];
+    const adj = new Map<number, number[]>();
+    for (const [k, c] of ec) {
+      if (c !== 1) continue;
+      const bar = k.indexOf('|');
+      const a2 = Number(k.slice(0, bar)), b2 = Number(k.slice(bar + 1));
+      bedgeList.push([a2, b2]);
+      (adj.get(a2) ?? adj.set(a2, []).get(a2)!).push(b2);
+      (adj.get(b2) ?? adj.set(b2, []).get(b2)!).push(a2);
+    }
+    // Composantes connexes = boucles de contour ; id + nb d aretes + sommet mini.
+    const compId = new Map<number, number>();
+    const compApex: number[] = [];
+    for (const s0 of adj.keys()) {
+      if (compId.has(s0)) continue;
+      const id = compApex.length; let apex = s0;
+      const stack = [s0]; compId.set(s0, id);
+      while (stack.length) {
+        const cur = stack.pop()!; if (cur < apex) apex = cur;
+        for (const nb of adj.get(cur)!) if (!compId.has(nb)) { compId.set(nb, id); stack.push(nb); }
+      }
+      compApex.push(apex);
+    }
+    const compEdges = new Array<number>(compApex.length).fill(0);
+    for (const [a2] of bedgeList) compEdges[compId.get(a2)!]!++;
+    // Bouchage en EVENTAIL par aretes : pour chaque petite composante, on relie
+    // son sommet mini a toute arete de bord qui ne le touche pas. Robuste meme
+    // aux jonctions (pas besoin d ordonner la boucle).
+    for (const [a2, b2] of bedgeList) {
+      const id = compId.get(a2)!;
+      if (compEdges[id]! > HOLE_MAX || compEdges[id]! < 3) continue;
+      const apex = compApex[id]!;
+      if (a2 === apex || b2 === apex) continue;
+      triangles.push(apex, a2, b2);
+    }
+  }
   const triangleIndices = new Uint32Array(triangles);
 
   return {
