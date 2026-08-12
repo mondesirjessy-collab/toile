@@ -724,6 +724,9 @@ export class ClothRenderer {
   private fitMap = false;
   // PAGE BLANCHE : le mannequin et la scène se dessinent, le tissu non.
   private clothVisible = true;
+  // PRÉPARATION À PLAT : masque la surface de tissu (la « masse » pré-drapé)
+  // sans toucher aux liserés de couture — on ne garde que les liaisons colorées.
+  private clothSurfaceVisible = true;
   private lastStyle: FabricStyle | null = null;
   private readonly clothSpacing: number;
   private readonly clothSpacingV: number;
@@ -1109,19 +1112,23 @@ export class ClothRenderer {
     }
 
     if (this.clothVisible) {
-      pass.setPipeline(this.clothPipeline);
-      pass.setBindGroup(0, this.clothBindGroup);
-      pass.setVertexBuffer(0, this.positionBuffer);
-      pass.setVertexBuffer(1, this.normalsBuffer);
-      pass.setVertexBuffer(2, this.materialIdBuffer);
-      pass.setVertexBuffer(3, this.graphicUVBuffer);
-      pass.setIndexBuffer(this.clothIndexBuffer, 'uint32');
-      pass.drawIndexed(this.clothIndexCount);
-      if (this.clothRibbonIndexCount > 0) {
-        pass.setPipeline(this.clothRibbonPipeline);
-        pass.setBindGroup(0, this.clothRibbonBindGroup);
-        pass.draw(this.clothRibbonIndexCount);
+      if (this.clothSurfaceVisible) {
+        pass.setPipeline(this.clothPipeline);
+        pass.setBindGroup(0, this.clothBindGroup);
+        pass.setVertexBuffer(0, this.positionBuffer);
+        pass.setVertexBuffer(1, this.normalsBuffer);
+        pass.setVertexBuffer(2, this.materialIdBuffer);
+        pass.setVertexBuffer(3, this.graphicUVBuffer);
+        pass.setIndexBuffer(this.clothIndexBuffer, 'uint32');
+        pass.drawIndexed(this.clothIndexCount);
+        if (this.clothRibbonIndexCount > 0) {
+          pass.setPipeline(this.clothRibbonPipeline);
+          pass.setBindGroup(0, this.clothRibbonBindGroup);
+          pass.draw(this.clothRibbonIndexCount);
+        }
       }
+      // Liserés de couture : dessinés même sans la surface (bind group autonome
+      // — vsSeam lit ribbonPositions/seamVerts, aucun vertex buffer requis).
       if (this.seamsVisible && this.seamVertexCount > 0 && this.seamBindGroup) {
         pass.setPipeline(this.seamPipeline);
         pass.setBindGroup(0, this.seamBindGroup);
@@ -1164,6 +1171,12 @@ export class ClothRenderer {
 
   setClothVisible(visible: boolean): void {
     this.clothVisible = visible;
+  }
+
+  /** Masque la SEULE surface de tissu (garde liserés de couture + mannequin).
+   *  Préparation à plat : on ne voit que les liaisons colorées entre pièces. */
+  setClothSurfaceVisible(visible: boolean): void {
+    this.clothSurfaceVisible = visible;
   }
 
   dispose(): void {

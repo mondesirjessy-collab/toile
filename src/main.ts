@@ -1090,6 +1090,9 @@ async function main(): Promise<void> {
     patternView.setInteractionEnabled(atelierDesign);
     simBtn().classList.toggle('running', !atelierDesign);
     simBtn().setAttribute('aria-pressed', String(!atelierDesign));
+    // Préparation à plat (design) : on masque la masse de tissu pré-drapé pour
+    // ne garder que les liserés de couture ; à l'essayage, tissu plein.
+    renderer?.setClothSurfaceVisible(sceneMode !== 'atelier' || !atelierDesign);
     syncAtelierControls();
   };
 
@@ -5806,6 +5809,7 @@ async function main(): Promise<void> {
       sceneMode === 'atelier' && draft ? seamOverlayVerts(draft, mesh.resolution) : null,
     );
     nextRenderer.setSeamsVisible(seams3dOn);
+    nextRenderer.setClothSurfaceVisible(sceneMode !== 'atelier' || !atelierDesign);
     renderer = nextRenderer;
     posCache = null; // stale cache belongs to the previous system
     dragIndex = null;
