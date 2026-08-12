@@ -1550,17 +1550,7 @@ export class ParticleSystem {
     dv.setFloat32(164, anchorStrength, LE);
     dv.setFloat32(168, this.maxLayer, LE); // max_layer: sd_body reject margin covers the deepest stack (M4)
     dv.setUint32(96, this.count, LE);
-    // Amortissement transitoire d'assemblage (params.damping) : fort au tout
-    // début pour tuer l'énergie du rappel des pièces écartées par les coutures,
-    // puis FONDU à 0 en ~4 s — avant que le tombé lent (manches) ne s'installe.
-    // C'est un terme LINÉAIRE en vitesse qui s'annule à l'équilibre, et qui
-    // repasse à 0 après 4 s : le drapé final et toute interaction ultérieure
-    // (tirer le tissu) sont identiques à sans amortissement. Vérifié : la pose
-    // se stabilise en ~13 s au lieu de ~30 s, tombé des manches inchangé.
-    const SETTLE_MAX = 25;
-    const SETTLE_SECONDS = 4;
-    const settleDamp = SETTLE_MAX * Math.max(0, 1 - this.simulatedSeconds / SETTLE_SECONDS);
-    dv.setFloat32(100, settleDamp, LE);
+    dv.setFloat32(100, this.damping, LE);
     dv.setFloat32(104, this.maxSpeed, LE);
     dv.setUint32(108, this.dragIndex, LE);
     dv.setFloat32(112, this.bodyMin[0]!, LE);
