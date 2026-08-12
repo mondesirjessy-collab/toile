@@ -80,7 +80,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // unchanged — this only enriches motion (wind, podium, dragging). Then the
   // hard speed clamp for stability.
   let speed0 = length(v);
-  v *= max(0.0, 1.0 - material.contact_motion.y * params.dt - 0.1 * material.contact_motion.z * speed0 * params.dt);
+  // params.damping = amortissement transitoire d'assemblage (fondu à 0 côté CPU).
+  // Terme LINÉAIRE en vitesse : il s'annule à l'équilibre (v→0), donc le drapé
+  // final est identique — il ne fait qu'accélérer la convergence pendant la pose.
+  v *= max(0.0, 1.0 - params.damping * params.dt - material.contact_motion.y * params.dt - 0.1 * material.contact_motion.z * speed0 * params.dt);
   let speed = length(v);
   if (speed > params.max_speed) { v *= params.max_speed / speed; }
 
