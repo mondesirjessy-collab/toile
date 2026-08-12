@@ -537,6 +537,10 @@ export interface ClothTrianglePartition {
 export function partitionClothTriangles(
   triangleIndices: ArrayLike<number>,
   resolution: number,
+  // Panneaux à NE PAS inclure dans piecesOnly (vue préparation) : p.ex. la bande
+  // de col, qui à plat s'enroule et se lit comme un ruban de liaison. Ils restent
+  // dans `surface` (donc pleins à l'essayage).
+  prepHiddenPanels: ReadonlySet<number> = new Set<number>(),
 ): ClothTrianglePartition {
   const panelSize = resolution * resolution;
   const surface: number[] = [];
@@ -558,7 +562,10 @@ export function partitionClothTriangles(
       Math.floor(b / panelSize) !== panel || Math.floor(c / panelSize) !== panel;
     const indices = [a, b, c] as const;
     triangles.push({ indices, mixed });
-    if (!mixed) { piecesOnly.push(a, b, c); continue; }
+    if (!mixed) {
+      if (!prepHiddenPanels.has(panel)) piecesOnly.push(a, b, c);
+      continue;
+    }
     ribbons.push(a, b, c);
     ribbonWeights.push(1, 1, 1);
     capVertices.add(a);
@@ -769,6 +776,8 @@ export class ClothRenderer {
     collisionThickness = 0.005,
     graphicUVs?: Float32Array,
     graphicAtlas?: CanvasImageSource | OffscreenCanvas | null,
+    // Panneaux masqués dans la vue préparation à plat (bande de col).
+    prepHiddenPanels: ReadonlySet<number> = new Set<number>(),
   ) {
     this.device = device;
     const createBuffer = (descriptor: GPUBufferDescriptor): GPUBuffer =>
@@ -916,7 +925,7 @@ export class ClothRenderer {
         { binding: 11, resource: { buffer: layerBuffer } },
       ],
     });
-    const partition = partitionClothTriangles(triangleIndices, resolution);
+    const partition = partitionClothTriangles(triangleIndices, resolution, prepHiddenPanels);
     this.clothIndexBuffer = createBuffer({
       size: Math.max(4, partition.surface.byteLength),
       usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,

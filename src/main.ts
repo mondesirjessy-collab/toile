@@ -5775,6 +5775,26 @@ async function main(): Promise<void> {
         rawBody: shownScan ? shownScan.mesh : undefined, // v189 : l'œil voit le corps POSÉ
         groundY: GROUND_Y,
       });
+      // Bande de col (wrap 'neck') : à plat elle s'enroule et se lit comme un
+      // ruban de liaison. On la retire de la vue préparation. Panneaux : front=0,
+      // dos=1, puis les pièces dans l'ordre (une pièce wrap = 2 panneaux). Elle
+      // reste pleine à l'essayage (elle n'est retirée que de piecesOnly).
+      const prepHiddenPanels = new Set<number>();
+      if (sceneMode === 'atelier' && draft) {
+        const panelCount = Math.floor(
+          nextSystem.count / (mesh.resolution * mesh.resolution),
+        );
+        let cursor = 2;
+        for (const pc of draft.pieces ?? []) {
+          const span = pc.wrap ? 2 : 1;
+          if (pc.wrap === 'neck') {
+            for (let k = 0; k < span; k++) prepHiddenPanels.add(cursor + k);
+          }
+          cursor += span;
+        }
+        // Structure de panneaux inattendue → ne rien cacher (sécurité).
+        if (cursor !== panelCount) prepHiddenPanels.clear();
+      }
       nextRenderer = new ClothRenderer(
         device,
         canvas,
@@ -5792,6 +5812,7 @@ async function main(): Promise<void> {
         fabricDynamics.collisionThickness,
         graphicUVs,
         graphicAtlas,
+        prepHiddenPanels,
       );
       nextRenderer.setFabric(fabricStyle); // keep the preset's look across rebuilds
       nextRenderer.setFitMap(fitMap); // the tension view is a rebuild-surviving setting (M29)
