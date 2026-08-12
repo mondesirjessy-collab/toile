@@ -5309,7 +5309,11 @@ async function main(): Promise<void> {
                 // body collision reopens it by projecting its endpoints onto
                 // opposite surfaces. The bottom row remains centred and is
                 // then pinned to the authored neckline below.
-                preWrapCollarTube(pieceMesh);
+                // Préparation à plat : on laisse la bande de col PLATE (comme les
+                // autres pièces). On ne la pré-enroule en tube (pour un drapé net
+                // sans réouverture de couture) qu'au moment de l'essayage — build()
+                // est relancé par Simuler avec atelierDesign=false.
+                if (!atelierDesign) preWrapCollarTube(pieceMesh);
               } else if (!surfacePiece) {
                 // Spawn it in FRONT of the body (at the body's front-panel plane),
                 // clear of the avatar SDF collider — spawning inside would eject it
@@ -5366,7 +5370,7 @@ async function main(): Promise<void> {
                     pid,
                   )
                 : [];
-              if (fp.wrap === 'neck') {
+              if (fp.wrap === 'neck' && !atelierDesign) {
                 fitCollarTubeToNeckline(garment, pieceMesh, pins);
               }
               if (!surfacePiece && fp.placement?.role !== 'free') {
@@ -5775,26 +5779,6 @@ async function main(): Promise<void> {
         rawBody: shownScan ? shownScan.mesh : undefined, // v189 : l'œil voit le corps POSÉ
         groundY: GROUND_Y,
       });
-      // Bande de col (wrap 'neck') : à plat elle s'enroule et se lit comme un
-      // ruban de liaison. On la retire de la vue préparation. Panneaux : front=0,
-      // dos=1, puis les pièces dans l'ordre (une pièce wrap = 2 panneaux). Elle
-      // reste pleine à l'essayage (elle n'est retirée que de piecesOnly).
-      const prepHiddenPanels = new Set<number>();
-      if (sceneMode === 'atelier' && draft) {
-        const panelCount = Math.floor(
-          nextSystem.count / (mesh.resolution * mesh.resolution),
-        );
-        let cursor = 2;
-        for (const pc of draft.pieces ?? []) {
-          const span = pc.wrap ? 2 : 1;
-          if (pc.wrap === 'neck') {
-            for (let k = 0; k < span; k++) prepHiddenPanels.add(cursor + k);
-          }
-          cursor += span;
-        }
-        // Structure de panneaux inattendue → ne rien cacher (sécurité).
-        if (cursor !== panelCount) prepHiddenPanels.clear();
-      }
       nextRenderer = new ClothRenderer(
         device,
         canvas,
@@ -5812,7 +5796,6 @@ async function main(): Promise<void> {
         fabricDynamics.collisionThickness,
         graphicUVs,
         graphicAtlas,
-        prepHiddenPanels,
       );
       nextRenderer.setFabric(fabricStyle); // keep the preset's look across rebuilds
       nextRenderer.setFitMap(fitMap); // the tension view is a rebuild-surviving setting (M29)
