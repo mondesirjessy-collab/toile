@@ -520,6 +520,9 @@ export interface ClothTrianglePartition {
   readonly surface: Uint32Array;
   readonly ribbons: Uint32Array;
   readonly ribbonWeights: Float32Array;
+  // Triangles mono-panneau uniquement = les vraies pièces, sans les rubans de
+  // liaison entre pièces. Sert à afficher les pièces pleines en préparation.
+  readonly piecesOnly: Uint32Array;
 }
 
 /**
@@ -539,6 +542,7 @@ export function partitionClothTriangles(
   const surface: number[] = [];
   const ribbons: number[] = [];
   const ribbonWeights: number[] = [];
+  const piecesOnly: number[] = [];
   const triangles: Array<{
     indices: readonly [number, number, number];
     mixed: boolean;
@@ -554,7 +558,7 @@ export function partitionClothTriangles(
       Math.floor(b / panelSize) !== panel || Math.floor(c / panelSize) !== panel;
     const indices = [a, b, c] as const;
     triangles.push({ indices, mixed });
-    if (!mixed) continue;
+    if (!mixed) { piecesOnly.push(a, b, c); continue; }
     ribbons.push(a, b, c);
     ribbonWeights.push(1, 1, 1);
     capVertices.add(a);
@@ -576,6 +580,7 @@ export function partitionClothTriangles(
     surface: Uint32Array.from(surface),
     ribbons: Uint32Array.from(ribbons),
     ribbonWeights: Float32Array.from(ribbonWeights),
+    piecesOnly: Uint32Array.from(piecesOnly),
   };
 }
 
@@ -724,9 +729,10 @@ export class ClothRenderer {
   private fitMap = false;
   // PAGE BLANCHE : le mannequin et la scène se dessinent, le tissu non.
   private clothVisible = true;
-  // PRÉPARATION À PLAT : masque la surface de tissu (la « masse » pré-drapé)
-  // sans toucher aux liserés de couture — on ne garde que les liaisons colorées.
-  private clothSurfaceVisible = true;
+  // PRÉPARATION À PLAT : n'affiche que les pièces mono-panneau (pleines) + les
+  // liserés de couture, sans les rubans de liaison qui, pièces écartées,
+  // formeraient une masse crème entre elles. false = surface complète (essayage).
+  private preparationMode = false;
   private lastStyle: FabricStyle | null = null;
   private readonly clothSpacing: number;
   private readonly clothSpacingV: number;
@@ -735,6 +741,8 @@ export class ClothRenderer {
   private readonly visualLayerCount: number;
   private readonly clothIndexBuffer: GPUBuffer;
   private readonly clothIndexCount: number;
+  private readonly clothPiecesIndexBuffer: GPUBuffer;
+  private readonly clothPiecesIndexCount: number;
   private readonly clothRibbonTriangleBuffer: GPUBuffer;
   private readonly clothRibbonWeightBuffer: GPUBuffer;
   private readonly clothRibbonIndexCount: number;
@@ -917,6 +925,14 @@ export class ClothRenderer {
     new Uint32Array(this.clothIndexBuffer.getMappedRange()).set(partition.surface);
     this.clothIndexBuffer.unmap();
     this.clothIndexCount = partition.surface.length;
+    this.clothPiecesIndexBuffer = createBuffer({
+      size: Math.max(4, partition.piecesOnly.byteLength),
+      usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+      mappedAtCreation: true,
+    });
+    new Uint32Array(this.clothPiecesIndexBuffer.getMappedRange()).set(partition.piecesOnly);
+    this.clothPiecesIndexBuffer.unmap();
+    this.clothPiecesIndexCount = partition.piecesOnly.length;
     this.clothRibbonTriangleBuffer = createBuffer({
       size: Math.max(4, partition.ribbons.byteLength),
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
@@ -1112,13 +1128,20 @@ export class ClothRenderer {
     }
 
     if (this.clothVisible) {
-      if (this.clothSurfaceVisible) {
-        pass.setPipeline(this.clothPipeline);
-        pass.setBindGroup(0, this.clothBindGroup);
-        pass.setVertexBuffer(0, this.positionBuffer);
-        pass.setVertexBuffer(1, this.normalsBuffer);
-        pass.setVertexBuffer(2, this.materialIdBuffer);
-        pass.setVertexBuffer(3, this.graphicUVBuffer);
+      // Pièces toujours PLEINES. Essayage : surface complète (pièces + rubans de
+      // couture + coque de sécurité). Préparation à plat : seulement les
+      // triangles mono-panneau (les vraies pièces), sans les rubans de liaison
+      // qui, pièces écartées, formeraient une masse crème entre elles.
+      pass.setPipeline(this.clothPipeline);
+      pass.setBindGroup(0, this.clothBindGroup);
+      pass.setVertexBuffer(0, this.positionBuffer);
+      pass.setVertexBuffer(1, this.normalsBuffer);
+      pass.setVertexBuffer(2, this.materialIdBuffer);
+      pass.setVertexBuffer(3, this.graphicUVBuffer);
+      if (this.preparationMode) {
+        pass.setIndexBuffer(this.clothPiecesIndexBuffer, 'uint32');
+        pass.drawIndexed(this.clothPiecesIndexCount);
+      } else {
         pass.setIndexBuffer(this.clothIndexBuffer, 'uint32');
         pass.drawIndexed(this.clothIndexCount);
         if (this.clothRibbonIndexCount > 0) {
@@ -1127,7 +1150,7 @@ export class ClothRenderer {
           pass.draw(this.clothRibbonIndexCount);
         }
       }
-      // Liserés de couture : dessinés même sans la surface (bind group autonome
+      // Liserés de couture : dessinés dans les deux modes (bind group autonome
       // — vsSeam lit ribbonPositions/seamVerts, aucun vertex buffer requis).
       if (this.seamsVisible && this.seamVertexCount > 0 && this.seamBindGroup) {
         pass.setPipeline(this.seamPipeline);
@@ -1173,10 +1196,11 @@ export class ClothRenderer {
     this.clothVisible = visible;
   }
 
-  /** Masque la SEULE surface de tissu (garde liserés de couture + mannequin).
-   *  Préparation à plat : on ne voit que les liaisons colorées entre pièces. */
-  setClothSurfaceVisible(visible: boolean): void {
-    this.clothSurfaceVisible = visible;
+  /** Préparation à plat (true) : dessine seulement les pièces mono-panneau
+   *  (pleines) + les liserés de couture, sans les rubans de liaison entre pièces
+   *  écartées. Essayage (false) : surface complète assemblée. */
+  setPreparationMode(on: boolean): void {
+    this.preparationMode = on;
   }
 
   dispose(): void {
