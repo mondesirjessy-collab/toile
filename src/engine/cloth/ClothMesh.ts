@@ -2053,7 +2053,7 @@ export function combineClothMeshes(
       if (compEdges[id]! > HOLE_MAX || compEdges[id]! < 3) continue;
       const apex = compApex[id]!;
       if (a2 === apex || b2 === apex) continue;
-      triangles.push(apex, a2, b2);
+      triangles.push(apex, a2, b2, apex, b2, a2); // double face : visible des deux cotes
     }
   }
   const triangleIndices = new Uint32Array(triangles);
