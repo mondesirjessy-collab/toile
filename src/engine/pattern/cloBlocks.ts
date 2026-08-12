@@ -43,19 +43,26 @@ export function teeRuns(piece: DraftPiece): TeeRuns {
     for (let i = 1; i < n; i++) if (score(p[i]!, i) < score(p[best]!, best)) best = i;
     return best;
   };
-  // Épaule = point le plus haut de chaque moitié (min v, |u-0.5| notable).
-  const shoulderR = idxWhere((q) => q[1] + (q[0] > 0.5 ? 0 : 2)); // droite = u>0.5
-  const shoulderL = idxWhere((q) => q[1] + (q[0] < 0.5 ? 0 : 2));
-  // Dessous de bras = u extrême dans la bande haute [minV, 0,55·spanV].
-  const upper = (q: UV): boolean => q[1] <= minV + 0.55 * spanV;
+  // Jonction col↔épaule = point le plus HAUT de chaque moitié (v min). C'est là
+  // que l'encolure rejoint l'épaule — PAS la couture d'épaule (l'ancienne version
+  // confondait les deux et cousait les demi-encolures devant↔dos, d'où le col
+  // froncé).
+  const junctionR = idxWhere((q) => q[1] + (q[0] > 0.5 ? 0 : 2)); // droite = u>0.5
+  const junctionL = idxWhere((q) => q[1] + (q[0] < 0.5 ? 0 : 2));
+  // Pointe d'épaule = point le plus LARGE de la bande haute (au-dessus de
+  // l'emmanchure), là où l'épaule rejoint l'emmanchure. La couture d'épaule va
+  // de la pointe à la jonction col ; l'emmanchure part de la pointe vers le bas.
+  const shoulderBand = (q: UV): boolean => q[1] <= minV + 0.16 * spanV;
+  const tipR = idxWhere((q) => (shoulderBand(q) ? -q[0] : 10)); // max u
+  const tipL = idxWhere((q) => (shoulderBand(q) ? q[0] : 10)); // min u
+  // Dessous de bras = u extrême dans la bande [minV, 0,6·spanV].
+  const upper = (q: UV): boolean => q[1] <= minV + 0.6 * spanV;
   const underarmR = idxWhere((q) => (upper(q) ? -q[0] : 10)); // max u
   const underarmL = idxWhere((q) => (upper(q) ? q[0] : 10)); // min u
   // Ourlet = deux coins bas.
   const low = (q: UV): boolean => q[1] >= maxV - 0.03 * spanV;
   const hemR = idxWhere((q) => (low(q) ? -q[0] : 10));
   const hemL = idxWhere((q) => (low(q) ? q[0] : 10));
-  // Centre d'encolure = point le plus proche de u=0,5 au-dessus de l'épaule.
-  const neckMid = idxWhere((q) => Math.abs(q[0] - 0.5) + (q[1] <= minV + 0.3 * spanV ? 0 : 5));
 
   // Le devant et le dos de CLO tournent en sens INVERSES : un run from→to peut
   // parcourir 90 % du périmètre selon la pièce. Tous ces bords (épaule, côté,
@@ -75,11 +82,11 @@ export function teeRuns(piece: DraftPiece): TeeRuns {
   const run = (a: number, b: number): EdgeRun =>
     arc(a, b) <= arc(b, a) ? { from: a, to: b } : { from: b, to: a };
   return {
-    neckline: run(shoulderL, shoulderR),
-    armholeR: run(shoulderR, underarmR),
-    armholeL: run(underarmL, shoulderL),
-    shoulderR: run(neckMid, shoulderR),
-    shoulderL: run(shoulderL, neckMid),
+    neckline: run(junctionL, junctionR), // ouvert — reçoit la bande de col
+    shoulderR: run(tipR, junctionR), // couture d'épaule D (pointe → jonction col)
+    shoulderL: run(junctionL, tipL), // couture d'épaule G
+    armholeR: run(underarmR, tipR), // ouvert — reçoit la manche
+    armholeL: run(tipL, underarmL), // ouvert — reçoit la manche
     sideR: run(underarmR, hemR),
     sideL: run(hemL, underarmL),
     hem: run(hemR, hemL),
@@ -91,9 +98,83 @@ function scaledOutline(data: { outline: UV[] }): UV[] {
 }
 
 /**
- * Tee Set-In de CLO, gradé sur l'avatar. Devant col en V + dos ras-du-cou,
- * cousus épaules + côtés ; manches WRAP (tête de manche = bouche du tube) ;
- * col bord-côte WRAP. Largeur ← poitrine, hauteur ← stature (ratios CLO).
+ * Remplace l'encolure d'une face (devant/dos) par un COL ROND (ras-du-cou) :
+ * on garde la largeur d'encolure de CLO (jonctions col↔épaule inchangées, donc
+ * les coutures d'épaule restent appariées devant↔dos) mais on redessine le bord
+ * en arc lisse et peu profond — un vrai col rond au lieu du décolleté d'origine.
+ * `depthCm` = profondeur au centre sous la ligne d'épaule ; `hCm` = hauteur de la
+ * pièce à plat (pour convertir en v normalisé). v=0 en haut.
+ */
+function roundNeck(outline: UV[], depthCm: number, hCm: number, sy: number): UV[] {
+  const n = outline.length;
+  // Jonctions col↔épaule = point le plus haut (v min) de chaque moitié.
+  let iR = -1;
+  let iL = -1;
+  let vR = Infinity;
+  let vL = Infinity;
+  for (let i = 0; i < n; i++) {
+    const [u, v] = outline[i]!;
+    if (u > 0.5 && v < vR) { vR = v; iR = i; }
+    if (u <= 0.5 && v < vL) { vL = v; iL = i; }
+  }
+  if (iR < 0 || iL < 0) return outline;
+  // Ourlet = v max ; l'arc entre jonctions qui le contient est le CORPS, l'autre
+  // est l'encolure (celle qu'on remplace).
+  let iHem = 0;
+  let vHem = -Infinity;
+  for (let i = 0; i < n; i++) if (outline[i]![1] > vHem) { vHem = outline[i]![1]; iHem = i; }
+  const containsHem = (from: number, to: number): boolean => {
+    let i = from;
+    let guard = 0;
+    while (guard++ < n + 1) { if (i === iHem) return true; if (i === to) return false; i = (i + 1) % n; }
+    return false;
+  };
+  const bodyFromL = containsHem(iL, iR);
+  const start = bodyFromL ? iL : iR;
+  const end = bodyFromL ? iR : iL;
+  // Arc corps : start → end (inclus), en longeant l'ourlet.
+  const body: UV[] = [];
+  let i = start;
+  let guard = 0;
+  while (guard++ < n + 1) { body.push(outline[i]!); if (i === end) break; i = (i + 1) % n; }
+  // Arc col rond : de la jonction `end` vers la jonction `start`, en passant par
+  // le centre (u=0,5) à la profondeur voulue. sin(πt) → 0 aux jonctions, max au
+  // centre (jonctions symétriques autour de u=0,5 sur les blocs CLO).
+  const uEnd = outline[end]![0];
+  const uStart = outline[start]![0];
+  const depthV = depthCm / (hCm * sy); // depthCm ÷ hauteur pièce (cm) = v normalisé
+  const K = 16;
+  const arc: UV[] = [];
+  for (let k = 1; k < K; k++) {
+    const t = k / K;
+    arc.push([uEnd + (uStart - uEnd) * t, depthV * Math.sin(Math.PI * t)]);
+  }
+  return [...body, ...arc];
+}
+
+/** Longueur physique (m) d'un run le long du contour d'une pièce. */
+function runLenM(piece: DraftPiece, run: EdgeRun): number {
+  const p = piece.outline;
+  const N = p.length;
+  const ph = (q: UV): [number, number] => [q[0] * piece.width, q[1] * piece.height];
+  let len = 0;
+  let i = run.from;
+  let guard = 0;
+  while (i !== run.to && guard++ < N + 1) {
+    const a = ph(p[i]!);
+    const j = (i + 1) % N;
+    const b = ph(p[j]!);
+    len += Math.hypot(a[0] - b[0], a[1] - b[1]);
+    i = j;
+  }
+  return len;
+}
+
+/**
+ * Tee Set-In de CLO, gradé sur l'avatar. Col ROND (ras-du-cou) devant et dos,
+ * corps devant + dos cousus aux épaules (jonction col → pointe d'épaule) et aux
+ * côtés ; manches montées en demi-panneau WRAP ; bande de col bord-côte WRAP
+ * taillée au tour d'encolure réel. Largeur ← poitrine, hauteur ← stature.
  */
 export function cloTee(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
   const sx = (m.chest.circ * 100) / CLO_BODY.chestCm; // grade largeur ← poitrine
@@ -102,11 +183,10 @@ export function cloTee(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
   const F = CLO_BLOCKS.teeFront;
   const B = CLO_BLOCKS.teeBack;
   const S = CLO_BLOCKS.teeSleeve;
-  const C = CLO_BLOCKS.teeCollar;
 
-  const face = (data: { outline: UV[]; wCm: number; hCm: number }): DraftPiece => {
+  const face = (data: { outline: UV[]; wCm: number; hCm: number }, neckDepthCm: number): DraftPiece => {
     const piece: DraftPiece = {
-      outline: scaledOutline(data),
+      outline: roundNeck(scaledOutline(data), neckDepthCm, data.hCm, sy),
       darts: [],
       seams: [],
       openEdges: [],
@@ -119,23 +199,53 @@ export function cloTee(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
     piece.openEdges = [r.neckline, r.armholeR, r.hem, r.armholeL];
     return piece;
   };
-  const front = face(F);
-  const back = face(B);
+  // Col ROND : encolure devant peu profonde (~7 cm sous l'épaule) et dos ras
+  // (~2,5 cm), redessinées en arc lisse — le col rond demandé, à la place du
+  // décolleté d'origine du bloc CLO.
+  const front = face(F, 7);
+  const back = face(B, 2.5);
   const fr = teeRuns(front);
   const br = teeRuns(back);
 
-  const sleeve = (wrap: 'armL' | 'armR'): DraftPiece => ({
-    outline: scaledOutline(S),
-    darts: [],
-    seams: [],
-    openEdges: [],
-    width: (S.wCm / 100) * sx * 0.5, // un panneau = une moitié du tube
-    height: (S.hCm / 100) * sy,
-    topY: m.shoulderY + 0.01,
-    gap: 0.2,
-    wrap,
-    placement: { role: wrap, autoAlign: true },
-  });
+  // CLO exporte sa manche set-in en contour PLEIN (teeSleeve : tête arrondie au
+  // milieu, les deux dessous-de-bras aux coins hauts, poignet fuselé). Mais
+  // TOILE monte la manche par un DEMI-PANNEAU WRAP : sleeveCrossSeams construit
+  // 2 panneaux (moitié devant + moitié dos) et épingle la bouche de chacun à
+  // l'emmanchure devant/dos — exactement comme boxyTee / oversizeTee. Plaquer le
+  // contour PLEIN de CLO dans cette fente demi-panneau froissait le tube et
+  // laissait l'emmanchure béante (le vice « l'assemblage ne rend pas pareil »).
+  // On ré-émet donc la manche en demi-panneau, aux COTES MESURÉES sur teeSleeve :
+  // poignet = 63 % du biceps (ouverture [0,183…0,817]), demi-biceps et longueur
+  // (59,5 cm) gradés comme le reste. La HAUTEUR de tête, elle, n'est pas la cote
+  // brute de CLO (tête pleine set-in) mais calée sur la LONGUEUR d'emmanchure du
+  // corps : la bouche du demi-panneau (≈ largeur + flèche de la tête) doit égaler
+  // l'emmanchure (≈ 22 cm) sinon l'excédent de tissu godaille et ouvre l'épaule.
+  // CAP ≈ 0,11 donne une bouche ≈ emmanchure → montage net (à CAP=0,205 la bouche
+  // faisait ~31 cm contre 22 cm d'emmanchure : +45 %, d'où les trous à l'épaule).
+  const CAP = 0.11; // flèche de tête / longueur — calée sur l'emmanchure du corps
+  const CUFF = 0.63; // ouverture poignet / biceps — mesurée sur teeSleeve
+  const sleeve = (wrap: 'armL' | 'armR'): DraftPiece => {
+    const capArc: UV[] = [];
+    for (const u of [0.1, 0.28, 0.5, 0.72, 0.9]) capArc.push([u, CAP * (1 - Math.sin(Math.PI * u))]);
+    const cuffIn = (1.02 * (1 - CUFF)) / 2; // rentré de chaque côté au poignet
+    return {
+      outline: [[-0.01, CAP], ...capArc, [1.01, CAP], [1.01 - cuffIn, 1.01], [-0.01 + cuffIn, 1.01]],
+      darts: [],
+      seams: [],
+      openEdges: [],
+      width: (S.wCm / 100) * sx * 0.5, // demi-tour de biceps (un panneau = une moitié du tube)
+      height: (S.hCm / 100) * sy, // longueur de manche (59,5 cm, gradée)
+      topY: m.shoulderY + 0.01,
+      gap: 0.2,
+      wrap,
+      placement: { role: wrap, autoAlign: true },
+    };
+  };
+  // Bande de col (bord-côte) : cousue au ras de l'encolure ronde. On la taille à
+  // 85 % du VRAI tour d'encolure mesuré (devant + dos, après arrondi) — pas à la
+  // cote figée du bloc CLO qui ne correspond plus au col rond. L'aisance négative
+  // (85 %) resserre le col comme un jersey côtelé et évite qu'il godaille.
+  const neckRingM = runLenM(front, fr.neckline) + runLenM(back, br.neckline);
   const band = (): DraftPiece => ({
     outline: [
       [-0.01, -0.01],
@@ -146,8 +256,8 @@ export function cloTee(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
     darts: [],
     seams: [],
     openEdges: [],
-    width: 0.85 * (C.wCm / 100) * sx * 0.5,
-    height: (C.hCm / 100) * sy,
+    width: 0.85 * neckRingM * 0.5, // un panneau = une moitié de l'anneau
+    height: 0.023, // bande ~2,3 cm — assez haute pour un rendu net (vs 1,7 cm)
     topY: m.neckY - 0.005,
     gap: 0.15,
     wrap: 'neck',
