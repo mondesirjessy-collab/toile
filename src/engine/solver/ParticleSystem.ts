@@ -18,6 +18,7 @@ import selfCollideWGSL from './shaders/selfCollide.wgsl?raw';
 import surfaceContactWGSL from './shaders/surfaceContact.wgsl?raw';
 import surfaceReactionWGSL from './shaders/surfaceReaction.wgsl?raw';
 import updateVelocityWGSL from './shaders/updateVelocity.wgsl?raw';
+import smoothVelocityWGSL from './shaders/smoothVelocity.wgsl?raw';
 import type { ClothMeshData } from '../cloth/ClothMesh';
 import { SceneResourceRegistry } from '../gpu/SceneResourceRegistry';
 import { measureSurfaceContacts } from './SurfaceContact';
@@ -198,6 +199,9 @@ interface SolverPipelines {
   drag: GPUComputePipeline;
   collide: GPUComputePipeline;
   velocity: GPUComputePipeline;
+  smoothVelocity: GPUComputePipeline;
+  smoothCopy: GPUComputePipeline;
+  smoothTemporal: GPUComputePipeline;
   hashClear: GPUComputePipeline;
   hashInsert: GPUComputePipeline;
   selfCollide: GPUComputePipeline;
@@ -236,12 +240,21 @@ function solverPipelines(device: GPUDevice): SolverPipelines {
   const selfModule = device.createShaderModule({ code: selfCollideWGSL, label: 'selfCollide' });
   const selfPipe = (entryPoint: string): GPUComputePipeline =>
     device.createComputePipeline({ label: `self-${entryPoint}`, layout: 'auto', compute: { module: selfModule, entryPoint } });
+  // Lissage de vitesse (XSPH) : un module, deux entrées sur les mêmes
+  // déclarations — `smooth_pass` écrit le scratch, `copyback` le recopie
+  // (bind groups aux buffers échangés). Voir smoothVelocity.wgsl.
+  const smoothModule = device.createShaderModule({ code: smoothVelocityWGSL, label: 'smoothVelocity' });
+  const smoothEntry = (entryPoint: string): GPUComputePipeline =>
+    device.createComputePipeline({ label: `smooth-${entryPoint}`, layout: 'auto', compute: { module: smoothModule, entryPoint } });
   const pipelines: SolverPipelines = {
     integrate: compute(integrateWGSL, 'integrate'),
     distance: compute(distanceWGSL, 'distance'),
     drag: compute(dragWGSL, 'drag'),
     collide: compute(collideWGSL, 'collide'),
     velocity: compute(updateVelocityWGSL, 'updateVelocity'),
+    smoothVelocity: smoothEntry('smooth_pass'),
+    smoothCopy: smoothEntry('copyback'),
+    smoothTemporal: smoothEntry('temporal_pass'),
     hashClear: selfPipe('clear_hash'),
     hashInsert: selfPipe('insert'),
     selfCollide: selfPipe('collide'),
@@ -269,6 +282,10 @@ export class ParticleSystem {
   private readonly materialIdBuffer: GPUBuffer;
   private readonly materialBuffer: GPUBuffer;
   private readonly layerBuffer: GPUBuffer;
+  private readonly velocityScratchBuffer: GPUBuffer;
+  private readonly velocityHistBuffer: GPUBuffer;
+  private readonly nbOffsetsBuffer: GPUBuffer;
+  private readonly nbIndicesBuffer: GPUBuffer;
   private readonly maxLayer: number; // deepest garment layer, for the sd_body reject margin (M4)
   private readonly seamFreeBuffer: GPUBuffer;
   private readonly seamDistBuffer: GPUBuffer;
@@ -303,6 +320,9 @@ export class ParticleSystem {
   private readonly velocityPipeline: GPUComputePipeline;
   private readonly hashClearPipeline: GPUComputePipeline;
   private readonly hashInsertPipeline: GPUComputePipeline;
+  private readonly smoothVelocityPipeline: GPUComputePipeline;
+  private readonly smoothCopyPipeline: GPUComputePipeline;
+  private readonly smoothTemporalPipeline: GPUComputePipeline;
   private readonly selfCollidePipeline: GPUComputePipeline;
   private readonly surfaceContactPipeline: GPUComputePipeline;
   private readonly surfaceReactionPipeline: GPUComputePipeline;
@@ -311,6 +331,9 @@ export class ParticleSystem {
   private readonly dragBindGroup: GPUBindGroup;
   private readonly collideBindGroup: GPUBindGroup;
   private readonly velocityBindGroup: GPUBindGroup;
+  private readonly smoothVelocityBindGroup: GPUBindGroup;
+  private readonly smoothCopyBindGroup: GPUBindGroup;
+  private readonly smoothTemporalBindGroup: GPUBindGroup;
   private readonly solveBindGroups: GPUBindGroup[];
   private readonly hashClearBindGroup: GPUBindGroup;
   private readonly hashInsertBindGroup: GPUBindGroup;
@@ -488,6 +511,37 @@ export class ParticleSystem {
     // Garment layer per particle: collide pushes layer L to thickness + L·gap,
     // so a dress worn over a tee rests ON the tee instead of inside it.
     this.layerBuffer = this.createBuffer(mesh.layers ?? new Float32Array(this.count), storage);
+    this.velocityScratchBuffer = this.createBuffer(new Float32Array(this.count * 4), storage);
+    this.velocityHistBuffer = this.createBuffer(new Float32Array(this.count * 4), storage);
+    // --- Adjacence CSR du tissage pour le lissage de vitesse (XSPH) ---
+    // Voisines de i = particules liées par une contrainte trame(0)/biais(1)/
+    // couture(3)/chaîne(4). Les autres genres sont exclus : flexion saut-2 (2,
+    // redondant), surface (5, unilatéral), attache (6), zip (7, débrayable).
+    {
+      const cw = new Uint32Array(mesh.constraintData);
+      const deg = new Uint32Array(this.count);
+      const usable: number[] = [];
+      for (let c = 0; c < mesh.constraintCount; c++) {
+        const base = c * 4;
+        const kind = cw[base + 3]!;
+        if (kind !== 0 && kind !== 1 && kind !== 3 && kind !== 4) continue;
+        deg[cw[base]!]!++;
+        deg[cw[base + 1]!]!++;
+        usable.push(base);
+      }
+      const nbOffsets = new Uint32Array(this.count + 1);
+      for (let i = 0; i < this.count; i++) nbOffsets[i + 1] = nbOffsets[i]! + deg[i]!;
+      const nbIndices = new Uint32Array(Math.max(1, nbOffsets[this.count]!));
+      const cursor = new Uint32Array(this.count);
+      for (const base of usable) {
+        const i = cw[base]!;
+        const j = cw[base + 1]!;
+        nbIndices[nbOffsets[i]! + cursor[i]!++] = j;
+        nbIndices[nbOffsets[j]! + cursor[j]!++] = i;
+      }
+      this.nbOffsetsBuffer = this.createBufferRaw(nbOffsets.buffer, storage);
+      this.nbIndicesBuffer = this.createBufferRaw(nbIndices.buffer, storage);
+    }
     this.maxLayer = mesh.layers ? mesh.layers.reduce((m, v) => Math.max(m, v), 0) : 0;
     // Cross-seam ring: these particles are held at seam distance on purpose —
     // self-collision must not repel them (u32 per particle for the shader).
@@ -652,6 +706,9 @@ export class ParticleSystem {
     this.dragPipeline = pipes.drag;
     this.collidePipeline = pipes.collide;
     this.velocityPipeline = pipes.velocity;
+    this.smoothVelocityPipeline = pipes.smoothVelocity;
+    this.smoothCopyPipeline = pipes.smoothCopy;
+    this.smoothTemporalPipeline = pipes.smoothTemporal;
     this.hashClearPipeline = pipes.hashClear;
     this.hashInsertPipeline = pipes.hashInsert;
     this.selfCollidePipeline = pipes.selfCollide;
@@ -703,6 +760,27 @@ export class ParticleSystem {
       this.invMassBuffer,
       this.materialIdBuffer,
       this.materialBuffer,
+    ]);
+    // Lissage : lit les vitesses -> écrit le scratch ; recopie : l'inverse.
+    this.smoothVelocityBindGroup = bg(this.smoothVelocityPipeline, [
+      this.uniformBuffer,
+      this.velocityBuffer,
+      this.velocityScratchBuffer,
+      this.invMassBuffer,
+      this.nbOffsetsBuffer,
+      this.nbIndicesBuffer,
+    ]);
+    this.smoothCopyBindGroup = bg(this.smoothCopyPipeline, [
+      this.uniformBuffer,
+      this.velocityScratchBuffer,
+      this.velocityBuffer,
+    ]);
+    // Filtre temporel : vitesses en lecture/ecriture + historique 1 frame.
+    this.smoothTemporalBindGroup = bg(this.smoothTemporalPipeline, [
+      this.uniformBuffer,
+      this.velocityBuffer,
+      this.velocityHistBuffer,
+      this.invMassBuffer,
     ]);
 
     const solveLayout = this.solvePipeline.getBindGroupLayout(0);
@@ -1387,6 +1465,16 @@ export class ParticleSystem {
       pass.dispatchWorkgroups(groups);
     };
 
+    // Lissage de vitesse : fin de frame par défaut (dernier substep) ;
+    // __veloSmoothAll = true pour chaque substep (escalade). Force: __veloSmooth.
+    const svg = globalThis as unknown as {
+      __veloSmooth?: number;
+      __veloSmoothAll?: boolean;
+      __veloTemporal?: boolean;
+    };
+    const veloSmooth = svg.__veloSmooth ?? 0.9;
+    const veloSmoothAll = svg.__veloSmoothAll !== false;
+    const veloTemporal = svg.__veloTemporal !== false;
     for (let s = 0; s < substeps; s++) {
       dispatch(this.integratePipeline, this.integrateBindGroup, particleGroups);
 
@@ -1450,6 +1538,16 @@ export class ParticleSystem {
 
       dispatch(this.collidePipeline, this.collideBindGroup, particleGroups);
       dispatch(this.velocityPipeline, this.velocityBindGroup, particleGroups);
+      if (veloSmooth > 0 && (veloSmoothAll || s === substeps - 1)) {
+        dispatch(this.smoothVelocityPipeline, this.smoothVelocityBindGroup, particleGroups);
+        dispatch(this.smoothCopyPipeline, this.smoothCopyBindGroup, particleGroups);
+      }
+      // Filtre temporel en fin de frame : moyenne avec la frame precedente ->
+      // annule exactement le micro-fremissement alterne qui traverse le filtre
+      // spatial (un groupe oscillant ensemble), transparent au mouvement continu.
+      if (veloSmooth > 0 && veloTemporal && s === substeps - 1) {
+        dispatch(this.smoothTemporalPipeline, this.smoothTemporalBindGroup, particleGroups);
+      }
     }
 
     pass.end();
@@ -1509,7 +1607,13 @@ export class ParticleSystem {
     dv.setFloat32(0, dt, LE);
     dv.setFloat32(4, this.gravity, LE);
     dv.setFloat32(8, this.groundY, LE);
-    dv.setFloat32(12, this.friction, LE);
+    // Offset 12 (params.friction) : slot mort recyclé en FORCE DU LISSAGE DE
+    // VITESSE (smoothVelocity.wgsl) — s ∈ [0,1], mélange de chaque vitesse vers
+    // la moyenne de ses voisines en fin de frame. Éteint le frémissement
+    // résiduel incohérent (col/aisselles/ourlet) sans amortissement global ni
+    // raideur : le mouvement d'ensemble traverse. Réglable : __veloSmooth.
+    const __gg = globalThis as unknown as { __veloSmooth?: number };
+    dv.setFloat32(12, __gg.__veloSmooth ?? 0.9, LE); // force du lissage de vitesse
     dv.setFloat32(16, this.mouseOrigin[0], LE);
     dv.setFloat32(20, this.mouseOrigin[1], LE);
     dv.setFloat32(24, this.mouseOrigin[2], LE);
