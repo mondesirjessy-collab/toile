@@ -98,7 +98,7 @@ import {
 } from './app/ControlStateSync';
 import { showToast, undoToastMessage } from './app/ToastQueue';
 import { claimFirstUseTip } from './app/FirstUseTip';
-import { selectBriefBackend } from './app/brief/BriefBackend';
+import { BRIEF_ENDPOINT_STORAGE_KEY, probeBriefEndpoint, RemoteBackend, RulesBackend, type BriefBackend } from './app/brief/BriefBackend';
 import { executeBrief, type BriefHooks } from './app/brief/BriefExecutor';
 import { PatternView, SEAM_COLORS, type PatternHandleSpec, type SystemLink } from './app/PatternView';
 import { setPatternTheme, type PatternTheme } from './app/patternPalette';
@@ -8847,7 +8847,9 @@ async function main(): Promise<void> {
   // l'exécuteur le rejoue par les MÊMES chemins que les gestes utilisateur
   // (boutons et sélecteurs de l'atelier), donc tout reste annulable (Cmd+Z).
   {
-    const briefBackend = selectBriefBackend();
+    // Backend mutable : règles locales immédiatement, Claude dès que la sonde
+    // trouve un proxy (localStorage prioritaire, sinon /api/brief même origine).
+    let briefBackend: BriefBackend = new RulesBackend();
     const briefInput = document.getElementById('at-brief-input') as HTMLTextAreaElement | null;
     const briefGo = document.getElementById('at-brief-go') as HTMLButtonElement | null;
     const briefStatus = document.getElementById('at-brief-status') as HTMLElement | null;
@@ -8872,6 +8874,13 @@ async function main(): Promise<void> {
         (sel) => [...sel.options].some((o) => o.value === probeValue) && !(exclude?.(sel) ?? false),
       );
       return all.length ? all[all.length - 1]! : null;
+    };
+    /** Provenance du dernier résultat, affichée avec chaque réponse du Brief. */
+    const backendTag = (): string => {
+      if (!(briefBackend instanceof RemoteBackend)) return ' · règles locales';
+      if (briefBackend.lastUsed === 'assistant') return ' · ✨ Claude';
+      if (briefBackend.lastUsed === 'règles') return ' · règles locales (IA en repli)';
+      return '';
     };
     const briefHooks: BriefHooks = {
       loadArchetype: (archetype) => {
@@ -8928,8 +8937,59 @@ async function main(): Promise<void> {
         btn.click();
         return true;
       },
-      say: briefSay,
+      say: (message, ok) => briefSay(`${message}${backendTag()}`, ok),
     };
+    // ---- Studio IA : état atelier joint aux briefs + détection du proxy ----
+    const BRIEF_PATTERN_LABEL: Record<string, string> = {
+      boxy: 'tshirt_boxy',
+      pants: 'pantalon',
+      hoodie: 'hoodie_zip',
+      jupe: 'jupe',
+      robe: 'robe',
+      veste: 'veste',
+      doudoune: 'doudoune',
+      'clo-tee': 'import CLO (tee, hors catalogue)',
+      'clo-pants': 'import CLO (pantalon, hors catalogue)',
+    };
+    const briefContext = (): Record<string, unknown> => {
+      const ctx: Record<string, unknown> = {};
+      ctx.patron = BRIEF_PATTERN_LABEL[loadedPattern] ?? loadedPattern;
+      if (sizeSel?.value) ctx.taille = sizeSel.value;
+      const fabricSel = panelSelect('Soie', (sel) =>
+        [...sel.options].some((o) => /Tissu global/.test(o.textContent ?? '')),
+      );
+      if (fabricSel?.value) ctx.tissu = fabricSel.value;
+      const motifSel = panelSelect('vichy');
+      if (motifSel?.value) ctx.motif = motifSel.value;
+      const bodySel = panelSelect('scan homme');
+      if (bodySel?.value) ctx.mannequin = bodySel.value;
+      const stature = Number(avatarStatureInput.value);
+      if (Number.isFinite(stature) && stature > 0) ctx.statureCm = Math.round(stature);
+      const sleevesBtn = document.getElementById('at-sleeves');
+      if (sleevesBtn instanceof HTMLElement) {
+        ctx.manchesAuto = sleevesBtn.getAttribute('aria-pressed') === 'true';
+      }
+      ctx.essayage = document.body.classList.contains('atelier-simulating');
+      return ctx;
+    };
+    {
+      let explicit: string | null = null;
+      try {
+        const stored = localStorage.getItem(BRIEF_ENDPOINT_STORAGE_KEY)?.trim();
+        explicit = stored && /^https?:\/\//.test(stored) ? stored : null;
+      } catch {
+        explicit = null; // storage interdit (webview privée) : sonde même origine.
+      }
+      if (explicit) {
+        briefBackend = new RemoteBackend(explicit, undefined, undefined, undefined, briefContext);
+      } else {
+        void probeBriefEndpoint('/api/brief').then((ready) => {
+          if (!ready) return;
+          briefBackend = new RemoteBackend('/api/brief', undefined, undefined, undefined, briefContext);
+          briefSay('✨ Studio IA actif — Claude interprète les briefs (règles locales en secours).', true);
+        });
+      }
+    }
     const runBrief = async (): Promise<void> => {
       const text = briefInput?.value ?? '';
       if (!text.trim()) {
@@ -8937,6 +8997,7 @@ async function main(): Promise<void> {
         return;
       }
       if (briefGo) briefGo.disabled = true;
+      if (briefBackend instanceof RemoteBackend) briefSay('✨ Claude interprète le brief…', true);
       try {
         const result = await briefBackend.interpret(text);
         executeBrief(result, briefHooks);

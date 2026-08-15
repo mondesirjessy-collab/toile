@@ -28,8 +28,12 @@ export class RulesBackend implements BriefBackend {
 export const BRIEF_ENDPOINT_STORAGE_KEY = 'toile.brief.endpoint';
 export const BRIEF_REMOTE_TIMEOUT_MS = 8_000;
 
+/** Qui a réellement produit le dernier résultat (affichage de provenance). */
+export type BriefProvenance = 'assistant' | 'règles';
+
 export class RemoteBackend implements BriefBackend {
   readonly label = 'assistant distant';
+  lastUsed: BriefProvenance | null = null;
 
   constructor(
     private readonly endpoint: string,
@@ -41,6 +45,8 @@ export class RemoteBackend implements BriefBackend {
     // fléchées, ne détectaient pas la sensibilité au `this`.)
     private readonly fetchImpl: typeof fetch = (...args) => fetch(...args),
     private readonly timeoutMs: number = BRIEF_REMOTE_TIMEOUT_MS,
+    /** État atelier joint à chaque brief (« ÉTAT ACTUEL » côté proxy) — optionnel. */
+    private readonly contextProvider: (() => Record<string, unknown> | null) | null = null,
   ) {}
 
   async interpret(briefText: string): Promise<BriefResult> {
@@ -49,10 +55,13 @@ export class RemoteBackend implements BriefBackend {
       const timer = setTimeout(() => controller.abort(), this.timeoutMs);
       let raw: unknown;
       try {
+        const payload: Record<string, unknown> = { format: 'toile-brief', version: 1, brief: briefText };
+        const context = this.contextProvider?.() ?? null;
+        if (context && Object.keys(context).length > 0) payload.context = context;
         const response = await this.fetchImpl(this.endpoint, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ format: 'toile-brief', version: 1, brief: briefText }),
+          body: JSON.stringify(payload),
           signal: controller.signal,
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -61,12 +70,43 @@ export class RemoteBackend implements BriefBackend {
         clearTimeout(timer);
       }
       const validated = validateBriefResult(raw);
-      if (validated) return validated;
+      if (validated) {
+        this.lastUsed = 'assistant';
+        return validated;
+      }
       // Réponse hors contrat : le fallback local reste plus utile qu'une erreur.
+      this.lastUsed = 'règles';
       return this.fallback.interpret(briefText);
     } catch {
+      this.lastUsed = 'règles';
       return this.fallback.interpret(briefText);
     }
+  }
+}
+
+/**
+ * Sonde `/api/brief` (GET) : vrai si un proxy Studio IA répond avec une clé
+ * configurée. Permet d'activer Claude sans aucune manipulation console —
+ * proxy dev Vite en local, Worker/Function en production, même contrat.
+ */
+export async function probeBriefEndpoint(
+  url: string,
+  fetchImpl: typeof fetch = (...args) => fetch(...args),
+  timeoutMs = 2500,
+): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetchImpl(url, { method: 'GET', signal: controller.signal });
+      if (!response.ok) return false;
+      const data = (await response.json()) as { ready?: unknown } | null;
+      return data?.ready === true;
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return false;
   }
 }
 

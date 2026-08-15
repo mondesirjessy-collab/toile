@@ -35,6 +35,8 @@ const json = (status: number, body: unknown): Response =>
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
+    // Sonde du Studio IA (même contrat que le middleware de dev).
+    if (request.method === 'GET') return json(200, { ready: !!env.ANTHROPIC_API_KEY });
     if (request.method !== 'POST') return json(405, { error: 'POST uniquement.' });
     if (!env.ANTHROPIC_API_KEY) return json(503, { error: 'ANTHROPIC_API_KEY non configurée sur le Worker.' });
     let body: unknown;

@@ -24,6 +24,10 @@ function briefDevProxy(env: Record<string, string>): Plugin {
           res.setHeader('content-type', 'application/json');
           res.end(JSON.stringify(body));
         };
+        if (req.method === 'GET') {
+          // Sonde du Studio IA : le client détecte proxy + clé sans coût modèle.
+          return finish(200, { ready: !!env.ANTHROPIC_API_KEY, model: env.BRIEF_MODEL || 'claude-haiku-4-5' });
+        }
         if (req.method !== 'POST') return finish(405, { error: 'POST uniquement.' });
         const apiKey = env.ANTHROPIC_API_KEY;
         if (!apiKey) {
