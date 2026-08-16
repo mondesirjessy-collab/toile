@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TOILE — du brief au patron · v216</title>
+  <title>TOILE — du brief au patron · v217</title>
   <style>
     :root {
       color-scheme: dark;
@@ -979,6 +979,36 @@
       outline: 1px solid rgba(120, 180, 255, 0.7);
       outline-offset: 1px;
     }
+    #at-brief-image-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 6px;
+    }
+    #at-brief-image-row[hidden] { display: none; }
+    #at-brief-image-thumb {
+      height: 42px;
+      max-width: 84px;
+      object-fit: cover;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.22);
+    }
+    #at-brief-image-name {
+      flex: 1;
+      font-size: 10px;
+      opacity: 0.75;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #at-brief-image-clear {
+      border: 0;
+      background: transparent;
+      color: inherit;
+      font-size: 16px;
+      cursor: pointer;
+      opacity: 0.8;
+    }
     .brief-status {
       margin: 6px 0 0;
       font-size: 11px;
@@ -1223,7 +1253,7 @@
   <canvas id="view" tabindex="-1" aria-label="Vue 3D du vêtement et du mannequin"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 5 — du brief au patron · v216</small></span>
+    <span class="title">TOILE<small>phase 5 — du brief au patron · v217</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
       <span id="resolution-rebuild-status" role="status" aria-live="polite" hidden></span>
@@ -1310,6 +1340,12 @@
         <div class="tgrp one-column">
           <button id="at-brief-go" title="Interpréter le brief puis préparer le vêtement : patron, taille, tissu, mannequin — et lancer l’essayage 3D">✨ Créer depuis le brief</button>
           <button id="at-fit-check" title="Analyser le tombé de l’essayage — aisance, tensions, coutures mesurées par le solveur — et proposer des retouches (Studio IA)">🩺 Bilan du tombé</button>
+          <button id="at-brief-photo" title="Joindre une photo ou un croquis de vêtement — Claude l’identifie et le rapproche du catalogue (Studio IA). Coller (Cmd+V) ou glisser une image marche aussi.">📷 Photo / croquis</button>
+        </div>
+        <div id="at-brief-image-row" hidden>
+          <img id="at-brief-image-thumb" alt="aperçu du brief visuel" />
+          <span id="at-brief-image-name"></span>
+          <button id="at-brief-image-clear" type="button" aria-label="retirer l’image du brief">×</button>
         </div>
         <p id="at-brief-status" class="brief-status" aria-live="polite" hidden></p>
       </section>

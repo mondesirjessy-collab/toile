@@ -17,6 +17,12 @@ export interface BriefBackend {
   interpret(briefText: string): Promise<BriefResult>;
 }
 
+/** Image jointe à un brief visuel (déjà compressée côté client). */
+export interface BriefImageAttachment {
+  mediaType: string;
+  dataBase64: string;
+}
+
 export class RulesBackend implements BriefBackend {
   readonly label = 'règles locales';
 
@@ -47,17 +53,23 @@ export class RemoteBackend implements BriefBackend {
     private readonly timeoutMs: number = BRIEF_REMOTE_TIMEOUT_MS,
     /** État atelier joint à chaque brief (« ÉTAT ACTUEL » côté proxy) — optionnel. */
     private readonly contextProvider: (() => Record<string, unknown> | null) | null = null,
+    /** Brief visuel : image jointe {mediaType, dataBase64} — optionnel. */
+    private readonly imageProvider: (() => BriefImageAttachment | null) | null = null,
   ) {}
 
   async interpret(briefText: string): Promise<BriefResult> {
     try {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+      const image0 = this.imageProvider?.() ?? null;
+      const timeout = image0 ? Math.max(this.timeoutMs, 25_000) : this.timeoutMs;
+      const timer = setTimeout(() => controller.abort(), timeout);
       let raw: unknown;
       try {
         const payload: Record<string, unknown> = { format: 'toile-brief', version: 1, brief: briefText };
         const context = this.contextProvider?.() ?? null;
         if (context && Object.keys(context).length > 0) payload.context = context;
+        const image = this.imageProvider?.() ?? null;
+        if (image) payload.image = image;
         const response = await this.fetchImpl(this.endpoint, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },

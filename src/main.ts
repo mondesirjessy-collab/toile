@@ -98,7 +98,7 @@ import {
 } from './app/ControlStateSync';
 import { showToast, undoToastMessage } from './app/ToastQueue';
 import { claimFirstUseTip } from './app/FirstUseTip';
-import { BRIEF_ENDPOINT_STORAGE_KEY, probeBriefEndpoint, RemoteBackend, RulesBackend, type BriefBackend } from './app/brief/BriefBackend';
+import { BRIEF_ENDPOINT_STORAGE_KEY, probeBriefEndpoint, RemoteBackend, RulesBackend, type BriefBackend, type BriefImageAttachment } from './app/brief/BriefBackend';
 import { validateFitAdvice, type FitAdviceResult } from './app/brief/FitContract';
 import { executeBrief, type BriefHooks } from './app/brief/BriefExecutor';
 import { PatternView, SEAM_COLORS, type PatternHandleSpec, type SystemLink } from './app/PatternView';
@@ -8942,6 +8942,92 @@ async function main(): Promise<void> {
       },
       say: (message, ok) => briefSay(`${message}${backendTag()}`, ok),
     };
+    // ---- Brief visuel (IA 2) : une image accompagne ou remplace le texte ----
+    // Compressée côté client (≤ 1024 px, JPEG) : les photos de téléphone font
+    // plusieurs Mo, l'API n'a besoin que de la silhouette et de la matière.
+    let briefImage: (BriefImageAttachment & { name: string; dataUrl: string }) | null = null;
+    const briefPhotoBtn = document.getElementById('at-brief-photo') as HTMLButtonElement | null;
+    const briefImageRow = document.getElementById('at-brief-image-row') as HTMLElement | null;
+    const briefImageThumb = document.getElementById('at-brief-image-thumb') as HTMLImageElement | null;
+    const briefImageName = document.getElementById('at-brief-image-name') as HTMLElement | null;
+    const briefImageClear = document.getElementById('at-brief-image-clear') as HTMLButtonElement | null;
+    const syncBriefImageRow = (): void => {
+      if (!briefImageRow) return;
+      briefImageRow.hidden = !briefImage;
+      if (briefImage) {
+        if (briefImageThumb) briefImageThumb.src = briefImage.dataUrl;
+        if (briefImageName) briefImageName.textContent = briefImage.name;
+      }
+    };
+    const clearBriefImage = (): void => {
+      briefImage = null;
+      syncBriefImageRow();
+    };
+    briefImageClear?.addEventListener('click', clearBriefImage);
+    const attachBriefImage = async (file: File): Promise<void> => {
+      try {
+        const bitmap = await createImageBitmap(file);
+        const scale = Math.min(1, 1024 / Math.max(bitmap.width, bitmap.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+        canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+        const ctx2d = canvas.getContext('2d');
+        if (!ctx2d) throw new Error('canvas 2d indisponible');
+        ctx2d.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        bitmap.close();
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        const comma = dataUrl.indexOf(',');
+        briefImage = {
+          mediaType: 'image/jpeg',
+          dataBase64: dataUrl.slice(comma + 1),
+          dataUrl,
+          name: file.name || 'image collée',
+        };
+        syncBriefImageRow();
+        briefSay(`📷 « ${briefImage.name} » jointe au brief — décris (ou pas) et lance.`, true);
+      } catch (error) {
+        console.error('[toile] brief visuel — image illisible :', error);
+        briefSay('Image illisible (format non décodable par le navigateur — essaie JPEG/PNG).', false);
+      }
+    };
+    briefPhotoBtn?.addEventListener('click', () => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.onchange = () => {
+        const file = input.files?.[0];
+        if (file) void attachBriefImage(file);
+      };
+      input.click();
+    });
+    // Coller (Cmd+V) une image dans le champ du brief.
+    briefInput?.addEventListener('paste', (event) => {
+      const items = event.clipboardData?.items;
+      if (!items) return;
+      for (const item of items) {
+        if (item.kind === 'file' && item.type.startsWith('image/')) {
+          const file = item.getAsFile();
+          if (file) {
+            event.preventDefault();
+            void attachBriefImage(file);
+            return;
+          }
+        }
+      }
+    });
+    // Glisser-déposer une image sur le champ du brief.
+    briefInput?.addEventListener('dragover', (event) => {
+      if ([...(event.dataTransfer?.items ?? [])].some((i) => i.kind === 'file')) event.preventDefault();
+    });
+    briefInput?.addEventListener('drop', (event) => {
+      const file = [...(event.dataTransfer?.files ?? [])].find((f) => f.type.startsWith('image/'));
+      if (file) {
+        event.preventDefault();
+        void attachBriefImage(file);
+      }
+    });
+    const briefImageProvider = (): BriefImageAttachment | null =>
+      briefImage ? { mediaType: briefImage.mediaType, dataBase64: briefImage.dataBase64 } : null;
     // ---- Studio IA : état atelier joint aux briefs + détection du proxy ----
     const BRIEF_PATTERN_LABEL: Record<string, string> = {
       boxy: 'tshirt_boxy',
@@ -8984,12 +9070,12 @@ async function main(): Promise<void> {
         explicit = null; // storage interdit (webview privée) : sonde même origine.
       }
       if (explicit) {
-        briefBackend = new RemoteBackend(explicit, undefined, undefined, undefined, briefContext);
+        briefBackend = new RemoteBackend(explicit, undefined, undefined, undefined, briefContext, briefImageProvider);
         briefEndpointUrl = explicit;
       } else {
         void probeBriefEndpoint('/api/brief').then((ready) => {
           if (!ready) return;
-          briefBackend = new RemoteBackend('/api/brief', undefined, undefined, undefined, briefContext);
+          briefBackend = new RemoteBackend('/api/brief', undefined, undefined, undefined, briefContext, briefImageProvider);
           briefEndpointUrl = '/api/brief';
           briefSay('✨ Studio IA actif — Claude interprète les briefs (règles locales en secours).', true);
         });
@@ -9243,15 +9329,24 @@ async function main(): Promise<void> {
     fitCheckBtn?.addEventListener('click', () => void runFitCheck());
     const runBrief = async (): Promise<void> => {
       const text = briefInput?.value ?? '';
-      if (!text.trim()) {
-        briefSay('Décris d’abord le vêtement — par exemple « hoodie en maille, taille L ».', false);
+      if (!text.trim() && !briefImage) {
+        briefSay('Décris le vêtement (« hoodie en maille, taille L ») — ou joins une photo 📷.', false);
+        return;
+      }
+      if (briefImage && !(briefBackend instanceof RemoteBackend)) {
+        briefSay('Le brief visuel demande le Studio IA (proxy Claude non détecté) — les règles locales ne lisent pas les images.', false);
         return;
       }
       if (briefGo) briefGo.disabled = true;
-      if (briefBackend instanceof RemoteBackend) briefSay('✨ Claude interprète le brief…', true);
+      if (briefBackend instanceof RemoteBackend) {
+        briefSay(briefImage ? '✨ Claude regarde la photo…' : '✨ Claude interprète le brief…', true);
+      }
       try {
         const result = await briefBackend.interpret(text);
-        executeBrief(result, briefHooks);
+        const execution = executeBrief(result, briefHooks);
+        // Image consommée une fois le vêtement appliqué : les briefs suivants
+        // (« une taille au-dessus ») ne doivent pas re-payer ni re-lire la photo.
+        if (execution.ok && briefImage) clearBriefImage();
       } finally {
         if (briefGo) briefGo.disabled = false;
       }

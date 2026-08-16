@@ -14,13 +14,22 @@
 import { validateBriefResult, type BriefResult } from '../src/app/brief/BriefContract';
 import { validateFitAdvice, type FitAdviceResult } from '../src/app/brief/FitContract';
 
+/** Bloc de contenu multimodal (sous-ensemble de l'API Messages d'Anthropic). */
+export type ModelContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
+
 /** Adaptateur modèle : reçoit le system prompt + les messages, rend le texte brut. */
 export type ModelCaller = (
   system: string,
-  messages: Array<{ role: 'user' | 'assistant'; content: string }>,
+  messages: Array<{ role: 'user' | 'assistant'; content: string | ModelContentBlock[] }>,
 ) => Promise<string>;
 
 export const BRIEF_MAX_CHARS = 500;
+/** Types d'image acceptés par l'API Messages (brief visuel). */
+export const BRIEF_IMAGE_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'] as const;
+/** ~2 Mo une fois encodée base64 : large pour un croquis compressé côté client. */
+export const BRIEF_IMAGE_MAX_BASE64 = 2_800_000;
 
 /** Catalogue des capacités — la seule vérité montrée au modèle. */
 const CATALOG = `ARCHÉTYPES CONSTRUCTIBLES (les seuls) :
@@ -57,7 +66,8 @@ const STYLE = `RÈGLES :
 4. Retouche du vêtement courant (« passe-le en… », « la même en… », « ajoute des manches ») → "modify" avec la liste d'ops minimale.
 5. Tu peux interpréter les synonymes et l'à-peu-près (« coton léger » → Popeline ; « petits carreaux » → vichy ; « tricot » → Maille ; « 1m85 » → statureCm 185) mais JAMAIS inventer hors catalogue.
 6. Réponds en JSON compact sur une seule ligne. Aucun commentaire, aucune balise de code.
-7. Un « ÉTAT ACTUEL : … » peut précéder le brief : c'est le vêtement déjà chargé dans l'atelier. Les retouches relatives (« une taille au-dessus », « plus grand », « l'autre mannequin », « enlève le motif ») se calculent depuis cet état, dans la liste de tailles de CE patron.`;
+7. Un « ÉTAT ACTUEL : … » peut précéder le brief : c'est le vêtement déjà chargé dans l'atelier. Les retouches relatives (« une taille au-dessus », « plus grand », « l'autre mannequin », « enlève le motif ») se calculent depuis cet état, dans la liste de tailles de CE patron.
+8. BRIEF VISUEL : une image (photo, croquis, moodboard) peut accompagner ou remplacer le texte. Identifie le vêtement porté ou dessiné et rapproche-le du catalogue : silhouette → archétype le plus proche, texture/aspect → tissu le plus proche, imprimé → motif le plus proche (uni/rayures/vichy/pois). Le texte, s'il existe, PRIME sur l'image en cas de conflit. Ne devine jamais une taille depuis une photo. Vêtement photographié non constructible → "refuse" + suggestion du catalogue ; image sans vêtement identifiable → "clarify". Mentionne « d'après la photo » (ou « d'après le croquis ») dans resumeFr.`;
 
 export function buildBriefSystemPrompt(): string {
   return `Tu es l'interprète de briefs de TOILE, un atelier de patronage 3D dans le navigateur. Tu traduis un brief français (parfois anglais) en une action JSON du contrat — tu ne dessines jamais, tu pilotes des capacités existantes.
@@ -208,17 +218,42 @@ export interface BriefProxyResponse {
  * validation du JSON, UNE relance en cas de réponse hors contrat.
  */
 export async function handleBrief(rawBody: unknown, callModel: ModelCaller): Promise<BriefProxyResponse> {
-  const req = rawBody as { format?: unknown; version?: unknown; brief?: unknown; context?: unknown } | null;
+  const req = rawBody as {
+    format?: unknown;
+    version?: unknown;
+    brief?: unknown;
+    context?: unknown;
+    image?: unknown;
+  } | null;
   const brief = typeof req?.brief === 'string' ? req.brief.trim() : '';
-  if (req?.format !== 'toile-brief' || req?.version !== 1 || !brief) {
-    return { status: 400, body: { error: 'Requête invalide — attendu {format:"toile-brief", version:1, brief}.' } };
+  // Brief visuel : image optionnelle {mediaType, dataBase64}, bornée et typée.
+  let image: { mediaType: string; data: string } | null = null;
+  if (req?.image !== undefined && req.image !== null) {
+    const rawImage = req.image as { mediaType?: unknown; dataBase64?: unknown };
+    const mediaType = rawImage?.mediaType;
+    const data = rawImage?.dataBase64;
+    if (
+      typeof mediaType !== 'string' ||
+      !BRIEF_IMAGE_MEDIA_TYPES.includes(mediaType as (typeof BRIEF_IMAGE_MEDIA_TYPES)[number]) ||
+      typeof data !== 'string' ||
+      data.length === 0
+    ) {
+      return { status: 400, body: { error: 'Image invalide — attendu {mediaType (jpeg/png/webp/gif), dataBase64}.' } };
+    }
+    if (data.length > BRIEF_IMAGE_MAX_BASE64) {
+      return { status: 400, body: { error: 'Image trop lourde (max ~2 Mo encodée) — réduis-la côté client.' } };
+    }
+    image = { mediaType, data };
+  }
+  if (req?.format !== 'toile-brief' || req?.version !== 1 || (!brief && !image)) {
+    return { status: 400, body: { error: 'Requête invalide — attendu {format:"toile-brief", version:1, brief et/ou image}.' } };
   }
   if (brief.length > BRIEF_MAX_CHARS) {
     return { status: 400, body: { error: `Brief trop long (max ${BRIEF_MAX_CHARS} caractères).` } };
   }
 
   const system = buildBriefSystemPrompt();
-  const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
+  const messages: Array<{ role: 'user' | 'assistant'; content: string | ModelContentBlock[] }> = [
     ...BRIEF_FEW_SHOT.flatMap((ex) => [
       { role: 'user' as const, content: ex.user },
       { role: 'assistant' as const, content: ex.assistant },
@@ -226,10 +261,17 @@ export async function handleBrief(rawBody: unknown, callModel: ModelCaller): Pro
     {
       role: 'user' as const,
       // L'état atelier précède le brief quand le client le fournit — même
-      // forme que les exemples « ÉTAT ACTUEL » du few-shot.
+      // forme que les exemples « ÉTAT ACTUEL » du few-shot. Un brief visuel
+      // devient [image, texte] ; sans texte, une consigne par défaut guide.
       content: (() => {
         const stateLine = briefContextLine(req.context);
-        return stateLine ? `ÉTAT ACTUEL : ${stateLine}\nBRIEF : ${brief}` : brief;
+        const briefText = brief || 'Reproduis le vêtement de l’image au plus proche du catalogue.';
+        const text = stateLine ? `ÉTAT ACTUEL : ${stateLine}\nBRIEF : ${briefText}` : briefText;
+        if (!image) return text;
+        return [
+          { type: 'image' as const, source: { type: 'base64' as const, media_type: image.mediaType, data: image.data } },
+          { type: 'text' as const, text },
+        ];
       })(),
     },
   ];
