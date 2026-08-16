@@ -13,7 +13,7 @@
  * domaine public de TOILE avant une beta.
  */
 
-import { anthropicCaller, handleBrief } from './brief-core';
+import { anthropicCaller, handleStudioRequest } from './brief-core';
 
 interface Env {
   ANTHROPIC_API_KEY?: string;
@@ -45,7 +45,7 @@ export default {
     } catch {
       return json(400, { error: 'Corps JSON attendu.' });
     }
-    const result = await handleBrief(body, anthropicCaller(env.ANTHROPIC_API_KEY, env.BRIEF_MODEL));
+    const result = await handleStudioRequest(body, anthropicCaller(env.ANTHROPIC_API_KEY, env.BRIEF_MODEL));
     return json(result.status, result.body);
   },
 };

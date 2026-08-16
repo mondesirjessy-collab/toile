@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TOILE — du brief au patron · v215</title>
+  <title>TOILE — du brief au patron · v216</title>
   <style>
     :root {
       color-scheme: dark;
@@ -148,6 +148,14 @@
       opacity: 0.48;
       pointer-events: none;
       filter: saturate(0.6);
+    }
+    /* Le Studio IA reste vivant à l'essayage : le Brief retouche le vêtement
+       porté (« une taille au-dessus ») et le Bilan du tombé LIT le drapé —
+       les griser là serait les couper au moment où ils servent. */
+    #atelier-bar[data-mode="simulation"] #at-brief-section {
+      opacity: 1;
+      pointer-events: auto;
+      filter: none;
     }
     .mode-chip {
       min-width: 30px;
@@ -1215,7 +1223,7 @@
   <canvas id="view" tabindex="-1" aria-label="Vue 3D du vêtement et du mannequin"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 5 — du brief au patron · v215</small></span>
+    <span class="title">TOILE<small>phase 5 — du brief au patron · v216</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
       <span id="resolution-rebuild-status" role="status" aria-live="polite" hidden></span>
@@ -1301,6 +1309,7 @@
         <textarea id="at-brief-input" rows="2" aria-label="Brief du vêtement" placeholder="« hoodie en maille, taille L, mannequin homme »"></textarea>
         <div class="tgrp one-column">
           <button id="at-brief-go" title="Interpréter le brief puis préparer le vêtement : patron, taille, tissu, mannequin — et lancer l’essayage 3D">✨ Créer depuis le brief</button>
+          <button id="at-fit-check" title="Analyser le tombé de l’essayage — aisance, tensions, coutures mesurées par le solveur — et proposer des retouches (Studio IA)">🩺 Bilan du tombé</button>
         </div>
         <p id="at-brief-status" class="brief-status" aria-live="polite" hidden></p>
       </section>

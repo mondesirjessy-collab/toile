@@ -99,6 +99,7 @@ import {
 import { showToast, undoToastMessage } from './app/ToastQueue';
 import { claimFirstUseTip } from './app/FirstUseTip';
 import { BRIEF_ENDPOINT_STORAGE_KEY, probeBriefEndpoint, RemoteBackend, RulesBackend, type BriefBackend } from './app/brief/BriefBackend';
+import { validateFitAdvice, type FitAdviceResult } from './app/brief/FitContract';
 import { executeBrief, type BriefHooks } from './app/brief/BriefExecutor';
 import { PatternView, SEAM_COLORS, type PatternHandleSpec, type SystemLink } from './app/PatternView';
 import { setPatternTheme, type PatternTheme } from './app/patternPalette';
@@ -8850,6 +8851,8 @@ async function main(): Promise<void> {
     // Backend mutable : règles locales immédiatement, Claude dès que la sonde
     // trouve un proxy (localStorage prioritaire, sinon /api/brief même origine).
     let briefBackend: BriefBackend = new RulesBackend();
+    /** URL du proxy Studio IA quand il est détecté (briefs ET bilan du tombé). */
+    let briefEndpointUrl: string | null = null;
     const briefInput = document.getElementById('at-brief-input') as HTMLTextAreaElement | null;
     const briefGo = document.getElementById('at-brief-go') as HTMLButtonElement | null;
     const briefStatus = document.getElementById('at-brief-status') as HTMLElement | null;
@@ -8982,14 +8985,262 @@ async function main(): Promise<void> {
       }
       if (explicit) {
         briefBackend = new RemoteBackend(explicit, undefined, undefined, undefined, briefContext);
+        briefEndpointUrl = explicit;
       } else {
         void probeBriefEndpoint('/api/brief').then((ready) => {
           if (!ready) return;
           briefBackend = new RemoteBackend('/api/brief', undefined, undefined, undefined, briefContext);
+          briefEndpointUrl = '/api/brief';
           briefSay('✨ Studio IA actif — Claude interprète les briefs (règles locales en secours).', true);
         });
       }
     }
+    // ---- IA 1 : Bilan du tombé — le conseiller de bien-aller ----------------
+    // Le solveur mesure (aisance tissu-corps, étirement du tissage, coutures),
+    // Claude interprète en modéliste et propose des retouches en ops du contrat.
+    const fitCheckBtn = document.getElementById('at-fit-check') as HTMLButtonElement | null;
+    const collectFitReport = async (): Promise<Record<string, unknown> | null> => {
+      const mesh = currentMesh;
+      if (!mesh || !system) return null;
+      const snap = await system.readCollisionDistances();
+      if (!snap) return null;
+      const m = lastMeasure;
+      interface ZoneAcc {
+        n: number;
+        easeSum: number;
+        easeMin: number;
+        strains: number[];
+      }
+      const zones = new Map<string, ZoneAcc>();
+      const zoneAcc = (name: string): ZoneAcc => {
+        let a = zones.get(name);
+        if (!a) {
+          a = { n: 0, easeSum: 0, easeMin: Infinity, strains: [] };
+          zones.set(name, a);
+        }
+        return a;
+      };
+      const midChestShoulder = (m.chest.y + m.shoulderY) / 2;
+      const midChestWaist = (m.chest.y + m.waist.y) / 2;
+      const midWaistHip = (m.waist.y + m.hip.y) / 2;
+      const hemCut = m.hip.y - Math.max(0.04, (m.waist.y - m.hip.y) / 2);
+      const zoneOf = (x: number, y: number): string => {
+        if (Math.abs(x) > m.shoulderHalfW * 1.05) return 'manches';
+        if (y >= midChestShoulder) return 'épaules/col';
+        if (y >= midChestWaist) return 'poitrine';
+        if (y >= midWaistHip) return 'taille';
+        if (y >= hemCut) return 'hanches';
+        return 'bas/ourlet';
+      };
+      const positions = snap.positions; // xyz par particule (stride 3)
+      const live = (index: number): boolean =>
+        (mesh.invMasses[index] ?? 0) > 0 && positions[index * 3 + 1]! > -1;
+      // Aisance : distance signée au corps moins l'épaisseur de contact.
+      for (let index = 0; index < mesh.count; index++) {
+        if (!live(index)) continue;
+        const distance = snap.distances[index]!;
+        if (!Number.isFinite(distance) || distance > 0.5) continue; // hors domaine
+        const easeMm = (distance - snap.contactOffsets[index]!) * 1000;
+        const zone = zoneAcc(zoneOf(positions[index * 3]!, positions[index * 3 + 1]!));
+        zone.n++;
+        zone.easeSum += easeMm;
+        if (easeMm < zone.easeMin) zone.easeMin = easeMm;
+      }
+      // Étirement du tissage + sur-tension des coutures, depuis les contraintes.
+      const cu = new Uint32Array(mesh.constraintData);
+      const cf = new Float32Array(mesh.constraintData);
+      // Bords découpés : l'accrochage des particules sur la courbe exacte du
+      // patron laisse des contraintes-échardes à repos minuscule, dont le
+      // moindre écart absolu se lit en pourcentage énorme (faux « +170 % »).
+      // On ne mesure l'étirement que sur le tissage à repos plein.
+      const sliverRest =
+        0.4 * Math.min(mesh.spacing, mesh.spacingV ?? mesh.spacing, mesh.spacing2 ?? mesh.spacing);
+      let seamOverMaxMm = 0;
+      let seamOverSumMm = 0;
+      let seamCount = 0;
+      for (let c = 0; c < mesh.constraintCount; c++) {
+        const base = c * 4;
+        const kind = cu[base + 3]!;
+        if (kind !== 0 && kind !== 1 && kind !== 3 && kind !== 4) continue;
+        const i = cu[base]!;
+        const j = cu[base + 1]!;
+        if (!live(i) || !live(j)) continue;
+        const rest = cf[base + 2]!;
+        if (!(rest > 1e-6)) continue;
+        if (kind !== 3 && rest < sliverRest) continue; // écharde de bord découpé
+        const dx = positions[i * 3]! - positions[j * 3]!;
+        const dy = positions[i * 3 + 1]! - positions[j * 3 + 1]!;
+        const dz = positions[i * 3 + 2]! - positions[j * 3 + 2]!;
+        const len = Math.hypot(dx, dy, dz);
+        if (kind === 3) {
+          const overMm = Math.max(0, len - rest) * 1000;
+          seamCount++;
+          seamOverSumMm += overMm;
+          if (overMm > seamOverMaxMm) seamOverMaxMm = overMm;
+          continue;
+        }
+        const strainPct =
+          kind === 1 ? (Math.abs(len - rest) / rest) * 100 : (Math.max(0, len - rest) / rest) * 100;
+        zoneAcc(zoneOf((positions[i * 3]! + positions[j * 3]!) / 2, (positions[i * 3 + 1]! + positions[j * 3 + 1]!) / 2))
+          .strains.push(strainPct);
+      }
+      const r1 = (v: number): number => Math.round(v * 10) / 10;
+      const zoneReports: Array<Record<string, unknown>> = [];
+      for (const [name, a] of zones) {
+        if (a.n < 12 && a.strains.length < 12) continue; // zone anecdotique
+        const sorted = a.strains.sort((u, v) => u - v);
+        const p95 = sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))]! : 0;
+        const mean = sorted.length ? sorted.reduce((s2, v) => s2 + v, 0) / sorted.length : 0;
+        zoneReports.push({
+          zone: name,
+          aisanceMm: a.n ? { min: r1(a.easeMin), moy: r1(a.easeSum / a.n) } : undefined,
+          etirementPct: { moy: r1(mean), p95: r1(p95) },
+        });
+      }
+      const ctx = briefContext();
+      const garment: Record<string, unknown> = {
+        patron: ctx.patron,
+        taille: ctx.taille,
+        tissu: ctx.tissu,
+        motif: ctx.motif,
+      };
+      const fabricSnapshot = (panel.snapshotGarment() as { fabric?: { densityGsm?: unknown } }).fabric;
+      if (typeof fabricSnapshot?.densityGsm === 'number') garment.grammageGsm = fabricSnapshot.densityGsm;
+      return {
+        garment,
+        body: {
+          mannequin: ctx.mannequin,
+          statureCm: ctx.statureCm,
+          poitrineCm: r1(m.chest.circ * 100),
+          tailleCm: r1(m.waist.circ * 100),
+          hanchesCm: r1(m.hip.circ * 100),
+        },
+        zones: zoneReports,
+        coutures: seamCount
+          ? { surTensionMaxMm: r1(seamOverMaxMm), surTensionMoyMm: r1(seamOverSumMm / seamCount) }
+          : undefined,
+      };
+    };
+    const showFitCard = (advice: FitAdviceResult): void => {
+      let card = document.getElementById('toile-fit-card');
+      if (!card) {
+        card = document.createElement('section');
+        card.id = 'toile-fit-card';
+        card.style.cssText =
+          'position:fixed;left:18px;bottom:18px;z-index:22;width:min(430px,calc(100vw - 36px));' +
+          'padding:14px 16px;border-radius:8px;font:12px/1.5 system-ui,sans-serif;color:#ede9df;' +
+          'background:rgba(10,11,14,0.96);border:1px solid rgba(151,222,180,.55);box-shadow:0 12px 40px rgba(0,0,0,.35)';
+        document.body.appendChild(card);
+      }
+      card.replaceChildren();
+      const title = document.createElement('strong');
+      title.textContent = '🩺 Bilan du tombé — ✨ Claude';
+      title.style.cssText = 'display:block;margin-right:28px;margin-bottom:6px;font-size:13px';
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.textContent = '×';
+      close.setAttribute('aria-label', 'fermer le bilan du tombé');
+      close.style.cssText =
+        'position:absolute;right:10px;top:7px;border:0;background:transparent;color:#ede9df;font:22px sans-serif;cursor:pointer';
+      close.onclick = () => card!.remove();
+      const resume = document.createElement('p');
+      resume.textContent = advice.resumeFr;
+      resume.style.cssText = 'margin:0 0 8px;color:#cfe8d8';
+      card.append(title, close, resume);
+      const ICON: Record<string, string> = { ok: '🟢', tendu: '🔴', 'serré': '🟠', ample: '🔵' };
+      for (const finding of advice.findings) {
+        const line = document.createElement('div');
+        line.style.marginTop = '4px';
+        line.textContent = `${ICON[finding.etat] ?? '·'} ${finding.zone} — ${finding.detailFr}`;
+        card.appendChild(line);
+      }
+      if (advice.suggestions.length) {
+        const actions = document.createElement('div');
+        actions.style.cssText = 'margin-top:10px;display:flex;flex-wrap:wrap;gap:6px';
+        for (const suggestion of advice.suggestions) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.textContent = suggestion.labelFr;
+          btn.style.cssText =
+            'padding:5px 10px;border-radius:6px;border:1px solid rgba(151,222,180,.5);' +
+            'background:rgba(151,222,180,.12);color:#dff3e6;cursor:pointer;font:12px system-ui';
+          btn.onclick = () => {
+            executeBrief(
+              { intent: 'modify', ops: suggestion.ops, tryOn: false, resumeFr: suggestion.labelFr },
+              briefHooks,
+            );
+          };
+          actions.appendChild(btn);
+        }
+        card.appendChild(actions);
+      }
+    };
+    const runFitCheck = async (): Promise<void> => {
+      if (!document.body.classList.contains('atelier-simulating')) {
+        briefSay('Lance d’abord l’essayage 3D — le bilan lit le drapé réel, pas le patron à plat.', false);
+        return;
+      }
+      // Mesurer un vêtement en mouvement (assemblage, chute) donne des chiffres
+      // faux (coutures encore ouvertes lues comme « sur-tension »). La veille du
+      // moteur EST le certificat d'équilibre : on ne mesure qu'un tissu posé.
+      if (!asleep) {
+        briefSay('Le tissu bouge encore — attends qu’il se pose (veille 💤), puis relance le bilan.', false);
+        return;
+      }
+      if (!briefEndpointUrl) {
+        briefSay('Le bilan du tombé demande le Studio IA (proxy Claude non détecté).', false);
+        return;
+      }
+      if (fitCheckBtn) fitCheckBtn.disabled = true;
+      briefSay('🩺 Claude examine le tombé…', true);
+      try {
+        const report = await collectFitReport();
+        if (!report) {
+          briefSay('Mesures indisponibles — attends la fin de la mise en place de l’essayage.', false);
+          return;
+        }
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 25_000);
+        let advice: FitAdviceResult | null = null;
+        let failureFr = 'conseiller injoignable';
+        // Le rapport en console : pour diagnostiquer un bilan refusé sans deviner.
+        console.debug('[toile] bilan du tombé — rapport envoyé :', report);
+        try {
+          const response = await fetch(briefEndpointUrl, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ format: 'toile-fit', version: 1, report }),
+            signal: controller.signal,
+          });
+          const raw: unknown = await response.json().catch(() => null);
+          if (!response.ok) {
+            const serverError = (raw as { error?: unknown } | null)?.error;
+            failureFr = `HTTP ${response.status}${typeof serverError === 'string' ? ` — ${serverError}` : ''}`;
+            console.error('[toile] bilan refusé par le proxy :', response.status, raw);
+          } else {
+            advice = validateFitAdvice(raw);
+            if (!advice) {
+              failureFr = 'réponse du conseiller hors contrat';
+              console.error('[toile] bilan hors contrat :', raw);
+            }
+          }
+        } catch (error) {
+          failureFr = controller.signal.aborted ? 'délai dépassé (25 s)' : `réseau : ${String(error)}`;
+          console.error('[toile] bilan — échec réseau :', error);
+        } finally {
+          clearTimeout(timer);
+        }
+        if (!advice) {
+          briefSay(`Bilan indisponible — ${failureFr}. Réessaie ; le détail est en console.`, false);
+          return;
+        }
+        showFitCard(advice);
+        briefSay(`${advice.resumeFr} · ✨ Claude`, true);
+      } finally {
+        if (fitCheckBtn) fitCheckBtn.disabled = false;
+      }
+    };
+    fitCheckBtn?.addEventListener('click', () => void runFitCheck());
     const runBrief = async (): Promise<void> => {
       const text = briefInput?.value ?? '';
       if (!text.trim()) {

@@ -12,7 +12,7 @@
  */
 
 import { defineConfig, loadEnv, type Plugin } from 'vite';
-import { anthropicCaller, handleBrief } from './server/brief-core';
+import { anthropicCaller, handleStudioRequest } from './server/brief-core';
 
 function briefDevProxy(env: Record<string, string>): Plugin {
   return {
@@ -44,7 +44,7 @@ function briefDevProxy(env: Record<string, string>): Plugin {
               return finish(400, { error: 'Corps JSON attendu.' });
             }
             try {
-              const result = await handleBrief(body, anthropicCaller(apiKey, env.BRIEF_MODEL || undefined));
+              const result = await handleStudioRequest(body, anthropicCaller(apiKey, env.BRIEF_MODEL || undefined));
               finish(result.status, result.body);
             } catch (error) {
               finish(502, { error: String(error) });

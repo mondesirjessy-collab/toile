@@ -12,6 +12,7 @@
  */
 
 import { validateBriefResult, type BriefResult } from '../src/app/brief/BriefContract';
+import { validateFitAdvice, type FitAdviceResult } from '../src/app/brief/FitContract';
 
 /** Adaptateur modèle : reçoit le system prompt + les messages, rend le texte brut. */
 export type ModelCaller = (
@@ -276,4 +277,121 @@ export function anthropicCaller(apiKey: string, model = 'claude-haiku-4-5'): Mod
     if (!text) throw new Error('Réponse Anthropic sans texte.');
     return text;
   };
+}
+
+
+// ---------------------------------------------------------------------------
+// Bilan du tombé — le conseiller de bien-aller (IA 1).
+// ---------------------------------------------------------------------------
+
+const FIT_CONTRACT = `CONTRAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON, sans texte autour :
+{"intent":"fit","resumeFr":"…","findings":[{"zone":"…","etat":"ok|tendu|serré|ample","detailFr":"…"}],"suggestions":[{"labelFr":"…","ops":[{"op":"…",…}]}]}
+"findings" : un constat par zone MESURÉE digne d'intérêt (2 à 5 constats), "detailFr" cite le chiffre qui le justifie.
+"suggestions" : 0 à 3 retouches actionnables, chacune en ops de la liste (resize, change_fabric, change_motif, set_body, set_stature, set_sleeves, try_on). Le label dit l'effet attendu.
+"resumeFr" : le verdict global en UNE phrase de couturière, concret et sans jargon.`;
+
+const FIT_LECTURE = `LECTURE DES MESURES (issues du solveur physique, pas d'une image) :
+- aisanceMm par zone = distance moyenne tissu-corps moins l'épaisseur (min = le point le plus près). Repères : < 3 mm très ajusté/contact, 3-15 ajusté, 15-45 confortable, 45-80 ample, > 80 très ample (oversize voulu ou taille trop grande).
+- etirementPct par zone = tension du tissage (p95 = pic hors bruit). Repères : < 0,5 % au repos, 0,5-2 % habillé normal, 2-5 % sollicité (acceptable en jersey/maille, gênant en popeline/denim), > 5 % = trop tendu quel que soit le tissu.
+- coutures.surTensionMm = dépassement de longueur des coutures vs repos ; > 2 mm = coutures qui tirent.
+- Compare l'aisance aux zones voisines : un vêtement bien tombé a une aisance qui CROÎT de la poitrine vers l'ourlet. Une zone nettement plus serrée que ses voisines est LE point à corriger.
+- Tiens compte du tissu (un jersey s'étire, une popeline non) et du style du patron (un boxy/oversize AMPLE est normal, une robe cintrée AJUSTÉE est normale).
+- Suggestions : le levier le plus simple d'abord (taille au-dessus/au-dessous dans la grille de CE patron), puis tissu plus extensible si la tension domine, puis mannequin/stature si le corps ne correspond pas.`;
+
+export function buildFitSystemPrompt(): string {
+  return `Tu es la modéliste-conseil de TOILE, un atelier de patronage 3D. On te donne les MESURES PHYSIQUES d'un essayage simulé (aisance tissu-corps, étirement du tissage, coutures) et tu rends un bilan de bien-aller bref et actionnable, comme au pied du mannequin.
+
+${CATALOG}
+
+${FIT_LECTURE}
+
+${FIT_CONTRACT}
+
+RÈGLES : vocabulaire d'ops STRICTEMENT fermé ; jamais de retouche hors grille de tailles du patron courant ; si tout va bien, dis-le (findings "ok", zéro suggestion superflue) ; réponds en JSON compact sur une seule ligne.
+IMPORTANT — contrairement au Brief, tu ne réponds JAMAIS "refuse" ni "clarify" : le seul intent valide est "fit". Un patron HORS CATALOGUE (ex. « import CLO ») reçoit quand même son bilan chiffré complet ; ses suggestions se limitent alors aux ops indépendantes du patron (change_fabric, set_body, set_stature) — jamais de resize, sa grille de tailles est inconnue.`;
+}
+
+/** Un exemple complet ancre le format (les chiffres sont réalistes). */
+export const FIT_FEW_SHOT: ReadonlyArray<{ user: string; assistant: string }> = [
+  {
+    user:
+      '{"garment":{"patron":"tshirt_boxy","taille":"S","tissu":"Popeline","grammageGsm":110},"body":{"mannequin":"scan homme","statureCm":188,"poitrineCm":102,"tailleCm":86,"hanchesCm":100},"zones":[{"zone":"épaules/col","aisanceMm":{"min":1.2,"moy":6},"etirementPct":{"moy":1.1,"p95":4.8}},{"zone":"poitrine","aisanceMm":{"min":2.1,"moy":9},"etirementPct":{"moy":0.9,"p95":3.9}},{"zone":"taille","aisanceMm":{"min":8,"moy":22},"etirementPct":{"moy":0.3,"p95":0.9}},{"zone":"manches","aisanceMm":{"min":4,"moy":14},"etirementPct":{"moy":0.4,"p95":1.2}},{"zone":"bas/ourlet","aisanceMm":{"min":18,"moy":36},"etirementPct":{"moy":0.2,"p95":0.5}}],"coutures":{"surTensionMm":3.1}}',
+    assistant:
+      '{"intent":"fit","resumeFr":"Trop juste du buste pour ce mannequin : la popeline ne s\'étire pas, ça tire aux épaules et à la poitrine.","findings":[{"zone":"épaules/col","etat":"tendu","detailFr":"Étirement p95 à 4,8 % et aisance mini 1,2 mm : le tissu travaille en butée sur la carrure."},{"zone":"poitrine","etat":"serré","detailFr":"Aisance moyenne 9 mm seulement pour une popeline non extensible."},{"zone":"bas/ourlet","etat":"ok","detailFr":"Aisance 36 mm, tombé libre."}],"suggestions":[{"labelFr":"Passer en M — libère épaules et poitrine","ops":[{"op":"resize","size":"M"}]},{"labelFr":"Ou garder le S en jersey extensible","ops":[{"op":"change_fabric","preset":"Jersey"}]}]}',
+  },
+];
+
+// Deuxième exemple : patron importé (hors catalogue) — bilan quand même,
+// suggestions sans resize. C'est le cas qui faisait basculer le modèle en
+// "refuse" de Brief (bug observé en live sur le tee CLO importé).
+export const FIT_FEW_SHOT_IMPORT: { user: string; assistant: string } = {
+  user:
+    '{"garment":{"patron":"import CLO (tee, hors catalogue)","taille":"avatar","tissu":"Jersey","grammageGsm":180},"body":{"mannequin":"scan femme","statureCm":176,"poitrineCm":89,"tailleCm":72,"hanchesCm":95},"zones":[{"zone":"épaules/col","aisanceMm":{"min":0.8,"moy":8},"etirementPct":{"moy":1.4,"p95":4.1}},{"zone":"poitrine","aisanceMm":{"min":5,"moy":14},"etirementPct":{"moy":0.8,"p95":2.2}},{"zone":"bas/ourlet","aisanceMm":{"min":22,"moy":41},"etirementPct":{"moy":0.1,"p95":0.4}}],"coutures":{"surTensionMaxMm":1.2,"surTensionMoyMm":0.3}}',
+  assistant:
+    '{"intent":"fit","resumeFr":"Bon tombé d\'ensemble pour ce tee importé : ça travaille un peu aux épaules, le reste est équilibré.","findings":[{"zone":"épaules/col","etat":"serré","detailFr":"Aisance mini 0,8 mm et étirement p95 4,1 % : le jersey encaisse, mais c\'est la zone qui porte."},{"zone":"poitrine","etat":"ok","detailFr":"Aisance moyenne 14 mm, étirement 2,2 % : ajusté sain pour un jersey."},{"zone":"bas/ourlet","etat":"ok","detailFr":"Aisance 41 mm, tombé libre."}],"suggestions":[{"labelFr":"Si tu le veux plus souple aux épaules : passer en Maille","ops":[{"op":"change_fabric","preset":"Maille"}]}]}',
+};
+
+export const FIT_REPORT_MAX_CHARS = 6000;
+
+/** Traite une requête {format:"toile-fit", version:1, report} de bout en bout. */
+export async function handleFit(rawBody: unknown, callModel: ModelCaller): Promise<BriefProxyResponse> {
+  const req = rawBody as { format?: unknown; version?: unknown; report?: unknown } | null;
+  if (req?.format !== 'toile-fit' || req?.version !== 1 || !req.report || typeof req.report !== 'object') {
+    return { status: 400, body: { error: 'Requête invalide — attendu {format:"toile-fit", version:1, report}.' } };
+  }
+  let reportJson: string;
+  try {
+    reportJson = JSON.stringify(req.report);
+  } catch {
+    return { status: 400, body: { error: 'Rapport non sérialisable.' } };
+  }
+  if (reportJson.length > FIT_REPORT_MAX_CHARS) {
+    return { status: 400, body: { error: `Rapport trop long (max ${FIT_REPORT_MAX_CHARS} caractères).` } };
+  }
+  const system = buildFitSystemPrompt();
+  const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
+    ...[...FIT_FEW_SHOT, FIT_FEW_SHOT_IMPORT].flatMap((ex) => [
+      { role: 'user' as const, content: ex.user },
+      { role: 'assistant' as const, content: ex.assistant },
+    ]),
+    { role: 'user' as const, content: reportJson },
+  ];
+  let lastModelText = '';
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let text: string;
+    try {
+      text = await callModel(system, messages);
+    } catch (error) {
+      return { status: 502, body: { error: `Modèle injoignable : ${String(error)}` } };
+    }
+    lastModelText = text;
+    const parsed = extractJson(text);
+    const validated = parsed === null ? null : validateFitAdvice(parsed);
+    if (validated) return { status: 200, body: validated as unknown as BriefResult & FitAdviceResult };
+    messages.push(
+      { role: 'assistant', content: text },
+      {
+        role: 'user',
+        content:
+          'Réponse hors contrat. Réponds UNIQUEMENT avec l\'objet JSON {"intent":"fit",…} du contrat, ops de la liste blanche, sur une ligne.',
+      },
+    );
+  }
+  return {
+    status: 502,
+    body: {
+      error: `Réponse du conseiller hors contrat après relance. Dernière réponse du modèle : ${lastModelText.slice(0, 260)}`,
+    },
+  };
+}
+
+/**
+ * Routeur du Studio IA : une seule route HTTP, le champ `format` du corps
+ * choisit le service (brief ou bilan du tombé). Les proxies (middleware dev,
+ * Worker) appellent ceci et restent ignorants des contrats.
+ */
+export async function handleStudioRequest(rawBody: unknown, callModel: ModelCaller): Promise<BriefProxyResponse> {
+  const format = (rawBody as { format?: unknown } | null)?.format;
+  if (format === 'toile-fit') return handleFit(rawBody, callModel);
+  return handleBrief(rawBody, callModel);
 }

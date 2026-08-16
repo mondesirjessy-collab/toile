@@ -149,47 +149,57 @@ export function validateBriefResult(raw: unknown): BriefResult | null {
   }
   if (r.intent === 'modify') {
     if (!isString(r.resumeFr) || !Array.isArray(r.ops)) return null;
-    const ops: BriefOp[] = [];
-    for (const rawOp of r.ops) {
-      const o = rawOp as Record<string, unknown>;
-      switch (o?.op) {
-        case 'resize':
-          if (isString(o.size)) ops.push({ op: 'resize', size: o.size });
-          break;
-        case 'change_fabric':
-          if (BRIEF_FABRICS.includes(o.preset as BriefFabric)) {
-            ops.push({ op: 'change_fabric', preset: o.preset as BriefFabric });
-          }
-          break;
-        case 'change_motif':
-          if (BRIEF_MOTIFS.includes(o.motif as BriefMotif)) {
-            ops.push({ op: 'change_motif', motif: o.motif as BriefMotif });
-          }
-          break;
-        case 'set_body':
-          if (o.kind === 'scan femme' || o.kind === 'scan homme') {
-            ops.push({ op: 'set_body', kind: o.kind });
-          }
-          break;
-        case 'set_stature':
-          if (typeof o.statureCm === 'number') {
-            ops.push({ op: 'set_stature', statureCm: clampStature(o.statureCm) });
-          }
-          break;
-        case 'set_sleeves':
-          if (typeof o.on === 'boolean') ops.push({ op: 'set_sleeves', on: o.on });
-          break;
-        case 'try_on':
-          ops.push({ op: 'try_on' });
-          break;
-        default:
-          // Op inconnue : ignorée silencieusement côté validation ; l'exécuteur
-          // n'aura donc jamais à gérer autre chose que la liste blanche.
-          break;
-      }
-    }
+    const ops = validateBriefOps(r.ops);
     if (!ops.length) return null;
     return { intent: 'modify', ops, tryOn: r.tryOn === true, resumeFr: r.resumeFr };
   }
   return null;
+}
+
+/**
+ * Valide une liste d'ops contre la liste blanche — partagé entre le Brief
+ * (intent "modify") et le Bilan du tombé (suggestions du conseiller).
+ * Op inconnue : ignorée silencieusement ; l'exécuteur n'a donc jamais à gérer
+ * autre chose que le vocabulaire fermé.
+ */
+export function validateBriefOps(rawOps: unknown): BriefOp[] {
+  if (!Array.isArray(rawOps)) return [];
+  const ops: BriefOp[] = [];
+  for (const rawOp of rawOps) {
+    const o = rawOp as Record<string, unknown>;
+    switch (o?.op) {
+      case 'resize':
+        if (isString(o.size)) ops.push({ op: 'resize', size: o.size });
+        break;
+      case 'change_fabric':
+        if (BRIEF_FABRICS.includes(o.preset as BriefFabric)) {
+          ops.push({ op: 'change_fabric', preset: o.preset as BriefFabric });
+        }
+        break;
+      case 'change_motif':
+        if (BRIEF_MOTIFS.includes(o.motif as BriefMotif)) {
+          ops.push({ op: 'change_motif', motif: o.motif as BriefMotif });
+        }
+        break;
+      case 'set_body':
+        if (o.kind === 'scan femme' || o.kind === 'scan homme') {
+          ops.push({ op: 'set_body', kind: o.kind });
+        }
+        break;
+      case 'set_stature':
+        if (typeof o.statureCm === 'number') {
+          ops.push({ op: 'set_stature', statureCm: clampStature(o.statureCm) });
+        }
+        break;
+      case 'set_sleeves':
+        if (typeof o.on === 'boolean') ops.push({ op: 'set_sleeves', on: o.on });
+        break;
+      case 'try_on':
+        ops.push({ op: 'try_on' });
+        break;
+      default:
+        break;
+    }
+  }
+  return ops;
 }
