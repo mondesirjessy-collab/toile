@@ -3664,6 +3664,25 @@ async function main(): Promise<void> {
         showToast('Commencez par choisir un modèle ou tracer une pièce.');
         return;
       }
+      // Le hoodie s'enfile bras baissés (v218). En pose T native, ses panneaux
+      // s'échouent SUR les bras horizontaux et les coutures d'épaules ne se
+      // ferment jamais — cause trouvée par bissection : le « vrai T » de Mia
+      // (v187-v190) n'a jamais été re-réglé pour le hoodie (v137). Vérifié en
+      // live : le même code s'assemble correctement en « Bras 45° ». On habille
+      // donc à 45° automatiquement — comme on enfile une veste — uniquement si
+      // la pose est réellement disponible ; sinon, comportement inchangé.
+      const scanForPose = bodyKind.startsWith('scan') ? (scans[bodyKind] ?? null) : null;
+      const hoodieInT =
+        draft?.preset === 'lucas-hoodie' &&
+        bodyPose === 'native' &&
+        isNeutral(morphs) &&
+        scanForPose !== null &&
+        scanHasCollisionPose(scanForPose, 'a-pose');
+      if (hoodieInT) {
+        showToast('Hoodie : habillage bras à 45° — les coutures d’épaules se ferment mieux bras baissés.');
+        void applyPose('a-pose').then(() => simulate());
+        return;
+      }
       simulate();
     } else {
       if (!bigPanel) setBig(true);
