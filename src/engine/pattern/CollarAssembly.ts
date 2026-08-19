@@ -229,7 +229,12 @@ export function collarCrossSeams(
     const firstBandU = n >= 3 ? 1 : 0;
     const lastBandU = n >= 3 ? n - 2 : n - 1;
     const availableBandVertices = lastBandU - firstBandU + 1;
-    const seamCount = Math.min(availableBandVertices, neckline.length);
+    // Piquer le bord le plus DENSE au complet (max, pas min) : avec min, quand
+    // la bande a plus de sommets que l'encolure n'a de cellules, les sommets
+    // entre deux points restaient libres → la bande FRONÇAIT en jour. En
+    // couvrant le bord dense, elle se fronce uniformément sur l'encolure au
+    // lieu de bâiller (appariement 1:n net, note COUTURES-TROUS #5).
+    const seamCount = Math.max(availableBandVertices, neckline.length);
     for (let k = 0; k < seamCount; k++) {
       const fraction = seamCount === 1 ? 0.5 : k / (seamCount - 1);
       const bodyLocal = neckline[
