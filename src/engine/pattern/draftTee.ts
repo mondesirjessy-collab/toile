@@ -183,7 +183,13 @@ export function boxyChestCm(sz: BoxySize): number {
   return BOXY_DATA[sz].chestCm;
 }
 
-export function boxyTee(size: BoxySize, m: BodyMeasure, ref: BodyMeasure): DraftDoc {
+export type TeeSleeves = 'none' | 'short' | 'long';
+export function boxyTee(
+  size: BoxySize,
+  m: BodyMeasure,
+  ref: BodyMeasure,
+  sleeves: TeeSleeves = 'short',
+): DraftDoc {
   const D = BOXY_DATA[size];
   const topY = 1.52 + (m.shoulderY - ref.shoulderY); // ligne épaule-encolure = haut de pièce (v=0)
   const clone = (o: readonly UV[]): UV[] => o.map(([a, b]) => [a, b]);
@@ -208,13 +214,17 @@ export function boxyTee(size: BoxySize, m: BodyMeasure, ref: BodyMeasure): Draft
   // de manche (courbe du patron, hauteur 7,4-9,6 cm selon la taille), le
   // poignet suit le rentré réel. sleeveCrossSeams épingle la bouche à
   // l'emmanchure ; le contrat tube ouvre bouche et poignet.
+  // Bloc MANCHE échangeable : longue = tube ~2,8× plus long (jusqu'au
+  // poignet), courte = tête de manche du patron. « Sans » retire les
+  // deux pièces manche : les emmanchures restent des ouvertures finies.
+  const sleeveH = sleeves === 'long' ? D.sleeve.height * 2.8 : D.sleeve.height;
   const sleeve = (wrap: 'armL' | 'armR'): DraftPiece => ({
     outline: clone(D.sleeve.outline),
     darts: [],
     seams: [],
     openEdges: [],
     width: D.sleeve.width, // demi-tour de tête (un panneau = une moitié du tube)
-    height: D.sleeve.height,
+    height: sleeveH,
     topY: m.shoulderY + 0.01,
     gap: 0.2,
     wrap,
@@ -249,7 +259,8 @@ export function boxyTee(size: BoxySize, m: BodyMeasure, ref: BodyMeasure): Draft
     piece: face(D.front),
     back: face(D.back),
     manual: true,
-    pieces: [sleeve('armR'), sleeve('armL'), band()],
+    pieces:
+      sleeves === 'none' ? [band()] : [sleeve('armR'), sleeve('armL'), band()],
     // Épaules + côtés sous les emmanchures. Chaque arc reste ouvert et reçoit
     // le panneau correspondant de la manche.
     seams: [

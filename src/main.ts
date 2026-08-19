@@ -45,7 +45,7 @@ import {
   stagingOffsetOf,
   simulationPlacementIssues,
 } from './engine/pattern/PatternPlacement';
-import { boxyTee, boxyChestCm, BOXY_SIZES, type BoxySize } from './engine/pattern/draftTee';
+import { boxyTee, boxyChestCm, BOXY_SIZES, type BoxySize, type TeeSleeves } from './engine/pattern/draftTee';
 import { draftJupe, jupeCm, JUPE_SIZES, type JupeSize } from './engine/pattern/jupe';
 import { draftRobe, robeCm, ROBE_SIZES, type RobeSize } from './engine/pattern/robe';
 import { draftVeste, vesteCm, VESTE_AVATAR_EASE_CM, VESTE_SIZES, type VesteSize } from './engine/pattern/veste';
@@ -2100,6 +2100,7 @@ async function main(): Promise<void> {
   // Le sélecteur est partagé par les patrons intégrés. Son contenu suit le
   // vêtement actif pour éviter de mélanger XS–XXL et les tailles pantalon 26–46.
   let boxySize: BoxySize = 'S';
+  let boxySleeves: TeeSleeves = 'short'; // bloc manche échangeable du tee
   // The bundled male scan measures about 70.5 cm at the waist; size 26 is the
   // closest supplied pattern. Starting on 32 made an intentionally oversized
   // waistband look as though it needed an invisible suspension.
@@ -2111,6 +2112,8 @@ async function main(): Promise<void> {
   let hoodieSize: LucasHoodieSize = 'S';
   let loadedPattern: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' = 'boxy';
   const sizeSel = document.getElementById('at-size') as HTMLSelectElement | null;
+  const teeSleevesRow = document.getElementById('at-tee-sleeves-row');
+  const teeSleevesSel = document.getElementById('at-tee-sleeves') as HTMLSelectElement | null;
   const syncAvatarStatureHelp = (): void => {
     if (sizeSel) sizeSel.disabled = !draftTouched;
     if (!draftTouched) {
@@ -2164,6 +2167,9 @@ async function main(): Promise<void> {
   const showSizes = (kind: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants'): void => {
     if (!sizeSel) return;
     loadedPattern = kind;
+    // Bloc manche : sélecteur visible pour le tee seulement (1er bloc composable).
+    if (teeSleevesRow) teeSleevesRow.hidden = kind !== 'boxy';
+    if (teeSleevesSel && kind === 'boxy') teeSleevesSel.value = boxySleeves;
     if (kind === 'clo-tee') {
       sizeSel.innerHTML = `<option value="avatar">Bloc CLO ajusté au mannequin · poitrine ${(lastMeasure.chest.circ * 100).toFixed(0)} cm</option>`;
       sizeSel.value = 'avatar';
@@ -2340,7 +2346,7 @@ async function main(): Promise<void> {
     pushHistory();
     showSizes('boxy');
     teePreset = false;
-    draft = boxyTee(boxySize, lastMeasure, REF);
+    draft = boxyTee(boxySize, lastMeasure, REF, boxySleeves);
     draftTouched = true; // un vrai draft : éditable, exportable
     atelierSleeves = false; // les manches sont DES PIÈCES du patron
     atelierCollar = false;
@@ -2348,6 +2354,11 @@ async function main(): Promise<void> {
     build();
   };
   (document.getElementById('at-tshirt') as HTMLElement).addEventListener('click', loadBoxyTee);
+  // Bloc manche échangeable : change la variante et recompose le tee.
+  teeSleevesSel?.addEventListener('change', () => {
+    boxySleeves = teeSleevesSel.value as TeeSleeves;
+    if (loadedPattern === 'boxy' && sceneMode === 'atelier') loadBoxyTee();
+  });
 
   const loadLoosePants = (): void => {
     if (!bigPanel) setBig(true);
