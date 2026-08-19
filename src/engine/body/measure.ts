@@ -446,6 +446,10 @@ export function arrangementPoints(m: BodyMeasure): ArrangementPoint[] {
   const frontZ = m.chest.halfD + ARRANGE_CLEAR;
   const hipZ = m.hip.halfD + ARRANGE_CLEAR;
   const sideX = m.shoulderHalfW + ARRANGE_CLEAR + 0.04;
+  const neckZ = m.chest.halfD * 0.5 + ARRANGE_CLEAR;
+  const chestZ = m.chest.halfD + ARRANGE_CLEAR;
+  const waistZ = m.waist.halfD + ARRANGE_CLEAR;
+  const shoulderX = m.shoulderHalfW * 0.75;
   const points: ArrangementPoint[] = [
     { id: 'torso-front', labelFr: 'Devant', pos: [0, torsoY, frontZ] },
     { id: 'torso-back', labelFr: 'Dos', pos: [0, torsoY, -frontZ] },
@@ -463,6 +467,14 @@ export function arrangementPoints(m: BodyMeasure): ArrangementPoint[] {
       labelFr: 'Jambe gauche',
       pos: [-Math.max(0.09, m.hip.halfW * 0.55), m.thigh.y, m.thigh.halfD + ARRANGE_CLEAR],
     },
+    { id: 'neck-front', labelFr: 'Encolure devant', pos: [0, m.neckY, neckZ] },
+    { id: 'neck-back', labelFr: 'Encolure dos', pos: [0, m.neckY, -neckZ] },
+    { id: 'shoulder-right', labelFr: 'Epaule droite', pos: [shoulderX, m.shoulderY, 0] },
+    { id: 'shoulder-left', labelFr: 'Epaule gauche', pos: [-shoulderX, m.shoulderY, 0] },
+    { id: 'chest-front', labelFr: 'Poitrine devant', pos: [0, m.chest.y, chestZ] },
+    { id: 'chest-back', labelFr: 'Poitrine dos', pos: [0, m.chest.y, -chestZ] },
+    { id: 'waist-front', labelFr: 'Taille devant', pos: [0, m.waist.y, waistZ] },
+    { id: 'waist-back', labelFr: 'Taille dos', pos: [0, m.waist.y, -waistZ] },
   ];
   if (m.arm) {
     // Au-dessus de l'axe mesuré du bras (T-pose) : la pièce plane à côté du
@@ -472,6 +484,15 @@ export function arrangementPoints(m: BodyMeasure): ArrangementPoint[] {
       { id: 'arm-right', labelFr: 'Bras droit', pos: [armX, m.arm.y + 0.15, m.arm.z] },
       { id: 'arm-left', labelFr: 'Bras gauche', pos: [-armX, m.arm.y + 0.15, m.arm.z] },
     );
+    const armPath = m.arm.path;
+    if (armPath && armPath.length > 1) {
+      const wrist = armPath[armPath.length - 1]!;
+      const wristX = Math.abs(wrist.x) + 0.06;
+      points.push(
+        { id: 'forearm-right', labelFr: 'Avant-bras droit', pos: [wristX, wrist.y + 0.12, wrist.z] },
+        { id: 'forearm-left', labelFr: 'Avant-bras gauche', pos: [-wristX, wrist.y + 0.12, wrist.z] },
+      );
+    }
   }
   return points;
 }
