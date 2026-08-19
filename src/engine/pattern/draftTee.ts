@@ -184,11 +184,13 @@ export function boxyChestCm(sz: BoxySize): number {
 }
 
 export type TeeSleeves = 'none' | 'short' | 'long';
+export type TeeCollar = 'sans' | 'cote' | 'montant';
 export function boxyTee(
   size: BoxySize,
   m: BodyMeasure,
   ref: BodyMeasure,
   sleeves: TeeSleeves = 'short',
+  collar: TeeCollar = 'cote',
 ): DraftDoc {
   const D = BOXY_DATA[size];
   const topY = 1.52 + (m.shoulderY - ref.shoulderY); // ligne épaule-encolure = haut de pièce (v=0)
@@ -234,6 +236,10 @@ export function boxyTee(
   // une bande CÔTELÉE cousue étirée. La sim n'a pas de pré-étirement : on pose
   // la bande à 85 % du tour réel (l'état porté, la recette v116 éprouvée) ;
   // le 64 % à plat reste documenté dans boxyData (collarLen).
+  // Bloc COL échangeable : « montant » = bande ~2,4× plus haute (col
+  // cheminée qui se tient), « côte » = bande côtelée ras-du-cou, « sans »
+  // retire la bande (l'encolure reste une ouverture finie).
+  const collarH = collar === 'montant' ? D.collarH * 2.4 : D.collarH;
   const band = (): DraftPiece => ({
     outline: [
       [-0.01, -0.01],
@@ -245,7 +251,7 @@ export function boxyTee(
     seams: [],
     openEdges: [],
     width: 0.85 * D.neckRing * 0.5,
-    height: D.collarH,
+    height: collarH,
     topY: m.neckY - 0.005,
     gap: 0.15,
     wrap: 'neck',
@@ -259,8 +265,10 @@ export function boxyTee(
     piece: face(D.front),
     back: face(D.back),
     manual: true,
-    pieces:
-      sleeves === 'none' ? [band()] : [sleeve('armR'), sleeve('armL'), band()],
+    pieces: [
+      ...(sleeves === 'none' ? [] : [sleeve('armR'), sleeve('armL')]),
+      ...(collar === 'sans' ? [] : [band()]),
+    ],
     // Épaules + côtés sous les emmanchures. Chaque arc reste ouvert et reçoit
     // le panneau correspondant de la manche.
     seams: [
