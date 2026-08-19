@@ -4823,6 +4823,76 @@ async function main(): Promise<void> {
     if (!c) return false;
     return Math.abs(Math.hypot(px - c[0], py - c[1]) - GIZMO_RING_PX) <= 14;
   };
+  const GIZMO_ROT_R = GIZMO_LEN_M * 0.72; // rayon MONDE des 3 anneaux X/Y/Z
+  // Base (u,v) du plan de l'anneau de l'axe k, main droite (u×v = axe).
+  const ROT_RING_BASIS: readonly {
+    u: readonly [number, number, number];
+    v: readonly [number, number, number];
+  }[] = [
+    { u: [0, 1, 0], v: [0, 0, 1] },
+    { u: [0, 0, 1], v: [1, 0, 0] },
+    { u: [1, 0, 0], v: [0, 1, 0] },
+  ];
+  /** Intersection rayon ∩ plan (normale `nrm`, passant par `pt`), ou null. */
+  const rayHitPlane = (
+    ray: { origin: readonly [number, number, number]; dir: readonly [number, number, number] },
+    nrm: readonly [number, number, number],
+    pt: readonly [number, number, number],
+  ): [number, number, number] | null => {
+    const denom = ray.dir[0] * nrm[0] + ray.dir[1] * nrm[1] + ray.dir[2] * nrm[2];
+    if (Math.abs(denom) < 1e-6) return null;
+    const t =
+      ((pt[0] - ray.origin[0]) * nrm[0] +
+        (pt[1] - ray.origin[1]) * nrm[1] +
+        (pt[2] - ray.origin[2]) * nrm[2]) /
+      denom;
+    if (t <= 0) return null;
+    return [
+      ray.origin[0] + ray.dir[0] * t,
+      ray.origin[1] + ray.dir[1] * t,
+      ray.origin[2] + ray.dir[2] * t,
+    ];
+  };
+  /** Points MONDE d'un anneau d'axe (centre c, base k). */
+  const rotRingPoints = (
+    c: readonly [number, number, number],
+    k: 0 | 1 | 2,
+    segs = 48,
+  ): [number, number, number][] => {
+    const b = ROT_RING_BASIS[k]!;
+    const out: [number, number, number][] = [];
+    for (let s = 0; s < segs; s++) {
+      const a = (s / segs) * Math.PI * 2;
+      const cu = Math.cos(a) * GIZMO_ROT_R;
+      const sv = Math.sin(a) * GIZMO_ROT_R;
+      out.push([
+        c[0] + b.u[0] * cu + b.v[0] * sv,
+        c[1] + b.u[1] * cu + b.v[1] * sv,
+        c[2] + b.u[2] * cu + b.v[2] * sv,
+      ]);
+    }
+    return out;
+  };
+  /** L'axe (0..2) dont l'anneau MONDE passe sous (px,py) canvas, ou null. */
+  const gizmoWorldRingAt = (px: number, py: number): 0 | 1 | 2 | null => {
+    if (!gizmoPick) return null;
+    const c = stagingInstanceCentroid(gizmoPick.pid, gizmoPick.instance);
+    if (!c) return null;
+    const rect = canvas.getBoundingClientRect();
+    let best: 0 | 1 | 2 | null = null;
+    let bestD = 10;
+    for (let k = 0 as 0 | 1 | 2; k < 3; k = (k + 1) as 0 | 1 | 2) {
+      for (const pt of rotRingPoints(c, k, 64)) {
+        const ndc = arrangeNdcOf(pt);
+        if (!ndc) continue;
+        const sx = ((ndc[0] + 1) / 2) * rect.width;
+        const sy = ((1 - ndc[1]) / 2) * rect.height;
+        const dd = Math.hypot(px - sx, py - sy);
+        if (dd < bestD) { bestD = dd; best = k; }
+      }
+    }
+    return best;
+  };
   let pieceDrag: {
     pid: number;
     instance: number;
@@ -4839,8 +4909,12 @@ async function main(): Promise<void> {
     rot?: {
       axis: readonly [number, number, number];
       pivot: readonly [number, number, number];
-      lastScreenAngle: number;
+      lastAngle: number;
       angle: number;
+      /** Anneau d'axe MONDE : base (u,v) du plan ⇒ angle via rayon∩plan, +
+       *  index d'axe pour le surlignage. Absent = anneau écran (roll caméra). */
+      plane?: { u: readonly [number, number, number]; v: readonly [number, number, number] };
+      axisIdx?: 0 | 1 | 2;
     };
   } | null = null;
   if (import.meta.env.DEV) {
@@ -7365,18 +7439,45 @@ async function main(): Promise<void> {
         // autour du centroïde ; masqué pendant un drag d'axe (translation).
         if (!active) {
           const rotting = dragging && dragging.rot ? dragging.rot : null;
-          // L'anneau est dessiné en pixels backing-store (device) ; le hit-test
-          // est en pixels CSS. On met le rayon dessiné à l'échelle du DPR pour
-          // que le cercle visible coïncide EXACTEMENT avec la zone d'attrape.
+          const worldRot = rotting && rotting.plane ? rotting : null;
+          // 3 anneaux X/Y/Z (rotation autour d'un axe MONDE). Pendant un drag
+          // d'axe, seul l'anneau tiré est tracé (surligné).
+          for (let k = 0 as 0 | 1 | 2; k < 3; k = (k + 1) as 0 | 1 | 2) {
+            if (worldRot && worldRot.axisIdx !== k) continue;
+            mirrorCtx.strokeStyle = GIZMO_AXES[k]!.color;
+            mirrorCtx.lineWidth = worldRot && worldRot.axisIdx === k ? 3.5 : 2;
+            mirrorCtx.beginPath();
+            let started = false;
+            for (const pt of rotRingPoints(base, k)) {
+              const sp = proj(pt);
+              if (!sp) {
+                started = false;
+                continue;
+              }
+              if (!started) {
+                mirrorCtx.moveTo(sp[0], sp[1]);
+                started = true;
+              } else {
+                mirrorCtx.lineTo(sp[0], sp[1]);
+              }
+            }
+            if (started) mirrorCtx.closePath();
+            mirrorCtx.stroke();
+          }
+          // Anneau ÉCRAN (roll libre autour de l'axe caméra). Rayon dessiné mis
+          // à l'échelle du DPR pour coïncider avec la zone d'attrape ; masqué
+          // pendant un drag d'axe monde pour ne pas encombrer.
           const ringScale = mirror.clientWidth > 0 ? mirror.width / mirror.clientWidth : 1;
           const ringR = GIZMO_RING_PX * ringScale;
-          mirrorCtx.beginPath();
-          mirrorCtx.arc(s0[0], s0[1], ringR, 0, Math.PI * 2);
-          mirrorCtx.strokeStyle = rotting
-            ? 'rgba(236, 240, 246, 0.95)'
-            : 'rgba(236, 240, 246, 0.5)';
-          mirrorCtx.lineWidth = rotting ? 3 : 2;
-          mirrorCtx.stroke();
+          if (!worldRot) {
+            mirrorCtx.beginPath();
+            mirrorCtx.arc(s0[0], s0[1], ringR, 0, Math.PI * 2);
+            mirrorCtx.strokeStyle = rotting
+              ? 'rgba(236, 240, 246, 0.95)'
+              : 'rgba(236, 240, 246, 0.5)';
+            mirrorCtx.lineWidth = rotting ? 3 : 2;
+            mirrorCtx.stroke();
+          }
           if (rotting) {
             const deg = (rotting.angle * 180) / Math.PI;
             const label = `${deg >= 0 ? '+' : '−'}${Math.abs(deg).toFixed(0)}°`;
@@ -7595,8 +7696,51 @@ async function main(): Promise<void> {
           }
         }
       }
-      // ⟳ Anneau de rotation sous le pointeur : drag = rotation (roll autour
-      // de l'axe caméra) autour du centroïde de la pièce sélectionnée.
+      // ⟳ Anneaux X/Y/Z (rotation autour d'un axe MONDE) — priorité sur
+      // l'anneau écran ; drag = rotation autour de cet axe, pivot = centroïde.
+      if (gizmoPick) {
+        const rk = gizmoWorldRingAt(e.clientX - rect.left, e.clientY - rect.top);
+        const ranges = rk !== null ? gizmoRangesOf(gizmoPick.pid, gizmoPick.instance) : [];
+        const centroid = rk !== null ? stagingInstanceCentroid(gizmoPick.pid, gizmoPick.instance) : null;
+        if (rk !== null && ranges.length && centroid) {
+          const axis = GIZMO_AXES[rk]!.dir;
+          const b = ROT_RING_BASIS[rk]!;
+          const hit = rayHitPlane(ray, axis, centroid);
+          const ang = hit
+            ? Math.atan2(
+                (hit[0] - centroid[0]) * b.v[0] + (hit[1] - centroid[1]) * b.v[1] + (hit[2] - centroid[2]) * b.v[2],
+                (hit[0] - centroid[0]) * b.u[0] + (hit[1] - centroid[1]) * b.u[1] + (hit[2] - centroid[2]) * b.u[2],
+              )
+            : 0;
+          pieceDrag = {
+            pid: gizmoPick.pid,
+            instance: gizmoPick.instance,
+            ranges,
+            depth: 0,
+            start: [centroid[0], centroid[1], centroid[2]],
+            delta: [0, 0, 0],
+            pointerId: e.pointerId,
+            positions: posCache,
+            rot: {
+              axis: [axis[0], axis[1], axis[2]],
+              pivot: [centroid[0], centroid[1], centroid[2]],
+              lastAngle: ang,
+              angle: 0,
+              plane: { u: b.u, v: b.v },
+              axisIdx: rk,
+            },
+          };
+          try {
+            canvas.setPointerCapture(e.pointerId);
+          } catch {
+            // A synthetic or already-cancelled pointer cannot be captured.
+          }
+          canvas.classList.add('piece-dragging');
+          return false;
+        }
+      }
+      // ⟳ Anneau de rotation ÉCRAN sous le pointeur : roll autour de l'axe
+      // caméra, autour du centroïde de la pièce sélectionnée.
       if (gizmoPick && gizmoRingAt(e.clientX - rect.left, e.clientY - rect.top)) {
         const ranges = gizmoRangesOf(gizmoPick.pid, gizmoPick.instance);
         const centroid = stagingInstanceCentroid(gizmoPick.pid, gizmoPick.instance);
@@ -7615,7 +7759,7 @@ async function main(): Promise<void> {
             rot: {
               axis: [viewAxis[0], viewAxis[1], viewAxis[2]],
               pivot: [centroid[0], centroid[1], centroid[2]],
-              lastScreenAngle: Math.atan2(
+              lastAngle: Math.atan2(
                 e.clientY - rect.top - cpx[1],
                 e.clientX - rect.left - cpx[0],
               ),
@@ -9860,21 +10004,34 @@ async function main(): Promise<void> {
       if (mouse.leftDown && sceneMode === 'atelier' && atelierDesign) {
         const d = pieceDrag;
         if (d.rot) {
-          const ringRect = canvas.getBoundingClientRect();
-          const cpx = gizmoCenterPx();
-          if (cpx) {
-            const rpx = ((mouse.ndcX + 1) / 2) * ringRect.width;
-            const rpy = ((1 - mouse.ndcY) / 2) * ringRect.height;
-            const ang = Math.atan2(rpy - cpx[1], rpx - cpx[0]);
-            let dA = ang - d.rot.lastScreenAngle;
-            while (dA > Math.PI) dA -= 2 * Math.PI;
-            while (dA < -Math.PI) dA += 2 * Math.PI;
-            d.rot.angle += dA;
-            d.rot.lastScreenAngle = ang;
-            const q = quatFromAxisAngle(d.rot.axis, d.rot.angle);
-            for (const range of d.ranges) {
-              system.rotateRange(range.first, range.count, q, d.rot.pivot);
+          const r = d.rot;
+          let ang = r.lastAngle;
+          if (r.plane) {
+            // Anneau d'axe MONDE : angle dans le plan de l'anneau (rayon∩plan).
+            const hit = rayHitPlane(ray, r.axis, r.pivot);
+            if (hit) {
+              const du = (hit[0] - r.pivot[0]) * r.plane.u[0] + (hit[1] - r.pivot[1]) * r.plane.u[1] + (hit[2] - r.pivot[2]) * r.plane.u[2];
+              const dv = (hit[0] - r.pivot[0]) * r.plane.v[0] + (hit[1] - r.pivot[1]) * r.plane.v[1] + (hit[2] - r.pivot[2]) * r.plane.v[2];
+              ang = Math.atan2(dv, du);
             }
+          } else {
+            // Anneau ÉCRAN : angle du pointeur autour du centre projeté.
+            const cpx = gizmoCenterPx();
+            if (cpx) {
+              const ringRect = canvas.getBoundingClientRect();
+              const rpx = ((mouse.ndcX + 1) / 2) * ringRect.width;
+              const rpy = ((1 - mouse.ndcY) / 2) * ringRect.height;
+              ang = Math.atan2(rpy - cpx[1], rpx - cpx[0]);
+            }
+          }
+          let dA = ang - r.lastAngle;
+          while (dA > Math.PI) dA -= 2 * Math.PI;
+          while (dA < -Math.PI) dA += 2 * Math.PI;
+          r.angle += dA;
+          r.lastAngle = ang;
+          const q = quatFromAxisAngle(r.axis, r.angle);
+          for (const range of d.ranges) {
+            system.rotateRange(range.first, range.count, q, r.pivot);
           }
         } else if (d.axis !== undefined && d.grabNdc) {
           // ⌖ Drag de flèche : le paramètre d'axe qui suit au mieux le curseur
