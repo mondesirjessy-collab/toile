@@ -1160,6 +1160,51 @@ export class ParticleSystem {
     this.device.queue.writeBuffer(this.prevPositionBuffer, first * 16, out);
   }
 
+  /**
+   * ATELIER — tourner une PIÈCE gelée rigidement autour d'un pivot, depuis ses
+   * positions de REPOS (pas d'accumulation pendant le drag). Quaternion
+   * [x, y, z, w]. Écrit position ET prevPosition, comme translateRange.
+   */
+  rotateRange(
+    first: number,
+    count: number,
+    q: readonly [number, number, number, number],
+    pivot: readonly [number, number, number],
+  ): void {
+    if (!this.gpuActive) return;
+    const n = Math.max(0, Math.min(count, this.count - first));
+    if (n === 0) return;
+    const src = this.initialPositions.subarray(first * 4, (first + n) * 4);
+    const out = new Float32Array(src.length);
+    const qx = q[0];
+    const qy = q[1];
+    const qz = q[2];
+    const qw = q[3];
+    for (let i = 0; i < out.length; i += 4) {
+      // Cellules coupées garées au sentinelle (y = -10) : laissées en place.
+      if (src[i + 1]! < -5) {
+        out[i] = src[i]!;
+        out[i + 1] = src[i + 1]!;
+        out[i + 2] = src[i + 2]!;
+        out[i + 3] = src[i + 3]!;
+        continue;
+      }
+      const x = src[i]! - pivot[0];
+      const y = src[i + 1]! - pivot[1];
+      const z = src[i + 2]! - pivot[2];
+      // v' = v + 2·cross(q.xyz, cross(q.xyz, v) + w·v)
+      const tx = 2 * (qy * z - qz * y);
+      const ty = 2 * (qz * x - qx * z);
+      const tz = 2 * (qx * y - qy * x);
+      out[i] = pivot[0] + x + qw * tx + (qy * tz - qz * ty);
+      out[i + 1] = pivot[1] + y + qw * ty + (qz * tx - qx * tz);
+      out[i + 2] = pivot[2] + z + qw * tz + (qx * ty - qy * tx);
+      out[i + 3] = src[i + 3]!;
+    }
+    this.device.queue.writeBuffer(this.positionBuffer, first * 16, out);
+    this.device.queue.writeBuffer(this.prevPositionBuffer, first * 16, out);
+  }
+
   /** Re-drop the cloth: restore the rest pose, zero velocities, release pins. */
   reset(): void {
     if (!this.gpuActive) return;

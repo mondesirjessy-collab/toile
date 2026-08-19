@@ -36,6 +36,10 @@ export type PieceStagingOffset = [number, number, number];
 export type PieceStagingOrient = [number, number, number, number];
 
 const QUAT_IDENTITY: PieceStagingOrient = [0, 0, 0, 1];
+// Les cellules coupées d'un panneau sont garées à un sentinelle lointain
+// (ClothMesh : y = -10, immobiles). Tout ce qui est sous -5 n'est pas du
+// vêtement : on l'exclut du pivot et de la rotation.
+const PARKED_Y = -5;
 
 function quatNormalize(q: readonly number[]): PieceStagingOrient {
   const n = Math.hypot(q[0]!, q[1]!, q[2]!, q[3]!);
@@ -351,19 +355,24 @@ export function applyStagingOrient(
   const start = Math.max(0, first);
   const end = Math.max(start, Math.min(mesh.count, first + count));
   if (end <= start) return;
+  // Pivot = centroïde des cellules VIVANTES uniquement (voir PARKED_Y).
   let cx = 0;
   let cy = 0;
   let cz = 0;
+  let live = 0;
   for (let i = start; i < end; i++) {
+    if (mesh.positions[i * 4 + 1]! < PARKED_Y) continue;
     cx += mesh.positions[i * 4]!;
     cy += mesh.positions[i * 4 + 1]!;
     cz += mesh.positions[i * 4 + 2]!;
+    live++;
   }
-  const n = end - start;
-  cx /= n;
-  cy /= n;
-  cz /= n;
+  if (live === 0) return;
+  cx /= live;
+  cy /= live;
+  cz /= live;
   for (let i = start; i < end; i++) {
+    if (mesh.positions[i * 4 + 1]! < PARKED_Y) continue;
     const r = quatRotateVec(q, [
       mesh.positions[i * 4]! - cx,
       mesh.positions[i * 4 + 1]! - cy,

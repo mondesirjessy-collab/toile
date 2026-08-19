@@ -4806,6 +4806,23 @@ async function main(): Promise<void> {
     }
     return best;
   };
+  const GIZMO_RING_PX = 46; // rayon écran de l'anneau de rotation
+  /** Centre écran (px canvas) de la pièce sélectionnée, ou null. */
+  const gizmoCenterPx = (): [number, number] | null => {
+    if (!gizmoPick) return null;
+    const c = stagingInstanceCentroid(gizmoPick.pid, gizmoPick.instance);
+    if (!c) return null;
+    const ndc = arrangeNdcOf(c);
+    if (!ndc) return null;
+    const rect = canvas.getBoundingClientRect();
+    return [((ndc[0] + 1) / 2) * rect.width, ((1 - ndc[1]) / 2) * rect.height];
+  };
+  /** (px,py) est-il SUR l'anneau de rotation (près du cercle, pas au centre) ? */
+  const gizmoRingAt = (px: number, py: number): boolean => {
+    const c = gizmoCenterPx();
+    if (!c) return false;
+    return Math.abs(Math.hypot(px - c[0], py - c[1]) - GIZMO_RING_PX) <= 14;
+  };
   let pieceDrag: {
     pid: number;
     instance: number;
@@ -4818,6 +4835,13 @@ async function main(): Promise<void> {
     /** Drag contraint : l'index de l'axe monde du trièdre (X/Y/Z). */
     axis?: 0 | 1 | 2;
     grabNdc?: [number, number];
+    /** Drag de l'anneau de rotation : roll autour de l'axe caméra. */
+    rot?: {
+      axis: readonly [number, number, number];
+      pivot: readonly [number, number, number];
+      lastScreenAngle: number;
+      angle: number;
+    };
   } | null = null;
   if (import.meta.env.DEV) {
     (window as unknown as { __toileGizmo?: unknown }).__toileGizmo = {
@@ -7337,6 +7361,33 @@ async function main(): Promise<void> {
           mirrorCtx.fillStyle = axe.color;
           mirrorCtx.fillText(axe.label, s1[0] + ux * 15, s1[1] + uy * 15);
         }
+        // ⟳ Anneau de rotation (roll autour de l'axe caméra) — cercle écran fixe
+        // autour du centroïde ; masqué pendant un drag d'axe (translation).
+        if (!active) {
+          const rotting = dragging && dragging.rot ? dragging.rot : null;
+          // L'anneau est dessiné en pixels backing-store (device) ; le hit-test
+          // est en pixels CSS. On met le rayon dessiné à l'échelle du DPR pour
+          // que le cercle visible coïncide EXACTEMENT avec la zone d'attrape.
+          const ringScale = mirror.clientWidth > 0 ? mirror.width / mirror.clientWidth : 1;
+          const ringR = GIZMO_RING_PX * ringScale;
+          mirrorCtx.beginPath();
+          mirrorCtx.arc(s0[0], s0[1], ringR, 0, Math.PI * 2);
+          mirrorCtx.strokeStyle = rotting
+            ? 'rgba(236, 240, 246, 0.95)'
+            : 'rgba(236, 240, 246, 0.5)';
+          mirrorCtx.lineWidth = rotting ? 3 : 2;
+          mirrorCtx.stroke();
+          if (rotting) {
+            const deg = (rotting.angle * 180) / Math.PI;
+            const label = `${deg >= 0 ? '+' : '−'}${Math.abs(deg).toFixed(0)}°`;
+            mirrorCtx.font = '700 13px Inter, ui-sans-serif, sans-serif';
+            const w = mirrorCtx.measureText(label).width;
+            mirrorCtx.fillStyle = 'rgba(14, 15, 18, 0.85)';
+            mirrorCtx.fillRect(s0[0] - w / 2 - 7, s0[1] + ringR + 6, w + 14, 22);
+            mirrorCtx.fillStyle = 'rgba(236, 240, 246, 0.95)';
+            mirrorCtx.fillText(label, s0[0], s0[1] + ringR + 17);
+          }
+        }
         mirrorCtx.beginPath();
         mirrorCtx.arc(s0[0], s0[1], active ? 3 : 4.5, 0, Math.PI * 2);
         mirrorCtx.fillStyle = 'rgba(236, 240, 246, 0.95)';
@@ -7542,6 +7593,42 @@ async function main(): Promise<void> {
             canvas.classList.add('piece-dragging');
             return false;
           }
+        }
+      }
+      // ⟳ Anneau de rotation sous le pointeur : drag = rotation (roll autour
+      // de l'axe caméra) autour du centroïde de la pièce sélectionnée.
+      if (gizmoPick && gizmoRingAt(e.clientX - rect.left, e.clientY - rect.top)) {
+        const ranges = gizmoRangesOf(gizmoPick.pid, gizmoPick.instance);
+        const centroid = stagingInstanceCentroid(gizmoPick.pid, gizmoPick.instance);
+        const cpx = gizmoCenterPx();
+        if (ranges.length && centroid && cpx) {
+          const viewAxis = camera.pickRay(ndcX, ndcY, canvas.width / canvas.height).dir;
+          pieceDrag = {
+            pid: gizmoPick.pid,
+            instance: gizmoPick.instance,
+            ranges,
+            depth: 0,
+            start: [centroid[0], centroid[1], centroid[2]],
+            delta: [0, 0, 0],
+            pointerId: e.pointerId,
+            positions: posCache,
+            rot: {
+              axis: [viewAxis[0], viewAxis[1], viewAxis[2]],
+              pivot: [centroid[0], centroid[1], centroid[2]],
+              lastScreenAngle: Math.atan2(
+                e.clientY - rect.top - cpx[1],
+                e.clientX - rect.left - cpx[0],
+              ),
+              angle: 0,
+            },
+          };
+          try {
+            canvas.setPointerCapture(e.pointerId);
+          } catch {
+            // A synthetic or already-cancelled pointer cannot be captured.
+          }
+          canvas.classList.add('piece-dragging');
+          return false;
         }
       }
       const target = pickStagingPiece(ray);
@@ -9772,7 +9859,24 @@ async function main(): Promise<void> {
     if (pieceDrag) {
       if (mouse.leftDown && sceneMode === 'atelier' && atelierDesign) {
         const d = pieceDrag;
-        if (d.axis !== undefined && d.grabNdc) {
+        if (d.rot) {
+          const ringRect = canvas.getBoundingClientRect();
+          const cpx = gizmoCenterPx();
+          if (cpx) {
+            const rpx = ((mouse.ndcX + 1) / 2) * ringRect.width;
+            const rpy = ((1 - mouse.ndcY) / 2) * ringRect.height;
+            const ang = Math.atan2(rpy - cpx[1], rpx - cpx[0]);
+            let dA = ang - d.rot.lastScreenAngle;
+            while (dA > Math.PI) dA -= 2 * Math.PI;
+            while (dA < -Math.PI) dA += 2 * Math.PI;
+            d.rot.angle += dA;
+            d.rot.lastScreenAngle = ang;
+            const q = quatFromAxisAngle(d.rot.axis, d.rot.angle);
+            for (const range of d.ranges) {
+              system.rotateRange(range.first, range.count, q, d.rot.pivot);
+            }
+          }
+        } else if (d.axis !== undefined && d.grabNdc) {
           // ⌖ Drag de flèche : le paramètre d'axe qui suit au mieux le curseur
           // à l'écran (projection du delta souris sur l'axe projeté, en px).
           const a = GIZMO_AXES[d.axis]!.dir;
@@ -9809,8 +9913,10 @@ async function main(): Promise<void> {
             ray.origin[2] + ray.dir[2] * d.depth - d.start[2],
           ];
         }
-        for (const range of d.ranges) {
-          system.translateRange(range.first, range.count, d.delta);
+        if (!d.rot) {
+          for (const range of d.ranges) {
+            system.translateRange(range.first, range.count, d.delta);
+          }
         }
       } else {
         const d = pieceDrag;
@@ -9818,10 +9924,28 @@ async function main(): Promise<void> {
         pieceDrag = null;
         pieceHoverDirty = true;
         canvas.classList.remove('piece-dragging');
-        const moved = !!draft && Math.hypot(...d.delta) >= 0.005;
+        const rotated = !!draft && !!d.rot && Math.abs(d.rot.angle) >= 0.0087;
+        const moved = !rotated && !!draft && Math.hypot(...d.delta) >= 0.005;
         // Sélection du trièdre : le clic simple sélectionne, un drag la garde.
         gizmoPick = { pid: d.pid, instance: d.instance };
-        if (moved && draft) {
+        if (rotated && draft && d.rot) {
+          pushHistory();
+          let piece = draftPieceOf(d.pid);
+          if (piece) {
+            if (d.pid === 1 && !draft.back) piece = structuredClone(draft.piece);
+            replaceDraftPiece(
+              d.pid,
+              rotatePieceInstanceInStaging(
+                piece,
+                d.instance,
+                quatFromAxisAngle(d.rot.axis, d.rot.angle),
+              ),
+            );
+          }
+          draftTouched = true;
+          atelierDesign = true;
+          build();
+        } else if (moved && draft) {
           pushHistory();
           let piece = draftPieceOf(d.pid);
           if (piece) {
