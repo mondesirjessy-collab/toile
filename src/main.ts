@@ -35,6 +35,7 @@ import {
   movePieceInstanceInStaging,
   placeMeshOnSurface,
   placementRoleLabel,
+  placementRoleOf,
   resetPieceInstanceStaging,
   resetPieceStaging,
   stagingOffsetOf,
@@ -883,6 +884,11 @@ async function main(): Promise<void> {
   let arrangeMode = false;
   let arrangePick: { pid: number; instance: number } | null = null;
   let arrangeHoverId: string | null = null;
+  // ⊹ PRÉ-ASSEMBLAGE ANATOMIQUE (B2) : quand actif, l'essayage NE jette
+  // plus l'arrangement de préparation — il fait naître les pièces depuis
+  // leurs offsets de staging (posés sur le corps) au lieu du canonique.
+  // Défaut OFF ⇒ comportement produit strictement inchangé.
+  let respectArrangement = false;
   let atelierSleeves = location.hash.startsWith('#v96'); // multi-piece stage 1: add system sleeves to the atelier garment (debug hash: #v96 = proven rect tubes, #v96b = same via the freeform generator)
   let atelierSleeveLen = 0.5; // sleeve length (shoulder→cuff, m): 0.5 long, ~0.22 short (t-shirt)
   let atelierCollar = false; // multi-piece: add a system collar band at the neckline
@@ -1718,6 +1724,80 @@ async function main(): Promise<void> {
     build();
     const label = draftPieceLabel(draftPieceOf(pick.pid), pick.pid);
     showToast(`« ${label} » rangée : ${point.labelFr}.`);
+  };
+
+  // ⊹ PRÉ-ASSEMBLAGE ANATOMIQUE (auto) — range TOUTES les pièces sur le corps
+  // en UNE passe : torse devant/dos par construction (pid 0/1), les autres
+  // pièces via leur rôle (manches/col résolus depuis leur `wrap`). Même
+  // translation de staging que l'arrange manuel, mais groupée (un seul build).
+  // N'a d'effet sur l'essayage que si `respectArrangement` est actif.
+  const ROLE_TO_PASTILLE: Record<string, string> = {
+    front: 'torso-front',
+    back: 'torso-back',
+    armL: 'arm-left',
+    armR: 'arm-right',
+    neck: 'neck-front',
+    waist: 'waist-front',
+    legL: 'leg-left',
+    legR: 'leg-right',
+    pocket: 'hip-front',
+  };
+  const autoArrangeByRole = (): number => {
+    if (!draft) return 0;
+    const byId = new Map(currentArrangePoints().map((point) => [point.id, point] as const));
+    const pastilleForPiece = (pid: number): ArrangementPoint | null => {
+      if (pid === 0) return byId.get('torso-front') ?? null;
+      if (pid === 1) return byId.get('torso-back') ?? null;
+      const piece = draftPieceOf(pid);
+      if (!piece) return null;
+      const role = placementRoleOf(piece);
+      if (!role) return null;
+      const target = ROLE_TO_PASTILLE[role];
+      return target ? byId.get(target) ?? null : null;
+    };
+    const seen = new Set<string>();
+    let moved = 0;
+    let pushed = false;
+    for (const [pid, ranges] of pieceParticleRanges) {
+      const point = pastilleForPiece(pid);
+      if (!point) continue;
+      for (const range of ranges) {
+        const key = `${pid}:${range.instance}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const centroid = stagingInstanceCentroid(pid, range.instance);
+        if (!centroid) continue;
+        const delta: [number, number, number] = [
+          point.pos[0] - centroid[0],
+          point.pos[1] - centroid[1],
+          point.pos[2] - centroid[2],
+        ];
+        let piece = draftPieceOf(pid);
+        if (!piece) continue;
+        if (pid === 1 && !draft.back) piece = structuredClone(draft.piece);
+        if (!pushed) {
+          pushHistory();
+          pushed = true;
+        }
+        replaceDraftPiece(pid, movePieceInstanceInStaging(piece, range.instance, delta));
+        moved++;
+      }
+    }
+    if (moved) {
+      draftTouched = true;
+      atelierDesign = true;
+      build();
+    }
+    return moved;
+  };
+  // Hook dev (validation avant UI) : __toileAnatomical(true) active le respect
+  // de l'arrangement par l'essayage + auto-range par rôle ; (false) le coupe.
+  (window as unknown as { __toileAnatomical?: (on?: boolean) => unknown }).__toileAnatomical = (
+    on: boolean = true,
+  ) => {
+    respectArrangement = !!on;
+    const moved = on ? autoArrangeByRole() : 0;
+    return { respectArrangement, moved };
   };
   (document.getElementById('at-arrange') as HTMLElement).addEventListener('click', () => {
     if (!atelierDesign) {
@@ -5090,7 +5170,7 @@ async function main(): Promise<void> {
                   range.instance,
                 );
               }
-              if (atelierDesign) {
+              if (atelierDesign || respectArrangement) {
                 for (const range of hoodie.ranges) {
                   const piece = draftPieceAt(range.pieceId);
                   if (!piece) continue;
@@ -5115,7 +5195,7 @@ async function main(): Promise<void> {
               registerPieceRange(1, panelSize, panelSize, 0);
               registerPieceRange(0, panelSize * 2, panelSize, 1);
               registerPieceRange(1, panelSize * 3, panelSize, 1);
-              if (atelierDesign) {
+              if (atelierDesign || respectArrangement) {
                 for (const range of pieceParticleRanges.get(0) ?? []) {
                   applyStagingOffset(
                     pants,
@@ -5207,7 +5287,7 @@ async function main(): Promise<void> {
             const panelSize = resolution * resolution;
             registerPieceRange(0, 0, panelSize);
             registerPieceRange(1, panelSize, panelSize);
-            if (atelierDesign) {
+            if (atelierDesign || respectArrangement) {
               applyStagingOffset(body, stagingOffsetOf(d), 0, panelSize);
               applyStagingOffset(body, stagingOffsetOf(back ?? d), panelSize, panelSize);
             }
@@ -5421,7 +5501,7 @@ async function main(): Promise<void> {
                 autoPlaceMeshFromCrossSeams(garment, pieceMesh, pins, garment.count);
               }
               registerPieceRange(pid, garment.count, pieceMesh.count);
-              if (atelierDesign) {
+              if (atelierDesign || respectArrangement) {
                 applyStagingOffset(pieceMesh, stagingOffsetOf(fp));
               }
               if (fp.wrap) {
