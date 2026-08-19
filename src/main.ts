@@ -4005,6 +4005,11 @@ async function main(): Promise<void> {
     Lin: '#d9ccad',
     Laine: '#858085',
     Soie: '#eddec7',
+    Molleton: '#8f9490',
+    Cuir: '#5a3d2b',
+    Satin: '#e8ddc0',
+    Twill: '#8a7d5c',
+    Mousseline: '#f0ece1',
   };
   const graphicAddBtn = document.getElementById('at-graphic-add') as HTMLButtonElement | null;
   const graphicRemoveBtn = document.getElementById('at-graphic-remove') as HTMLButtonElement | null;

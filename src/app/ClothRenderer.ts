@@ -212,7 +212,8 @@ struct MaterialLook {
   ambient: f32,
 };
 
-// Stable ids: 1 Jersey, 2 Maille, 3 Popeline, 4 Denim, 5 Lin, 6 Laine, 7 Soie.
+// Stable ids: 1 Jersey, 2 Maille, 3 Popeline, 4 Denim, 5 Lin, 6 Laine, 7 Soie,
+// 8 Molleton, 9 Cuir, 10 Satin, 11 Twill, 12 Mousseline.
 fn material_look(id: u32) -> MaterialLook {
   var look = MaterialLook(vec3f(0.87, 0.82, 0.72), vec3f(0.66, 0.55, 0.47), 2.0, 0.22);
   if (id == 2u) { look = MaterialLook(vec3f(0.72, 0.45, 0.42), vec3f(0.55, 0.33, 0.31), 1.8, 0.24); }
@@ -221,6 +222,11 @@ fn material_look(id: u32) -> MaterialLook {
   else if (id == 5u) { look = MaterialLook(vec3f(0.85, 0.80, 0.68), vec3f(0.74, 0.69, 0.57), 1.6, 0.26); }
   else if (id == 6u) { look = MaterialLook(vec3f(0.52, 0.50, 0.52), vec3f(0.40, 0.38, 0.40), 1.5, 0.28); }
   else if (id == 7u) { look = MaterialLook(vec3f(0.93, 0.87, 0.78), vec3f(0.80, 0.68, 0.58), 3.5, 0.12); }
+  else if (id == 8u) { look = MaterialLook(vec3f(0.56, 0.58, 0.57), vec3f(0.42, 0.44, 0.43), 1.5, 0.30); } // Molleton
+  else if (id == 9u) { look = MaterialLook(vec3f(0.30, 0.19, 0.12), vec3f(0.50, 0.35, 0.24), 2.6, 0.16); } // Cuir
+  else if (id == 10u) { look = MaterialLook(vec3f(0.90, 0.86, 0.72), vec3f(0.98, 0.95, 0.85), 4.5, 0.08); } // Satin
+  else if (id == 11u) { look = MaterialLook(vec3f(0.52, 0.47, 0.34), vec3f(0.64, 0.59, 0.45), 1.7, 0.24); } // Twill
+  else if (id == 12u) { look = MaterialLook(vec3f(0.94, 0.92, 0.86), vec3f(0.88, 0.86, 0.80), 2.8, 0.15); } // Mousseline
   return look;
 }
 
@@ -233,6 +239,11 @@ fn material_thickness(id: u32) -> f32 {
   else if (id == 5u) { thickness = 0.004; }
   else if (id == 6u) { thickness = 0.008; }
   else if (id == 7u) { thickness = 0.0025; }
+  else if (id == 8u) { thickness = 0.009; }
+  else if (id == 9u) { thickness = 0.009; }
+  else if (id == 10u) { thickness = 0.003; }
+  else if (id == 11u) { thickness = 0.005; }
+  else if (id == 12u) { thickness = 0.0022; }
   return thickness;
 }
 
