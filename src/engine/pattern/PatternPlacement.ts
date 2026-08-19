@@ -32,6 +32,62 @@ export interface AutoPlacementResult {
 
 export type PieceStagingOffset = [number, number, number];
 
+/** Preparation rotation: quaternion [x, y, z, w], applied about the piece centroid. */
+export type PieceStagingOrient = [number, number, number, number];
+
+const QUAT_IDENTITY: PieceStagingOrient = [0, 0, 0, 1];
+
+function quatNormalize(q: readonly number[]): PieceStagingOrient {
+  const n = Math.hypot(q[0]!, q[1]!, q[2]!, q[3]!);
+  if (!(n > 1e-12)) return [0, 0, 0, 1];
+  return [q[0]! / n, q[1]! / n, q[2]! / n, q[3]! / n];
+}
+
+/** Hamilton product a·b (rotate by b, then by a); quaternions [x, y, z, w]. */
+export function quatMultiply(
+  a: readonly [number, number, number, number],
+  b: readonly [number, number, number, number],
+): PieceStagingOrient {
+  const [ax, ay, az, aw] = a;
+  const [bx, by, bz, bw] = b;
+  return quatNormalize([
+    aw * bx + ax * bw + ay * bz - az * by,
+    aw * by - ax * bz + ay * bw + az * bx,
+    aw * bz + ax * by - ay * bx + az * bw,
+    aw * bw - ax * bx - ay * by - az * bz,
+  ]);
+}
+
+/** Unit quaternion for a rotation of `angleRad` about `axis` (need not be unit). */
+export function quatFromAxisAngle(
+  axis: readonly [number, number, number],
+  angleRad: number,
+): PieceStagingOrient {
+  const len = Math.hypot(axis[0], axis[1], axis[2]);
+  if (!(len > 1e-9) || !Number.isFinite(angleRad)) return [0, 0, 0, 1];
+  const s = Math.sin(angleRad / 2) / len;
+  return [axis[0] * s, axis[1] * s, axis[2] * s, Math.cos(angleRad / 2)];
+}
+
+function quatRotateVec(
+  q: readonly [number, number, number, number],
+  v: readonly [number, number, number],
+): [number, number, number] {
+  const [x, y, z, w] = q;
+  const tx = 2 * (y * v[2] - z * v[1]);
+  const ty = 2 * (z * v[0] - x * v[2]);
+  const tz = 2 * (x * v[1] - y * v[0]);
+  return [
+    v[0] + w * tx + (y * tz - z * ty),
+    v[1] + w * ty + (z * tx - x * tz),
+    v[2] + w * tz + (x * ty - y * tx),
+  ];
+}
+
+function isIdentityQuat(q: readonly [number, number, number, number]): boolean {
+  return Math.hypot(q[0], q[1], q[2]) <= 1e-6;
+}
+
 /**
  * Build a transient simulation view of a draft without selected free pieces.
  *
@@ -234,6 +290,88 @@ export function applyStagingOffset(
     mesh.positions[q * 4] = mesh.positions[q * 4]! + offset[0];
     mesh.positions[q * 4 + 1] = mesh.positions[q * 4 + 1]! + offset[1];
     mesh.positions[q * 4 + 2] = mesh.positions[q * 4 + 2]! + offset[2];
+  }
+}
+
+/** Defensive per-instance preparation rotation; malformed values stay identity. */
+export function stagingOrientOf(
+  piece: DraftPiece,
+  instance = 0,
+): PieceStagingOrient {
+  const raw = piece.stagingOrients?.[instance];
+  if (raw && raw.length === 4 && raw.every(Number.isFinite)) {
+    return [raw[0], raw[1], raw[2], raw[3]];
+  }
+  return [0, 0, 0, 1];
+}
+
+/**
+ * Compose one preparation rotation onto a single physical copy, about its
+ * centroid. Mirrors movePieceInstanceInStaging: instances are independent and
+ * an all-identity set drops the field entirely.
+ */
+export function rotatePieceInstanceInStaging(
+  piece: DraftPiece,
+  instance: number,
+  quat: readonly [number, number, number, number],
+): DraftPiece {
+  const safeInstance = Math.max(0, Math.floor(instance));
+  const instanceCount = Math.max(
+    safeInstance + 1,
+    Number.isFinite(piece.cut) ? Math.max(1, Math.floor(piece.cut!)) : 1,
+    piece.stagingOrients?.length ?? 0,
+  );
+  const orients: Array<PieceStagingOrient | null> = Array.from(
+    { length: instanceCount },
+    (_, index) => stagingOrientOf(piece, index),
+  );
+  orients[safeInstance] = quatMultiply(
+    quatNormalize(quat),
+    orients[safeInstance] ?? QUAT_IDENTITY,
+  );
+  const { stagingOrients: _discarded, ...rest } = piece;
+  return orients.some((q) => !!q && !isIdentityQuat(q))
+    ? { ...rest, stagingOrients: orients }
+    : rest;
+}
+
+/**
+ * Rotate one particle range about its own centroid, in place. Identity ⇒ no-op.
+ * Applied before applyStagingOffset so the translation still lands the centroid
+ * on its arrangement target.
+ */
+export function applyStagingOrient(
+  mesh: ClothMeshData,
+  quat: readonly [number, number, number, number],
+  first = 0,
+  count = mesh.count,
+): void {
+  if (isIdentityQuat(quat)) return;
+  const q = quatNormalize(quat);
+  const start = Math.max(0, first);
+  const end = Math.max(start, Math.min(mesh.count, first + count));
+  if (end <= start) return;
+  let cx = 0;
+  let cy = 0;
+  let cz = 0;
+  for (let i = start; i < end; i++) {
+    cx += mesh.positions[i * 4]!;
+    cy += mesh.positions[i * 4 + 1]!;
+    cz += mesh.positions[i * 4 + 2]!;
+  }
+  const n = end - start;
+  cx /= n;
+  cy /= n;
+  cz /= n;
+  for (let i = start; i < end; i++) {
+    const r = quatRotateVec(q, [
+      mesh.positions[i * 4]! - cx,
+      mesh.positions[i * 4 + 1]! - cy,
+      mesh.positions[i * 4 + 2]! - cz,
+    ]);
+    mesh.positions[i * 4] = cx + r[0];
+    mesh.positions[i * 4 + 1] = cy + r[1];
+    mesh.positions[i * 4 + 2] = cz + r[2];
   }
 }
 

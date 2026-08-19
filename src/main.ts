@@ -28,6 +28,10 @@ import { generateClothGrid, generateSeamedPanels, combineClothMeshes, scaleMeshI
 import { defaultDraft, blankBaseDraft, tshirtDraft, compileDraft, compileAssembly, compileAssemblyGroups, compileCrossSeams, compileQuiltSeams, compileSurfaceContacts, compileSurfaceSeams, crossSewnOpenCells, cutPieceAlongChord, docPieces, freeSeamBetween, mirrorDuplicatePiece, graphicLocalUV, GRAPHIC_IMAGE_MAX_CHARS, INTERNAL_LINES_MAX, offsetPieceOutline, generateFittedSleeves, addFisheyeDart, roundOutlineCorner, cutPieceAlongInternalLine, toggleNotchAt, addSeamNotches, slashSpreadFullness, mergePiecesAlongSeam, toggleInternalHole, linkedVertexEdit, divideOutlineEdge, alignOutlineVertex, squareCorner, extendInternalLineEnd, divideInternalLineAt, pieceHolePolygons, isSelfIntersecting, fitCapWidthToArmhole, draftPieceLabel, gatherSeamSide, neckOpeningCells, removeFreePiece, reboxPiece, pieceIdOf, nearestOutlineEdgeInfo, syncPieceFrames, sanitizeDraft, pointInPolygon, pointInTriangle, surfaceAttachmentUV, type DraftDoc, type AssemblySeam, type DraftPiece, type PieceGraphic, type UV } from './engine/pattern/Draft';
 import {
   applyStagingOffset,
+  applyStagingOrient,
+  quatFromAxisAngle,
+  rotatePieceInstanceInStaging,
+  stagingOrientOf,
   autoPlaceMeshFromCrossSeams,
   canTemporarilyExcludePiece,
   draftForSimulationExcluding,
@@ -1798,6 +1802,37 @@ async function main(): Promise<void> {
     respectArrangement = !!on;
     const moved = on ? autoArrangeByRole() : 0;
     return { respectArrangement, moved };
+  };
+  // Hook dev : rotate-panneau façon CLO. __toileRotatePiece(pid, degrés, axe?,
+  // instance?) tourne une pièce autour de son centroïde ; la rotation est
+  // rendue au pré-essayage, et respectée par l'essayage si respectArrangement
+  // est actif (via __toileAnatomical(true)). Axe défaut Y (rotation verticale).
+  (
+    window as unknown as {
+      __toileRotatePiece?: (
+        pid: number,
+        deg: number,
+        axis?: [number, number, number],
+        instance?: number,
+      ) => unknown;
+    }
+  ).__toileRotatePiece = (
+    pid: number,
+    deg: number,
+    axis: [number, number, number] = [0, 1, 0],
+    instance = 0,
+  ) => {
+    if (!draft) return { ok: false, reason: 'no draft' };
+    let piece = draftPieceOf(pid);
+    if (!piece) return { ok: false, reason: 'no piece' };
+    if (pid === 1 && !draft.back) piece = structuredClone(draft.piece);
+    const quat = quatFromAxisAngle(axis, (deg * Math.PI) / 180);
+    pushHistory();
+    replaceDraftPiece(pid, rotatePieceInstanceInStaging(piece, instance, quat));
+    draftTouched = true;
+    atelierDesign = true;
+    build();
+    return { ok: true, pid, deg, axis, instance };
   };
   (document.getElementById('at-arrange') as HTMLElement).addEventListener('click', () => {
     if (!atelierDesign) {
@@ -5174,6 +5209,12 @@ async function main(): Promise<void> {
                 for (const range of hoodie.ranges) {
                   const piece = draftPieceAt(range.pieceId);
                   if (!piece) continue;
+                  applyStagingOrient(
+                    hoodie.mesh,
+                    stagingOrientOf(piece, range.instance),
+                    range.first,
+                    range.count,
+                  );
                   applyStagingOffset(
                     hoodie.mesh,
                     stagingOffsetOf(piece, range.instance),
@@ -5197,6 +5238,12 @@ async function main(): Promise<void> {
               registerPieceRange(1, panelSize * 3, panelSize, 1);
               if (atelierDesign || respectArrangement) {
                 for (const range of pieceParticleRanges.get(0) ?? []) {
+                  applyStagingOrient(
+                    pants,
+                    stagingOrientOf(doc.piece, range.instance),
+                    range.first,
+                    range.count,
+                  );
                   applyStagingOffset(
                     pants,
                     stagingOffsetOf(doc.piece, range.instance),
@@ -5205,6 +5252,12 @@ async function main(): Promise<void> {
                   );
                 }
                 for (const range of pieceParticleRanges.get(1) ?? []) {
+                  applyStagingOrient(
+                    pants,
+                    stagingOrientOf(doc.back, range.instance),
+                    range.first,
+                    range.count,
+                  );
                   applyStagingOffset(
                     pants,
                     stagingOffsetOf(doc.back, range.instance),
@@ -5288,7 +5341,9 @@ async function main(): Promise<void> {
             registerPieceRange(0, 0, panelSize);
             registerPieceRange(1, panelSize, panelSize);
             if (atelierDesign || respectArrangement) {
+              applyStagingOrient(body, stagingOrientOf(d), 0, panelSize);
               applyStagingOffset(body, stagingOffsetOf(d), 0, panelSize);
+              applyStagingOrient(body, stagingOrientOf(back ?? d), panelSize, panelSize);
               applyStagingOffset(body, stagingOffsetOf(back ?? d), panelSize, panelSize);
             }
             let garment = body;
@@ -5502,6 +5557,7 @@ async function main(): Promise<void> {
               }
               registerPieceRange(pid, garment.count, pieceMesh.count);
               if (atelierDesign || respectArrangement) {
+                applyStagingOrient(pieceMesh, stagingOrientOf(fp));
                 applyStagingOffset(pieceMesh, stagingOffsetOf(fp));
               }
               if (fp.wrap) {

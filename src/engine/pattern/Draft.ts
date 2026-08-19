@@ -274,6 +274,14 @@ export interface DraftPiece {
    * can be arranged independently in 3D while sharing one editable 2D pattern.
    */
   stagingOffsets?: Array<[number, number, number] | null>;
+  /**
+   * Preparation rotations (quaternion [x, y, z, w]) for repeated physical
+   * instances, applied about each copy's centroid at the arrangement spawn.
+   * Like the translation offsets they are preparation-only and honoured by
+   * the essayage only when the anatomical pre-assembly is active. Absent or
+   * identity ⇒ no rotation.
+   */
+  stagingOrients?: Array<[number, number, number, number] | null>;
 }
 
 export interface DraftDoc {
@@ -2382,6 +2390,23 @@ export function sanitizeDraft(raw: unknown): DraftDoc {
         });
         return offsets.some((offset) => offset && Math.hypot(...offset) > 1e-8)
           ? { stagingOffsets: offsets }
+          : {};
+      })(),
+      ...((): { stagingOrients?: Array<[number, number, number, number] | null> } => {
+        if (!Array.isArray(pp.stagingOrients)) return {};
+        const orients = pp.stagingOrients.slice(0, 8).map((raw) => {
+          if (
+            !Array.isArray(raw) ||
+            raw.length !== 4 ||
+            !raw.every((value) => typeof value === 'number' && Number.isFinite(value))
+          ) {
+            return null;
+          }
+          return [raw[0], raw[1], raw[2], raw[3]] as [number, number, number, number];
+        });
+        // Identity quaternion (0,0,0,±1) carries no rotation ⇒ drop it.
+        return orients.some((q) => q && Math.hypot(q[0], q[1], q[2]) > 1e-6)
+          ? { stagingOrients: orients }
           : {};
       })(),
     };
