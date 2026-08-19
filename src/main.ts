@@ -1864,11 +1864,38 @@ async function main(): Promise<void> {
       arrangeMode
         ? [
             'Points d’arrangement actifs : cliquez une pièce dans la vue 3D, puis une pastille autour du corps — elle s’y range.',
-            'Organisation de la préparation uniquement : patron, coutures et pose d’essayage restent inchangés.',
+            respectArrangement
+              ? 'Pré-assemblage anatomique actif : l’essayage PART de cette préparation.'
+              : 'Organisation de la préparation uniquement : patron, coutures et pose d’essayage restent inchangés.',
           ]
         : ['Points d’arrangement désactivés.'],
       true,
     );
+    refreshHint();
+  });
+  // ⚓ PRÉ-ASSEMBLAGE ANATOMIQUE : auto-ancre par rôle + l'essayage respecte
+  // la préparation (remplace le hook dev __toileAnatomical). Défaut OFF.
+  (document.getElementById('at-preassemble') as HTMLElement | null)?.addEventListener('click', () => {
+    if (!atelierDesign) enterDesign();
+    respectArrangement = !respectArrangement;
+    setPressed('at-preassemble', respectArrangement);
+    if (respectArrangement) {
+      const moved = autoArrangeByRole();
+      showPlacementStatus(
+        [
+          moved > 0
+            ? `Pré-assemblage anatomique : ${moved} pièce${moved > 1 ? 's' : ''} posée${moved > 1 ? 's' : ''} sur le corps par rôle.`
+            : 'Pré-assemblage anatomique actif.',
+          'L’essayage PART de cette pose — ajuste à la main (✥ déplacer / anneaux de rotation) au besoin.',
+        ],
+        true,
+      );
+    } else {
+      showPlacementStatus(
+        ['Pré-assemblage anatomique désactivé : l’essayage repart du placement canonique (coutures).'],
+        false,
+      );
+    }
     refreshHint();
   });
   (document.getElementById('at-reset3d') as HTMLElement).addEventListener('click', () => {
