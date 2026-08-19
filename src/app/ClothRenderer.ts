@@ -598,6 +598,7 @@ interface RendererPipelines {
   clothRibbon: GPURenderPipeline;
   scene: GPURenderPipeline;
 }
+const SAMPLE_COUNT = 4; // 4× MSAA — bords nets (annexe §17), coût GPU minime
 const rendererPipelineCache = new WeakMap<GPUDevice, RendererPipelines>();
 function rendererPipelines(device: GPUDevice, format: GPUTextureFormat): RendererPipelines {
   const cached = rendererPipelineCache.get(device);
@@ -611,6 +612,7 @@ function rendererPipelines(device: GPUDevice, format: GPUTextureFormat): Rendere
   const clothModule = device.createShaderModule({ code: CLOTH_SHADER, label: 'cloth' });
   const cloth = device.createRenderPipeline({
     label: 'cloth-pipeline',
+    multisample: { count: SAMPLE_COUNT },
     layout: 'auto',
     vertex: {
       module: clothModule,
@@ -628,6 +630,7 @@ function rendererPipelines(device: GPUDevice, format: GPUTextureFormat): Rendere
   });
   const clothRibbon = device.createRenderPipeline({
     label: 'cloth-ribbon-pipeline',
+    multisample: { count: SAMPLE_COUNT },
     layout: 'auto',
     vertex: {
       module: clothModule,
@@ -647,6 +650,7 @@ function rendererPipelines(device: GPUDevice, format: GPUTextureFormat): Rendere
   });
   const seam = device.createRenderPipeline({
     label: 'seam-lines-pipeline',
+    multisample: { count: SAMPLE_COUNT },
     layout: 'auto',
     vertex: { module: clothModule, entryPoint: 'vsSeam', buffers: [] },
     fragment: {
@@ -670,6 +674,7 @@ function rendererPipelines(device: GPUDevice, format: GPUTextureFormat): Rendere
   const sceneModule = device.createShaderModule({ code: SCENE_SHADER, label: 'scene' });
   const scene = device.createRenderPipeline({
     label: 'scene-pipeline',
+    multisample: { count: SAMPLE_COUNT },
     layout: 'auto',
     vertex: {
       module: sceneModule,
@@ -751,6 +756,7 @@ export class ClothRenderer {
   private readonly sceneIndexCount: number;
   private readonly count: number;
   private depthTexture: GPUTexture;
+  private msaaColor!: GPUTexture;
 
   constructor(
     device: GPUDevice,
@@ -1008,11 +1014,14 @@ export class ClothRenderer {
     this.sceneBodyIndexCount = scene.bodyIndexCount;
 
     this.depthTexture = this.createDepthTexture(canvas.width, canvas.height);
+    this.msaaColor = this.createMsaaColor(canvas.width, canvas.height);
   }
 
   resize(width: number, height: number): void {
     this.resources.release(this.depthTexture);
+    this.resources.release(this.msaaColor);
     this.depthTexture = this.createDepthTexture(width, height);
+    this.msaaColor = this.createMsaaColor(width, height);
   }
 
   /** Apply a fabric preset's visual identity (live, no rebuild). */
@@ -1099,10 +1108,11 @@ export class ClothRenderer {
     const pass = encoder.beginRenderPass({
       colorAttachments: [
         {
-          view: this.context.getCurrentTexture().createView(),
+          view: this.msaaColor.createView(),
+          resolveTarget: this.context.getCurrentTexture().createView(),
           clearValue: { r: 0.11, g: 0.118, b: 0.138, a: 1 },
           loadOp: 'clear',
-          storeOp: 'store',
+          storeOp: 'discard',
         },
       ],
       depthStencilAttachment: {
@@ -1215,6 +1225,18 @@ export class ClothRenderer {
     return this.resources.trackTexture(this.device.createTexture({
       size: [Math.max(1, width), Math.max(1, height)],
       format: 'depth24plus',
+      sampleCount: SAMPLE_COUNT,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    }));
+  }
+
+  // Cible couleur multi-échantillonnée : on dessine dedans en 4×, puis on
+  // résout vers la texture 1× de l'écran (resolveTarget) → silhouettes lisses.
+  private createMsaaColor(width: number, height: number): GPUTexture {
+    return this.resources.trackTexture(this.device.createTexture({
+      size: [Math.max(1, width), Math.max(1, height)],
+      format: this.format,
+      sampleCount: SAMPLE_COUNT,
       usage: GPUTextureUsage.RENDER_ATTACHMENT,
     }));
   }
