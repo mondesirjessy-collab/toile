@@ -648,6 +648,12 @@
     #precision-axis-chooser[hidden],
     #divide-chooser[hidden],
     #gather-chooser[hidden] { display: none; }
+    /* Blocs composables du tee (manche / encolure / col) : le hidden doit
+       primer sur .field-label{display:flex} — sinon ils restent visibles sur
+       les autres patrons (Tee CLO, pantalon…) où ils ne s'appliquent pas. */
+    #at-tee-sleeves-row[hidden],
+    #at-tee-neck-row[hidden],
+    #at-tee-collar-row[hidden] { display: none; }
     #motif-chooser .q,
     #offset-chooser .q,
     #fullness-chooser .q,
@@ -1379,6 +1385,13 @@
             <option value="none">Sans manches</option>
             <option value="short" selected>Courtes</option>
             <option value="long">Longues</option>
+          </select>
+        </label>
+        <label class="field-label" for="at-tee-neck" id="at-tee-neck-row" hidden>
+          Encolure
+          <select id="at-tee-neck" aria-label="Encolure du t-shirt" title="Forme d'encolure échangeable : ras du cou ou V — le devant se retaille et se recoud tout seul (le V est une encolure finie, sans bande côte)">
+            <option value="ras" selected>Ras du cou</option>
+            <option value="v">En V</option>
           </select>
         </label>
         <label class="field-label" for="at-tee-collar" id="at-tee-collar-row" hidden>

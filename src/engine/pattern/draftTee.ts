@@ -185,12 +185,14 @@ export function boxyChestCm(sz: BoxySize): number {
 
 export type TeeSleeves = 'none' | 'short' | 'long';
 export type TeeCollar = 'sans' | 'cote' | 'montant';
+export type TeeNeck = 'ras' | 'v';
 export function boxyTee(
   size: BoxySize,
   m: BodyMeasure,
   ref: BodyMeasure,
   sleeves: TeeSleeves = 'short',
   collar: TeeCollar = 'cote',
+  neck: TeeNeck = 'ras',
 ): DraftDoc {
   const D = BOXY_DATA[size];
   const topY = 1.52 + (m.shoulderY - ref.shoulderY); // ligne épaule-encolure = haut de pièce (v=0)
@@ -257,17 +259,42 @@ export function boxyTee(
     wrap: 'neck',
     placement: { role: 'neck', autoAlign: true },
   });
+  // Encolure en V (DEVANT seul) : on remplace l'arc rond (29→37→0) par deux
+  // diagonales droites qui plongent au centre. Les points épaule-encolure 0
+  // et 29 restent fixes → les coutures d'épaule rejoignent le dos à
+  // l'identique ; le dos garde son encolure ronde. Le V est une encolure
+  // FINIE (pas de bande côtelée : une bande droite ne sait pas s'ongleter sur
+  // la pointe — c'est le slice suivant).
+  const V_DEEP = 0.22; // profondeur du V en v-pièce (col rond ≈ 0.105)
+  const applyVNeck = (o: UV[]): void => {
+    const A = BOXY_IDX.neckR; // 29 (colD)
+    const C = BOXY_IDX.center; // 37 (creux)
+    const p29 = o[A]!;
+    const p0 = o[0]!;
+    const cx = 0.5;
+    for (let i = A; i <= C; i++) {
+      const t = (i - A) / (C - A);
+      o[i] = [p29[0] + (cx - p29[0]) * t, p29[1] + (V_DEEP - p29[1]) * t];
+    }
+    for (let i = C; i <= 44; i++) {
+      const t = (i - C) / (45 - C);
+      o[i] = [cx + (p0[0] - cx) * t, V_DEEP + (p0[1] - V_DEEP) * t];
+    }
+  };
+  const frontFace = face(D.front);
+  const backFace = face(D.back);
+  if (neck === 'v') applyVNeck(frontFace.outline);
   const seam = (from: number, to: number): AssemblySeam => ({ a: { face: 'front', from, to }, b: { face: 'back', from, to } });
   return {
     format: 'toile-draft',
     version: 1,
     gridN: 64,
-    piece: face(D.front),
-    back: face(D.back),
+    piece: frontFace,
+    back: backFace,
     manual: true,
     pieces: [
       ...(sleeves === 'none' ? [] : [sleeve('armR'), sleeve('armL')]),
-      ...(collar === 'sans' ? [] : [band()]),
+      ...(collar === 'sans' || neck === 'v' ? [] : [band()]),
     ],
     // Épaules + côtés sous les emmanchures. Chaque arc reste ouvert et reçoit
     // le panneau correspondant de la manche.
