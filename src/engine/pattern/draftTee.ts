@@ -186,6 +186,7 @@ export function boxyChestCm(sz: BoxySize): number {
 export type TeeSleeves = 'none' | 'short' | 'long';
 export type TeeCollar = 'sans' | 'cote' | 'montant';
 export type TeeNeck = 'ras' | 'v';
+export type TeeLength = 'crop' | 'regular' | 'long';
 export function boxyTee(
   size: BoxySize,
   m: BodyMeasure,
@@ -193,27 +194,45 @@ export function boxyTee(
   sleeves: TeeSleeves = 'short',
   collar: TeeCollar = 'cote',
   neck: TeeNeck = 'ras',
+  bodyLen: TeeLength = 'regular',
 ): DraftDoc {
   const D = BOXY_DATA[size];
   const topY = 1.52 + (m.shoulderY - ref.shoulderY); // ligne épaule-encolure = haut de pièce (v=0)
   const clone = (o: readonly UV[]): UV[] => o.map(([a, b]) => [a, b]);
   // DEVANT / DOS : le contour exact du patron (45 points — encolure 15 pts,
   // emmanchures en J 11 pts chacune, épaules droites, côtés/ourlet droits).
-  const face = (body: { outline: UV[]; width: number; height: number }): DraftPiece => ({
-    outline: clone(body.outline),
-    darts: [],
-    seams: [],
-    openEdges: [
-      { from: BOXY_IDX.tipL, to: BOXY_IDX.uaL }, // emmanchure G
-      { from: BOXY_IDX.hemL, to: BOXY_IDX.hemR }, // ourlet
-      { from: BOXY_IDX.uaR, to: BOXY_IDX.tipR }, // emmanchure D
-      { from: BOXY_IDX.neckR, to: BOXY_IDX.N }, // encolure (l'arc complet, colD → colG)
-    ],
-    width: body.width,
-    height: body.height,
-    topY,
-    gap: 0.9,
-  });
+  // Bloc LONGUEUR du corps : on allonge (long) ou raccourcit (crop) le corps
+  // UNIQUEMENT sous les emmanchures — l'ourlet (hemL/hemR) descend de
+  // bodyLenDelta·H, tandis que tout le haut (encolure, épaules, emmanchures)
+  // garde sa position physique. Les manches et le col restent donc alignés.
+  const bodyLenDelta = bodyLen === 'crop' ? -0.16 : bodyLen === 'long' ? 0.2 : 0;
+  const face = (body: { outline: UV[]; width: number; height: number }): DraftPiece => {
+    const H = body.height;
+    const Hp = H * (1 + bodyLenDelta);
+    const outline = clone(body.outline);
+    if (bodyLenDelta !== 0) {
+      for (let i = 0; i < outline.length; i++) {
+        const isHem = i === BOXY_IDX.hemL || i === BOXY_IDX.hemR;
+        const y = outline[i]![1] * H + (isHem ? bodyLenDelta * H : 0);
+        outline[i] = [outline[i]![0], y / Hp];
+      }
+    }
+    return {
+      outline,
+      darts: [],
+      seams: [],
+      openEdges: [
+        { from: BOXY_IDX.tipL, to: BOXY_IDX.uaL }, // emmanchure G
+        { from: BOXY_IDX.hemL, to: BOXY_IDX.hemR }, // ourlet
+        { from: BOXY_IDX.uaR, to: BOXY_IDX.tipR }, // emmanchure D
+        { from: BOXY_IDX.neckR, to: BOXY_IDX.N }, // encolure (l'arc complet, colD → colG)
+      ],
+      width: body.width,
+      height: Hp,
+      topY,
+      gap: 0.9,
+    };
+  };
   // MANCHE ×2 : panneau de tube WRAP — la bouche = le PROFIL RÉEL de la tête
   // de manche (courbe du patron, hauteur 7,4-9,6 cm selon la taille), le
   // poignet suit le rentré réel. sleeveCrossSeams épingle la bouche à

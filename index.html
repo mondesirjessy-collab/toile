@@ -653,7 +653,8 @@
        les autres patrons (Tee CLO, pantalon…) où ils ne s'appliquent pas. */
     #at-tee-sleeves-row[hidden],
     #at-tee-neck-row[hidden],
-    #at-tee-collar-row[hidden] { display: none; }
+    #at-tee-collar-row[hidden],
+    #at-tee-length-row[hidden] { display: none; }
     #motif-chooser .q,
     #offset-chooser .q,
     #fullness-chooser .q,
@@ -1400,6 +1401,14 @@
             <option value="sans">Sans col</option>
             <option value="cote" selected>Bord côte</option>
             <option value="montant">Col montant</option>
+          </select>
+        </label>
+        <label class="field-label" for="at-tee-length" id="at-tee-length-row" hidden>
+          Longueur du corps
+          <select id="at-tee-length" aria-label="Longueur du corps du t-shirt" title="Bloc longueur échangeable : court, normal ou long — seul l'ourlet monte ou descend, l'encolure et les emmanchures ne bougent pas">
+            <option value="crop">Court</option>
+            <option value="regular" selected>Normal</option>
+            <option value="long">Long</option>
           </select>
         </label>
         <div class="tgrp one-column">
