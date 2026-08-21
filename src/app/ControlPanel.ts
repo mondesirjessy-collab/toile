@@ -104,6 +104,7 @@ export interface PanelCallbacks {
   onPatternSvg(): string | null;
   onSeamAllowance(cm: number): void;
   onGltf(): string | null | Promise<string | null>;
+  onTechPack?(): void;
   onPins(held: boolean): void;
   onFitMap(on: boolean): void;
   onReset(): void;
@@ -517,6 +518,7 @@ export class ControlPanel {
         .onChange((v: number) => this.cb.onSeamAllowance(v)),
     );
     file.add({ glb: () => void this.exportGltf() }, 'glb').name('exporter en 3D (.glb)');
+    file.add({ techpack: () => this.cb.onTechPack?.() }, 'techpack').name('fiche de production (.json)');
     file.add({ exporter: () => this.exportGarment() }, 'exporter').name('exporter le vêtement (.json)');
     file.add({ importer: () => this.importGarment() }, 'importer').name('importer un vêtement');
 

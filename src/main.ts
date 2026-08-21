@@ -84,6 +84,7 @@ import { OrbitCamera, type CameraBounds } from './app/OrbitCamera';
 import { MouseForce } from './app/MouseForce';
 import { buildSceneMesh, SCENE_VERTEX_FLOATS, type SceneMesh } from './app/SceneGeometry';
 import { computeNormals, downloadGlb, type GltfPiece } from './app/gltfExport';
+import { exportTechPack } from './app/techPack';
 import { GpuProfiler } from './app/GpuProfiler';
 import {
   AVATAR_STATURE_MAX_CM,
@@ -8278,6 +8279,37 @@ async function main(): Promise<void> {
         build();
       },
       onFitMap: (v) => applyFitMap(v),
+      onTechPack: () => {
+        if (!draft) return;
+        const garment =
+          loadedPattern === 'boxy' ? 'T-shirt'
+          : loadedPattern === 'clo-tee' ? 'T-shirt CLO'
+          : loadedPattern === 'pants' || loadedPattern === 'clo-pants' ? 'Pantalon'
+          : loadedPattern === 'hoodie' ? 'Hoodie'
+          : loadedPattern === 'jupe' ? 'Jupe'
+          : loadedPattern === 'robe' ? 'Robe'
+          : loadedPattern === 'veste' ? 'Veste'
+          : loadedPattern === 'doudoune' ? 'Doudoune'
+          : 'Vetement';
+        const size =
+          loadedPattern === 'boxy'
+            ? boxySurMesure ? 'sur-mesure (mannequin)' : boxySize
+            : 'ajuste au mannequin';
+        const m = lastMeasure;
+        const res = exportTechPack(draft, {
+          garment,
+          size,
+          fabric: String(globalFabricPreset),
+          measureCm: {
+            poitrine: Math.round(m.chest.circ * 100),
+            taille: Math.round(m.waist.circ * 100),
+            bassin: Math.round(m.hip.circ * 100),
+            stature: Math.round(m.height * 100),
+          },
+          seamAllowanceCm: +(seamAllowanceM * 100).toFixed(1),
+        });
+        showToast(`Fiche de production exportee - ${res.pieces} pieces - ~${res.yardageM} m de tissu`);
+      },
       onPatternPdf: () => {
         // Le pantalon importé est déjà un patron vectoriel coté, marge de
         // couture de 1,25 cm comprise. Exporter les DraftPieces originales
