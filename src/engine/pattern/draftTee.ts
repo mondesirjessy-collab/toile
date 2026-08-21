@@ -261,6 +261,9 @@ export function boxyTee(
   // cheminée qui se tient), « côte » = bande côtelée ras-du-cou, « sans »
   // retire la bande (l'encolure reste une ouverture finie).
   const collarH = collar === 'montant' ? D.collarH * 2.4 : D.collarH;
+  // Longueur de bande = 0,85 × tour d'encolure (fronce côtelée). L'encolure
+  // en V allonge ce tour : neckRingEff est recalculé plus bas après le V.
+  let neckRingEff = D.neckRing;
   const band = (): DraftPiece => ({
     outline: [
       [-0.01, -0.01],
@@ -271,7 +274,7 @@ export function boxyTee(
     darts: [],
     seams: [],
     openEdges: [],
-    width: 0.85 * D.neckRing * 0.5,
+    width: 0.85 * neckRingEff * 0.5,
     height: collarH,
     topY: m.neckY - 0.005,
     gap: 0.15,
@@ -281,9 +284,9 @@ export function boxyTee(
   // Encolure en V (DEVANT seul) : on remplace l'arc rond (29→37→0) par deux
   // diagonales droites qui plongent au centre. Les points épaule-encolure 0
   // et 29 restent fixes → les coutures d'épaule rejoignent le dos à
-  // l'identique ; le dos garde son encolure ronde. Le V est une encolure
-  // FINIE (pas de bande côtelée : une bande droite ne sait pas s'ongleter sur
-  // la pointe — c'est le slice suivant).
+  // l'identique ; le dos garde son encolure ronde. La bande côtelée suit le V
+  // (elle se plie à la pointe) ; sa longueur est rallongée au périmètre réel du
+  // V pour qu'elle fronce sans tirer sur la pointe (« Sans col » = bord fini).
   const V_DEEP = 0.22; // profondeur du V en v-pièce (col rond ≈ 0.105)
   const applyVNeck = (o: UV[]): void => {
     const A = BOXY_IDX.neckR; // 29 (colD)
@@ -300,9 +303,29 @@ export function boxyTee(
       o[i] = [cx + (p0[0] - cx) * t, V_DEEP + (p0[1] - V_DEEP) * t];
     }
   };
+  // Périmètre physique (m) de l'arc d'encolure DEVANT (points 29→44→0).
+  const frontNeckPerimeter = (o: UV[], w: number, h: number): number => {
+    let len = 0;
+    let prev: number = BOXY_IDX.neckR;
+    for (let i = BOXY_IDX.neckR + 1; i <= 45; i++) {
+      const cur = i === 45 ? 0 : i;
+      const a = o[prev]!;
+      const b = o[cur]!;
+      len += Math.hypot((a[0] - b[0]) * w, (a[1] - b[1]) * h);
+      prev = cur;
+    }
+    return len;
+  };
   const frontFace = face(D.front);
   const backFace = face(D.back);
-  if (neck === 'v') applyVNeck(frontFace.outline);
+  if (neck === 'v') {
+    applyVNeck(frontFace.outline);
+    // Le V allonge le tour d'encolure : on rallonge la bande d'autant (delta
+    // rond→V) pour qu'elle fronce au lieu de tirer sur la pointe.
+    const roundFront = frontNeckPerimeter(D.front.outline, D.front.width, D.front.height);
+    const vFront = frontNeckPerimeter(frontFace.outline, frontFace.width, frontFace.height);
+    neckRingEff = D.neckRing + (vFront - roundFront);
+  }
   const seam = (from: number, to: number): AssemblySeam => ({ a: { face: 'front', from, to }, b: { face: 'back', from, to } });
   return {
     format: 'toile-draft',
@@ -313,7 +336,7 @@ export function boxyTee(
     manual: true,
     pieces: [
       ...(sleeves === 'none' ? [] : [sleeve('armR'), sleeve('armL')]),
-      ...(collar === 'sans' || neck === 'v' ? [] : [band()]),
+      ...(collar === 'sans' ? [] : [band()]),
     ],
     // Épaules + côtés sous les emmanchures. Chaque arc reste ouvert et reçoit
     // le panneau correspondant de la manche.
