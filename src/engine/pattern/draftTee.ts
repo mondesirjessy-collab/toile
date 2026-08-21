@@ -264,6 +264,9 @@ export function boxyTee(
   // Longueur de bande = 0,85 × tour d'encolure (fronce côtelée). L'encolure
   // en V allonge ce tour : neckRingEff est recalculé plus bas après le V.
   let neckRingEff = D.neckRing;
+  // Bande ASYMÉTRIQUE (col V) : le panneau dos se resserre pour froncer comme
+  // le devant au lieu de gondoler. undefined pour le col rond (symétrique).
+  let bandBackWeaveScale: number | undefined = undefined;
   const band = (): DraftPiece => ({
     outline: [
       [-0.01, -0.01],
@@ -280,6 +283,7 @@ export function boxyTee(
     gap: 0.15,
     wrap: 'neck',
     placement: { role: 'neck', autoAlign: true },
+    backWeaveScale: bandBackWeaveScale,
   });
   // Encolure en V (DEVANT seul) : on remplace l'arc rond (29→37→0) par deux
   // diagonales droites qui plongent au centre. Les points épaule-encolure 0
@@ -325,6 +329,10 @@ export function boxyTee(
     const roundFront = frontNeckPerimeter(D.front.outline, D.front.width, D.front.height);
     const vFront = frontNeckPerimeter(frontFace.outline, frontFace.width, frontFace.height);
     neckRingEff = D.neckRing + (vFront - roundFront);
+    // Dos du tube resserré au ratio (encolure dos)/(encolure V devant) : les
+    // deux panneaux froncent alors à la même tension, le dos ne gondole plus.
+    const backNeck = D.neckRing - roundFront;
+    if (vFront > 0) bandBackWeaveScale = backNeck / vFront;
   }
   const seam = (from: number, to: number): AssemblySeam => ({ a: { face: 'front', from, to }, b: { face: 'back', from, to } });
   return {

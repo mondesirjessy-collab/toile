@@ -260,6 +260,13 @@ export interface DraftPiece {
   // ring that cinches the neckline — cut shorter than the neck hole, it pulls
   // the collar in and lets a deep front drop hold). Absent → flat spawn.
   wrap?: 'armL' | 'armR' | 'neck';
+  /**
+   * Bande asymétrique (col en V) : facteur (<1) qui raccourcit le rest du
+   * tissage HORIZONTAL du panneau DOS (panel 1) du tube. Le devant garde sa
+   * longueur (il borde le V, plus long), le dos se resserre pour froncer au
+   * lieu de gondoler. Absent/≥1 → aucun effet (bande symétrique).
+   */
+  backWeaveScale?: number;
   /** Simulation placement metadata. Independent from the movable 2D layout. */
   placement?: PiecePlacement;
   /**

@@ -518,6 +518,14 @@ export interface SeamedPanelsOptions {
    * by default.
    */
   anchorTop?: boolean;
+  /**
+   * Asymmetric tube (V-neck band): scale (<1) applied to the HORIZONTAL
+   * weave rest of the BACK panel (p===1) only. The back panel keeps its
+   * geometry and both side seams (tube topology unchanged) but wants to be
+   * narrower, so it gathers its shorter neckline instead of buckling.
+   * 1 = symmetric (every existing piece unchanged).
+   */
+  backWeaveScale?: number;
 }
 
 type PatternShape = NonNullable<SeamedPanelsOptions['shape']>;
@@ -1215,6 +1223,8 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
 
   const elasticTop = opts.elasticTop ?? 1;
   const reinforceTop = opts.reinforceTop ?? false;
+  // Bande asymétrique (col V) : le panneau DOS (p===1) veut être plus étroit.
+  const backWeaveScale = opts.backWeaveScale ?? 1;
   // Elastic band height in ROWS, floored at 2 (audit M15): `v/(n-1) < 0.06`
   // alone collapses to a single row at n ≤ 17, so grip strength jumps with
   // resolution. round(0.06·(n-1)) is identical at the selectable 32/64/128
@@ -1232,6 +1242,8 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
           // Elastic band: the top rows want to be SHORTER than they are cut —
           // the weave gathers and grips (elasticated waist).
           if (elasticTop < 1 && v < elasticRows) e.rest *= elasticTop;
+          // Bande asymétrique : le panneau dos du tube se resserre (col V).
+          if (backWeaveScale < 1 && p === 1) e.rest *= backWeaveScale;
           if (reinforceTop && v < elasticRows) {
             // An interfaced waistband is governed by its stitched length, not
             // the stretch compliance of the selected shell fabric.

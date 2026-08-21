@@ -5604,6 +5604,8 @@ async function main(): Promise<void> {
                 // A wrap piece is a TUBE: its side seams must fold freely
                 // around the arm — the flatten rings would pin it shut.
                 flattenSeams: fp.wrap ? false : undefined,
+                // Bande asymétrique (col V) : le panneau dos se resserre.
+                backWeaveScale: fp.backWeaveScale,
               });
               // Every editable piece owns the same n×n grid. Scale its base
               // inverse masses by physical cell area before material density is
