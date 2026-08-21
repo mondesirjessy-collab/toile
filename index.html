@@ -825,6 +825,34 @@
     /* La carte d'ajustement reste dispo à l'essayage : c'est LE seul outil
        pertinent sur le vêtement porté. */
     body.atelier-simulating #atelier-view3d-tools #at-fitmap3d { display: inline-flex; }
+    /* Légende de la carte d'ajustement : n'apparaît qu'avec la carte active
+       ET pendant l'essayage (le heatmap n'existe que sur le vêtement porté). */
+    #fitmap-legend {
+      display: none;
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 40;
+      flex-direction: column;
+      gap: 5px;
+      padding: 9px 11px;
+      border-radius: 9px;
+      background: rgba(20, 23, 29, 0.9);
+      border: 1px solid rgba(237, 233, 223, 0.14);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+      backdrop-filter: blur(10px);
+      pointer-events: none;
+      font-size: 10px;
+    }
+    body.fitmap-on.atelier-simulating #fitmap-legend { display: flex; }
+    .fitmap-legend-title { color: rgba(244, 242, 236, 0.9); font-weight: 650; letter-spacing: 0.02em; }
+    .fitmap-legend-bar {
+      width: 184px;
+      height: 9px;
+      border-radius: 5px;
+      background: linear-gradient(90deg, #3366E6 0%, #33D966 33%, #F2D933 66%, #E6261A 100%);
+    }
+    .fitmap-legend-labels { display: flex; justify-content: space-between; color: rgba(217, 213, 203, 0.82); }
     body.atelier-simulating #atelier-view3d-tools::after {
       content: "Tirer le tissu · tourner la vue";
       padding: 0 5px;
@@ -1790,6 +1818,11 @@
     <span id="atelier-guidance">Sélectionnez une pièce puis choisissez un outil.</span>
   </div>
   <div id="split-divider" title="Glisser pour ajuster le partage plan 2D / fenêtre 3D"></div>
+  <div id="fitmap-legend" aria-hidden="true">
+    <span class="fitmap-legend-title">Tension du tissu</span>
+    <div class="fitmap-legend-bar"></div>
+    <div class="fitmap-legend-labels"><span>Ample</span><span>Ajusté</span><span>Serré</span></div>
+  </div>
   <div id="overlay" hidden></div>
   <script type="module" src="/src/main.ts"></script>
 </body>

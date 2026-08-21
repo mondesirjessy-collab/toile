@@ -6342,6 +6342,7 @@ async function main(): Promise<void> {
   const fitmapButton = document.getElementById('at-fitmap3d') as HTMLButtonElement | null;
   const applyFitMap = (on: boolean): void => {
     fitMap = on;
+    document.body.classList.toggle('fitmap-on', on); // affiche la légende
     if (fitmapButton) {
       fitmapButton.classList.toggle('active', on);
       fitmapButton.setAttribute('aria-pressed', String(on));
