@@ -6336,6 +6336,24 @@ async function main(): Promise<void> {
   const sceneTransitionBusy = (): boolean =>
     lifecycle.isTransitioning || lifecycle.pendingTarget !== undefined;
 
+  // Carte d'ajustement (fit map) : bascule la vue TENSION du tissu porté et
+  // synchronise le bouton visible. Chemin unique appelé par le bouton ET par
+  // la case « carte de tension » des Réglages avancés.
+  const fitmapButton = document.getElementById('at-fitmap3d') as HTMLButtonElement | null;
+  const applyFitMap = (on: boolean): void => {
+    fitMap = on;
+    if (fitmapButton) {
+      fitmapButton.classList.toggle('active', on);
+      fitmapButton.setAttribute('aria-pressed', String(on));
+    }
+    if (sceneTransitionBusy()) {
+      build();
+      return;
+    }
+    renderer.setFitMap(on);
+  };
+  fitmapButton?.addEventListener('click', () => applyFitMap(!fitMap));
+
   /** Queue a rebuild; import batching collapses all requests to its final call. */
   const build = (fromSceneSelector = false): void => {
     if (buildSuspended) return;
@@ -8242,14 +8260,7 @@ async function main(): Promise<void> {
         }
         build();
       },
-      onFitMap: (v) => {
-        fitMap = v;
-        if (sceneTransitionBusy()) {
-          build();
-          return;
-        }
-        renderer.setFitMap(v);
-      },
+      onFitMap: (v) => applyFitMap(v),
       onPatternPdf: () => {
         // Le pantalon importé est déjà un patron vectoriel coté, marge de
         // couture de 1,25 cm comprise. Exporter les DraftPieces originales
