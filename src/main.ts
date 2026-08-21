@@ -85,6 +85,7 @@ import { MouseForce } from './app/MouseForce';
 import { buildSceneMesh, SCENE_VERTEX_FLOATS, type SceneMesh } from './app/SceneGeometry';
 import { computeNormals, downloadGlb, type GltfPiece } from './app/gltfExport';
 import { exportTechPack } from './app/techPack';
+import { exportMarker } from './app/markerLayout';
 import { GpuProfiler } from './app/GpuProfiler';
 import {
   AVATAR_STATURE_MAX_CM,
@@ -8309,6 +8310,11 @@ async function main(): Promise<void> {
           seamAllowanceCm: +(seamAllowanceM * 100).toFixed(1),
         });
         showToast(`Fiche de production exportee - ${res.pieces} pieces - ~${res.yardageM} m de tissu`);
+      },
+      onMarker: () => {
+        if (!draft) return;
+        const res = exportMarker(draft, +(seamAllowanceM * 100).toFixed(1));
+        showToast(`Plan de decoupe - ${res.pieces} pieces - ~${res.lengthM} m sur laize 150 cm`);
       },
       onPatternPdf: () => {
         // Le pantalon importé est déjà un patron vectoriel coté, marge de
