@@ -86,6 +86,7 @@ import { buildSceneMesh, SCENE_VERTEX_FLOATS, type SceneMesh } from './app/Scene
 import { computeNormals, downloadGlb, type GltfPiece } from './app/gltfExport';
 import { exportTechPack } from './app/techPack';
 import { exportMarker } from './app/markerLayout';
+import { exportDxf } from './app/dxfExport';
 import { GpuProfiler } from './app/GpuProfiler';
 import {
   AVATAR_STATURE_MAX_CM,
@@ -8315,6 +8316,11 @@ async function main(): Promise<void> {
         if (!draft) return;
         const res = exportMarker(draft, +(seamAllowanceM * 100).toFixed(1));
         showToast(`Plan de decoupe - ${res.pieces} pieces - ~${res.lengthM} m sur laize 150 cm`);
+      },
+      onDxf: () => {
+        if (!draft) return;
+        const res = exportDxf(draft, +(seamAllowanceM * 100).toFixed(1));
+        showToast(`DXF de decoupe exporte - ${res.pieces} pieces (mm, calque CUT)`);
       },
       onPatternPdf: () => {
         // Le pantalon importé est déjà un patron vectoriel coté, marge de
