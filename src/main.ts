@@ -2100,6 +2100,7 @@ async function main(): Promise<void> {
   // Le sélecteur est partagé par les patrons intégrés. Son contenu suit le
   // vêtement actif pour éviter de mélanger XS–XXL et les tailles pantalon 26–46.
   let boxySize: BoxySize = 'S';
+  let boxySurMesure = false; // T-shirt composable coupé aux cotes du mannequin
   let boxySleeves: TeeSleeves = 'short'; // bloc manche échangeable du tee
   let boxyCollar: TeeCollar = 'cote'; // bloc col échangeable du tee
   let boxyNeck: TeeNeck = 'ras'; // forme d'encolure échangeable du tee
@@ -2195,8 +2196,18 @@ async function main(): Promise<void> {
       sizeSel.innerHTML = `<option value="avatar">Bloc CLO ajusté au mannequin · taille ${(lastMeasure.waist.circ * 100).toFixed(0)} · bassin ${(lastMeasure.hip.circ * 100).toFixed(0)} cm</option>`;
       sizeSel.value = 'avatar';
     } else if (kind === 'boxy') {
-      sizeSel.innerHTML = BOXY_SIZES.map((s) => `<option value="${s}">${s} · poitrine ${boxyChestCm(s)} cm</option>`).join('');
-      sizeSel.value = boxySize;
+      // lastMeasure est en zone morte au tout premier showSizes de l'init :
+      // on affiche l'option sans la cote, elle réapparaît dès le tee chargé.
+      let avatarChest = '';
+      try {
+        avatarChest = ` · poitrine ${(lastMeasure.chest.circ * 100).toFixed(0)} cm`;
+      } catch {
+        /* mannequin pas encore mesuré */
+      }
+      sizeSel.innerHTML =
+        `<option value="avatar">Ajusté au mannequin${avatarChest}</option>` +
+        BOXY_SIZES.map((s) => `<option value="${s}">${s} · poitrine ${boxyChestCm(s)} cm</option>`).join('');
+      sizeSel.value = boxySurMesure ? 'avatar' : boxySize;
     } else if (kind === 'doudoune') {
       sizeSel.innerHTML = [
         `<option value="avatar">Ajustée au mannequin · poitrine ${(lastMeasure.chest.circ * 100).toFixed(0)} + ${DOUDOUNE_AVATAR_EASE_CM} cm d'aisance</option>`,
@@ -2364,7 +2375,7 @@ async function main(): Promise<void> {
     pushHistory();
     showSizes('boxy');
     teePreset = false;
-    draft = boxyTee(boxySize, lastMeasure, REF, boxySleeves, boxyCollar, boxyNeck, boxyLen);
+    draft = boxyTee(boxySize, lastMeasure, REF, boxySleeves, boxyCollar, boxyNeck, boxyLen, boxySurMesure);
     draftTouched = true; // un vrai draft : éditable, exportable
     atelierSleeves = false; // les manches sont DES PIÈCES du patron
     atelierCollar = false;
@@ -2647,7 +2658,12 @@ async function main(): Promise<void> {
         }
         if (sceneMode === 'atelier') loadLucasHoodie();
       } else {
-        boxySize = sizeSel.value as BoxySize;
+        if (sizeSel.value === 'avatar') {
+          boxySurMesure = true;
+        } else {
+          boxySurMesure = false;
+          boxySize = sizeSel.value as BoxySize;
+        }
         if (sceneMode === 'atelier') loadBoxyTee();
       }
     });

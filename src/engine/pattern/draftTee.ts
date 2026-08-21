@@ -175,7 +175,7 @@ export function oversizeTee(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
 // qu'au placement vertical. Mécanique éprouvée : corps cousu épaules + côtés
 // sous les emmanchures, manches WRAP, col WRAP.
 // ---------------------------------------------------------------------------
-import { BOXY_DATA, BOXY_IDX, BOXY_SIZES, type BoxySize } from './boxyData';
+import { BOXY_DATA, BOXY_IDX, BOXY_SIZES, type BoxySize, type BoxySizeData } from './boxyData';
 export { BOXY_SIZES, type BoxySize };
 
 /** Tour de poitrine (cm) d'une taille — pour l'étiquette du sélecteur. */
@@ -187,6 +187,30 @@ export type TeeSleeves = 'none' | 'short' | 'long';
 export type TeeCollar = 'sans' | 'cote' | 'montant';
 export type TeeNeck = 'ras' | 'v';
 export type TeeLength = 'crop' | 'regular' | 'long';
+/** Gradation SUR-MESURE du boxy tee : on met une taille de référence (M) à
+ * l'échelle des cotes du mannequin — largeur par la POITRINE (remontée vers la
+ * carrure pour un corps disproportionné), hauteur par la STATURE. Échelle
+ * UNIFORME comme le bloc CLO : préserve l'appariement devant↔dos et le calage
+ * manche↔emmanchure, donc les blocs (manches/col/encolure/longueur) restent
+ * alignés. Seuls les champs d'échelle bougent ; le contour normalisé [0,1] ne
+ * change pas. */
+function boxyDataGraded(m: BodyMeasure, ref: BodyMeasure): BoxySizeData {
+  const D0 = BOXY_DATA.M;
+  const chestSx = (m.chest.circ * 100) / D0.chestCm;
+  const shoulderSx = m.shoulderHalfW / 0.175; // ≈ demi-carrure de réf.
+  const sx = chestSx + 0.5 * Math.max(0, shoulderSx - chestSx); // grade largeur
+  const sy = ref.height > 0 ? m.height / ref.height : 1; // grade hauteur ← stature
+  const cl = (o: readonly UV[]): UV[] => o.map(([a, b]) => [a, b]);
+  return {
+    front: { outline: cl(D0.front.outline), width: D0.front.width * sx, height: D0.front.height * sy },
+    back: { outline: cl(D0.back.outline), width: D0.back.width * sx, height: D0.back.height * sy },
+    sleeve: { outline: cl(D0.sleeve.outline), width: D0.sleeve.width * sx, height: D0.sleeve.height * sy },
+    collarLen: D0.collarLen * sx,
+    collarH: D0.collarH,
+    neckRing: D0.neckRing * sx,
+    chestCm: m.chest.circ * 100,
+  };
+}
 export function boxyTee(
   size: BoxySize,
   m: BodyMeasure,
@@ -195,8 +219,9 @@ export function boxyTee(
   collar: TeeCollar = 'cote',
   neck: TeeNeck = 'ras',
   bodyLen: TeeLength = 'regular',
+  surMesure = false,
 ): DraftDoc {
-  const D = BOXY_DATA[size];
+  const D = surMesure ? boxyDataGraded(m, ref) : BOXY_DATA[size];
   const topY = 1.52 + (m.shoulderY - ref.shoulderY); // ligne épaule-encolure = haut de pièce (v=0)
   const clone = (o: readonly UV[]): UV[] => o.map(([a, b]) => [a, b]);
   // DEVANT / DOS : le contour exact du patron (45 points — encolure 15 pts,
