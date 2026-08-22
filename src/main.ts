@@ -2108,6 +2108,7 @@ async function main(): Promise<void> {
   let boxyCollar: TeeCollar = 'cote'; // bloc col échangeable du tee
   let boxyNeck: TeeNeck = 'ras'; // forme d'encolure échangeable du tee
   let boxyLen: TeeLength = 'regular'; // longueur du corps échangeable du tee
+  let boxyFitBodyKey = ''; // v242 — corps du dernier regrade sur-mesure du tee (ne recalcule que si le corps change)
   // The bundled male scan measures about 70.5 cm at the waist; size 26 is the
   // closest supplied pattern. Starting on 32 made an intentionally oversized
   // waistband look as though it needed an invisible suspension.
@@ -5271,6 +5272,44 @@ async function main(): Promise<void> {
           ],
           true,
         );
+      }
+    }
+    // v242 — sur-mesure EN LIVE : le T-shirt composable coupe aux cotes du
+    // mannequin epouse le corps courant des qu'une mensuration bouge, sans
+    // re-selection ni reset de vue. Comme le hoodie ci-dessus, on ne regrade
+    // QUE si le corps a change (les rebuilds tissu/resolution laissent le
+    // patron intact). Le design par-piece (« mets ton design » : imprime,
+    // couleur, grammage) est reporte sur le patron regrade — un coup de
+    // curseur ne l'efface pas. Les pid sont stables tant que les blocs ne
+    // changent pas (un changement de bloc passe par loadBoxyTee, pas ici).
+    if (target === 'atelier' && loadedPattern === 'boxy' && boxySurMesure) {
+      const boxyKey = hoodieBodyKey(m);
+      if (boxyKey !== boxyFitBodyKey) {
+        const carried = new Map<
+          number,
+          Pick<DraftPiece, 'graphic' | 'color' | 'arealDensityGsm'>
+        >();
+        const nPrev = 2 + (draft?.pieces?.length ?? 0);
+        for (let pid = 0; pid < nPrev; pid++) {
+          const prev = draftPieceAt(pid);
+          if (prev && (prev.graphic || prev.color || prev.arealDensityGsm !== undefined)) {
+            carried.set(pid, {
+              graphic: prev.graphic,
+              color: prev.color,
+              arealDensityGsm: prev.arealDensityGsm,
+            });
+          }
+        }
+        draft = boxyTee(boxySize, m, REF, boxySleeves, boxyCollar, boxyNeck, boxyLen, true);
+        boxyFitBodyKey = boxyKey;
+        for (const [pid, d] of carried) {
+          const next = draftPieceAt(pid);
+          if (!next) continue;
+          if (d.graphic) next.graphic = d.graphic;
+          if (d.color) next.color = d.color;
+          if (d.arealDensityGsm !== undefined) next.arealDensityGsm = d.arealDensityGsm;
+        }
+        showSizes('boxy'); // l'etiquette « poitrine XX cm » suit la cote vive
       }
     }
     await checkpoint();
