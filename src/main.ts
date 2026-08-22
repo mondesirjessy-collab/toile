@@ -87,6 +87,7 @@ import { computeNormals, downloadGlb, type GltfPiece } from './app/gltfExport';
 import { exportTechPack } from './app/techPack';
 import { exportMarker } from './app/markerLayout';
 import { exportDxf } from './app/dxfExport';
+import { exportMaterialReport } from './app/materialReport';
 import { GpuProfiler } from './app/GpuProfiler';
 import {
   AVATAR_STATURE_MAX_CM,
@@ -8385,6 +8386,32 @@ async function main(): Promise<void> {
         if (!draft) return;
         const res = exportDxf(draft, +(seamAllowanceM * 100).toFixed(1));
         showToast(`DXF de decoupe exporte - ${res.pieces} pieces (mm, calque CUT)`);
+      },
+      onMaterialReport: () => {
+        // Bilan matiere multi-tailles : le metrage de placement pour TOUTE la
+        // gradation standard (XS-XXL) du tee, avec les blocs courants. Toujours
+        // les tailles standard (le sur-mesure est propre a un corps).
+        if (loadedPattern !== 'boxy') {
+          showToast('Bilan multi-tailles : charge le T-shirt composable');
+          return;
+        }
+        const cfg = [
+          teeSleevesSel && `Manches: ${teeSleevesSel.selectedOptions[0]?.text ?? boxySleeves}`,
+          teeNeckSel && `Encolure: ${teeNeckSel.selectedOptions[0]?.text ?? boxyNeck}`,
+          teeCollarSel && `Col: ${teeCollarSel.selectedOptions[0]?.text ?? boxyCollar}`,
+          teeLengthSel && `Longueur: ${teeLengthSel.selectedOptions[0]?.text ?? boxyLen}`,
+        ].filter(Boolean).join(' - ');
+        const entries = BOXY_SIZES.map((size) => ({
+          size,
+          draft: boxyTee(size, lastMeasure, REF, boxySleeves, boxyCollar, boxyNeck, boxyLen, false),
+        }));
+        const res = exportMaterialReport(entries, {
+          garment: 'T-shirt',
+          fabric: String(globalFabricPreset),
+          config: cfg,
+          seamAllowanceCm: +(seamAllowanceM * 100).toFixed(1),
+        });
+        showToast(`Bilan matiere - ${res.sizes} tailles - ${res.total_m} m pour un exemplaire par taille`);
       },
       onPatternPdf: () => {
         // Le pantalon importé est déjà un patron vectoriel coté, marge de
