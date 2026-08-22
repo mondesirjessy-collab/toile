@@ -190,3 +190,31 @@ export function exportMarker(draft: DraftDoc, saCm: number): { lengthM: number; 
   downloadBrowserBlob(blob, 'toile-plan-decoupe.svg');
   return { lengthM: +(nest.lengthCm / 100).toFixed(2), pieces: nest.placements.length };
 }
+
+/** Plan de découpe MULTI-TAILLES : toutes les pièces commandées (× quantité,
+ * étiquetées par taille) placées sur UN matelas, en SVG 1:1 — le marker à
+ * donner au façonnier. Le nombre de pièces est borné : au-delà, le SVG
+ * devient illisible/énorme (le bilan matière, lui, chiffre les grosses
+ * commandes par extrapolation). */
+export function exportMultiSizeMarker(
+  entries: ReadonlyArray<{ size: string; draft: DraftDoc; qty: number }>,
+  saCm: number,
+  cap = 200,
+): { lengthM: number; pieces: number; capped: boolean } {
+  const combined: MarkerPiece[] = [];
+  for (const { size, draft, qty } of entries) {
+    const q = Math.max(0, Math.round(qty));
+    if (q === 0) continue;
+    // Une pièce étiquetée PAR taille, réutilisée pour toutes ses copies →
+    // le cache raster de nestPieces ne la calcule qu'une fois.
+    const labeled = collect(draft).map((p) => ({ ...p, name: `${size} \u00b7 ${p.name}` }));
+    for (let i = 0; i < q; i++) for (const p of labeled) combined.push(p);
+  }
+  if (combined.length === 0 || combined.length > cap) {
+    return { lengthM: 0, pieces: combined.length, capped: combined.length > cap };
+  }
+  const nest = nestPieces(combined, saCm);
+  const blob = new Blob([markerSvg(nest)], { type: 'image/svg+xml' });
+  downloadBrowserBlob(blob, 'toile-plan-decoupe-multi-tailles.svg');
+  return { lengthM: +(nest.lengthCm / 100).toFixed(2), pieces: combined.length, capped: false };
+}

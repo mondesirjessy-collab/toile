@@ -85,7 +85,7 @@ import { MouseForce } from './app/MouseForce';
 import { buildSceneMesh, SCENE_VERTEX_FLOATS, type SceneMesh } from './app/SceneGeometry';
 import { computeNormals, downloadGlb, type GltfPiece } from './app/gltfExport';
 import { exportTechPack } from './app/techPack';
-import { exportMarker } from './app/markerLayout';
+import { exportMarker, exportMultiSizeMarker } from './app/markerLayout';
 import { exportDxf } from './app/dxfExport';
 import { exportMaterialReport, parseSizeCurve } from './app/materialReport';
 import { GpuProfiler } from './app/GpuProfiler';
@@ -8418,6 +8418,28 @@ async function main(): Promise<void> {
             (res.estimated ? ' (estime)' : '') +
             ` (economie ${res.saved_m} m vs separe)`,
         );
+      },
+      onMultiMarker: (sizeCurve: string) => {
+        // Plan de decoupe visuel du matelas MELANGE (vraies positions). Borne
+        // en nombre de pieces : le SVG doit rester lisible/telechargeable.
+        if (loadedPattern !== 'boxy') {
+          showToast('Plan multi-tailles : charge le T-shirt composable');
+          return;
+        }
+        const qtyMap = parseSizeCurve(sizeCurve, BOXY_SIZES);
+        const entries = BOXY_SIZES.map((size) => ({
+          size,
+          qty: qtyMap[size] ?? 0,
+          draft: boxyTee(size, lastMeasure, REF, boxySleeves, boxyCollar, boxyNeck, boxyLen, false),
+        }));
+        const res = exportMultiSizeMarker(entries, +(seamAllowanceM * 100).toFixed(1));
+        if (res.capped) {
+          showToast(`Plan multi-tailles : ${res.pieces} pieces, trop pour un SVG lisible - reduis la commande (le bilan chiffre les grosses)`);
+        } else if (res.pieces === 0) {
+          showToast('Plan multi-tailles : renseigne des quantites (courbe de tailles)');
+        } else {
+          showToast(`Plan de decoupe multi-tailles - ${res.pieces} pieces - ${res.lengthM} m sur laize 150 cm`);
+        }
       },
       onPatternPdf: () => {
         // Le pantalon importé est déjà un patron vectoriel coté, marge de

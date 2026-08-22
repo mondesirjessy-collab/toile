@@ -108,6 +108,7 @@ export interface PanelCallbacks {
   onMarker?(): void;
   onDxf?(): void;
   onMaterialReport?(sizeCurve: string): void;
+  onMultiMarker?(sizeCurve: string): void;
   onPins(held: boolean): void;
   onFitMap(on: boolean): void;
   onReset(): void;
@@ -527,6 +528,7 @@ export class ControlPanel {
     file.add({ dxf: () => this.cb.onDxf?.() }, 'dxf').name('découpe usine (DXF)');
     file.add(this.reportOpts, 'courbe').name('quantités / taille (ex : M:10 L:8)');
     file.add({ bilan: () => this.cb.onMaterialReport?.(this.reportOpts.courbe) }, 'bilan').name('bilan matière multi-tailles (.csv)');
+    file.add({ multimarker: () => this.cb.onMultiMarker?.(this.reportOpts.courbe) }, 'multimarker').name('plan de découpe multi-tailles (SVG)');
     file.add({ exporter: () => this.exportGarment() }, 'exporter').name('exporter le vêtement (.json)');
     file.add({ importer: () => this.importGarment() }, 'importer').name('importer un vêtement');
 
