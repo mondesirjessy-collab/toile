@@ -17,7 +17,7 @@ function roleLabel(p: DraftPiece): string {
   return p.name ?? 'Pièce';
 }
 
-interface MarkerPiece { name: string; wCm: number; hCm: number; outline: readonly UV[]; }
+export interface MarkerPiece { name: string; wCm: number; hCm: number; outline: readonly UV[]; }
 export interface Placement extends MarkerPiece { x: number; y: number; rot: 0 | 180; }
 export interface MarkerNest { placements: Placement[]; rollWidthCm: number; lengthCm: number }
 
@@ -74,11 +74,30 @@ function maskOn(ra: Raster, mr: number, mc: number, rot: 0 | 180): boolean {
   return ra.mask[r * ra.cols + c] === 1;
 }
 
-/** Nesting bottom-left-fill : chaque pièce descend le plus bas / à gauche possible. */
+/** Nesting bottom-left-fill d'un patron (mono-taille). */
 export function nestMarker(draft: DraftDoc, saCm: number, rollWidthCm = ROLL_WIDTH_CM): MarkerNest {
+  return nestPieces(collect(draft), saCm, rollWidthCm);
+}
+
+/** Toutes les pièces (MarkerPiece) d'un patron, prêtes à placer. */
+export function draftMarkerPieces(draft: DraftDoc): MarkerPiece[] {
+  return collect(draft);
+}
+
+/** Nesting bottom-left-fill : chaque pièce descend le plus bas / à gauche
+ * possible. Accepte une LISTE de pièces (mono- OU multi-tailles) — c'est le
+ * cœur du placement mélangé. Les rasters sont mis en cache PAR pièce : les
+ * copies (mêmes objets, une commande entière) ne sont rasterisées qu'une fois. */
+export function nestPieces(list: readonly MarkerPiece[], saCm: number, rollWidthCm = ROLL_WIDTH_CM): MarkerNest {
   const gridCols = Math.max(1, Math.ceil(rollWidthCm / CELL_CM));
-  const pieces = collect(draft)
-    .map((p) => ({ p, ra: rasterize(p.outline, p.wCm, p.hCm, saCm) }))
+  const cache = new Map<MarkerPiece, Raster>();
+  const rasterOf = (p: MarkerPiece): Raster => {
+    let ra = cache.get(p);
+    if (!ra) { ra = rasterize(p.outline, p.wCm, p.hCm, saCm); cache.set(p, ra); }
+    return ra;
+  };
+  const pieces = list
+    .map((p) => ({ p, ra: rasterOf(p) }))
     .sort((a, b) => b.ra.cols * b.ra.rows - a.ra.cols * a.ra.rows); // plus grosses d'abord
   const occ: Uint8Array[] = [];
   const rowOf = (y: number): Uint8Array => {
@@ -103,7 +122,7 @@ export function nestMarker(draft: DraftDoc, saCm: number, rollWidthCm = ROLL_WID
     for (const rot of [0, 180] as const) {
       const maxX = Math.max(0, gridCols - ra.cols);
       let found: { x: number; y: number } | null = null;
-      for (let y = 0; !found && y < 4000; y++) {
+      for (let y = 0; !found && y < 20000; y++) {
         for (let x = 0; x <= maxX; x++) {
           if (!collides(ra, x, y, rot)) { found = { x, y }; break; }
         }

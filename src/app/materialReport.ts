@@ -1,6 +1,6 @@
 import type { DraftDoc, DraftPiece, UV } from '../engine/pattern/Draft';
 import { downloadBrowserBlob } from './browserDownload';
-import { nestMarker } from './markerLayout';
+import { nestMarker, nestPieces, draftMarkerPieces, type MarkerPiece } from './markerLayout';
 
 // Bilan matière multi-tailles (BLUEPRINT §16) : pour une gradation complète, le
 // métrage de placement — le MÊME nesting serré que le plan de découpe (marker)
@@ -87,7 +87,12 @@ export interface MaterialReportInput {
 export function buildMaterialReport(
   entries: ReadonlyArray<{ size: string; draft: DraftDoc; qty: number }>,
   input: MaterialReportInput,
-): { rows: MaterialRow[]; laize_cm: number; total: { quantite: number; metrage_total_m: number } } {
+): {
+  rows: MaterialRow[];
+  laize_cm: number;
+  total: { quantite: number; metrage_total_m: number };
+  mixed: { metrage_m: number; estimated: boolean; pieces: number };
+} {
   let laizeCm = 150;
   const rows: MaterialRow[] = entries.map(({ size, draft, qty }) => {
     const nest = nestMarker(draft, input.seamAllowanceCm);
@@ -110,14 +115,53 @@ export function buildMaterialReport(
     quantite: rows.reduce((s, r) => s + r.quantite, 0),
     metrage_total_m: +rows.reduce((s, r) => s + r.metrage_total_m, 0).toFixed(2),
   };
-  return { rows, laize_cm: laizeCm, total };
+  // Placement MÉLANGÉ : toutes les pièces commandées sur UN seul matelas — le
+  // vrai gain multi-tailles (grandes et petites pièces s'imbriquent). Jusqu'à
+  // SAMPLE_TARGET pièces on place la commande RÉELLE (exact) ; au-delà on place
+  // un échantillon représentatif (mêmes ratios) et on extrapole par la surface
+  // — le rendement d'un matelas est ~constant à mix égal (vérifié <1%). Les
+  // copies d'une taille partagent le même objet → raster mis en cache (rapide).
+  const SAMPLE_TARGET = 220;
+  const perSize = entries
+    .map(({ draft, qty }) => ({
+      pcs: draftMarkerPieces(draft),
+      area: draftAreaM2(draft),
+      qty: Math.max(0, Math.round(qty)),
+    }))
+    .filter((e) => e.qty > 0);
+  const totalPieces = perSize.reduce((s, e) => s + e.pcs.length * e.qty, 0);
+  const fullSurface = perSize.reduce((s, e) => s + e.area * e.qty, 0);
+  const rollM = laizeCm / 100;
+  let mixedM = 0;
+  let estimated = false;
+  if (totalPieces > 0 && totalPieces <= SAMPLE_TARGET) {
+    const combined: MarkerPiece[] = [];
+    for (const e of perSize) for (let i = 0; i < e.qty; i++) for (const p of e.pcs) combined.push(p);
+    mixedM = +(nestPieces(combined, input.seamAllowanceCm).lengthCm / 100).toFixed(2);
+  } else if (totalPieces > SAMPLE_TARGET) {
+    const scale = SAMPLE_TARGET / totalPieces;
+    const sample: MarkerPiece[] = [];
+    let sampleSurface = 0;
+    for (const e of perSize) {
+      const sq = Math.max(1, Math.round(e.qty * scale));
+      for (let i = 0; i < sq; i++) for (const p of e.pcs) sample.push(p);
+      sampleSurface += e.area * sq;
+    }
+    const sampleLenM = nestPieces(sample, input.seamAllowanceCm).lengthCm / 100;
+    const usedM2 = rollM * sampleLenM;
+    const rendement = usedM2 > 0 ? sampleSurface / usedM2 : 0;
+    mixedM = rendement > 0 ? +(fullSurface / (rollM * rendement)).toFixed(2) : 0;
+    estimated = true;
+  }
+  const mixed = { metrage_m: mixedM, estimated, pieces: totalPieces };
+  return { rows, laize_cm: laizeCm, total, mixed };
 }
 
 /** Construit + télécharge le bilan matière (CSV). Renvoie l'entête (toast). */
 export function exportMaterialReport(
   entries: ReadonlyArray<{ size: string; draft: DraftDoc; qty: number }>,
   input: MaterialReportInput,
-): { total_m: number; units: number; sizes: number } {
+): { total_m: number; units: number; sizes: number; mixed_m: number; saved_m: number; estimated: boolean } {
   const rep = buildMaterialReport(entries, input);
   const esc = (s: string): string => `"${s.replace(/"/g, '""')}"`;
   const lines: string[] = [];
@@ -132,9 +176,28 @@ export function exportMaterialReport(
   for (const r of rep.rows) {
     lines.push(`${esc(r.taille)},${r.quantite},${r.metrage_piece_m},${r.metrage_total_m},${r.surface_m2},${r.rendement}`);
   }
-  lines.push(`${esc('Total commande')},${rep.total.quantite},,${rep.total.metrage_total_m},,`);
+  lines.push(`${esc('Total (placement separe par taille)')},${rep.total.quantite},,${rep.total.metrage_total_m},,`);
+  if (rep.mixed.pieces > 0) {
+    const saved = +(rep.total.metrage_total_m - rep.mixed.metrage_m).toFixed(2);
+    const pct = rep.total.metrage_total_m > 0 ? Math.round((saved / rep.total.metrage_total_m) * 100) : 0;
+    const label = rep.mixed.estimated
+      ? 'Placement melange (estime d apres echantillon)'
+      : 'Placement melange (matelas unique)';
+    lines.push(`${esc(label)},${rep.total.quantite},,${rep.mixed.metrage_m},,`);
+    lines.push(`${esc('Economie tissu vs separe')},,,${saved} m (${pct}%),,`);
+  }
   // BOM UTF-8 pour qu'Excel lise correctement les accents de la configuration.
   const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
   downloadBrowserBlob(blob, 'toile-bilan-matiere.csv');
-  return { total_m: rep.total.metrage_total_m, units: rep.total.quantite, sizes: rep.rows.length };
+  const savedM = rep.mixed.pieces > 0
+    ? +(rep.total.metrage_total_m - rep.mixed.metrage_m).toFixed(2)
+    : 0;
+  return {
+    total_m: rep.total.metrage_total_m,
+    units: rep.total.quantite,
+    sizes: rep.rows.length,
+    mixed_m: rep.mixed.metrage_m,
+    saved_m: savedM,
+    estimated: rep.mixed.estimated,
+  };
 }

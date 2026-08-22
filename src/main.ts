@@ -8413,7 +8413,11 @@ async function main(): Promise<void> {
           config: cfg,
           seamAllowanceCm: +(seamAllowanceM * 100).toFixed(1),
         });
-        showToast(`Bilan matiere - ${res.units} pieces (${res.sizes} tailles) - ${res.total_m} m de tissu`);
+        showToast(
+          `Bilan matiere - ${res.units} pieces - placement melange ${res.mixed_m} m` +
+            (res.estimated ? ' (estime)' : '') +
+            ` (economie ${res.saved_m} m vs separe)`,
+        );
       },
       onPatternPdf: () => {
         // Le pantalon importé est déjà un patron vectoriel coté, marge de
