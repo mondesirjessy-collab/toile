@@ -1,6 +1,6 @@
-import type { DraftDoc, UV } from '../engine/pattern/Draft';
+import type { DraftDoc } from '../engine/pattern/Draft';
 import { downloadBrowserBlob } from './browserDownload';
-import { nestMarker } from './markerLayout';
+import { nestMarker, placedPoint, type Placement } from './markerLayout';
 
 // Export DXF (BLUEPRINT §16.7 #3) — le fichier de découpe que les usines
 // attendent. DXF R12 ASCII (AC1009), le plus largement lisible : une POLYLINE
@@ -8,12 +8,11 @@ import { nestMarker } from './markerLayout';
 // marker, + un label TEXT. Calques CUT (coupe) et TEXT.
 const g = (code: number | string, val: number | string): string => `${code}\n${val}\n`;
 
-function polyline(outline: readonly UV[], xCm: number, yCm: number, wCm: number, hCm: number): string {
+function polyline(pl: Placement): string {
   let s = g(0, 'POLYLINE') + g(8, 'CUT') + g(66, 1) + g(70, 1); // 66=vertices suivent, 70=1 fermée
-  for (const [u, v] of outline) {
-    const X = ((xCm + u * wCm) * 10).toFixed(2); // cm → mm
-    const Y = ((yCm + v * hCm) * 10).toFixed(2);
-    s += g(0, 'VERTEX') + g(8, 'CUT') + g(10, X) + g(20, Y) + g(30, '0.0');
+  for (const [u, v] of pl.outline) {
+    const [xCm, yCm] = placedPoint(pl, u, v); // position absolue (rotation comprise)
+    s += g(0, 'VERTEX') + g(8, 'CUT') + g(10, (xCm * 10).toFixed(2)) + g(20, (yCm * 10).toFixed(2)) + g(30, '0.0');
   }
   s += g(0, 'SEQEND') + g(8, 'CUT');
   return s;
@@ -28,8 +27,9 @@ export function buildDxf(draft: DraftDoc, saCm: number): { dxf: string; pieces: 
   const nest = nestMarker(draft, saCm);
   let ents = '';
   for (const pl of nest.placements) {
-    ents += polyline(pl.outline, pl.x, pl.y, pl.wCm, pl.hCm);
-    ents += textLabel(pl.name, pl.x + pl.wCm / 2, pl.y + pl.hCm / 2);
+    ents += polyline(pl);
+    const [cxCm, cyCm] = placedPoint(pl, 0.5, 0.5);
+    ents += textLabel(pl.name, cxCm, cyCm);
   }
   const header =
     g(0, 'SECTION') + g(2, 'HEADER') +

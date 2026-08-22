@@ -1,11 +1,13 @@
 import type { DraftDoc, DraftPiece, UV } from '../engine/pattern/Draft';
+import { pointInPolygon } from '../engine/pattern/Draft';
 import { downloadBrowserBlob } from './browserDownload';
 
-// Plan de découpe (BLUEPRINT §16.7 #2) : on place les pièces sur la laize
-// (nesting « shelf » FFDH — simple et démontrable), on en tire un schéma de
-// coupe 1:1 (SVG) et le métrage réel. Version démocratisée du marker CLO.
+// Plan de découpe (BLUEPRINT §16.7 #2). Nesting SERRÉ : bottom-left-fill sur une
+// grille d'occupation, avec les VRAIS contours rasterisés — les pièces
+// s'imbriquent dans les creux (encolure, entre-emmanchures), et on essaie la
+// rotation 180° pour combler. Bien plus dense que l'ancien placement « shelf ».
 const ROLL_WIDTH_CM = 150; // laize standard
-const GAP_CM = 1.5; // jeu entre pièces
+const CELL_CM = 1.5; // résolution de la grille de placement
 
 function roleLabel(p: DraftPiece): string {
   const r = p.placement?.role ?? p.wrap;
@@ -16,8 +18,8 @@ function roleLabel(p: DraftPiece): string {
 }
 
 interface MarkerPiece { name: string; wCm: number; hCm: number; outline: readonly UV[]; }
-interface Placement extends MarkerPiece { x: number; y: number; }
-export interface MarkerNest { placements: Placement[]; rollWidthCm: number; lengthCm: number; }
+export interface Placement extends MarkerPiece { x: number; y: number; rot: 0 | 180; }
+export interface MarkerNest { placements: Placement[]; rollWidthCm: number; lengthCm: number }
 
 function collect(draft: DraftDoc): MarkerPiece[] {
   const out: MarkerPiece[] = [];
@@ -30,29 +32,106 @@ function collect(draft: DraftDoc): MarkerPiece[] {
   return out;
 }
 
-/** Nesting « shelf » (First-Fit Decreasing Height) sur la laize. Fonction PURE. */
-export function nestMarker(draft: DraftDoc, saCm: number, rollWidthCm = ROLL_WIDTH_CM): MarkerNest {
-  const pieces = collect(draft).sort((a, b) => b.hCm - a.hCm);
-  const placements: Placement[] = [];
-  let rowY = 0;
-  let cursorX = 0;
-  let rowMaxH = 0;
-  for (const pc of pieces) {
-    const bw = pc.wCm + 2 * saCm;
-    const bh = pc.hCm + 2 * saCm;
-    if (cursorX + bw > rollWidthCm && cursorX > 0) {
-      rowY += rowMaxH + GAP_CM;
-      cursorX = 0;
-      rowMaxH = 0;
+interface Raster { mask: Uint8Array; cols: number; rows: number }
+
+/** Rasterise le contour d'une pièce (+ marge de couture dilatée) sur la grille. */
+function rasterize(outline: readonly UV[], wCm: number, hCm: number, saCm: number): Raster {
+  const cols = Math.max(1, Math.ceil((wCm + 2 * saCm) / CELL_CM));
+  const rows = Math.max(1, Math.ceil((hCm + 2 * saCm) / CELL_CM));
+  const raw = new Uint8Array(cols * rows);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const xCm = (c + 0.5) * CELL_CM - saCm;
+      const yCm = (r + 0.5) * CELL_CM - saCm;
+      const u = xCm / wCm;
+      const v = yCm / hCm;
+      if (u >= 0 && u <= 1 && v >= 0 && v <= 1 && pointInPolygon([u, v], outline)) raw[r * cols + c] = 1;
     }
-    placements.push({ ...pc, x: cursorX + saCm, y: rowY + saCm });
-    cursorX += bw + GAP_CM;
-    rowMaxH = Math.max(rowMaxH, bh);
   }
-  return { placements, rollWidthCm, lengthCm: rowY + rowMaxH };
+  // Dilate d'un rayon = marge de couture (≥ 1 cellule) → jeu réel entre pièces.
+  const rad = Math.max(1, Math.round(saCm / CELL_CM));
+  const mask = new Uint8Array(cols * rows);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      let on = false;
+      for (let dr = -rad; dr <= rad && !on; dr++) {
+        for (let dc = -rad; dc <= rad; dc++) {
+          const rr = r + dr;
+          const cc = c + dc;
+          if (rr >= 0 && rr < rows && cc >= 0 && cc < cols && raw[rr * cols + cc]) { on = true; break; }
+        }
+      }
+      mask[r * cols + c] = on ? 1 : 0;
+    }
+  }
+  return { mask, cols, rows };
 }
 
-/** Schéma de coupe 1:1 en SVG (mm). Contours réels des pièces posés sur la laize. */
+/** Cellule (mr,mc) du masque, tournée de rot (0 ou 180°). */
+function maskOn(ra: Raster, mr: number, mc: number, rot: 0 | 180): boolean {
+  const r = rot === 180 ? ra.rows - 1 - mr : mr;
+  const c = rot === 180 ? ra.cols - 1 - mc : mc;
+  return ra.mask[r * ra.cols + c] === 1;
+}
+
+/** Nesting bottom-left-fill : chaque pièce descend le plus bas / à gauche possible. */
+export function nestMarker(draft: DraftDoc, saCm: number, rollWidthCm = ROLL_WIDTH_CM): MarkerNest {
+  const gridCols = Math.max(1, Math.ceil(rollWidthCm / CELL_CM));
+  const pieces = collect(draft)
+    .map((p) => ({ p, ra: rasterize(p.outline, p.wCm, p.hCm, saCm) }))
+    .sort((a, b) => b.ra.cols * b.ra.rows - a.ra.cols * a.ra.rows); // plus grosses d'abord
+  const occ: Uint8Array[] = [];
+  const rowOf = (y: number): Uint8Array => {
+    while (occ.length <= y) occ.push(new Uint8Array(gridCols));
+    return occ[y]!;
+  };
+  const collides = (ra: Raster, x: number, y: number, rot: 0 | 180): boolean => {
+    for (let mr = 0; mr < ra.rows; mr++) {
+      for (let mc = 0; mc < ra.cols; mc++) {
+        if (!maskOn(ra, mr, mc, rot)) continue;
+        const gx = x + mc;
+        const gy = y + mr;
+        if (gx < 0 || gx >= gridCols) return true;
+        if (gy < occ.length && occ[gy]![gx]) return true;
+      }
+    }
+    return false;
+  };
+  const placements: Placement[] = [];
+  for (const { p, ra } of pieces) {
+    let best: { x: number; y: number; rot: 0 | 180 } | null = null;
+    for (const rot of [0, 180] as const) {
+      const maxX = Math.max(0, gridCols - ra.cols);
+      let found: { x: number; y: number } | null = null;
+      for (let y = 0; !found && y < 4000; y++) {
+        for (let x = 0; x <= maxX; x++) {
+          if (!collides(ra, x, y, rot)) { found = { x, y }; break; }
+        }
+      }
+      if (found && (!best || found.y < best.y || (found.y === best.y && found.x < best.x))) {
+        best = { x: found.x, y: found.y, rot };
+      }
+    }
+    const chosen = best ?? { x: 0, y: 0, rot: 0 as const };
+    for (let mr = 0; mr < ra.rows; mr++) {
+      const row = rowOf(chosen.y + mr);
+      for (let mc = 0; mc < ra.cols; mc++) {
+        if (maskOn(ra, mr, mc, chosen.rot)) { const gx = chosen.x + mc; if (gx >= 0 && gx < gridCols) row[gx] = 1; }
+      }
+    }
+    placements.push({ name: p.name, wCm: p.wCm, hCm: p.hCm, outline: p.outline, x: chosen.x * CELL_CM, y: chosen.y * CELL_CM, rot: chosen.rot });
+  }
+  return { placements, rollWidthCm, lengthCm: occ.length * CELL_CM };
+}
+
+/** Point (u,v) d'une pièce → position ABSOLUE (cm) sur la laize, rotation comprise. */
+export function placedPoint(pl: Placement, u: number, v: number): [number, number] {
+  const uu = pl.rot === 180 ? 1 - u : u;
+  const vv = pl.rot === 180 ? 1 - v : v;
+  return [pl.x + uu * pl.wCm, pl.y + vv * pl.hCm];
+}
+
+/** Schéma de coupe 1:1 en SVG (mm). Contours réels posés sur la laize. */
 export function markerSvg(nest: MarkerNest): string {
   const { placements, rollWidthCm, lengthCm } = nest;
   const pad = 30;
@@ -64,11 +143,10 @@ export function markerSvg(nest: MarkerNest): string {
   const shapes = placements
     .map((pl) => {
       const pts = pl.outline
-        .map(([u, v]) => `${(pad + (pl.x + u * pl.wCm) * 10).toFixed(1)},${(pad + (pl.y + v * pl.hCm) * 10).toFixed(1)}`)
+        .map(([u, v]) => { const [x, y] = placedPoint(pl, u, v); return `${(pad + x * 10).toFixed(1)},${(pad + y * 10).toFixed(1)}`; })
         .join(' ');
-      const cx = pad + (pl.x + pl.wCm / 2) * 10;
-      const cy = pad + (pl.y + pl.hCm / 2) * 10;
-      return `<polygon points="${pts}" class="pc"/><text x="${cx.toFixed(0)}" y="${cy.toFixed(0)}" class="lbl">${pl.name}</text>`;
+      const [cxCm, cyCm] = placedPoint(pl, 0.5, 0.5);
+      return `<polygon points="${pts}" class="pc"/><text x="${(pad + cxCm * 10).toFixed(0)}" y="${(pad + cyCm * 10).toFixed(0)}" class="lbl">${pl.name}</text>`;
     })
     .join('');
   return (
