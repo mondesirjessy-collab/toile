@@ -654,7 +654,8 @@
     #at-tee-sleeves-row[hidden],
     #at-tee-neck-row[hidden],
     #at-tee-collar-row[hidden],
-    #at-tee-length-row[hidden] { display: none; }
+    #at-tee-length-row[hidden],
+    #at-tee-ease-row[hidden] { display: none; }
     #motif-chooser .q,
     #offset-chooser .q,
     #fullness-chooser .q,
@@ -1441,6 +1442,10 @@
             <option value="regular" selected>Normal</option>
             <option value="long">Long</option>
           </select>
+        </label>
+        <label class="field-label" for="at-tee-ease" id="at-tee-ease-row" hidden>
+          Aisance &middot; <span id="at-tee-ease-val" style="text-transform:none;letter-spacing:0;font-weight:600;color:rgba(211,215,223,0.82)">standard</span>
+          <input id="at-tee-ease" type="range" min="90" max="120" step="2" value="100" class="avatar-measure-range" aria-label="Aisance du t-shirt sur-mesure : pres du corps a ample" title="Aisance sur-mesure : pres du corps a ample. N'agit que sur la coupe aux cotes du mannequin.">
         </label>
         <div class="tgrp one-column">
           <button id="at-sleeves" aria-pressed="false" title="Manches AUTOMATIQUES : deux tubes tout faits, posés et cousus en un clic (pour les dessiner toi-même : Nouvelle pièce → Bras)">＋ Manches automatiques</button>

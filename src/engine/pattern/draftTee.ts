@@ -194,11 +194,11 @@ export type TeeLength = 'crop' | 'regular' | 'long';
  * manche↔emmanchure, donc les blocs (manches/col/encolure/longueur) restent
  * alignés. Seuls les champs d'échelle bougent ; le contour normalisé [0,1] ne
  * change pas. */
-function boxyDataGraded(m: BodyMeasure, ref: BodyMeasure): BoxySizeData {
+function boxyDataGraded(m: BodyMeasure, ref: BodyMeasure, ease = 1): BoxySizeData {
   const D0 = BOXY_DATA.M;
   const chestSx = (m.chest.circ * 100) / D0.chestCm;
   const shoulderSx = m.shoulderHalfW / 0.175; // ≈ demi-carrure de réf.
-  const sx = chestSx + 0.5 * Math.max(0, shoulderSx - chestSx); // grade largeur
+  const sx = (chestSx + 0.5 * Math.max(0, shoulderSx - chestSx)) * ease; // grade largeur x aisance (1 = coupe standard)
   const sy = ref.height > 0 ? m.height / ref.height : 1; // grade hauteur ← stature
   const cl = (o: readonly UV[]): UV[] => o.map(([a, b]) => [a, b]);
   return {
@@ -220,8 +220,9 @@ export function boxyTee(
   neck: TeeNeck = 'ras',
   bodyLen: TeeLength = 'regular',
   surMesure = false,
+  ease = 1, // aisance sur-mesure : <1 pres du corps, >1 ample ; n'agit que sur boxyDataGraded
 ): DraftDoc {
-  const D = surMesure ? boxyDataGraded(m, ref) : BOXY_DATA[size];
+  const D = surMesure ? boxyDataGraded(m, ref, ease) : BOXY_DATA[size];
   const topY = 1.52 + (m.shoulderY - ref.shoulderY); // ligne épaule-encolure = haut de pièce (v=0)
   const clone = (o: readonly UV[]): UV[] => o.map(([a, b]) => [a, b]);
   // DEVANT / DOS : le contour exact du patron (45 points — encolure 15 pts,

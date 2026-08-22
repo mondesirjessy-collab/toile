@@ -2109,6 +2109,7 @@ async function main(): Promise<void> {
   let boxyNeck: TeeNeck = 'ras'; // forme d'encolure échangeable du tee
   let boxyLen: TeeLength = 'regular'; // longueur du corps échangeable du tee
   let boxyFitBodyKey = ''; // v242 — corps du dernier regrade sur-mesure du tee (ne recalcule que si le corps change)
+  let boxyEase = 1; // v243 — aisance sur-mesure du tee : <1 pres du corps, >1 ample (multiplie la largeur graduee)
   // The bundled male scan measures about 70.5 cm at the waist; size 26 is the
   // closest supplied pattern. Starting on 32 made an intentionally oversized
   // waistband look as though it needed an invisible suspension.
@@ -2128,6 +2129,14 @@ async function main(): Promise<void> {
   const teeNeckSel = document.getElementById('at-tee-neck') as HTMLSelectElement | null;
   const teeLengthRow = document.getElementById('at-tee-length-row');
   const teeLengthSel = document.getElementById('at-tee-length') as HTMLSelectElement | null;
+  const teeEaseRow = document.getElementById('at-tee-ease-row');
+  const teeEaseSlider = document.getElementById('at-tee-ease') as HTMLInputElement | null;
+  const teeEaseVal = document.getElementById('at-tee-ease-val');
+  const easeWord = (pct: number): string =>
+    pct <= 94 ? 'pres du corps' : pct >= 108 ? 'ample' : 'standard';
+  const syncEaseLabel = (): void => {
+    if (teeEaseVal && teeEaseSlider) teeEaseVal.textContent = easeWord(teeEaseSlider.valueAsNumber);
+  };
   const syncAvatarStatureHelp = (): void => {
     if (sizeSel) sizeSel.disabled = !draftTouched;
     if (!draftTouched) {
@@ -2193,6 +2202,12 @@ async function main(): Promise<void> {
     // Longueur du corps : sélecteur visible pour le tee seulement (4e bloc composable).
     if (teeLengthRow) teeLengthRow.hidden = kind !== 'boxy';
     if (teeLengthSel && kind === 'boxy') teeLengthSel.value = boxyLen;
+    // Aisance : visible pour le tee EN SUR-MESURE seulement (agit sur la coupe aux cotes).
+    if (teeEaseRow) teeEaseRow.hidden = !(kind === 'boxy' && boxySurMesure);
+    if (teeEaseSlider && kind === 'boxy') {
+      teeEaseSlider.value = String(Math.round(boxyEase * 100));
+      syncEaseLabel();
+    }
     if (kind === 'clo-tee') {
       sizeSel.innerHTML = `<option value="avatar">Bloc CLO ajusté au mannequin · poitrine ${(lastMeasure.chest.circ * 100).toFixed(0)} cm</option>`;
       sizeSel.value = 'avatar';
@@ -2379,7 +2394,7 @@ async function main(): Promise<void> {
     pushHistory();
     showSizes('boxy');
     teePreset = false;
-    draft = boxyTee(boxySize, lastMeasure, REF, boxySleeves, boxyCollar, boxyNeck, boxyLen, boxySurMesure);
+    draft = boxyTee(boxySize, lastMeasure, REF, boxySleeves, boxyCollar, boxyNeck, boxyLen, boxySurMesure, boxyEase);
     draftTouched = true; // un vrai draft : éditable, exportable
     atelierSleeves = false; // les manches sont DES PIÈCES du patron
     atelierCollar = false;
@@ -2406,6 +2421,16 @@ async function main(): Promise<void> {
   teeLengthSel?.addEventListener('change', () => {
     boxyLen = teeLengthSel.value as TeeLength;
     if (loadedPattern === 'boxy' && sceneMode === 'atelier') loadBoxyTee();
+  });
+  // Aisance sur-mesure : pres du corps <-> ample. Le libelle suit en direct
+  // (input) ; le patron se recoupe au relachement (change), comme les curseurs
+  // de mensuration. On passe par build() (pas loadBoxyTee) : la vue et
+  // l'historique sont gardes, et le bloc de regrade reporte le design par-piece.
+  teeEaseSlider?.addEventListener('input', syncEaseLabel);
+  teeEaseSlider?.addEventListener('change', () => {
+    boxyEase = teeEaseSlider.valueAsNumber / 100;
+    syncEaseLabel();
+    if (loadedPattern === 'boxy' && boxySurMesure && sceneMode === 'atelier') build();
   });
 
   const loadLoosePants = (): void => {
@@ -5283,7 +5308,7 @@ async function main(): Promise<void> {
     // curseur ne l'efface pas. Les pid sont stables tant que les blocs ne
     // changent pas (un changement de bloc passe par loadBoxyTee, pas ici).
     if (target === 'atelier' && loadedPattern === 'boxy' && boxySurMesure) {
-      const boxyKey = hoodieBodyKey(m);
+      const boxyKey = hoodieBodyKey(m) + '|e' + boxyEase;
       if (boxyKey !== boxyFitBodyKey) {
         const carried = new Map<
           number,
@@ -5300,7 +5325,7 @@ async function main(): Promise<void> {
             });
           }
         }
-        draft = boxyTee(boxySize, m, REF, boxySleeves, boxyCollar, boxyNeck, boxyLen, true);
+        draft = boxyTee(boxySize, m, REF, boxySleeves, boxyCollar, boxyNeck, boxyLen, true, boxyEase);
         boxyFitBodyKey = boxyKey;
         for (const [pid, d] of carried) {
           const next = draftPieceAt(pid);
