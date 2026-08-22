@@ -109,6 +109,7 @@ export interface PanelCallbacks {
   onDxf?(): void;
   onMaterialReport?(sizeCurve: string): void;
   onMultiMarker?(sizeCurve: string): void;
+  onDxfGraded?(): void;
   onPins(held: boolean): void;
   onFitMap(on: boolean): void;
   onReset(): void;
@@ -526,6 +527,7 @@ export class ControlPanel {
     file.add({ techpack: () => this.cb.onTechPack?.() }, 'techpack').name('fiche de production (.json)');
     file.add({ marker: () => this.cb.onMarker?.() }, 'marker').name('plan de découpe (SVG)');
     file.add({ dxf: () => this.cb.onDxf?.() }, 'dxf').name('découpe usine (DXF)');
+    file.add({ dxfgrade: () => this.cb.onDxfGraded?.() }, 'dxfgrade').name('découpe usine · toutes tailles (DXF gradé)');
     file.add(this.reportOpts, 'courbe').name('quantités / taille (ex : M:10 L:8)');
     file.add({ bilan: () => this.cb.onMaterialReport?.(this.reportOpts.courbe) }, 'bilan').name('bilan matière multi-tailles (.csv)');
     file.add({ multimarker: () => this.cb.onMultiMarker?.(this.reportOpts.courbe) }, 'multimarker').name('plan de découpe multi-tailles (SVG)');

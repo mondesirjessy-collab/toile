@@ -86,7 +86,7 @@ import { buildSceneMesh, SCENE_VERTEX_FLOATS, type SceneMesh } from './app/Scene
 import { computeNormals, downloadGlb, type GltfPiece } from './app/gltfExport';
 import { exportTechPack } from './app/techPack';
 import { exportMarker, exportMultiSizeMarker } from './app/markerLayout';
-import { exportDxf } from './app/dxfExport';
+import { exportDxf, exportGradedDxf } from './app/dxfExport';
 import { exportMaterialReport, parseSizeCurve } from './app/materialReport';
 import { GpuProfiler } from './app/GpuProfiler';
 import {
@@ -8386,6 +8386,20 @@ async function main(): Promise<void> {
         if (!draft) return;
         const res = exportDxf(draft, +(seamAllowanceM * 100).toFixed(1));
         showToast(`DXF de decoupe exporte - ${res.pieces} pieces (mm, calque CUT)`);
+      },
+      onDxfGraded: () => {
+        // DXF GRADÉ : le patron dans toutes les tailles standard, une taille
+        // par calque (nid de gradation). Toujours la gradation standard.
+        if (loadedPattern !== 'boxy') {
+          showToast('DXF grade : charge le T-shirt composable');
+          return;
+        }
+        const entries = BOXY_SIZES.map((size) => ({
+          size,
+          draft: boxyTee(size, lastMeasure, REF, boxySleeves, boxyCollar, boxyNeck, boxyLen, false),
+        }));
+        const res = exportGradedDxf(entries);
+        showToast(`DXF grade - ${res.sizes} tailles (${res.pieces} pieces) - un calque par taille`);
       },
       onMaterialReport: (sizeCurve: string) => {
         // Bilan matiere multi-tailles : le metrage de placement pour TOUTE la
