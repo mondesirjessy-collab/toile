@@ -1,5 +1,5 @@
 import type { DraftDoc, DraftPiece, UV } from '../engine/pattern/Draft';
-import { pointInPolygon } from '../engine/pattern/Draft';
+import { pointInPolygon, addSeamNotches } from '../engine/pattern/Draft';
 import { downloadBrowserBlob } from './browserDownload';
 
 // Plan de découpe (BLUEPRINT §16.7 #2). Nesting SERRÉ : bottom-left-fill sur une
@@ -17,14 +17,14 @@ function roleLabel(p: DraftPiece): string {
   return p.name ?? 'Pièce';
 }
 
-export interface MarkerPiece { name: string; wCm: number; hCm: number; outline: readonly UV[]; }
+export interface MarkerPiece { name: string; wCm: number; hCm: number; outline: readonly UV[]; notches?: readonly UV[]; }
 export interface Placement extends MarkerPiece { x: number; y: number; rot: 0 | 180; }
 export interface MarkerNest { placements: Placement[]; rollWidthCm: number; lengthCm: number }
 
 function collect(draft: DraftDoc): MarkerPiece[] {
   const out: MarkerPiece[] = [];
   const add = (p: DraftPiece, nm: string): void => {
-    out.push({ name: nm, wCm: p.width * 100, hCm: p.height * 100, outline: p.outline });
+    out.push({ name: nm, wCm: p.width * 100, hCm: p.height * 100, outline: p.outline, notches: p.notches?.map((nt) => nt.at) });
   };
   add(draft.piece, 'Devant');
   if (draft.back && draft.back.outline.length >= 3) add(draft.back, 'Dos');
@@ -33,6 +33,19 @@ function collect(draft: DraftDoc): MarkerPiece[] {
 }
 
 interface Raster { mask: Uint8Array; cols: number; rows: number }
+
+/** Draft enrichi de crans de raccord sur chaque couture d'assemblage — points
+ * appariés (1/3-2/3, ou milieu si court) de part et d'autre. Non destructif :
+ * renvoie une copie, les crans existants (ajoutés main) sont conservés. */
+function withSeamNotches(draft: DraftDoc): DraftDoc {
+  let doc = draft;
+  const n = (draft.seams ?? []).length;
+  for (let i = 0; i < n; i++) {
+    const r = addSeamNotches(doc, i);
+    if (r.ok && r.doc) doc = r.doc;
+  }
+  return doc;
+}
 
 /** Rasterise le contour d'une pièce (+ marge de couture dilatée) sur la grille. */
 function rasterize(outline: readonly UV[], wCm: number, hCm: number, saCm: number): Raster {
@@ -138,7 +151,7 @@ export function nestPieces(list: readonly MarkerPiece[], saCm: number, rollWidth
         if (maskOn(ra, mr, mc, chosen.rot)) { const gx = chosen.x + mc; if (gx >= 0 && gx < gridCols) row[gx] = 1; }
       }
     }
-    placements.push({ name: p.name, wCm: p.wCm, hCm: p.hCm, outline: p.outline, x: chosen.x * CELL_CM, y: chosen.y * CELL_CM, rot: chosen.rot });
+    placements.push({ name: p.name, wCm: p.wCm, hCm: p.hCm, outline: p.outline, notches: p.notches, x: chosen.x * CELL_CM, y: chosen.y * CELL_CM, rot: chosen.rot });
   }
   return { placements, rollWidthCm, lengthCm: occ.length * CELL_CM };
 }
@@ -165,7 +178,22 @@ export function markerSvg(nest: MarkerNest): string {
         .map(([u, v]) => { const [x, y] = placedPoint(pl, u, v); return `${(pad + x * 10).toFixed(1)},${(pad + y * 10).toFixed(1)}`; })
         .join(' ');
       const [cxCm, cyCm] = placedPoint(pl, 0.5, 0.5);
-      return `<polygon points="${pts}" class="pc"/><text x="${(pad + cxCm * 10).toFixed(0)}" y="${(pad + cyCm * 10).toFixed(0)}" class="lbl">${pl.name}</text>`;
+      const marks = (pl.notches ?? [])
+        .map(([u, v]) => {
+          const [nx, ny] = placedPoint(pl, u, v);
+          let dx = cxCm - nx;
+          let dy = cyCm - ny;
+          const L = Math.hypot(dx, dy) || 1;
+          dx /= L;
+          dy /= L;
+          const x1 = pad + nx * 10;
+          const y1 = pad + ny * 10;
+          const x2 = pad + (nx + dx * 0.9) * 10;
+          const y2 = pad + (ny + dy * 0.9) * 10;
+          return `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" class="ntch"/><circle cx="${x1.toFixed(1)}" cy="${y1.toFixed(1)}" r="2.4" class="ntchd"/>`;
+        })
+        .join('');
+      return `<polygon points="${pts}" class="pc"/>${marks}<text x="${(pad + cxCm * 10).toFixed(0)}" y="${(pad + cyCm * 10).toFixed(0)}" class="lbl">${pl.name}</text>`;
     })
     .join('');
   return (
@@ -174,6 +202,7 @@ export function markerSvg(nest: MarkerNest): string {
     `<style>.roll{fill:#fbfaf7;stroke:#111;stroke-width:2;stroke-dasharray:9 5}` +
     `.pc{fill:#e9eefb;stroke:#2a2a2a;stroke-width:1.4;stroke-linejoin:round}` +
     `.lbl{font:11px sans-serif;fill:#333;text-anchor:middle}` +
+    `.ntch{stroke:#c0392b;stroke-width:2.2;stroke-linecap:round}.ntchd{fill:#c0392b}` +
     `.cap{font:14px sans-serif;fill:#111;font-weight:bold}</style>` +
     `<rect x="${pad}" y="${pad}" width="${rollW.toFixed(0)}" height="${rollH.toFixed(0)}" class="roll"/>` +
     shapes +
@@ -185,7 +214,7 @@ export function markerSvg(nest: MarkerNest): string {
 
 /** Nest + SVG + téléchargement. Renvoie le métrage (toast). */
 export function exportMarker(draft: DraftDoc, saCm: number): { lengthM: number; pieces: number } {
-  const nest = nestMarker(draft, saCm);
+  const nest = nestMarker(withSeamNotches(draft), saCm);
   const blob = new Blob([markerSvg(nest)], { type: 'image/svg+xml' });
   downloadBrowserBlob(blob, 'toile-plan-decoupe.svg');
   return { lengthM: +(nest.lengthCm / 100).toFixed(2), pieces: nest.placements.length };
@@ -207,7 +236,7 @@ export function exportMultiSizeMarker(
     if (q === 0) continue;
     // Une pièce étiquetée PAR taille, réutilisée pour toutes ses copies →
     // le cache raster de nestPieces ne la calcule qu'une fois.
-    const labeled = collect(draft).map((p) => ({ ...p, name: `${size} \u00b7 ${p.name}` }));
+    const labeled = collect(withSeamNotches(draft)).map((p) => ({ ...p, name: `${size} \u00b7 ${p.name}` }));
     for (let i = 0; i < q; i++) for (const p of labeled) combined.push(p);
   }
   if (combined.length === 0 || combined.length > cap) {
