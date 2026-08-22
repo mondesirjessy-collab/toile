@@ -1,11 +1,11 @@
 import type { DraftDoc, DraftPiece, UV } from '../engine/pattern/Draft';
 import { downloadBrowserBlob } from './browserDownload';
+import { nestMarker } from './markerLayout';
 
 // Pont de production (BLUEPRINT §16) : une fiche de production « miroir CLO »,
-// native web. Première brique de la feuille de route §16.7 : le techpack JSON
-// (résumé sourcing) enrichi du métrage estimé (nesting simplifié).
-const ROLL_WIDTH_M = 1.5; // laize standard
-const NEST_EFFICIENCY = 0.8; // rendement de placement (marker)
+// native web (feuille §16.7 #1). Le métrage vient du MÊME nesting serré que le
+// plan de découpe (marker) et le DXF → les trois exports affichent le même
+// chiffre.
 
 /** Aire du polygone normalisé [0,1] (formule du lacet), en unités [0,1]². */
 function polygonAreaUnit(outline: readonly UV[]): number {
@@ -62,9 +62,13 @@ export function buildTechPack(draft: DraftDoc, input: TechPackInput): Record<str
   for (const p of draft.pieces ?? []) pieces.push(entry(p));
 
   const totalAreaM2 = pieces.reduce((s, p) => s + p.aire_cm2, 0) / 1e4;
-  // Métrage ≈ aire totale (marge de couture incluse) / (laize × rendement).
-  const saFactor = 1 + Math.min(0.25, (input.seamAllowanceCm / 100) * 6);
-  const yardageM = +((totalAreaM2 * saFactor) / (ROLL_WIDTH_M * NEST_EFFICIENCY)).toFixed(2);
+  // Métrage RÉEL : longueur du plan de découpe (même nesting serré que le
+  // marker SVG et le DXF). Rendement = aire des pièces / surface utilisée.
+  const nest = nestMarker(draft, input.seamAllowanceCm);
+  const rollWidthM = nest.rollWidthCm / 100;
+  const yardageM = +(nest.lengthCm / 100).toFixed(2);
+  const usedM2 = rollWidthM * yardageM;
+  const efficiency = usedM2 > 0 ? +(totalAreaM2 / usedM2).toFixed(2) : 0;
 
   return {
     format: 'toile-techpack',
@@ -78,12 +82,12 @@ export function buildTechPack(draft: DraftDoc, input: TechPackInput): Record<str
     pieces,
     assemblage: { nb_pieces: pieces.length, coutures: draft.seams?.length ?? 0 },
     matiere: {
-      laize_cm: ROLL_WIDTH_M * 100,
-      rendement_placement: NEST_EFFICIENCY,
-      metrage_estime_m: yardageM,
+      laize_cm: nest.rollWidthCm,
+      metrage_reel_m: yardageM,
+      rendement_placement: efficiency,
     },
     nomenclature: [
-      { poste: 'Tissu principal', reference: input.fabric, quantite_m: yardageM, laize_cm: ROLL_WIDTH_M * 100 },
+      { poste: 'Tissu principal', reference: input.fabric, quantite_m: yardageM, laize_cm: nest.rollWidthCm },
       { poste: 'Fil a coudre', reference: 'assorti', quantite: 'selon assemblage' },
     ],
   };
@@ -100,7 +104,7 @@ export function exportTechPack(
   const slug =
     input.garment.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'vetement';
   downloadBrowserBlob(blob, `toile-techpack-${slug}.json`);
-  const matiere = tp.matiere as { metrage_estime_m: number };
+  const matiere = tp.matiere as { metrage_reel_m: number };
   const assemblage = tp.assemblage as { nb_pieces: number };
-  return { yardageM: matiere.metrage_estime_m, pieces: assemblage.nb_pieces };
+  return { yardageM: matiere.metrage_reel_m, pieces: assemblage.nb_pieces };
 }
