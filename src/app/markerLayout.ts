@@ -17,7 +17,8 @@ function roleLabel(p: DraftPiece): string {
   return p.name ?? 'Pièce';
 }
 
-export interface MarkerPiece { name: string; wCm: number; hCm: number; outline: readonly UV[]; notches?: readonly UV[]; }
+export interface MarkerNotch { at: UV; kind: 'seam' | 'attach'; }
+export interface MarkerPiece { name: string; wCm: number; hCm: number; outline: readonly UV[]; notches?: readonly MarkerNotch[]; }
 export interface Placement extends MarkerPiece { x: number; y: number; rot: 0 | 180; }
 export interface MarkerNest { placements: Placement[]; rollWidthCm: number; lengthCm: number }
 
@@ -52,7 +53,10 @@ function collect(draft: DraftDoc): MarkerPiece[] {
       wCm: p.width * 100,
       hCm: p.height * 100,
       outline: p.outline,
-      notches: [...base, ...attachNotches(p, isBody)],
+      notches: [
+        ...base.map((at) => ({ at, kind: 'seam' as const })),
+        ...attachNotches(p, isBody).map((at) => ({ at, kind: 'attach' as const })),
+      ],
     });
   };
   add(draft.piece, 'Devant', true);
@@ -199,7 +203,7 @@ export function markerSvg(nest: MarkerNest): string {
   const rollW = rollWidthCm * 10;
   const rollH = Math.max(lengthCm * 10, 40);
   const svgW = rollW + 2 * pad;
-  const svgH = rollH + 2 * pad + 26;
+  const svgH = rollH + 2 * pad + 60; // place pour la legende des crans
   const yardM = (lengthCm / 100).toFixed(2);
   const shapes = placements
     .map((pl) => {
@@ -208,7 +212,7 @@ export function markerSvg(nest: MarkerNest): string {
         .join(' ');
       const [cxCm, cyCm] = placedPoint(pl, 0.5, 0.5);
       const marks = (pl.notches ?? [])
-        .map(([u, v]) => {
+        .map(({ at: [u, v], kind }) => {
           const [nx, ny] = placedPoint(pl, u, v);
           let dx = cxCm - nx;
           let dy = cyCm - ny;
@@ -219,7 +223,8 @@ export function markerSvg(nest: MarkerNest): string {
           const y1 = pad + ny * 10;
           const x2 = pad + (nx + dx * 0.9) * 10;
           const y2 = pad + (ny + dy * 0.9) * 10;
-          return `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" class="ntch"/><circle cx="${x1.toFixed(1)}" cy="${y1.toFixed(1)}" r="2.4" class="ntchd"/>`;
+          const c = kind === 'attach' ? 'A' : '';
+          return `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" class="ntch${c}"/><circle cx="${x1.toFixed(1)}" cy="${y1.toFixed(1)}" r="2.4" class="ntchd${c}"/>`;
         })
         .join('');
       return `<polygon points="${pts}" class="pc"/>${marks}<text x="${(pad + cxCm * 10).toFixed(0)}" y="${(pad + cyCm * 10).toFixed(0)}" class="lbl">${pl.name}</text>`;
@@ -232,11 +237,19 @@ export function markerSvg(nest: MarkerNest): string {
     `.pc{fill:#e9eefb;stroke:#2a2a2a;stroke-width:1.4;stroke-linejoin:round}` +
     `.lbl{font:11px sans-serif;fill:#333;text-anchor:middle}` +
     `.ntch{stroke:#c0392b;stroke-width:2.2;stroke-linecap:round}.ntchd{fill:#c0392b}` +
+    `.ntchA{stroke:#0e7c86;stroke-width:2.2;stroke-linecap:round}.ntchdA{fill:#0e7c86}` +
+    `.leg{font:11px sans-serif;fill:#333}` +
     `.cap{font:14px sans-serif;fill:#111;font-weight:bold}</style>` +
     `<rect x="${pad}" y="${pad}" width="${rollW.toFixed(0)}" height="${rollH.toFixed(0)}" class="roll"/>` +
     shapes +
     `<text x="${pad}" y="${(rollH + pad + 18).toFixed(0)}" class="cap">` +
     `TOILE · plan de découpe · laize ${rollWidthCm} cm · longueur ${lengthCm.toFixed(0)} cm (~${yardM} m)</text>` +
+    `<line x1="${pad}" y1="${(rollH + pad + 38).toFixed(0)}" x2="${(pad + 14).toFixed(0)}" y2="${(rollH + pad + 38).toFixed(0)}" class="ntch"/>` +
+    `<circle cx="${pad}" cy="${(rollH + pad + 38).toFixed(0)}" r="2.4" class="ntchd"/>` +
+    `<text x="${(pad + 22).toFixed(0)}" y="${(rollH + pad + 42).toFixed(0)}" class="leg">crans de couture (devant \u2194 dos)</text>` +
+    `<line x1="${pad}" y1="${(rollH + pad + 54).toFixed(0)}" x2="${(pad + 14).toFixed(0)}" y2="${(rollH + pad + 54).toFixed(0)}" class="ntchA"/>` +
+    `<circle cx="${pad}" cy="${(rollH + pad + 54).toFixed(0)}" r="2.4" class="ntchdA"/>` +
+    `<text x="${(pad + 22).toFixed(0)}" y="${(rollH + pad + 58).toFixed(0)}" class="leg">crans de raccord (manche / col)</text>` +
     `</svg>`
   );
 }
