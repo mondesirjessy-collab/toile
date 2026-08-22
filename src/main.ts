@@ -87,7 +87,7 @@ import { computeNormals, downloadGlb, type GltfPiece } from './app/gltfExport';
 import { exportTechPack } from './app/techPack';
 import { exportMarker } from './app/markerLayout';
 import { exportDxf } from './app/dxfExport';
-import { exportMaterialReport } from './app/materialReport';
+import { exportMaterialReport, parseSizeCurve } from './app/materialReport';
 import { GpuProfiler } from './app/GpuProfiler';
 import {
   AVATAR_STATURE_MAX_CM,
@@ -8387,7 +8387,7 @@ async function main(): Promise<void> {
         const res = exportDxf(draft, +(seamAllowanceM * 100).toFixed(1));
         showToast(`DXF de decoupe exporte - ${res.pieces} pieces (mm, calque CUT)`);
       },
-      onMaterialReport: () => {
+      onMaterialReport: (sizeCurve: string) => {
         // Bilan matiere multi-tailles : le metrage de placement pour TOUTE la
         // gradation standard (XS-XXL) du tee, avec les blocs courants. Toujours
         // les tailles standard (le sur-mesure est propre a un corps).
@@ -8401,8 +8401,10 @@ async function main(): Promise<void> {
           teeCollarSel && `Col: ${teeCollarSel.selectedOptions[0]?.text ?? boxyCollar}`,
           teeLengthSel && `Longueur: ${teeLengthSel.selectedOptions[0]?.text ?? boxyLen}`,
         ].filter(Boolean).join(' - ');
+        const qty = parseSizeCurve(sizeCurve, BOXY_SIZES);
         const entries = BOXY_SIZES.map((size) => ({
           size,
+          qty: qty[size] ?? 0,
           draft: boxyTee(size, lastMeasure, REF, boxySleeves, boxyCollar, boxyNeck, boxyLen, false),
         }));
         const res = exportMaterialReport(entries, {
@@ -8411,7 +8413,7 @@ async function main(): Promise<void> {
           config: cfg,
           seamAllowanceCm: +(seamAllowanceM * 100).toFixed(1),
         });
-        showToast(`Bilan matiere - ${res.sizes} tailles - ${res.total_m} m pour un exemplaire par taille`);
+        showToast(`Bilan matiere - ${res.units} pieces (${res.sizes} tailles) - ${res.total_m} m de tissu`);
       },
       onPatternPdf: () => {
         // Le pantalon importé est déjà un patron vectoriel coté, marge de

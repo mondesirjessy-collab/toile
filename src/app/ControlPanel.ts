@@ -107,7 +107,7 @@ export interface PanelCallbacks {
   onTechPack?(): void;
   onMarker?(): void;
   onDxf?(): void;
-  onMaterialReport?(): void;
+  onMaterialReport?(sizeCurve: string): void;
   onPins(held: boolean): void;
   onFitMap(on: boolean): void;
   onReset(): void;
@@ -250,6 +250,7 @@ export class ControlPanel {
   private fabricBaseline: FabricPhysics = { ...FABRIC_PHYSICS.Jersey! };
   private fabricBaselineName = 'Jersey';
   private fabricCalibratedReport = 'preset Jersey · calibration TOILE';
+  private readonly reportOpts = { courbe: '' }; // courbe de tailles du bilan matière (quantités)
 
   constructor(cb: PanelCallbacks, initial: { resolution: number; substeps: number }) {
     this.cb = cb;
@@ -524,7 +525,8 @@ export class ControlPanel {
     file.add({ techpack: () => this.cb.onTechPack?.() }, 'techpack').name('fiche de production (.json)');
     file.add({ marker: () => this.cb.onMarker?.() }, 'marker').name('plan de découpe (SVG)');
     file.add({ dxf: () => this.cb.onDxf?.() }, 'dxf').name('découpe usine (DXF)');
-    file.add({ bilan: () => this.cb.onMaterialReport?.() }, 'bilan').name('bilan matière multi-tailles (.csv)');
+    file.add(this.reportOpts, 'courbe').name('quantités / taille (ex : M:10 L:8)');
+    file.add({ bilan: () => this.cb.onMaterialReport?.(this.reportOpts.courbe) }, 'bilan').name('bilan matière multi-tailles (.csv)');
     file.add({ exporter: () => this.exportGarment() }, 'exporter').name('exporter le vêtement (.json)');
     file.add({ importer: () => this.importGarment() }, 'importer').name('importer un vêtement');
 
