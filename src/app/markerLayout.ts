@@ -23,11 +23,40 @@ export interface MarkerNest { placements: Placement[]; rollWidthCm: number; leng
 
 function collect(draft: DraftDoc): MarkerPiece[] {
   const out: MarkerPiece[] = [];
-  const add = (p: DraftPiece, nm: string): void => {
-    out.push({ name: nm, wCm: p.width * 100, hCm: p.height * 100, outline: p.outline, notches: p.notches?.map((nt) => nt.at) });
+  const hasAttach = (draft.pieces ?? []).some(
+    (p) => p.wrap === 'armL' || p.wrap === 'armR' || p.wrap === 'neck',
+  );
+  // Milieu (UV) d'un tronçon de contour, en gérant l'enroulement.
+  const runMidUV = (outline: readonly UV[], from: number, to: number): UV => {
+    const N = outline.length;
+    const span = (((to - from) % N) + N) % N;
+    return outline[(from + Math.round(span / 2)) % N]!;
   };
-  add(draft.piece, 'Devant');
-  if (draft.back && draft.back.outline.length >= 3) add(draft.back, 'Dos');
+  // Crans de RACCORD des blocs rapportés (tête de manche, col) + repères
+  // d'emmanchure/encolure sur le corps — en plus des crans de couture (v248).
+  const attachNotches = (p: DraftPiece, isBody: boolean): UV[] => {
+    if (p.wrap === 'armL' || p.wrap === 'armR') return [[0.5, 0.02]]; // sommet de tete de manche -> epaule
+    if (p.wrap === 'neck') return [[0.5, 1]]; // centre de la bande col -> milieu d'encolure
+    if (isBody && hasAttach) {
+      // milieux des ouvertures HAUTES (emmanchures, encolure) ; l'ourlet (bas) est exclu
+      return (p.openEdges ?? [])
+        .map((run) => runMidUV(p.outline, run.from, run.to))
+        .filter((uv) => uv[1] <= 0.7);
+    }
+    return [];
+  };
+  const add = (p: DraftPiece, nm: string, isBody = false): void => {
+    const base = p.notches?.map((nt) => nt.at) ?? [];
+    out.push({
+      name: nm,
+      wCm: p.width * 100,
+      hCm: p.height * 100,
+      outline: p.outline,
+      notches: [...base, ...attachNotches(p, isBody)],
+    });
+  };
+  add(draft.piece, 'Devant', true);
+  if (draft.back && draft.back.outline.length >= 3) add(draft.back, 'Dos', true);
   for (const p of draft.pieces ?? []) add(p, roleLabel(p));
   return out;
 }
