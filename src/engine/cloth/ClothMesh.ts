@@ -118,6 +118,10 @@ export interface ClothMeshData {
    * loose (the gathered bodice slid off exactly this way). 1 = exempt.
    */
   readonly seamFree?: Uint8Array;
+  /** v256 — drapeau PAR TRIANGLE : 1 = triangle de bouchage (eventail de
+   * fermeture de fuite). Le renderer les envoie dans la passe ruban avec un
+   * lift renforce (sinon : cordes plates sous la peau aux cretes d'epaule). */
+  readonly closureTriangles?: Uint8Array;
   /**
    * Grid-hop distance from the nearest sewn boundary cell, per particle,
    * clamped to 3 (0 = on a seam, 3 = far). Self-collision's cross-panel mirror
@@ -171,7 +175,8 @@ export function plugJunctionLeaks(
   triangleIndices: Uint32Array,
   resolution: number,
   authoredOpen: (index: number) => boolean,
-): Uint32Array | null {
+  closureTriangles?: Uint8Array,
+): { triangleIndices: Uint32Array; closureTriangles: Uint8Array } | null {
   const HOLE_MAX = Math.round(resolution * 0.875); // 56 @ res 64
   const ec = new Map<string, number>();
   const ek = (x: number, y: number): string => (x < y ? x + '|' + y : y + '|' + x);
@@ -221,7 +226,10 @@ export function plugJunctionLeaks(
   const out = new Uint32Array(triangleIndices.length + extra.length);
   out.set(triangleIndices, 0);
   out.set(extra, triangleIndices.length);
-  return out;
+  const flags = new Uint8Array(out.length / 3);
+  if (closureTriangles) flags.set(closureTriangles, 0);
+  flags.fill(1, triangleIndices.length / 3); // les nouveaux eventails
+  return { triangleIndices: out, closureTriangles: flags };
 }
 const QUAD_STRIDE = 32; // bytes: 4×u32 + restAngle + softness + warpWeight + baseRestAngle
 const SURFACE_CONTACT_STRIDE = 32;
@@ -2083,6 +2091,7 @@ export function combineClothMeshes(
     undefined,
     (index) => { seamFree[index] = 1; },
   );
+  const trisBeforeFans = triangles.length; // v256 — les triangles ajoutes apres = eventails de bouchage
   // Bouchage des petits trous (v205) : apres les rubans de couture, il reste de
   // petites boucles de bord que le zip laisse entre deux epingles (echelle de
   // trous le long de la couture manche<->emmanchure, et aux pointes d epaule).
@@ -2138,6 +2147,10 @@ export function combineClothMeshes(
     }
   }
   const triangleIndices = new Uint32Array(triangles);
+  const closureTriangles = new Uint8Array(triangles.length / 3);
+  if (a.closureTriangles) closureTriangles.set(a.closureTriangles, 0);
+  if (b.closureTriangles) closureTriangles.set(b.closureTriangles, a.triangleIndices.length / 3);
+  closureTriangles.fill(1, trisBeforeFans / 3);
 
   return {
     resolution: a.resolution,
@@ -2175,6 +2188,7 @@ export function combineClothMeshes(
     surfaceContactData,
     surfaceContactCount: allSurfaceContacts.length,
     seamFree,
+    closureTriangles,
     seamDist,
     anchorY,
   };

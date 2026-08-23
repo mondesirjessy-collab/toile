@@ -446,6 +446,52 @@ export interface ArrangementPoint {
 const CLEAR_BODY = 0.1;
 const CLEAR_NECK = 0.06;
 
+/** v256 — la PRÉCISION CLO, relevée en direct dans l'éditeur d'avatar de
+ * CLO 2026 : un point d'arrangement n'est pas une position posée à la main,
+ * c'est une coordonnée (X% autour, Y% le long) SUR LA SURFACE d'un volume
+ * d'encadrement — un cylindre elliptique tendu entre deux ancres du squelette
+ * (relevés : Arm_L = Left_Hand→Left_Arm, h 600 mm, Ø 160 ; Body_L =
+ * Spine→Spine3, h 680, 400×380 ; Arm_Front_1 = X25 Y75 comp50 « en bas » ;
+ * Body_Back_1 = X90 Y90). Convention d'angle relevée : X25 = devant,
+ * X75 = dos, X50/X0 = côtés. Ici, les volumes se calculent des MENSURATIONS
+ * (l'axe du bras est le vrai axe mesuré m.arm.path) et les pastilles sont
+ * générées sur leurs surfaces, niveau par niveau — même densité, même
+ * précision, et elles suivent morphologie et pose par construction. */
+interface ClonePointSpec {
+  id: string;
+  labelFr: string;
+  xPct: number; // autour (25 devant, 75 dos)
+  yPct: number; // le long de l'axe (0 bas → 100 haut)
+  clearM: number; // compensation 50 CLO = ce dégagement en mètres
+}
+function volumeSurfacePoints(
+  a: [number, number, number],
+  b: [number, number, number],
+  radiusX: (t: number) => number,
+  radiusZ: (t: number) => number,
+  specs: readonly ClonePointSpec[],
+): ArrangementPoint[] {
+  return specs.map((p) => {
+    const t = p.yPct / 100;
+    const cx = a[0] + (b[0] - a[0]) * t;
+    const cy = a[1] + (b[1] - a[1]) * t;
+    const cz = a[2] + (b[2] - a[2]) * t;
+    const theta = (p.xPct / 100 - 0.25) * Math.PI * 2; // X25 → +Z (devant)
+    const dirX = -Math.sin(theta);
+    const dirZ = Math.cos(theta);
+    const rx = radiusX(t);
+    const rz = radiusZ(t);
+    // rayon de l'ellipse dans la direction (dirX, dirZ)
+    const denom = Math.sqrt((dirX * dirX) / (rx * rx) + (dirZ * dirZ) / (rz * rz));
+    const r = denom > 1e-9 ? 1 / denom : rx;
+    return {
+      id: p.id,
+      labelFr: p.labelFr,
+      pos: [cx + dirX * (r + p.clearM), cy, cz + dirZ * (r + p.clearM)] as [number, number, number],
+    };
+  });
+}
+
 export function arrangementPoints(m: BodyMeasure): ArrangementPoint[] {
   const torsoY = (m.chest.y + m.waist.y) / 2;
   const frontZ = m.chest.halfD + CLEAR_BODY;
@@ -496,6 +542,94 @@ export function arrangementPoints(m: BodyMeasure): ArrangementPoint[] {
       points.push(
         { id: 'forearm-right', labelFr: 'Avant-bras droit', pos: [wristX, wrist.y + 0.12, wrist.z] },
         { id: 'forearm-left', labelFr: 'Avant-bras gauche', pos: [-wristX, wrist.y + 0.12, wrist.z] },
+      );
+    }
+  }
+  // ——— v256 : la grille PRÉCISE façon CLO, générée sur les volumes ———
+  // TORSE : cylindre elliptique bassin→épaules, rayons interpolés entre les
+  // niveaux MESURÉS (bassin, taille, poitrine) — chaque pastille est posée
+  // sur la vraie surface du corps + dégagement.
+  const torsoA: [number, number, number] = [0, m.hip.y, 0];
+  const torsoB: [number, number, number] = [0, m.shoulderY, 0];
+  const spanY = Math.max(1e-6, m.shoulderY - m.hip.y);
+  const tOfY = (y: number): number => (y - m.hip.y) / spanY;
+  const tWaist = tOfY(m.waist.y);
+  const tChest = tOfY(m.chest.y);
+  const interp3 = (vHip: number, vWaist: number, vChest: number) => (t: number): number => {
+    if (t <= tWaist) return vHip + (vWaist - vHip) * (t / Math.max(1e-6, tWaist));
+    if (t <= tChest) return vWaist + (vChest - vWaist) * ((t - tWaist) / Math.max(1e-6, tChest - tWaist));
+    return vChest; // au-dessus de la poitrine : le buste garde sa section
+  };
+  const torsoRX = interp3(m.hip.halfW, m.waist.halfW, m.chest.halfW);
+  const torsoRZ = interp3(m.hip.halfD, m.waist.halfD, m.chest.halfD);
+  const lvl = (name: string, y: number): { yPct: number; label: string } => ({ yPct: tOfY(y) * 100, label: name });
+  const torsoLevels = [
+    { ...lvl('poitrine', m.chest.y), n: 1 },
+    { ...lvl('taille', m.waist.y), n: 2 },
+    { ...lvl('bassin', m.hip.y + 0.02), n: 3 },
+  ];
+  const torsoSpecs: ClonePointSpec[] = [];
+  for (const l of torsoLevels) {
+    torsoSpecs.push(
+      { id: `body-front-${l.n}`, labelFr: `Devant · ${l.label}`, xPct: 25, yPct: l.yPct, clearM: 0.1 },
+      { id: `body-back-${l.n}`, labelFr: `Dos · ${l.label}`, xPct: 75, yPct: l.yPct, clearM: 0.1 },
+      { id: `body-side-l-${l.n}`, labelFr: `Côté G · ${l.label}`, xPct: 50, yPct: l.yPct, clearM: 0.1 },
+      { id: `body-side-r-${l.n}`, labelFr: `Côté D · ${l.label}`, xPct: 0, yPct: l.yPct, clearM: 0.1 },
+    );
+  }
+  points.push(...volumeSurfacePoints(torsoA, torsoB, torsoRX, torsoRZ, torsoSpecs));
+  // BRAS : cylindre le long de l'AXE MESURÉ (racine→poignet), rayon ~biceps.
+  if (m.arm?.path && m.arm.path.length > 1) {
+    const path = m.arm.path;
+    const root = path[0]!;
+    const wrist = path[path.length - 1]!;
+    const ARM_R = 0.055; // rayon bras (pas de mesure biceps dédiée — Ø110 mm)
+    for (const side of ['r', 'l'] as const) {
+      const sgn = side === 'r' ? 1 : -1;
+      const aArm: [number, number, number] = [sgn * Math.abs(wrist.x), wrist.y, wrist.z];
+      const bArm: [number, number, number] = [sgn * Math.abs(root.x), root.y, root.z];
+      const sideFr = side === 'r' ? 'D' : 'G';
+      const specs: ClonePointSpec[] = [];
+      for (const [n, yPct] of [[1, 78], [2, 52], [3, 26]] as const) {
+        specs.push(
+          { id: `arm-${side}-front-${n}`, labelFr: `Bras ${sideFr} · devant ${n}`, xPct: 25, yPct, clearM: 0.03 },
+          { id: `arm-${side}-back-${n}`, labelFr: `Bras ${sideFr} · dos ${n}`, xPct: 75, yPct, clearM: 0.03 },
+          { id: `arm-${side}-top-${n}`, labelFr: `Bras ${sideFr} · dessus ${n}`, xPct: side === 'r' ? 0 : 50, yPct, clearM: 0.03 },
+        );
+      }
+      // En T-pose l'axe du bras est ~horizontal : le « dessus » du bras est
+      // +Y monde, pas une direction de la section XZ — volumeSurfacePoints
+      // travaille dans le plan XZ, on corrige le dessus à la main.
+      const pts = volumeSurfacePoints(aArm, bArm, () => ARM_R, () => ARM_R, specs);
+      for (const p of pts) {
+        if (p.id.includes('-top-')) {
+          const t = 1 - (parseInt(p.id.slice(-1), 10) - 1) * 0.26 - 0.22;
+          p.pos = [
+            aArm[0] + (bArm[0] - aArm[0]) * t,
+            aArm[1] + (bArm[1] - aArm[1]) * t + ARM_R + 0.03,
+            aArm[2] + (bArm[2] - aArm[2]) * t,
+          ];
+        }
+      }
+      points.push(...pts);
+    }
+  }
+  // JAMBES : cylindre bassin→genou par jambe, rayon cuisse mesuré.
+  {
+    const legX = Math.max(0.09, m.hip.halfW * 0.55);
+    const kneeY = Math.max(0.05, m.thigh.y - 0.25);
+    for (const side of ['r', 'l'] as const) {
+      const sgn = side === 'r' ? 1 : -1;
+      const aLeg: [number, number, number] = [sgn * legX, kneeY, 0];
+      const bLeg: [number, number, number] = [sgn * legX, m.hip.y, 0];
+      const sideFr = side === 'r' ? 'D' : 'G';
+      points.push(
+        ...volumeSurfacePoints(aLeg, bLeg, () => m.thigh.halfW, () => m.thigh.halfD, [
+          { id: `leg-${side}-front-1`, labelFr: `Jambe ${sideFr} · devant 1`, xPct: 25, yPct: 70, clearM: 0.06 },
+          { id: `leg-${side}-front-2`, labelFr: `Jambe ${sideFr} · devant 2`, xPct: 25, yPct: 30, clearM: 0.06 },
+          { id: `leg-${side}-back-1`, labelFr: `Jambe ${sideFr} · dos 1`, xPct: 75, yPct: 70, clearM: 0.06 },
+          { id: `leg-${side}-back-2`, labelFr: `Jambe ${sideFr} · dos 2`, xPct: 75, yPct: 30, clearM: 0.06 },
+        ]),
       );
     }
   }

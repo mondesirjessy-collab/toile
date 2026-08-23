@@ -1647,7 +1647,18 @@ async function main(): Promise<void> {
   });
   // ⊹ POINTS D'ARRANGEMENT : pastilles autour du corps (mensurations réelles).
   // Deux clics : la pièce, puis l'ancre — elle s'y range (staging pur, undo ✓).
-  const currentArrangePoints = (): ArrangementPoint[] => arrangementPoints(lastMeasure);
+  // v257 — façon CLO : les points d'arrangement suivent la POSE (les volumes
+  // CLO sont attachés au squelette). La mesure de pose est dédiée à
+  // l'arrangement ; le regradage du vêtement reste sur le corps natif T
+  // (v189) — comme CLO, où la pose ne retaille pas le patron.
+  const currentArrangePoints = (): ArrangementPoint[] => arrangementPoints(lastPoseMeasure ?? lastMeasure);
+  // Hook dev : positions des pastilles courantes (validation pose/morpho).
+  (window as unknown as { __toilePastilles?: (filtre?: string) => unknown }).__toilePastilles = (
+    filtre = '',
+  ) =>
+    currentArrangePoints()
+      .filter((p) => p.id.includes(filtre))
+      .map((p) => ({ id: p.id, pos: p.pos.map((v) => +v.toFixed(3)) }));
   /** NDC du point monde avec la matrice caméra courante (même math que
    * l'overlay atelier) ; null derrière la caméra. */
   const arrangeNdcOf = (pos: readonly [number, number, number]): [number, number] | null => {
@@ -1740,10 +1751,12 @@ async function main(): Promise<void> {
     // Façon CLO : la pastille d'un VOLUME (bras, cou) enroule la pièce libre
     // autour de ce volume — même chemin que « ◎ Placer → Bras/Cou ». Les
     // pastilles du torse restent des translations (panneau tangent).
+    // v256 — la grille précise (arm-r-front-2, …) déclenche le même
+    // enroulement que les pastilles héritées : test par préfixe.
     const wrapTarget =
-      point.id === 'arm-right' ? ('armR' as const)
-      : point.id === 'arm-left' ? ('armL' as const)
-      : point.id === 'neck-front' || point.id === 'neck-back' ? ('neck' as const)
+      point.id.startsWith('arm-r') || point.id === 'forearm-right' ? ('armR' as const)
+      : point.id.startsWith('arm-l') || point.id === 'forearm-left' ? ('armL' as const)
+      : point.id.startsWith('neck-') ? ('neck' as const)
       : null;
     if (wrapTarget && pick.pid >= 2) {
       const free = draftPieceOf(pick.pid);
@@ -4711,6 +4724,8 @@ async function main(): Promise<void> {
   // Stashed by build() so the pattern-view handles use the graded dimensions.
   let lastGrade = { topScale: 1, dressScale: 1, skirtScale: 1, dyShoulder: 0, dyWaist: 0 };
   let lastMeasure: BodyMeasure = REF; // dernière mensuration mesurée par build()
+  let lastPoseMeasure: BodyMeasure | null = null; // v257 — mesure du corps POSÉ (arrangement seulement)
+  const poseMeasureCache: Record<string, BodyMeasure> = {};
   let lastAvatarBounds: CameraBounds | null = null;
   // Liens SYSTÈME du dernier build (manche↔emmanchure, col↔encolure) — les
   // épingles réelles converties en cellules (u,v), pour l'affichage 2D/3D.
@@ -5321,6 +5336,15 @@ async function main(): Promise<void> {
     // tailor (chest, waist, hips, shoulder line) and cut every garment from
     // RATIOS against the reference form the patterns were designed on.
     const m = measureFor(bodyKind, bodyScene ? bodyPrims : null, effScan ? effScan.grid : null);
+    // v257 — la mesure du corps POSÉ alimente les points d'arrangement (les
+    // pastilles suivent les bras baissés, comme les volumes CLO suivent le
+    // squelette). Poses = morphs neutres (garde d'applyPose) → clé kind|pose.
+    lastPoseMeasure = posedBody
+      ? (poseMeasureCache[`${bodyKind}|${bodyPose}`] ??= measureBody(
+          gridSd(posedBody.grid),
+          posedBody.grid.max[1] - 0.06,
+        ))
+      : null;
     const bodyCollisionSd: Sd | undefined = effScan
       ? gridSd(effScan.grid)
       : bodyPrims
@@ -5837,7 +5861,19 @@ async function main(): Promise<void> {
                 // corps MakeHuman) et supposer z=0 fait naître le panneau
                 // arrière DANS le bras → le SDF éjecte le tube.
                 const tPose = useScan;
-                placeWrapSleeve(pieceMesh, fp, fp.wrap === 'armR' ? 'R' : 'L', m, tPose, atelierDesign);
+                // v257 — la manche s'enroule sur le bras POSÉ, à l'aperçu ET à
+                // l'essayage : le collider est le corps posé (v189), y faire
+                // spawner un tube placé pour les bras en T mettait le départ en
+                // porte-à-faux avec la pose. Seul le PLACEMENT suit la pose —
+                // la coupe (regradage) reste mesurée sur le corps natif T.
+                placeWrapSleeve(
+                  pieceMesh,
+                  fp,
+                  fp.wrap === 'armR' ? 'R' : 'L',
+                  lastPoseMeasure ?? m,
+                  tPose,
+                  atelierDesign,
+                );
               } else if (fp.wrap === 'neck') {
                 // NECKBAND: form the two flat panels into a real tube BEFORE
                 // physics. Otherwise each lateral stitch crosses the neck and
@@ -6053,8 +6089,9 @@ async function main(): Promise<void> {
                 garment.triangleIndices,
                 resolution,
                 (i) => stayOpenIdx.has(i),
+                garment.closureTriangles,
               );
-              if (plugged) garment = { ...garment, triangleIndices: plugged };
+              if (plugged) garment = { ...garment, ...plugged };
             }
             // v198 — un zip OUVERT dans le document : l'habillage se fait
             // quand même FERMÉ (les épingles ZipperSeam existent toujours),
@@ -6361,6 +6398,7 @@ async function main(): Promise<void> {
         fabricDynamics.collisionThickness,
         graphicUVs,
         graphicAtlas,
+        mesh.closureTriangles ?? null,
       );
       nextRenderer.setFabric(fabricStyle); // keep the preset's look across rebuilds
       nextRenderer.setFitMap(fitMap); // the tension view is a rebuild-surviving setting (M29)

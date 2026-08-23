@@ -548,6 +548,7 @@ export interface ClothTrianglePartition {
 export function partitionClothTriangles(
   triangleIndices: ArrayLike<number>,
   resolution: number,
+  closureTriangles?: ArrayLike<number> | null,
 ): ClothTrianglePartition {
   const panelSize = resolution * resolution;
   const surface: number[] = [];
@@ -568,10 +569,16 @@ export function partitionClothTriangles(
     const mixed =
       Math.floor(b / panelSize) !== panel || Math.floor(c / panelSize) !== panel;
     const indices = [a, b, c] as const;
-    triangles.push({ indices, mixed });
-    if (!mixed) { piecesOnly.push(a, b, c); continue; }
+    // v256 — les EVENTAILS de bouchage (mono-panneau, marques par le combine)
+    // rejoignent la passe ruban avec un lift DOUBLE : sans lift ils restaient
+    // des cordes plates SOUS la peau de l'epaule (mesure : fentes de crete
+    // entourees de rubans rouges au debug, peau visible au milieu).
+    const isClosure = !!closureTriangles?.[offset / 3];
+    triangles.push({ indices, mixed: mixed || isClosure });
+    if (!mixed && !isClosure) { piecesOnly.push(a, b, c); continue; }
     ribbons.push(a, b, c);
-    ribbonWeights.push(1, 1, 1);
+    const w = isClosure ? 2 : 1;
+    ribbonWeights.push(w, w, w);
     capVertices.add(a);
     capVertices.add(b);
     capVertices.add(c);
@@ -786,6 +793,7 @@ export class ClothRenderer {
     collisionThickness = 0.005,
     graphicUVs?: Float32Array,
     graphicAtlas?: CanvasImageSource | OffscreenCanvas | null,
+    closureTriangles?: Uint8Array | null,
   ) {
     this.device = device;
     const createBuffer = (descriptor: GPUBufferDescriptor): GPUBuffer =>
@@ -933,7 +941,7 @@ export class ClothRenderer {
         { binding: 11, resource: { buffer: layerBuffer } },
       ],
     });
-    const partition = partitionClothTriangles(triangleIndices, resolution);
+    const partition = partitionClothTriangles(triangleIndices, resolution, closureTriangles);
     this.clothIndexBuffer = createBuffer({
       size: Math.max(4, partition.surface.byteLength),
       usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
