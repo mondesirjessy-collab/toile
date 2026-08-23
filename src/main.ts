@@ -5676,22 +5676,31 @@ async function main(): Promise<void> {
             // v252 — pose d'APERÇU façon CLO (observé en direct sur CLO 2026) :
             // en pré-assemblage anatomique, le devant/dos du tee s'affichent à
             // HAUTEUR DE PORT (ligne d'épaule du patron sur l'épaule du corps
-            // + 1,5 cm) et RAPPROCHÉS du torse (poitrine + 10 cm), comme des
-            // pièces arrangées dans CLO. Transformation d'aperçu UNIQUEMENT :
-            // l'essayage (atelierDesign=false) repart du spawn éprouvé — le
-            // départ à hauteur de port déchirait l'encolure. Un déplacement
-            // MANUEL (offsets non nuls) garde la main.
-            if (atelierDesign && respectArrangement && loadedPattern === 'boxy') {
-              const zTarget = m.chest.halfD + 0.1;
+            // + 1,5 cm) et GALBÉS autour du torse — chaque panneau est cintré
+            // sur le cylindre d'axe vertical du corps (rayon poitrine + 10 cm,
+            // borné pour que les grandes largeurs ne s'enroulent pas au-delà
+            // des flancs) : devant et dos se referment presque sur les côtés,
+            // l'image exacte d'un panneau arrangé dans CLO. Transformation
+            // d'aperçu UNIQUEMENT : l'essayage (atelierDesign=false) repart du
+            // spawn éprouvé — le départ à hauteur de port déchirait
+            // l'encolure. Un déplacement MANUEL (offsets non nuls) garde la main.
+            // v253 — la pose CLO est l'aperçu PAR DÉFAUT du tee (plus
+            // d'opt-in ⚓ pour la VOIR ; le bouton ⚓ garde son rôle : faire
+            // respecter un arrangement manuel par l'essayage).
+            if (atelierDesign && loadedPattern === 'boxy') {
               const wearPose = (piece: DraftPiece, first: number, sign: 1 | -1): void => {
                 const off = stagingOffsetOf(piece);
                 if (Math.hypot(...off) > 1e-6) return; // pose manuelle respectée
-                applyStagingOffset(
-                  body,
-                  [0, m.shoulderY + 0.015 - piece.topY, sign * zTarget - sign * (piece.gap / 2)],
-                  first,
-                  panelSize,
-                );
+                const dy = m.shoulderY + 0.015 - piece.topY;
+                // Rayon du galbe : jamais plus de ~83° par flanc (grandes tailles).
+                const r = Math.max(m.chest.halfD + 0.1, piece.width / 2 / 1.45);
+                for (let q = first; q < first + panelSize; q++) {
+                  const px = body.positions[q * 4]!;
+                  const phi = px / r;
+                  body.positions[q * 4] = r * Math.sin(phi);
+                  body.positions[q * 4 + 1] = body.positions[q * 4 + 1]! + dy;
+                  body.positions[q * 4 + 2] = sign * r * Math.cos(phi);
+                }
               };
               wearPose(d, 0, 1);
               wearPose(back ?? d, panelSize, -1);
@@ -5820,7 +5829,7 @@ async function main(): Promise<void> {
                 // autres pièces). On ne la pré-enroule en tube (pour un drapé net
                 // sans réouverture de couture) qu'au moment de l'essayage — build()
                 // est relancé par Simuler avec atelierDesign=false.
-                if (!atelierDesign || respectArrangement) preWrapCollarTube(pieceMesh);
+                if (!atelierDesign || respectArrangement || loadedPattern === 'boxy') preWrapCollarTube(pieceMesh);
               } else if (!surfacePiece) {
                 // Spawn it in FRONT of the body (at the body's front-panel plane),
                 // clear of the avatar SDF collider — spawning inside would eject it
