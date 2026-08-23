@@ -178,12 +178,16 @@ const BATCH_SIZE = 16;
 const WORKGROUP = 256;
 const DRAG_NONE = 0xffffffff;
 /**
- * Two terminal Gauss-Seidel sweeps are enough to converge the small seam
- * junction graphs (shoulder↔sleeve↔collar) while keeping the adaptive substep
- * governor from shedding physics quality because of excessive dispatches.
- * The ordinary full solve already performs the first regular-seam sweep.
+ * Terminal Gauss-Seidel sweeps over the regular-seam colors. Two sufficed for
+ * the tee's small junction graphs, but the hoodie's 7-piece assembly converges
+ * ~1 cell per sweep against body collision : mesuré le 23/08 (Homme, bras 45°,
+ * 20 s de pose, seuil 5 mm) — 2 passes : 707/1085 points ouverts (moy. 14,7 mm) ;
+ * 6 : 537 (11,2) ; 12 : 383 (9,5) ; 20 : 311 (8,3) mais le temps de sim monte.
+ * 12 = le coude : −46 % de points ouverts, 30 fps / 20 substeps conservés.
+ * Le reliquat (~380 points, queues à 20-120 mm) est un problème de POSITION
+ * de départ des jonctions (§18.1 residuel), pas d'itérations — chantier suivant.
  */
-const REGULAR_SEAM_REPLAY_PASSES = 2;
+const REGULAR_SEAM_REPLAY_PASSES = 12;
 
 /**
  * Compute pipelines are pure functions of their (constant) WGSL — nothing
@@ -1568,7 +1572,7 @@ export class ParticleSystem {
       // Only regular Seam + AttachmentSeam colors live in this explicit range.
       // SurfaceSeam top-stitches are never replayed: strengthening their
       // asymmetric support reaction would make pockets tow the garment.
-      for (let replay = 0; replay < REGULAR_SEAM_REPLAY_PASSES; replay++) {
+      for (let replay = 0; replay < REGULAR_SEAM_REPLAY_PASSES - 1; replay++) {
         for (
           let c = this.regularSeamColorFirst;
           c < this.regularSeamColorFirst + this.regularSeamColorCount;
@@ -1582,6 +1586,23 @@ export class ParticleSystem {
       }
 
       dispatch(this.collidePipeline, this.collideBindGroup, particleGroups);
+      // EXPÉRIENCE 2a (§18.2) — le DERNIER balayage couture passe APRÈS la
+      // collision : mesuré le 23/08, la collision (dernier mot du sous-pas)
+      // rouvrait chaque sous-pas les jonctions pressées contre le corps
+      // (fluage : les manches du hoodie glissaient des épaules en ~2 min).
+      // Donner la fin de sous-pas aux coutures stoppe le fluage ; la
+      // pénétration résiduelle éventuelle est bornée à UNE correction de
+      // couture et la collision du sous-pas suivant la résorbe.
+      for (
+        let c = this.regularSeamColorFirst;
+        c < this.regularSeamColorFirst + this.regularSeamColorCount;
+        c++
+      ) {
+        const groups = Math.ceil(this.colorCounts[c]! / WORKGROUP);
+        if (groups > 0) {
+          dispatch(this.solvePipeline, this.solveBindGroups[c]!, groups);
+        }
+      }
       dispatch(this.velocityPipeline, this.velocityBindGroup, particleGroups);
       if (veloSmooth > 0 && (veloSmoothAll || s === substeps - 1)) {
         dispatch(this.smoothVelocityPipeline, this.smoothVelocityBindGroup, particleGroups);

@@ -80,7 +80,7 @@ const ADVANCED_COUTURE = {
   pattern: /\bcorsets?\b|\btraines?\b|\bbaleine(e|es)?\b|\bcrinolines?\b|\bsmokings?\b|\bdentelles?\b/,
   nameFr: 'pièce de couture avancée',
   suggestionFr:
-    'Corset baleiné, traîne ou dentelle demandent des techniques que TOILE ne simule pas encore. Constructible aujourd’hui : t-shirt, pantalon large, hoodie zippé, jupe trapèze, robe cintrée, veste doublée — et toute pièce tracée à la main.',
+    'Corset baleiné, traîne ou dentelle demandent des techniques que TOILE ne simule pas encore. Constructible aujourd’hui : t-shirt, pantalon large, jupe trapèze, robe cintrée, veste doublée — et toute pièce tracée à la main.',
 };
 
 interface ArchetypeMatch {
@@ -89,9 +89,9 @@ interface ArchetypeMatch {
 }
 
 function detectArchetype(t: string): ArchetypeMatch | null {
-  if (/\bhoodies?\b|\bhoody\b|sweat(shirt)?s? (a|à) capuche|sweat zipp|capuches?\b/.test(t)) {
-    return { archetype: 'hoodie_zip', labelFr: 'hoodie zippé' };
-  }
+  // v254 — hoodie retiré du catalogue public (moteur multi-pièces en chantier) :
+  // « hoodie » tombe sur le message catalogue, honnête, au lieu de charger un
+  // vêtement qui se découd à l'essayage.
   if (/\bdoudounes?\b|\bpuffers?\b|\bmatelass(e|ee)s?\b/.test(t)) {
     return { archetype: 'doudoune', labelFr: 'doudoune matelassée' };
   }
@@ -255,7 +255,7 @@ export function interpretBrief(rawText: string): BriefResult {
       intent: 'clarify',
       resumeFr: 'Je n’ai pas reconnu de vêtement constructible dans ce brief.',
       suggestionFr:
-        'L’atelier patronne aujourd’hui : t-shirt boxy, pantalon large, hoodie zippé, jupe trapèze, robe cintrée, veste doublée, doudoune matelassée. Exemple : « une doudoune, taille M ».',
+        'L’atelier patronne aujourd’hui : t-shirt boxy, pantalon large, jupe trapèze, robe cintrée, veste doublée, doudoune matelassée. Exemple : « une doudoune, taille M ».',
     };
   }
 

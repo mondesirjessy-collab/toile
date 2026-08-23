@@ -944,7 +944,7 @@ export function compileDraft(piece: DraftPiece, n: number): { extraSeams: { i: n
 /** Ordered boundary cells (by arc-length along the run) that a run of a piece's
  * outline resolves to at grid resolution n. Shared by hand-seams and manual
  * assembly seams to pair two edges cell-by-cell. */
-function boundaryRunCells(
+export function boundaryRunCells(
   piece: Pick<DraftPiece, 'outline' | 'darts' | 'width' | 'height' | 'internalLines'>,
   run: { from: number; to: number },
   n: number,

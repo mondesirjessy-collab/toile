@@ -1375,7 +1375,7 @@
             <small>Décris le vêtement, TOILE le prépare</small>
           </div>
         </div>
-        <textarea id="at-brief-input" rows="2" aria-label="Brief du vêtement" placeholder="« hoodie en maille, taille L, mannequin homme »"></textarea>
+        <textarea id="at-brief-input" rows="2" aria-label="Brief du vêtement" placeholder="« t-shirt en maille, taille L, mannequin homme »"></textarea>
         <div class="tgrp one-column">
           <button id="at-brief-go" title="Interpréter le brief puis préparer le vêtement : patron, taille, tissu, mannequin — et lancer l’essayage 3D">✨ Créer depuis le brief</button>
           <button id="at-fit-check" title="Analyser le tombé de l’essayage — aisance, tensions, coutures mesurées par le solveur — et proposer des retouches (Studio IA)">🩺 Bilan du tombé</button>
@@ -1404,7 +1404,11 @@
           <button id="at-robe" title="Charger la robe cintrée sans manches (2 pièces épaulées, tailles 34 à 46 ou coupée aux mensurations du mannequin)">👗 Robe</button>
           <button id="at-veste" title="Charger la veste zippée doublée : blouson kimono 6 pièces, fermeture milieu devant, doublure bordeaux cousue sous chaque panneau, tailles XS à XXL ou coupée au mannequin">🧷 Veste doublée</button>
           <button id="at-doudoune" title="Charger la doudoune matelassée : le châssis de la veste plus le gonflant — le tissu extérieur, coupé plus long, boudine entre les épingles de canal, tailles XS à XXL ou coupée au mannequin">☁️ Doudoune</button>
-          <button id="at-hoodie" title="Charger le Lucas Hoodie zippé : 7 pièces vectorielles exactes du patron A0, tailles XS à XXXL, marge de couture 1 cm incluse">🧥 Hoodie zippé</button>
+          <!-- v254 — hoodie RETIRÉ du catalogue public (moteur multi-pièces pas au niveau :
+               manches qui fluent, jonctions ouvertes — comparatif 23/08). Le bouton reste
+               dans le DOM (câblage main.ts) mais masqué ; le code hoodie est conservé
+               comme banc de crash-test moteur. -->
+          <button id="at-hoodie" hidden title="Charger le Lucas Hoodie zippé : 7 pièces vectorielles exactes du patron A0, tailles XS à XXXL, marge de couture 1 cm incluse">🧥 Hoodie zippé</button>
           <button id="at-clo-tee" title="Charger le bloc tee de CLO (Set-In) : devant col en V, dos ras-du-cou, manches montées, bord-côte col — lu au millimètre depuis CLO et gradé au mannequin">👕 Tee CLO</button>
           <button id="at-clo-pants" title="Charger le bloc pantalon de CLO (Trousers) : jambes devant/dos avec vraies courbes de fourche, ceinture — lu au millimètre depuis CLO et gradé au mannequin">👖 Pantalon CLO</button>
         </div>

@@ -154,6 +154,75 @@ export interface ClothMeshData {
 }
 
 const CONSTRAINT_STRIDE = 16; // bytes: 2×u32 + 2×f32
+
+/**
+ * v255 — §18.3 : bouchage FINAL des fuites de jonction sur le vetement
+ * ASSEMBLE. Mesure du 23/08 (tee res 64) : les encoches de crete d'epaule
+ * sont des boucles de bord de 46-48 aretes — au-dela du seuil in-combine
+ * (24), en deca des ouvertures dessinees (122-132). Un seuil seul boucherait
+ * les emmanchures d'une robe sans manches : le discriminant est le TAG
+ * d'ouverture dessinee RESTEE LIBRE (openCells du patron moins les cellules
+ * consommees par une epingle d'assemblage), fourni par l'appelant. Toute
+ * boucle <= ~0,9·res qui ne touche AUCUNE ouverture libre est une fuite de
+ * jonction : bouchee en eventail double-face. Rendu seulement — aucune
+ * particule, contrainte ou collision modifiee.
+ */
+export function plugJunctionLeaks(
+  triangleIndices: Uint32Array,
+  resolution: number,
+  authoredOpen: (index: number) => boolean,
+): Uint32Array | null {
+  const HOLE_MAX = Math.round(resolution * 0.875); // 56 @ res 64
+  const ec = new Map<string, number>();
+  const ek = (x: number, y: number): string => (x < y ? x + '|' + y : y + '|' + x);
+  for (let t = 0; t < triangleIndices.length; t += 3) {
+    const t0 = triangleIndices[t]!, t1 = triangleIndices[t + 1]!, t2 = triangleIndices[t + 2]!;
+    for (const [x, y] of [[t0, t1], [t1, t2], [t2, t0]] as [number, number][]) {
+      const k = ek(x, y); ec.set(k, (ec.get(k) ?? 0) + 1);
+    }
+  }
+  const bedgeList: [number, number][] = [];
+  const adj = new Map<number, number[]>();
+  for (const [k, c] of ec) {
+    if (c !== 1) continue;
+    const bar = k.indexOf('|');
+    const x = Number(k.slice(0, bar)), y = Number(k.slice(bar + 1));
+    bedgeList.push([x, y]);
+    (adj.get(x) ?? adj.set(x, []).get(x)!).push(y);
+    (adj.get(y) ?? adj.set(y, []).get(y)!).push(x);
+  }
+  const compId = new Map<number, number>();
+  const compApex: number[] = [];
+  const compEdgesN: number[] = [];
+  const compTouchesOpen: boolean[] = [];
+  for (const s0 of adj.keys()) {
+    if (compId.has(s0)) continue;
+    const id = compApex.length; let apex = s0; let touches = false;
+    const stack = [s0]; compId.set(s0, id);
+    while (stack.length) {
+      const cur = stack.pop()!; if (cur < apex) apex = cur;
+      if (authoredOpen(cur)) touches = true;
+      for (const nb of adj.get(cur)!) if (!compId.has(nb)) { compId.set(nb, id); stack.push(nb); }
+    }
+    compApex.push(apex); compEdgesN.push(0); compTouchesOpen.push(touches);
+  }
+  for (const [x] of bedgeList) compEdgesN[compId.get(x)!]!++;
+  const extra: number[] = [];
+  for (const [x, y] of bedgeList) {
+    const id = compId.get(x)!;
+    const edges = compEdgesN[id]!;
+    if (edges < 3 || edges > HOLE_MAX) continue;
+    if (compTouchesOpen[id]!) continue; // ouverture dessinee restee libre : jamais bouchee
+    const apex = compApex[id]!;
+    if (x === apex || y === apex) continue;
+    extra.push(apex, x, y, apex, y, x); // double face
+  }
+  if (!extra.length) return null;
+  const out = new Uint32Array(triangleIndices.length + extra.length);
+  out.set(triangleIndices, 0);
+  out.set(extra, triangleIndices.length);
+  return out;
+}
 const QUAD_STRIDE = 32; // bytes: 4×u32 + restAngle + softness + warpWeight + baseRestAngle
 const SURFACE_CONTACT_STRIDE = 32;
 

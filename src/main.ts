@@ -24,8 +24,8 @@ import {
   type FabricCompliance,
   type FabricDynamics,
 } from './engine/solver/FabricMaterial';
-import { generateClothGrid, generateSeamedPanels, combineClothMeshes, scaleMeshInverseMassesToReferenceCellArea, type CrossSeam, type ClothMeshData } from './engine/cloth/ClothMesh';
-import { defaultDraft, blankBaseDraft, tshirtDraft, compileDraft, compileAssembly, compileAssemblyGroups, compileCrossSeams, compileQuiltSeams, compileSurfaceContacts, compileSurfaceSeams, crossSewnOpenCells, cutPieceAlongChord, docPieces, freeSeamBetween, mirrorDuplicatePiece, graphicLocalUV, GRAPHIC_IMAGE_MAX_CHARS, INTERNAL_LINES_MAX, offsetPieceOutline, generateFittedSleeves, addFisheyeDart, roundOutlineCorner, cutPieceAlongInternalLine, toggleNotchAt, addSeamNotches, slashSpreadFullness, mergePiecesAlongSeam, toggleInternalHole, linkedVertexEdit, divideOutlineEdge, alignOutlineVertex, squareCorner, extendInternalLineEnd, divideInternalLineAt, pieceHolePolygons, isSelfIntersecting, fitCapWidthToArmhole, draftPieceLabel, gatherSeamSide, neckOpeningCells, removeFreePiece, reboxPiece, pieceIdOf, nearestOutlineEdgeInfo, syncPieceFrames, sanitizeDraft, pointInPolygon, pointInTriangle, surfaceAttachmentUV, type DraftDoc, type AssemblySeam, type DraftPiece, type PieceGraphic, type UV } from './engine/pattern/Draft';
+import { generateClothGrid, generateSeamedPanels, combineClothMeshes, plugJunctionLeaks, scaleMeshInverseMassesToReferenceCellArea, type CrossSeam, type ClothMeshData } from './engine/cloth/ClothMesh';
+import { defaultDraft, blankBaseDraft, tshirtDraft, compileDraft, compileAssembly, compileAssemblyGroups, compileCrossSeams, compileQuiltSeams, boundaryRunCells, compileSurfaceContacts, compileSurfaceSeams, crossSewnOpenCells, cutPieceAlongChord, docPieces, freeSeamBetween, mirrorDuplicatePiece, graphicLocalUV, GRAPHIC_IMAGE_MAX_CHARS, INTERNAL_LINES_MAX, offsetPieceOutline, generateFittedSleeves, addFisheyeDart, roundOutlineCorner, cutPieceAlongInternalLine, toggleNotchAt, addSeamNotches, slashSpreadFullness, mergePiecesAlongSeam, toggleInternalHole, linkedVertexEdit, divideOutlineEdge, alignOutlineVertex, squareCorner, extendInternalLineEnd, divideInternalLineAt, pieceHolePolygons, isSelfIntersecting, fitCapWidthToArmhole, draftPieceLabel, gatherSeamSide, neckOpeningCells, removeFreePiece, reboxPiece, pieceIdOf, nearestOutlineEdgeInfo, syncPieceFrames, sanitizeDraft, pointInPolygon, pointInTriangle, surfaceAttachmentUV, type DraftDoc, type AssemblySeam, type DraftPiece, type PieceGraphic, type UV } from './engine/pattern/Draft';
 import {
   applyStagingOffset,
   applyStagingOrient,
@@ -5706,6 +5706,25 @@ async function main(): Promise<void> {
               wearPose(back ?? d, panelSize, -1);
             }
             let garment = body;
+            // v255 (§18.3) — ouvertures DESSINÉES du vêtement, PAR RUN et en
+            // indices globaux. Un run consommé par une épingle d'assemblage
+            // (manche sur l'emmanchure, col sur l'encolure) est consommé EN
+            // ENTIER — l'appariement proportionnel n'épingle pas chaque
+            // cellule. Les runs restés vierges = ce qui doit RESTER ouvert
+            // (emmanchures d'une robe sans manches, encolures sans col,
+            // ourlets) et que le bouchage final ne touchera jamais.
+            const openRunsGlobal: number[][] = [];
+            for (const run of d.openEdges ?? []) {
+              openRunsGlobal.push(boundaryRunCells(d, run, resolution).map((x) => x.cell));
+            }
+            {
+              const backPiece = back ?? d;
+              for (const run of backPiece.openEdges ?? []) {
+                openRunsGlobal.push(
+                  boundaryRunCells(backPiece, run, resolution).map((x) => panelSize + x.cell),
+                );
+              }
+            }
             // FREE pieces (multi-piece editor): each user-drawn extra piece
             // (pieceId ≥ 2) becomes its OWN 2-panel mesh, combined onto the
             // garment and sewn where the user's assembly seams say
@@ -5917,6 +5936,13 @@ async function main(): Promise<void> {
                 autoPlaceMeshFromCrossSeams(garment, pieceMesh, pins, garment.count);
               }
               registerPieceRange(pid, garment.count, pieceMesh.count);
+              for (const run of fp.openEdges ?? []) {
+                const cells = boundaryRunCells(fp, run, resolution).map((x) => x.cell);
+                openRunsGlobal.push(cells.map((c) => offsets[pid]! + c));
+                if (pieceMesh.count > panelSize) {
+                  openRunsGlobal.push(cells.map((c) => offsets[pid]! + panelSize + c));
+                }
+              }
               if (atelierDesign || respectArrangement) {
                 applyStagingOrient(pieceMesh, stagingOrientOf(fp));
                 applyStagingOffset(pieceMesh, stagingOffsetOf(fp));
@@ -6007,6 +6033,28 @@ async function main(): Promise<void> {
                 col,
                 seams,
               );
+            }
+            // v255 (§18.3) — bouchage FINAL des fuites de jonction : toute
+            // boucle de bord moyenne (≤ ~0,9·res) qui ne touche AUCUNE
+            // ouverture dessinée restée libre est une fuite (mesuré : les
+            // encoches de crête d'épaule du tee = 46-48 arêtes, non cousues).
+            {
+              const pinned = new Set<number>();
+              for (const pin of automaticPlacementSeams) {
+                pinned.add(pin.i);
+                pinned.add(pin.j);
+              }
+              const stayOpenIdx = new Set<number>();
+              for (const run of openRunsGlobal) {
+                if (run.some((c) => pinned.has(c))) continue; // run consommé en entier
+                for (const c of run) stayOpenIdx.add(c);
+              }
+              const plugged = plugJunctionLeaks(
+                garment.triangleIndices,
+                resolution,
+                (i) => stayOpenIdx.has(i),
+              );
+              if (plugged) garment = { ...garment, triangleIndices: plugged };
             }
             // v198 — un zip OUVERT dans le document : l'habillage se fait
             // quand même FERMÉ (les épingles ZipperSeam existent toujours),
@@ -9251,6 +9299,68 @@ async function main(): Promise<void> {
       performanceRatio: number | null;
       seed: number;
     };
+    // Audit des COUTURES (chantier ① du comparatif) : résidus des contraintes
+    // couture (kind 3), attache (6) et zip (7), mesurés côté CPU depuis la
+    // dernière lecture de positions. Dit combien de points restent OUVERTS à
+    // convergence, de combien, et entre quelles pièces — le diagnostic
+    // avant/après pour la soudure des coutures (§18.2).
+    (window as unknown as { __toileSeamAudit?: (thresholdMm?: number) => unknown }).__toileSeamAudit = (
+      thresholdMm = 5,
+    ) => {
+      if (!currentMesh || !posCache) return { ok: false, reason: 'pas de vêtement simulé' };
+      const dv = new DataView(currentMesh.constraintData);
+      const stride = 16;
+      const p = posCache;
+      const pieceOf = (idx: number): string => {
+        for (const [pid, ranges] of pieceParticleRanges) {
+          for (const r of ranges) if (idx >= r.first && idx < r.first + r.count) return draftPieceLabel(draftPieceOf(pid), pid);
+        }
+        return '?';
+      };
+      const thr = thresholdMm / 1000;
+      const stats: Record<string, { n: number; over: number; sum: number; max: number; epingles?: number }> = {};
+      const byPair = new Map<string, { over: number; max: number }>();
+      for (let k = 0; k < currentMesh.constraintCount; k++) {
+        const base = k * stride;
+        const kind = dv.getUint32(base + 12, true);
+        if (kind !== 3 && kind !== 6 && kind !== 7) continue;
+        const i = dv.getUint32(base, true);
+        const j = dv.getUint32(base + 4, true);
+        const rest = dv.getFloat32(base + 8, true);
+        const dx = p[i * 4]! - p[j * 4]!;
+        const dy = p[i * 4 + 1]! - p[j * 4 + 1]!;
+        const dz = p[i * 4 + 2]! - p[j * 4 + 2]!;
+        const res = Math.max(0, Math.hypot(dx, dy, dz) - rest);
+        const key = kind === 3 ? 'couture' : kind === 6 ? 'attache' : 'zip';
+        const st = (stats[key] ??= { n: 0, over: 0, sum: 0, max: 0 });
+        st.n++;
+        st.sum += res;
+        if (res > st.max) st.max = res;
+        if (res > thr) {
+          st.over++;
+          if (currentMesh.invMasses[i] === 0 || currentMesh.invMasses[j] === 0) st.epingles = (st.epingles ?? 0) + 1;
+          const pk = pieceOf(i) + ' ↔ ' + pieceOf(j);
+          const e = byPair.get(pk) ?? { over: 0, max: 0 };
+          e.over++;
+          if (res > e.max) e.max = res;
+          byPair.set(pk, e);
+        }
+      }
+      return {
+        ok: true,
+        seuil_mm: thresholdMm,
+        par_famille: Object.fromEntries(
+          Object.entries(stats).map(([k2, st]) => [
+            k2,
+            { points: st.n, ouverts: st.over, epingles: st.epingles ?? 0, moyen_mm: +((st.sum / Math.max(1, st.n)) * 1000).toFixed(2), max_mm: +(st.max * 1000).toFixed(1) },
+          ]),
+        ),
+        pires_paires: [...byPair.entries()]
+          .sort((x, y) => y[1].over - x[1].over)
+          .slice(0, 6)
+          .map(([pk, e]) => ({ paire: pk, ouverts: e.over, max_mm: +(e.max * 1000).toFixed(1) })),
+      };
+    };
     const stressWindow = window as unknown as {
       __toileStress?: (options?: StressOptions) => Promise<StressReport>;
     };
@@ -9670,7 +9780,8 @@ async function main(): Promise<void> {
                     ? 'at-veste'
                     : archetype === 'doudoune'
                       ? 'at-doudoune'
-                      : 'at-hoodie';
+                      : null; // v254 — hoodie retiré du catalogue public
+        if (!id) return false;
         const btn = document.getElementById(id);
         if (!(btn instanceof HTMLElement)) return false;
         btn.click();
@@ -10100,7 +10211,7 @@ async function main(): Promise<void> {
     const runBrief = async (): Promise<void> => {
       const text = briefInput?.value ?? '';
       if (!text.trim() && !briefImage) {
-        briefSay('Décris le vêtement (« hoodie en maille, taille L ») — ou joins une photo 📷.', false);
+        briefSay('Décris le vêtement (« t-shirt en maille, taille L ») — ou joins une photo 📷.', false);
         return;
       }
       if (briefImage && !(briefBackend instanceof RemoteBackend)) {
