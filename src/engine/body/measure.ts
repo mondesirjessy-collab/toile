@@ -439,16 +439,21 @@ export interface ArrangementPoint {
 
 /** Dégagement devant/derrière le torse pour qu'une pièce à plat ne spawne pas
  * dans le corps : demi-profondeur mesurée + marge tissu. */
-const ARRANGE_CLEAR = 0.16;
+// v252 — degagements PAR ZONE (offset CLO par ancre) : le pre-assemblage pose
+// les pieces PLUS PRES du corps qu'un degagement uniforme (0,16 avant), pour
+// partir d'une pose serree facon CLO. Corps ~10 cm ; col au ras (~6 cm). Les
+// bras gardent leurs offsets propres (enroulement de la manche).
+const CLEAR_BODY = 0.1;
+const CLEAR_NECK = 0.06;
 
 export function arrangementPoints(m: BodyMeasure): ArrangementPoint[] {
   const torsoY = (m.chest.y + m.waist.y) / 2;
-  const frontZ = m.chest.halfD + ARRANGE_CLEAR;
-  const hipZ = m.hip.halfD + ARRANGE_CLEAR;
-  const sideX = m.shoulderHalfW + ARRANGE_CLEAR + 0.04;
-  const neckZ = m.chest.halfD * 0.5 + ARRANGE_CLEAR;
-  const chestZ = m.chest.halfD + ARRANGE_CLEAR;
-  const waistZ = m.waist.halfD + ARRANGE_CLEAR;
+  const frontZ = m.chest.halfD + CLEAR_BODY;
+  const hipZ = m.hip.halfD + CLEAR_BODY;
+  const sideX = m.shoulderHalfW + CLEAR_BODY + 0.04;
+  const neckZ = m.chest.halfD * 0.5 + CLEAR_NECK;
+  const chestZ = m.chest.halfD + CLEAR_BODY;
+  const waistZ = m.waist.halfD + CLEAR_BODY;
   const shoulderX = m.shoulderHalfW * 0.75;
   const points: ArrangementPoint[] = [
     { id: 'torso-front', labelFr: 'Devant', pos: [0, torsoY, frontZ] },
@@ -460,12 +465,12 @@ export function arrangementPoints(m: BodyMeasure): ArrangementPoint[] {
     {
       id: 'leg-right',
       labelFr: 'Jambe droite',
-      pos: [Math.max(0.09, m.hip.halfW * 0.55), m.thigh.y, m.thigh.halfD + ARRANGE_CLEAR],
+      pos: [Math.max(0.09, m.hip.halfW * 0.55), m.thigh.y, m.thigh.halfD + CLEAR_BODY],
     },
     {
       id: 'leg-left',
       labelFr: 'Jambe gauche',
-      pos: [-Math.max(0.09, m.hip.halfW * 0.55), m.thigh.y, m.thigh.halfD + ARRANGE_CLEAR],
+      pos: [-Math.max(0.09, m.hip.halfW * 0.55), m.thigh.y, m.thigh.halfD + CLEAR_BODY],
     },
     { id: 'neck-front', labelFr: 'Encolure devant', pos: [0, m.neckY, neckZ] },
     { id: 'neck-back', labelFr: 'Encolure dos', pos: [0, m.neckY, -neckZ] },

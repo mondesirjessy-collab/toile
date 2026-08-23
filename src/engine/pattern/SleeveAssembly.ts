@@ -68,8 +68,26 @@ export function placeWrapSleeve(
   side: 'L' | 'R',
   body: BodyMeasure,
   tPose: boolean,
+  curvePreview = false,
 ): void {
   const sign = side === 'R' ? 1 : -1;
+  if (curvePreview) {
+    // APERÇU ATELIER (façon CLO, observé en direct) : une manche arrangée est
+    // UN TUBE courbé autour du bras, pas deux plaques. Avant la rotation de
+    // pose, on cintre chaque panneau (±gap/2) en demi-cylindre autour de
+    // l'axe vertical local : les bords des deux panneaux se rejoignent sur
+    // les côtés → tube fermé de rayon largeur/π. L'ESSAYAGE n'utilise PAS ce
+    // cintrage (spawn plat éprouvé v96) — c'est une pose de préparation.
+    const halfW = Math.max(1e-6, piece.width / 2);
+    const r = piece.width / Math.PI;
+    for (let q = 0; q < mesh.count; q++) {
+      const px = mesh.positions[q * 4]!;
+      const pz = mesh.positions[q * 4 + 2]!;
+      const phi = Math.max(-1, Math.min(1, px / halfW)) * (Math.PI / 2);
+      mesh.positions[q * 4] = r * Math.sin(phi);
+      mesh.positions[q * 4 + 2] = Math.sign(pz || 1) * r * Math.cos(phi);
+    }
+  }
   let theta = Math.atan2(0.11 * (piece.height / 0.5) * sign, piece.height);
   if (tPose) {
     // Follow the measured shoulder→wrist slope. Historical horizontal scans

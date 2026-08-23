@@ -1700,11 +1700,68 @@ async function main(): Promise<void> {
     if (!n) return null;
     return [cx / n, cy / n, cz / n];
   };
+  // Enroulement d'une pièce LIBRE sur un volume corporel (bras / cou) — la
+  // branche éprouvée du « ◎ Placer », factorisée pour être partagée avec le
+  // clic de PASTILLE (façon CLO, observé en direct : cliquer le point du
+  // bras ENROULE la pièce autour du volume du bras, il ne la translate pas).
+  const wrapFreePieceToBodyRole = (
+    piece: DraftPiece,
+    place: 'armL' | 'armR' | 'neck',
+  ): { piece: DraftPiece; capM: number | null } => {
+    const prevWrap = piece.wrap;
+    let wrapped = reboxPiece(piece, place === 'neck' ? 0.15 : 0.18);
+    wrapped.wrap = place;
+    wrapped.placement = { role: place, autoAlign: true };
+    // Le nom AUTO suit le rôle (ré-enrouler Manche gauche → droite la renomme) ;
+    // un nom personnalisé par l'utilisateur est préservé.
+    if (!wrapped.name || (prevWrap && wrapped.name === placementRoleLabel(prevWrap))) {
+      wrapped.name = placementRoleLabel(place);
+    }
+    let capM: number | null = null;
+    if (draft && (place === 'armR' || place === 'armL')) {
+      const fit = fitCapWidthToArmhole(
+        draft.piece,
+        draft.back ?? null,
+        place === 'armR' ? 'R' : 'L',
+        wrapped,
+      );
+      if (fit) {
+        wrapped = fit.piece;
+        capM = fit.capM;
+      }
+    }
+    return { piece: wrapped, capM };
+  };
   const applyArrangement = (
     pick: { pid: number; instance: number },
     point: ArrangementPoint,
   ): void => {
     if (!draft) return;
+    // Façon CLO : la pastille d'un VOLUME (bras, cou) enroule la pièce libre
+    // autour de ce volume — même chemin que « ◎ Placer → Bras/Cou ». Les
+    // pastilles du torse restent des translations (panneau tangent).
+    const wrapTarget =
+      point.id === 'arm-right' ? ('armR' as const)
+      : point.id === 'arm-left' ? ('armL' as const)
+      : point.id === 'neck-front' || point.id === 'neck-back' ? ('neck' as const)
+      : null;
+    if (wrapTarget && pick.pid >= 2) {
+      const free = draftPieceOf(pick.pid);
+      if (free) {
+        if (free.wrap === wrapTarget) {
+          showToast(`« ${draftPieceLabel(free, pick.pid)} » est déjà enroulée là : ${point.labelFr}.`);
+          return;
+        }
+        pushHistory();
+        const w = wrapFreePieceToBodyRole(free, wrapTarget);
+        replaceDraftPiece(pick.pid, w.piece);
+        draftTouched = true;
+        atelierDesign = true;
+        build();
+        showToast(`« ${draftPieceLabel(draftPieceOf(pick.pid), pick.pid)} » enroulée : ${point.labelFr}.`);
+        return;
+      }
+    }
     const centroid = stagingInstanceCentroid(pick.pid, pick.instance);
     if (!centroid) {
       showToast('Pièce introuvable dans la préparation — re-cliquez-la.');
@@ -1754,10 +1811,25 @@ async function main(): Promise<void> {
     if (!draft) return 0;
     const byId = new Map(currentArrangePoints().map((point) => [point.id, point] as const));
     const pastilleForPiece = (pid: number): ArrangementPoint | null => {
-      if (pid === 0) return byId.get('torso-front') ?? null;
-      if (pid === 1) return byId.get('torso-back') ?? null;
+      if (pid === 0) return loadedPattern === 'boxy' ? null : byId.get('torso-front') ?? null;
+      if (pid === 1) return loadedPattern === 'boxy' ? null : byId.get('torso-back') ?? null;
       const piece = draftPieceOf(pid);
       if (!piece) return null;
+      // v253 — façon CLO (observé en direct sur CLO 2026) : une manche
+      // arrangée par CLO est ENROULÉE autour du volume du bras — et c'est
+      // exactement ce que placeWrapSleeve fait déjà dans l'aperçu atelier.
+      // L'auto-rangement ne doit donc PAS l'arracher du bras vers une
+      // pastille flottante (l'ancienne pose « plaque au-dessus de l'épaule »).
+      // On la laisse en place ; le rangement ne pose que devant/dos/col & co.
+      if (piece.wrap === 'armL' || piece.wrap === 'armR') return null;
+      // Tee (boxy) : le devant/dos ne stockent PAS d'offsets en auto — la
+      // pose CLO (hauteur de port + rapprochement) est une transformation
+      // d'APERÇU (voir le build atelier). L'essayage garde son départ
+      // éprouvé : partir de la hauteur de port déchirait l'encolure (mesuré).
+      // Idem pour le COL enroulé en anneau (v252) : l'anneau se forme autour
+      // de l'axe du cou à sa position dessinée — l'ancre « encolure devant »
+      // le décalait 10 cm devant le cou.
+      if (piece.wrap === 'neck' && respectArrangement) return null;
       const role = placementRoleOf(piece);
       if (!role) return null;
       const target = ROLE_TO_PASTILLE[role];
@@ -1775,13 +1847,13 @@ async function main(): Promise<void> {
         seen.add(key);
         const centroid = stagingInstanceCentroid(pid, range.instance);
         if (!centroid) continue;
+        let piece = draftPieceOf(pid);
+        if (!piece) continue;
         const delta: [number, number, number] = [
           point.pos[0] - centroid[0],
           point.pos[1] - centroid[1],
           point.pos[2] - centroid[2],
         ];
-        let piece = draftPieceOf(pid);
-        if (!piece) continue;
         if (pid === 1 && !draft.back) piece = structuredClone(draft.piece);
         if (!pushed) {
           pushHistory();
@@ -1798,6 +1870,19 @@ async function main(): Promise<void> {
     }
     return moved;
   };
+  // Hook dev : range une pièce sur une pastille PAR ID (le même chemin que
+  // le clic — enroulement pour bras/cou, translation sinon). Déterministe
+  // pour la validation : __toileArrangePiece(pid, 'arm-right'|'neck-front'|...).
+  (
+    window as unknown as {
+      __toileArrangePiece?: (pid: number, pointId: string, instance?: number) => unknown;
+    }
+  ).__toileArrangePiece = (pid: number, pointId: string, instance = 0) => {
+    const point = currentArrangePoints().find((p) => p.id === pointId);
+    if (!point) return { ok: false, reason: 'pastille inconnue: ' + pointId };
+    applyArrangement({ pid, instance }, point);
+    return { ok: true };
+  };
   // Hook dev (validation avant UI) : __toileAnatomical(true) active le respect
   // de l'arrangement par l'essayage + auto-range par rôle ; (false) le coupe.
   (window as unknown as { __toileAnatomical?: (on?: boolean) => unknown }).__toileAnatomical = (
@@ -1805,6 +1890,7 @@ async function main(): Promise<void> {
   ) => {
     respectArrangement = !!on;
     const moved = on ? autoArrangeByRole() : 0;
+    if (!moved) build(); // la pose d'aperçu (v252) vit dans le build
     return { respectArrangement, moved };
   };
   // Hook dev : rotate-panneau façon CLO. __toileRotatePiece(pid, degrés, axe?,
@@ -1885,6 +1971,7 @@ async function main(): Promise<void> {
     setPressed('at-preassemble', respectArrangement);
     if (respectArrangement) {
       const moved = autoArrangeByRole();
+      if (!moved) build(); // la pose d'aperçu (v252) vit dans le build
       showPlacementStatus(
         [
           moved > 0
@@ -1895,6 +1982,7 @@ async function main(): Promise<void> {
         true,
       );
     } else {
+      build(); // dé-pose l'aperçu façon CLO (v252)
       showPlacementStatus(
         ['Pré-assemblage anatomique désactivé : l’essayage repart du placement canonique (coutures).'],
         false,
@@ -1980,30 +2068,11 @@ async function main(): Promise<void> {
       if (place === 'front') draft.piece = piece;
       else draft.back = piece;
     } else if (place === 'armR' || place === 'armL' || place === 'neck') {
-      // Bras / cou : la pièce est re-boîtée sur l'emprise de son tracé (contour
-      // plein bord — la famille éprouvée pour les tubes), puis le placement
-      // wrap l'enroule et l'épingle (emmanchure / encolure).
-      let wrapped = reboxPiece(piece, place === 'neck' ? 0.15 : 0.18);
-      wrapped.wrap = place;
-      wrapped.placement = { role: place, autoAlign: true };
-      if (!wrapped.name) wrapped.name = placementRoleLabel(place);
-      // Manche dessinée à la main : sa tête s'adapte à l'emmanchure MESURÉE
-      // (largeur = tour du run ouvert, moyenne devant/dos) — v160.
-      if (place === 'armR' || place === 'armL') {
-        const fit = fitCapWidthToArmhole(
-          draft.piece,
-          draft.back ?? null,
-          place === 'armR' ? 'R' : 'L',
-          wrapped,
-        );
-        if (fit) {
-          wrapped = fit.piece;
-          armFitCapM = fit.capM;
-        } else {
-          armFitCapM = null;
-        }
-      }
-      draft.pieces[idx] = wrapped;
+      // Bras / cou : rebox + rôle wrap + tête ajustée à l'emmanchure mesurée
+      // (v160) — chemin factorisé, partagé avec le clic de pastille (CLO).
+      const w = wrapFreePieceToBodyRole(piece, place);
+      armFitCapM = w.capM;
+      draft.pieces[idx] = w.piece;
     } else if (place === 'pocket' || place === 'under') {
       // Une couche unique, boîtée serrée : par-dessus (poche, empiècement) ou
       // par-dessous (doublure, fond). Le clic suivant choisit le support et le
@@ -5604,6 +5673,29 @@ async function main(): Promise<void> {
               applyStagingOrient(body, stagingOrientOf(back ?? d), panelSize, panelSize);
               applyStagingOffset(body, stagingOffsetOf(back ?? d), panelSize, panelSize);
             }
+            // v252 — pose d'APERÇU façon CLO (observé en direct sur CLO 2026) :
+            // en pré-assemblage anatomique, le devant/dos du tee s'affichent à
+            // HAUTEUR DE PORT (ligne d'épaule du patron sur l'épaule du corps
+            // + 1,5 cm) et RAPPROCHÉS du torse (poitrine + 10 cm), comme des
+            // pièces arrangées dans CLO. Transformation d'aperçu UNIQUEMENT :
+            // l'essayage (atelierDesign=false) repart du spawn éprouvé — le
+            // départ à hauteur de port déchirait l'encolure. Un déplacement
+            // MANUEL (offsets non nuls) garde la main.
+            if (atelierDesign && respectArrangement && loadedPattern === 'boxy') {
+              const zTarget = m.chest.halfD + 0.1;
+              const wearPose = (piece: DraftPiece, first: number, sign: 1 | -1): void => {
+                const off = stagingOffsetOf(piece);
+                if (Math.hypot(...off) > 1e-6) return; // pose manuelle respectée
+                applyStagingOffset(
+                  body,
+                  [0, m.shoulderY + 0.015 - piece.topY, sign * zTarget - sign * (piece.gap / 2)],
+                  first,
+                  panelSize,
+                );
+              };
+              wearPose(d, 0, 1);
+              wearPose(back ?? d, panelSize, -1);
+            }
             let garment = body;
             // FREE pieces (multi-piece editor): each user-drawn extra piece
             // (pieceId ≥ 2) becomes its OWN 2-panel mesh, combined onto the
@@ -5717,7 +5809,7 @@ async function main(): Promise<void> {
                 // corps MakeHuman) et supposer z=0 fait naître le panneau
                 // arrière DANS le bras → le SDF éjecte le tube.
                 const tPose = useScan;
-                placeWrapSleeve(pieceMesh, fp, fp.wrap === 'armR' ? 'R' : 'L', m, tPose);
+                placeWrapSleeve(pieceMesh, fp, fp.wrap === 'armR' ? 'R' : 'L', m, tPose, atelierDesign);
               } else if (fp.wrap === 'neck') {
                 // NECKBAND: form the two flat panels into a real tube BEFORE
                 // physics. Otherwise each lateral stitch crosses the neck and
@@ -5728,7 +5820,7 @@ async function main(): Promise<void> {
                 // autres pièces). On ne la pré-enroule en tube (pour un drapé net
                 // sans réouverture de couture) qu'au moment de l'essayage — build()
                 // est relancé par Simuler avec atelierDesign=false.
-                if (!atelierDesign) preWrapCollarTube(pieceMesh);
+                if (!atelierDesign || respectArrangement) preWrapCollarTube(pieceMesh);
               } else if (!surfacePiece) {
                 // Spawn it in FRONT of the body (at the body's front-panel plane),
                 // clear of the avatar SDF collider — spawning inside would eject it
