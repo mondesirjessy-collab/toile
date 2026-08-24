@@ -25,7 +25,7 @@ import {
   type FabricDynamics,
 } from './engine/solver/FabricMaterial';
 import { generateClothGrid, generateSeamedPanels, combineClothMeshes, plugJunctionLeaks, scaleMeshInverseMassesToReferenceCellArea, type CrossSeam, type ClothMeshData } from './engine/cloth/ClothMesh';
-import { defaultDraft, blankBaseDraft, tshirtDraft, compileDraft, compileAssembly, compileAssemblyGroups, compileCrossSeams, compileQuiltSeams, boundaryRunCells, compileSurfaceContacts, compileSurfaceSeams, crossSewnOpenCells, cutPieceAlongChord, docPieces, freeSeamBetween, mirrorDuplicatePiece, graphicLocalUV, GRAPHIC_IMAGE_MAX_CHARS, INTERNAL_LINES_MAX, offsetPieceOutline, generateFittedSleeves, addFisheyeDart, roundOutlineCorner, cutPieceAlongInternalLine, toggleNotchAt, addSeamNotches, slashSpreadFullness, mergePiecesAlongSeam, toggleInternalHole, linkedVertexEdit, divideOutlineEdge, alignOutlineVertex, squareCorner, extendInternalLineEnd, divideInternalLineAt, pieceHolePolygons, isSelfIntersecting, fitCapWidthToArmhole, draftPieceLabel, gatherSeamSide, neckOpeningCells, removeFreePiece, reboxPiece, pieceIdOf, nearestOutlineEdgeInfo, syncPieceFrames, sanitizeDraft, pointInPolygon, pointInTriangle, surfaceAttachmentUV, type DraftDoc, type AssemblySeam, type DraftPiece, type PieceGraphic, type UV } from './engine/pattern/Draft';
+import { defaultDraft, blankBaseDraft, tshirtDraft, compileDraft, compileAssembly, compileAssemblyGroups, compileCrossSeams, compileQuiltSeams, boundaryRunCells, compileSurfaceContacts, compileSurfaceSeams, crossSewnOpenCells, cutPieceAlongChord, docPieces, freeSeamBetween, mirrorDuplicatePiece, graphicLocalUV, GRAPHIC_IMAGE_MAX_CHARS, INTERNAL_LINES_MAX, offsetPieceOutline, generateFittedSleeves, addFisheyeDart, roundOutlineCorner, cutPieceAlongInternalLine, toggleNotchAt, addSeamNotches, slashSpreadFullness, mergePiecesAlongSeam, toggleInternalHole, linkedVertexEdit, divideOutlineEdge, alignOutlineVertex, squareCorner, extendInternalLineEnd, divideInternalLineAt, pieceHolePolygons, isSelfIntersecting, fitCapWidthToArmhole, draftPieceLabel, gatherSeamSide, neckOpeningCells, removeFreePiece, reboxPiece, pieceIdOf, nearestOutlineEdgeInfo, syncPieceFrames, sanitizeDraft, pointInPolygon, pointInTriangle, surfaceAttachmentUV, type DraftDoc, type AssemblySeam, type DraftPiece, type PieceGraphic, type PiecePlacementRole, type UV } from './engine/pattern/Draft';
 import {
   applyStagingOffset,
   applyStagingOrient,
@@ -51,6 +51,7 @@ import { draftRobe, robeCm, ROBE_SIZES, type RobeSize } from './engine/pattern/r
 import { draftVeste, vesteCm, VESTE_AVATAR_EASE_CM, VESTE_SIZES, type VesteSize } from './engine/pattern/veste';
 import { draftDoudoune, doudouneCm, DOUDOUNE_AVATAR_EASE_CM, DOUDOUNE_SIZES, type DoudouneSize } from './engine/pattern/doudoune';
 import { cloTee, cloPants } from './engine/pattern/cloBlocks';
+import { opLooseTee, opLooseTeeChestCm, OP_LOOSE_TEE_SIZES, type OpLooseTeeSize } from './engine/pattern/openPattern';
 import {
   loosePants,
   loosePantsSizeLabel,
@@ -155,7 +156,7 @@ import {
   type ScanCollisionPose,
 } from './engine/body/ScanAvatar';
 import { arrangementPoints, gridSd, measureBody, type ArrangementPoint, type BodyMeasure, type Sd } from './engine/body/measure';
-import { arrangementVolumes, pointOnVolume, volumePlaneAxesAt, volumeRadialAt, volumeSettingsOf, type ArrangementVolume } from './engine/body/cloArrangement';
+import { arrangementVolumes, pointOnVolume, roleArrangeTarget, volumePlaneAxesAt, volumeRadialAt, volumeSettingsOf, type ArrangementVolume } from './engine/body/cloArrangement';
 import { isNeutral, morphGrid, morphMesh, morphPrims, NO_MORPH, type MorphMarks, type Morphs } from './engine/body/morph';
 import { parseObj, buildImportedBody } from './engine/body/importBody';
 import { applySkin, buildSkin, poseIdle, type Skin } from './engine/body/pose';
@@ -2037,6 +2038,20 @@ async function main(): Promise<void> {
     input.addEventListener('input', aePreview);
     input.addEventListener('change', aeCommit);
   }
+  // Hook dev : centroïdes monde de toutes les instances de pièces (tests).
+  (window as unknown as { __toileCentroids?: () => unknown }).__toileCentroids = () => {
+    const out: { pid: number; instance: number; centroid: number[] | undefined }[] = [];
+    for (const [pid, ranges] of pieceParticleRanges) {
+      for (const range of ranges) {
+        out.push({
+          pid,
+          instance: range.instance,
+          centroid: stagingInstanceCentroid(pid, range.instance)?.map((v) => +v.toFixed(3)),
+        });
+      }
+    }
+    return out;
+  };
   // Hook dev : état de l'éditeur + centroïde réel de la pièce saisie (tests).
   (window as unknown as { __toileAe?: () => unknown }).__toileAe = () =>
     aeRef && {
@@ -2070,23 +2085,21 @@ async function main(): Promise<void> {
   // pièces via leur rôle (manches/col résolus depuis leur `wrap`). Même
   // translation de staging que l'arrange manuel, mais groupée (un seul build).
   // N'a d'effet sur l'essayage que si `respectArrangement` est actif.
-  const ROLE_TO_PASTILLE: Record<string, string> = {
-    front: 'torso-front',
-    back: 'torso-back',
-    armL: 'arm-left',
-    armR: 'arm-right',
-    neck: 'neck-front',
-    waist: 'waist-front',
-    legL: 'leg-left',
-    legR: 'leg-right',
-    pocket: 'hip-front',
+  // v261 — TABLE RÔLE → RECETTE (le modèle d'assignation du Pacx CLO,
+  // généralisé) : les cibles du pré-assemblage viennent de ROLE_RECIPES
+  // (cloArrangement.ts, valeurs de référence du tee CLO décodé — ceinture
+  // plaquée −40 mm, bande d'encolure au DOS du cou, jambes/poche…),
+  // évaluées sur les volumes du corps POSÉ. Tout nouveau vêtement s'arrange
+  // en étiquetant ses pièces d'un rôle — zéro code spécifique.
+  const roleTargetPoint = (role: PiecePlacementRole): ArrangementPoint | null => {
+    const t = roleArrangeTarget(lastPoseMeasure ?? lastMeasure, role);
+    return t ? { id: `role:${role}`, labelFr: placementRoleLabel(role), pos: t.pos } : null;
   };
   const autoArrangeByRole = (): number => {
     if (!draft) return 0;
-    const byId = new Map(currentArrangePoints().map((point) => [point.id, point] as const));
     const pastilleForPiece = (pid: number): ArrangementPoint | null => {
-      if (pid === 0) return loadedPattern === 'boxy' ? null : byId.get('torso-front') ?? null;
-      if (pid === 1) return loadedPattern === 'boxy' ? null : byId.get('torso-back') ?? null;
+      if (pid === 0) return loadedPattern === 'boxy' ? null : roleTargetPoint('front');
+      if (pid === 1) return loadedPattern === 'boxy' ? null : roleTargetPoint('back');
       const piece = draftPieceOf(pid);
       if (!piece) return null;
       // v253 — façon CLO (observé en direct sur CLO 2026) : une manche
@@ -2101,13 +2114,11 @@ async function main(): Promise<void> {
       // d'APERÇU (voir le build atelier). L'essayage garde son départ
       // éprouvé : partir de la hauteur de port déchirait l'encolure (mesuré).
       // Idem pour le COL enroulé en anneau (v252) : l'anneau se forme autour
-      // de l'axe du cou à sa position dessinée — l'ancre « encolure devant »
-      // le décalait 10 cm devant le cou.
+      // de l'axe du cou à sa position dessinée.
       if (piece.wrap === 'neck' && respectArrangement) return null;
       const role = placementRoleOf(piece);
       if (!role) return null;
-      const target = ROLE_TO_PASTILLE[role];
-      return target ? byId.get(target) ?? null : null;
+      return roleTargetPoint(role);
     };
     const seen = new Set<string>();
     let moved = 0;
@@ -2463,8 +2474,9 @@ async function main(): Promise<void> {
   let vesteSize: VesteSize | 'avatar' = 'M';
   let doudouneSize: DoudouneSize | 'avatar' = 'M';
   let hoodieSize: LucasHoodieSize = 'S';
-  let loadedPattern: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' = 'boxy';
+  let loadedPattern: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee' = 'boxy';
   const sizeSel = document.getElementById('at-size') as HTMLSelectElement | null;
+  let opTeeSize: OpLooseTeeSize = 'M';
   const teeSleevesRow = document.getElementById('at-tee-sleeves-row');
   const teeSleevesSel = document.getElementById('at-tee-sleeves') as HTMLSelectElement | null;
   const teeCollarRow = document.getElementById('at-tee-collar-row');
@@ -2531,7 +2543,7 @@ async function main(): Promise<void> {
     avatarStatureHelp.textContent =
       `Redimensionne le mannequin et ses collisions. ${fixedGarmentSizeMessage(selectedSize)}`;
   };
-  const showSizes = (kind: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants'): void => {
+  const showSizes = (kind: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee'): void => {
     if (!sizeSel) return;
     loadedPattern = kind;
     // Bloc manche : sélecteur visible pour le tee seulement (1er bloc composable).
@@ -2552,7 +2564,12 @@ async function main(): Promise<void> {
       teeEaseSlider.value = String(Math.round(boxyEase * 100));
       syncEaseLabel();
     }
-    if (kind === 'clo-tee') {
+    if (kind === 'op-tee') {
+      sizeSel.innerHTML = OP_LOOSE_TEE_SIZES.map(
+        (s) => `<option value="${s}">${s} · vêtement ${opLooseTeeChestCm(s)} cm</option>`,
+      ).join('');
+      sizeSel.value = opTeeSize;
+    } else if (kind === 'clo-tee') {
       sizeSel.innerHTML = `<option value="avatar">Bloc CLO ajusté au mannequin · poitrine ${(lastMeasure.chest.circ * 100).toFixed(0)} cm</option>`;
       sizeSel.value = 'avatar';
     } else if (kind === 'clo-pants') {
@@ -2896,6 +2913,27 @@ async function main(): Promise<void> {
   };
   (document.getElementById('at-clo-tee') as HTMLElement | null)?.addEventListener('click', loadCloTee);
 
+  // Loose Fit T-Shirt d'openpattern.io (CC BY) : tailles absolues S-XXL du
+  // patron, lignes de couture nettes du DXF — l'assemblage générique éprouvé
+  // (devant + dos cousus épaules/côtés, manches WRAP, bande de col WRAP).
+  const loadOpTee = (): void => {
+    if (!bigPanel) setBig(true);
+    patternView.resetView();
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    resetPlacement();
+    pushHistory();
+    showSizes('op-tee');
+    teePreset = false;
+    draft = opLooseTee(opTeeSize, lastMeasure, REF);
+    draftTouched = true;
+    atelierSleeves = false;
+    atelierCollar = false;
+    document.getElementById('at-sleeves')?.classList.remove('active');
+    build();
+  };
+  (document.getElementById('at-op-tee') as HTMLElement | null)?.addEventListener('click', loadOpTee);
+
   const loadCloPants = (): void => {
     if (!bigPanel) setBig(true);
     patternView.resetView();
@@ -3016,6 +3054,9 @@ async function main(): Promise<void> {
       } else if (loadedPattern === 'doudoune') {
         doudouneSize = sizeSel.value as DoudouneSize | 'avatar';
         if (sceneMode === 'atelier') loadDoudoune();
+      } else if (loadedPattern === 'op-tee') {
+        opTeeSize = sizeSel.value as OpLooseTeeSize;
+        if (sceneMode === 'atelier') loadOpTee();
       } else if (loadedPattern === 'clo-tee') {
         if (sceneMode === 'atelier') loadCloTee();
       } else if (loadedPattern === 'clo-pants') {
@@ -8800,6 +8841,7 @@ async function main(): Promise<void> {
         const garment =
           loadedPattern === 'boxy' ? 'T-shirt'
           : loadedPattern === 'clo-tee' ? 'T-shirt CLO'
+          : loadedPattern === 'op-tee' ? 'T-shirt openpattern'
           : loadedPattern === 'pants' || loadedPattern === 'clo-pants' ? 'Pantalon'
           : loadedPattern === 'hoodie' ? 'Hoodie'
           : loadedPattern === 'jupe' ? 'Jupe'
@@ -10220,6 +10262,7 @@ async function main(): Promise<void> {
       doudoune: 'doudoune',
       'clo-tee': 'import CLO (tee, hors catalogue)',
       'clo-pants': 'import CLO (pantalon, hors catalogue)',
+      'op-tee': 't-shirt loose openpattern',
     };
     const briefContext = (): Record<string, unknown> => {
       const ctx: Record<string, unknown> = {};

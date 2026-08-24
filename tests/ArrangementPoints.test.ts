@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { arrangementPoints, type BodyMeasure } from '../src/engine/body/measure';
-import { arrangementVolumes, pointOnVolume, volumePlaneAxesAt, volumeRadialAt, volumeSettingsOf } from '../src/engine/body/cloArrangement';
+import { arrangementVolumes, pointOnVolume, roleArrangeTarget, volumePlaneAxesAt, volumeRadialAt, volumeSettingsOf } from '../src/engine/body/cloArrangement';
 
 const measure = (over: Partial<BodyMeasure> = {}): BodyMeasure => ({
   height: 1.65,
@@ -172,6 +172,43 @@ describe("points d'arrangement (grille CLO complète, mensurations réelles)", (
       ),
     ).get('arm-r')!;
     expect(Math.abs(volumePlaneAxesAt(arm, 0).up[0])).toBeGreaterThan(0.9);
+  });
+
+  it('la table rôle→recette : les destinations CLO de référence', () => {
+    const m = measure();
+    // Ceinture : PLAQUÉE à −40 mm (dégagement 0,10 − 0,04 = 0,06 devant).
+    const waist = roleArrangeTarget(m, 'waist')!;
+    expect(waist.recipe.offsetMm).toBe(-40);
+    expect(waist.pos[2]).toBeGreaterThan(0); // devant
+    const front = roleArrangeTarget(m, 'front')!;
+    expect(front.pos[2]).toBeGreaterThan(waist.pos[2]); // la ceinture est plus près
+    // Bande d'encolure : au DOS du cou (Neck_Back), pas devant.
+    const neck = roleArrangeTarget(m, 'neck')!;
+    expect(neck.pos[2]).toBeLessThan(0);
+    expect(neck.pos[1]).toBeCloseTo(m.neckY, 6);
+    // Devant/dos : symétrie avant/arrière au même niveau.
+    const back = roleArrangeTarget(m, 'back')!;
+    expect(back.pos[1]).toBeCloseTo(front.pos[1], 9);
+    expect(back.pos[2]).toBeCloseTo(-front.pos[2], 9);
+    // Jambes : devant des cuisses, miroir exact.
+    const legR = roleArrangeTarget(m, 'legR')!;
+    const legL = roleArrangeTarget(m, 'legL')!;
+    expect(legR.pos[0]).toBeCloseTo(-legL.pos[0], 9);
+    expect(legR.pos[2]).toBeGreaterThan(0);
+    // Manche : HAUT du bras (Y87 du bloc tee CLO) — près de la racine.
+    const path = [
+      { x: 0.22, y: 1.33, z: -0.02 },
+      { x: 0.62, y: 1.31, z: -0.08 },
+    ];
+    const withArm = measure({ arm: { y: 1.33, z: -0.02, rootX: 0.2, path } });
+    const armR = roleArrangeTarget(withArm, 'armR')!;
+    expect(armR.recipe.yPct).toBe(87);
+    expect(armR.pos[0]).toBeLessThan(0.32); // vers la racine (épaule), pas le poignet
+    expect(armR.pos[1]).toBeGreaterThan(1.33); // au-DESSUS du bras (outside)
+    // Sans bras mesuré : le rôle manche n'a pas de cible (pas de volume).
+    expect(roleArrangeTarget(m, 'armR')).toBeNull();
+    // Rôle inconnu : null.
+    expect(roleArrangeTarget(m, 'auto')).toBeNull();
   });
 
   it('suit la stature : un corps plus grand remonte les ancres', () => {

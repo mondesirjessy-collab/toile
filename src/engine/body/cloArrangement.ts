@@ -319,6 +319,53 @@ export function arrangementVolumes(m: BodyMeasure): ArrangementVolume[] {
   return volumes;
 }
 
+/* ------------------------------------------------------------------------- *
+ * TABLE RÔLE → RECETTE — le modèle d'assignation de CLO, généralisé.
+ *
+ * Dans le format Pacx de CLO, chaque pièce porte SA destination : un point
+ * d'arrangement (volume + X/Y/offset). Ici, la même idée par RÔLE de pièce :
+ * n'importe quel vêtement (openpattern, futur import Pacx…) s'arrange en
+ * étiquetant ses pièces, sans code spécifique. Les valeurs de référence
+ * sortent de l'export BOM du tee CLO décodé (docs/clo-arrangement-extrait/
+ * clo-tee-assemblage.json) : devant/dos au niveau poitrine
+ * (Body_Front/Back_Center_3 → Y55), la CEINTURE plaquée à −40 mm
+ * (Body_Front_Waist → Y35), la bande d'encolure au DOS du cou (Neck_Back),
+ * la manche en HAUT du bras (Arm_Outside_1 remonté à Y87 dans le bloc tee,
+ * offset UI 51 = +1 mm).
+ * ------------------------------------------------------------------------- */
+
+export interface ArrangeRecipe {
+  volume: string;
+  xPct: number;
+  yPct: number;
+  offsetMm: number;
+}
+
+export const ROLE_RECIPES: Record<string, ArrangeRecipe> = {
+  front: { volume: 'torso', xPct: 25, yPct: 55, offsetMm: 0 },
+  back: { volume: 'torso', xPct: 75, yPct: 55, offsetMm: 0 },
+  armR: { volume: 'arm-r', xPct: 0, yPct: 87, offsetMm: 1 },
+  armL: { volume: 'arm-l', xPct: 0, yPct: 87, offsetMm: 1 },
+  neck: { volume: 'neck', xPct: 75, yPct: 50, offsetMm: 0 },
+  waist: { volume: 'torso', xPct: 25, yPct: 35, offsetMm: WAIST_OFFSET_MM },
+  legR: { volume: 'leg-r', xPct: 25, yPct: 55, offsetMm: 0 },
+  legL: { volume: 'leg-l', xPct: 25, yPct: 55, offsetMm: 0 },
+  pocket: { volume: 'torso', xPct: 25, yPct: 15, offsetMm: 0 },
+};
+
+/** La cible monde du rôle sur CE corps — null si le rôle n'a pas de recette
+ * ou si son volume n'existe pas (bras absents sur un corps bras collés). */
+export function roleArrangeTarget(
+  m: BodyMeasure,
+  role: string,
+): { pos: [number, number, number]; recipe: ArrangeRecipe } | null {
+  const recipe = ROLE_RECIPES[role];
+  if (!recipe) return null;
+  const vol = arrangementVolumes(m).find((v) => v.id === recipe.volume);
+  if (!vol) return null;
+  return { pos: pointOnVolume(vol, recipe.xPct, recipe.yPct, recipe.offsetMm), recipe };
+}
+
 /** La grille de pastilles : les specs CLO évaluées sur les volumes. yPct 50
  * partout où le volume est une tranche (poignet, cheville, cou). */
 export function cloArrangementPoints(m: BodyMeasure): ArrangementPoint[] {
