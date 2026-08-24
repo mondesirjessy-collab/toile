@@ -289,6 +289,15 @@ export interface DraftPiece {
    * identity ⇒ no rotation.
    */
   stagingOrients?: Array<[number, number, number, number] | null>;
+  /**
+   * v263 — la RECETTE d'arrangement par instance : le modèle `<Arrangement>`
+   * du Pacx CLO. La pièce est ancrée à un volume d'encadrement du corps
+   * (volume + X autour + Y le long + offset radial en mm). Contrairement aux
+   * stagingOffsets (positions absolues figées), la recette exprime
+   * l'INTENTION — elle se réévalue sur le corps COURANT : changer de
+   * mannequin ou de pose re-range la pièce sur sa même ancre corporelle.
+   */
+  arrange?: Array<{ volume: string; xPct: number; yPct: number; offsetMm: number } | null>;
 }
 
 export interface DraftDoc {
@@ -2415,6 +2424,33 @@ export function sanitizeDraft(raw: unknown): DraftDoc {
         return orients.some((q) => q && Math.hypot(q[0], q[1], q[2]) > 1e-6)
           ? { stagingOrients: orients }
           : {};
+      })(),
+      ...((): { arrange?: Array<{ volume: string; xPct: number; yPct: number; offsetMm: number } | null> } => {
+        if (!Array.isArray(pp.arrange)) return {};
+        const recipes = pp.arrange.slice(0, 8).map((raw) => {
+          const r = raw as { volume?: unknown; xPct?: unknown; yPct?: unknown; offsetMm?: unknown } | null;
+          if (
+            !r ||
+            typeof r.volume !== 'string' ||
+            r.volume.length === 0 ||
+            r.volume.length > 32 ||
+            typeof r.xPct !== 'number' ||
+            !Number.isFinite(r.xPct) ||
+            typeof r.yPct !== 'number' ||
+            !Number.isFinite(r.yPct) ||
+            typeof r.offsetMm !== 'number' ||
+            !Number.isFinite(r.offsetMm)
+          ) {
+            return null;
+          }
+          return {
+            volume: r.volume,
+            xPct: Math.max(0, Math.min(100, r.xPct)),
+            yPct: Math.max(0, Math.min(100, r.yPct)),
+            offsetMm: Math.max(-200, Math.min(300, r.offsetMm)),
+          };
+        });
+        return recipes.some(Boolean) ? { arrange: recipes } : {};
       })(),
     };
   };

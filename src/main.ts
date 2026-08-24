@@ -1800,6 +1800,14 @@ async function main(): Promise<void> {
     // lui donner sa propre translation de préparation.
     if (pick.pid === 1 && !draft.back) piece = structuredClone(draft.piece);
     replaceDraftPiece(pick.pid, movePieceInstanceInStaging(piece, pick.instance, delta));
+    if (point.spec) {
+      writeArrangeRecipe(pick.pid, pick.instance, {
+        volume: point.spec.volume,
+        xPct: point.spec.xPct,
+        yPct: point.spec.yPct,
+        offsetMm: point.spec.offsetMm,
+      });
+    }
     draftTouched = true;
     atelierDesign = true;
     build();
@@ -1860,8 +1868,16 @@ async function main(): Promise<void> {
     const centroid = stagingInstanceCentroid(pid, instance);
     if (!centroid) return;
     aeFillVolumes();
+    const stored = draftPieceOf(pid)?.arrange?.[instance];
     const mem = aeMemory.get(`${pid}:${instance}`);
-    if (mem && [...aeVolume.options].some((o) => o.value === mem.volume)) {
+    if (stored && [...aeVolume.options].some((o) => o.value === stored.volume)) {
+      // v263 — la recette PERSISTÉE du patron : les vrais réglages, même
+      // après rechargement ou import.
+      aeVolume.value = stored.volume;
+      aeX.value = String(Math.round(stored.xPct));
+      aeY.value = String(Math.round(stored.yPct));
+      aeOff.value = String(Math.round(stored.offsetMm));
+    } else if (mem && [...aeVolume.options].some((o) => o.value === mem.volume)) {
       aeVolume.value = mem.volume;
       aeX.value = String(mem.x);
       aeY.value = String(mem.y);
@@ -1899,6 +1915,21 @@ async function main(): Promise<void> {
       y: Number(aeY.value),
       off: Number(aeOff.value),
     });
+  };
+  /** v263 — grave la RECETTE d'ancrage dans la pièce (piece.arrange, par
+   * instance) : l'intention persiste dans le patron — export/import, et la
+   * pièce SUIT son volume aux changements de corps (reapplyArrangeRecipes). */
+  const writeArrangeRecipe = (
+    pid: number,
+    instance: number,
+    recipe: { volume: string; xPct: number; yPct: number; offsetMm: number },
+  ): void => {
+    const piece = draftPieceOf(pid);
+    if (!piece || !draft) return;
+    const count = Math.max(instance + 1, piece.arrange?.length ?? 0);
+    const arr = Array.from({ length: count }, (_, k) => piece.arrange?.[k] ?? null);
+    arr[instance] = recipe;
+    replaceDraftPiece(pid, { ...piece, arrange: arr });
   };
   /** Après un clic-pastille : curseurs sur la recette du point, repère à jour. */
   const syncArrangeEditorTo = (pid: number, instance: number, point: ArrangementPoint): void => {
@@ -1958,6 +1989,12 @@ async function main(): Promise<void> {
     // lui donner sa propre translation de préparation.
     if (aeRef.pid === 1 && !draft.back) piece = structuredClone(draft.piece);
     replaceDraftPiece(aeRef.pid, movePieceInstanceInStaging(piece, aeRef.instance, delta));
+    writeArrangeRecipe(aeRef.pid, aeRef.instance, {
+      volume: aeVolume.value,
+      xPct: Number(aeX.value),
+      yPct: Number(aeY.value),
+      offsetMm: Number(aeOff.value),
+    });
     draftTouched = true;
     atelierDesign = true;
     build();
@@ -2060,6 +2097,7 @@ async function main(): Promise<void> {
       centroid: stagingInstanceCentroid(aeRef.pid, aeRef.instance)?.map((v) => +v.toFixed(3)),
       vals: { volume: aeVolume.value, x: +aeX.value, y: +aeY.value, off: +aeOff.value },
       orients: draftPieceOf(aeRef.pid)?.stagingOrients?.map((q) => q && q.map((v) => +v.toFixed(3))),
+      arrange: draftPieceOf(aeRef.pid)?.arrange ?? null,
     };
   aeVolume.addEventListener('change', () => {
     aePreview();
@@ -2095,9 +2133,25 @@ async function main(): Promise<void> {
     const t = roleArrangeTarget(lastPoseMeasure ?? lastMeasure, role);
     return t ? { id: `role:${role}`, labelFr: placementRoleLabel(role), pos: t.pos } : null;
   };
-  const autoArrangeByRole = (): number => {
+  const autoArrangeByRole = (recipesOnly = false): number => {
     if (!draft) return 0;
-    const pastilleForPiece = (pid: number): ArrangementPoint | null => {
+    const pastilleForPiece = (pid: number, instance: number): ArrangementPoint | null => {
+      // v263 — la RECETTE STOCKÉE (piece.arrange, le modèle <Arrangement> du
+      // Pacx) prime sur tout : c'est l'ancrage EXPLICITE de l'utilisateur,
+      // réévalué sur le corps COURANT — la pièce suit son volume quand le
+      // mannequin ou la pose change.
+      const stored = draftPieceOf(pid)?.arrange?.[instance];
+      if (stored) {
+        const vol = aeVolumes().find((v) => v.id === stored.volume);
+        if (vol) {
+          return {
+            id: `recette:${stored.volume}`,
+            labelFr: `ancre ${stored.volume}`,
+            pos: pointOnVolume(vol, stored.xPct, stored.yPct, stored.offsetMm),
+          };
+        }
+      }
+      if (recipesOnly) return null; // changement de corps : seules les ancres explicites suivent
       if (pid === 0) return loadedPattern === 'boxy' ? null : roleTargetPoint('front');
       if (pid === 1) return loadedPattern === 'boxy' ? null : roleTargetPoint('back');
       const piece = draftPieceOf(pid);
@@ -2124,9 +2178,9 @@ async function main(): Promise<void> {
     let moved = 0;
     let pushed = false;
     for (const [pid, ranges] of pieceParticleRanges) {
-      const point = pastilleForPiece(pid);
-      if (!point) continue;
       for (const range of ranges) {
+        const point = pastilleForPiece(pid, range.instance);
+        if (!point) continue;
         const key = `${pid}:${range.instance}`;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -2250,6 +2304,36 @@ async function main(): Promise<void> {
   });
   // ⚓ PRÉ-ASSEMBLAGE ANATOMIQUE : auto-ancre par rôle + l'essayage respecte
   // la préparation (remplace le hook dev __toileAnatomical). Défaut OFF.
+  // v263 — les pièces ANCRÉES (recette stockée) suivent le corps : après un
+  // changement de mannequin ou de pose, re-ranger UNIQUEMENT ces pièces sur
+  // leurs volumes réévalués. Différé : le readback GPU des centroïdes n'est
+  // pas prêt juste après le rebuild (le piège v258) — on attend qu'il
+  // réponde, puis une seule passe autoArrangeByRole(recipesOnly).
+  const reapplyArrangeRecipesSoon = (): void => {
+    if (!draft) return;
+    const hasRecipe = [draft.piece, draft.back, ...(draft.pieces ?? [])].some((p) =>
+      p?.arrange?.some(Boolean),
+    );
+    if (!hasRecipe) return;
+    let tries = 0;
+    const timer = window.setInterval(() => {
+      tries += 1;
+      if (sceneMode !== 'atelier' || !atelierDesign) {
+        window.clearInterval(timer);
+        return;
+      }
+      const ready = [...pieceParticleRanges.entries()].some(([pid, ranges]) =>
+        ranges.some((r) => stagingInstanceCentroid(pid, r.instance)),
+      );
+      if (ready) {
+        window.clearInterval(timer);
+        const moved = autoArrangeByRole(true);
+        if (moved) showToast(`${moved} pièce${moved > 1 ? 's' : ''} ancrée${moved > 1 ? 's' : ''} re-rangée${moved > 1 ? 's' : ''} sur le corps.`);
+      } else if (tries > 12) {
+        window.clearInterval(timer);
+      }
+    }, 350);
+  };
   (document.getElementById('at-preassemble') as HTMLElement | null)?.addEventListener('click', () => {
     if (!atelierDesign) enterDesign();
     respectArrangement = !respectArrangement;
@@ -4395,6 +4479,7 @@ async function main(): Promise<void> {
     }
     syncEmptyAvatarButtons();
     syncGabaritButtons(); // v183 : les boutons gabarit de l'atelier suivent aussi
+    reapplyArrangeRecipesSoon(); // v263 — les pièces ancrées suivent le nouveau corps
   };
   /** État pressé des boutons mannequin de la page blanche. */
   const syncEmptyAvatarButtons = (): void => {
@@ -9984,6 +10069,7 @@ async function main(): Promise<void> {
     bodyPose = pose;
     syncPoseButtons();
     if (sceneMode !== 'drapé' && sceneMode !== 'couture') build();
+    reapplyArrangeRecipesSoon(); // v263 — les pièces ancrées suivent la pose
     guidanceEl.textContent =
       pose === 'native'
         ? 'Pose couture (T) — le mannequin est revenu à la pose de travail.'

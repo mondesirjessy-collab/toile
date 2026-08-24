@@ -120,6 +120,32 @@ describe('Draft geometry', () => {
     expect(sanitizeDraft({ format: 'nope' }).piece.outline.length).toBeGreaterThanOrEqual(3);
   });
 
+  it("v263 : la recette d'ancrage (arrange) survit au round-trip, l'invalide est purgé", () => {
+    const base = defaultDraft(64);
+    const doc = {
+      ...base,
+      piece: {
+        ...base.piece,
+        arrange: [
+          { volume: 'arm-r', xPct: 0, yPct: 87, offsetMm: 10 },
+          null,
+          { volume: '', xPct: 1, yPct: 2, offsetMm: 3 }, // volume vide → purgé
+          { volume: 'torso', xPct: 250, yPct: -10, offsetMm: 9999 }, // clampé
+        ],
+      },
+    };
+    const s = sanitizeDraft(JSON.parse(JSON.stringify(doc)));
+    expect(s.piece.arrange?.[0]).toEqual({ volume: 'arm-r', xPct: 0, yPct: 87, offsetMm: 10 });
+    expect(s.piece.arrange?.[1]).toBeNull();
+    expect(s.piece.arrange?.[2]).toBeNull();
+    expect(s.piece.arrange?.[3]).toEqual({ volume: 'torso', xPct: 100, yPct: 0, offsetMm: 300 });
+    // Sans aucune recette valide : le champ disparaît.
+    const empty = sanitizeDraft(
+      JSON.parse(JSON.stringify({ ...base, piece: { ...base.piece, arrange: [null, { volume: '', xPct: 0, yPct: 0, offsetMm: 0 }] } })),
+    );
+    expect(empty.piece.arrange).toBeUndefined();
+  });
+
   it('insert/delete outline vertices and re-index the open runs', () => {
     const base = defaultDraft(64).piece; // 7 vertices, openEdges [{1,3},{5,6}]
     // Insert on edge 2 (between v2 and v3) → new vertex at index 3; runs ≥3 shift +1.
