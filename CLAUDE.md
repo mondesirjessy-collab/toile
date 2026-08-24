@@ -78,8 +78,18 @@ cuites par pose, scans uniquement). Hooks dev (console) :
 
 ## Approche produit
 
-Copier CLO en l'améliorant pour le grand public (voir le blueprint de Jessy et
-le comparatif) : zéro traçage, zéro couture manuelle, zéro réglage physique
-exposé — blocs + matières + sur-mesure + « Essayer en 3D » + dossier d'usine.
+Copier CLO en l'améliorant, sur DEUX étages (décision Jessy, 24/08/2026) :
+
+1. **Grand public (le défaut)** : zéro traçage, zéro couture manuelle, zéro
+   réglage physique exposé — blocs + matières + sur-mesure + « Essayer en
+   3D » + dossier d'usine.
+2. **Pro / modélisation manuelle (à CONSERVER et développer)** : l'atelier
+   complet — traçage à la plume, courbes, pinces, coutures manuelles (🪡),
+   placement 3D — existe déjà (v96-v135) et doit monter vers le niveau CLO :
+   éditeur fin des points d'arrangement (offset par pièce), propriétés de
+   couture (sens, pli), saisie au mm, M:N/embu, marge de couture par bord.
+
+Référence pour copier CLO : `docs/clo-arrangement-extrait/` (109 points,
+19 volumes, mapping pièce→point + 15 coutures du tee, extraits en clair).
 Quand un comportement CLO fait référence, l'observer réellement (CLO est
 installé sur ce Mac) plutôt que le supposer.

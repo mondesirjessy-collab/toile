@@ -155,6 +155,7 @@ import {
   type ScanCollisionPose,
 } from './engine/body/ScanAvatar';
 import { arrangementPoints, gridSd, measureBody, type ArrangementPoint, type BodyMeasure, type Sd } from './engine/body/measure';
+import { arrangementVolumes, pointOnVolume, volumePlaneAxesAt, volumeRadialAt, volumeSettingsOf, type ArrangementVolume } from './engine/body/cloArrangement';
 import { isNeutral, morphGrid, morphMesh, morphPrims, NO_MORPH, type MorphMarks, type Morphs } from './engine/body/morph';
 import { parseObj, buildImportedBody } from './engine/body/importBody';
 import { applySkin, buildSkin, poseIdle, type Skin } from './engine/body/pose';
@@ -1772,6 +1773,7 @@ async function main(): Promise<void> {
         atelierDesign = true;
         build();
         showToast(`« ${draftPieceLabel(draftPieceOf(pick.pid), pick.pid)} » enroulée : ${point.labelFr}.`);
+        syncArrangeEditorTo(pick.pid, pick.instance, point);
         return;
       }
     }
@@ -1802,7 +1804,266 @@ async function main(): Promise<void> {
     build();
     const label = draftPieceLabel(draftPieceOf(pick.pid), pick.pid);
     showToast(`« ${label} » rangée : ${point.labelFr}.`);
+    syncArrangeEditorTo(pick.pid, pick.instance, point);
   };
+
+  // ✎ ÉDITEUR FIN D'ARRANGEMENT (v258) — l'éditeur de propriétés de CLO :
+  // la pièce saisie en mode ⊹ se règle EN CONTINU sur un volume d'encadrement
+  // (X autour, Y le long, décalage radial en mm — les paramètres exacts d'un
+  // point d'arrangement CLO). Aperçu fluide par translateRange (positions de
+  // repos, zéro vitesse fantôme), gravure au relâchement par le même chemin
+  // que le drag 3D (pushHistory + movePieceInstanceInStaging + build → undo,
+  // export et essayage cohérents). Un clic-pastille classique resynchronise
+  // les curseurs sur la recette (spec) de la pastille cliquée.
+  const aeRoot = document.getElementById('arrange-editor') as HTMLElement;
+  const aeVolume = document.getElementById('ae-volume') as HTMLSelectElement;
+  const aeX = document.getElementById('ae-x') as HTMLInputElement;
+  const aeY = document.getElementById('ae-y') as HTMLInputElement;
+  const aeOff = document.getElementById('ae-off') as HTMLInputElement;
+  const aePieceLabel = document.getElementById('ae-piece') as HTMLElement;
+  const aeXv = document.getElementById('ae-xv') as HTMLElement;
+  const aeYv = document.getElementById('ae-yv') as HTMLElement;
+  const aeOffv = document.getElementById('ae-offv') as HTMLElement;
+  const aeOrient = document.getElementById('ae-orient') as HTMLInputElement;
+  const aeOrientv = document.getElementById('ae-orientv') as HTMLElement;
+  let aeRef: { pid: number; instance: number } | null = null;
+  /** Centroïde de RÉFÉRENCE du geste en cours, capturé FRAIS au premier
+   * input (jamais juste après un build : le readback GPU y est périmé — le
+   * stocker décalait la gravure suivante de tout l'ancien déplacement). */
+  let aeGestureBase: [number, number, number] | null = null;
+  /** Réglages retenus par pièce le temps de la session (pas dans le draft). */
+  const aeMemory = new Map<string, { volume: string; x: number; y: number; off: number }>();
+  const aeVolumes = (): ArrangementVolume[] => arrangementVolumes(lastPoseMeasure ?? lastMeasure);
+  const aeFillVolumes = (): void => {
+    const keep = aeVolume.value;
+    aeVolume.innerHTML = '';
+    for (const v of aeVolumes()) {
+      const opt = document.createElement('option');
+      opt.value = v.id;
+      opt.textContent = v.labelFr;
+      aeVolume.appendChild(opt);
+    }
+    if ([...aeVolume.options].some((o) => o.value === keep)) aeVolume.value = keep;
+  };
+  const aeShowVals = (): void => {
+    aeXv.textContent = aeX.value;
+    aeYv.textContent = aeY.value;
+    aeOffv.textContent = aeOff.value;
+    aeOrientv.textContent = aeOrient.value;
+  };
+  const aeTarget = (): [number, number, number] | null => {
+    const vol = aeVolumes().find((v) => v.id === aeVolume.value);
+    return vol ? pointOnVolume(vol, Number(aeX.value), Number(aeY.value), Number(aeOff.value)) : null;
+  };
+  const openArrangeEditor = (pid: number, instance: number): void => {
+    const centroid = stagingInstanceCentroid(pid, instance);
+    if (!centroid) return;
+    aeFillVolumes();
+    const mem = aeMemory.get(`${pid}:${instance}`);
+    if (mem && [...aeVolume.options].some((o) => o.value === mem.volume)) {
+      aeVolume.value = mem.volume;
+      aeX.value = String(mem.x);
+      aeY.value = String(mem.y);
+      aeOff.value = String(mem.off);
+    } else {
+      // Ouvrir sur la position RÉELLE : le volume dont la surface est la plus
+      // proche du centroïde, et les X/Y/offset inversés dessus — le premier
+      // geste AJUSTE au lieu de faire sauter la pièce.
+      let best: { vol: ArrangementVolume; s: ReturnType<typeof volumeSettingsOf>; score: number } | null = null;
+      for (const vol of aeVolumes()) {
+        const s = volumeSettingsOf(vol, centroid);
+        const score = Math.abs(s.offsetMm) + s.outsideMm * 3; // hors-axe : lourdement pénalisé
+        if (!best || score < best.score) best = { vol, s, score };
+      }
+      if (best) {
+        aeVolume.value = best.vol.id;
+        aeX.value = String(best.s.xPct);
+        aeY.value = String(best.s.yPct);
+        aeOff.value = String(Math.max(-60, Math.min(120, best.s.offsetMm)));
+      }
+    }
+    aeRef = { pid, instance };
+    aeGestureBase = null;
+    aeOrient.value = '0'; // relatif : 0 = l'orientation actuelle de la pièce
+    aeOrientCommitted = 0;
+    aePieceLabel.textContent = draftPieceLabel(draftPieceOf(pid), pid);
+    aeShowVals();
+    aeRoot.hidden = false;
+  };
+  const aeRemember = (): void => {
+    if (!aeRef) return;
+    aeMemory.set(`${aeRef.pid}:${aeRef.instance}`, {
+      volume: aeVolume.value,
+      x: Number(aeX.value),
+      y: Number(aeY.value),
+      off: Number(aeOff.value),
+    });
+  };
+  /** Après un clic-pastille : curseurs sur la recette du point, repère à jour. */
+  const syncArrangeEditorTo = (pid: number, instance: number, point: ArrangementPoint): void => {
+    if (!aeRef || aeRef.pid !== pid || aeRef.instance !== instance) return;
+    if (point.spec) {
+      aeFillVolumes();
+      if ([...aeVolume.options].some((o) => o.value === point.spec!.volume)) {
+        aeVolume.value = point.spec.volume;
+        aeX.value = String(Math.round(point.spec.xPct));
+        aeY.value = String(Math.round(point.spec.yPct));
+        aeOff.value = String(Math.round(point.spec.offsetMm));
+        aeShowVals();
+        aeRemember();
+      }
+    }
+    aeGestureBase = null; // le prochain geste relira un centroïde frais
+    aeOrient.value = '0';
+    aeOrientCommitted = 0;
+    aeShowVals();
+  };
+  const aePreview = (): void => {
+    if (!aeRef) return;
+    aeShowVals();
+    if (!aeGestureBase) aeGestureBase = stagingInstanceCentroid(aeRef.pid, aeRef.instance);
+    if (!aeGestureBase) return; // readback pas prêt — le tick suivant réessaie
+    const target = aeTarget();
+    if (!target) return;
+    const delta: [number, number, number] = [
+      target[0] - aeGestureBase[0],
+      target[1] - aeGestureBase[1],
+      target[2] - aeGestureBase[2],
+    ];
+    for (const range of gizmoRangesOf(aeRef.pid, aeRef.instance)) {
+      system.translateRange(range.first, range.count, delta);
+    }
+  };
+  const aeCommit = (): void => {
+    if (!aeRef || !draft) return;
+    const base = aeGestureBase ?? stagingInstanceCentroid(aeRef.pid, aeRef.instance);
+    if (!base) return;
+    const target = aeTarget();
+    if (!target) return;
+    const delta: [number, number, number] = [
+      target[0] - base[0],
+      target[1] - base[1],
+      target[2] - base[2],
+    ];
+    if (Math.hypot(...delta) < 0.002) return; // clic sans mouvement : rien à graver
+    pushHistory();
+    let piece = draftPieceOf(aeRef.pid);
+    if (!piece) {
+      draftHistory.pop();
+      syncUndoButton();
+      return;
+    }
+    // Même contrat que le drag 3D : matérialiser un dos indépendant avant de
+    // lui donner sa propre translation de préparation.
+    if (aeRef.pid === 1 && !draft.back) piece = structuredClone(draft.piece);
+    replaceDraftPiece(aeRef.pid, movePieceInstanceInStaging(piece, aeRef.instance, delta));
+    draftTouched = true;
+    atelierDesign = true;
+    build();
+    aeGestureBase = null; // gravé : le prochain geste repart d'une lecture fraîche
+    aeRemember();
+    const volLabel = aeVolume.selectedOptions[0]?.textContent ?? aeVolume.value;
+    showToast(
+      `« ${draftPieceLabel(draftPieceOf(aeRef.pid), aeRef.pid)} » réglée : ${volLabel} · X ${aeX.value} · Y ${aeY.value} · ${aeOff.value} mm.`,
+    );
+  };
+  // ORIENTATION (le 4e champ CLO) : tourner la pièce sur ELLE-MÊME face au
+  // corps — quaternion autour de la normale radiale du volume au X courant,
+  // pivot = centroïde. Le curseur est RELATIF (0 = l'état actuel) : la
+  // gravure est cumulative (stagingOrients) et l'undo la défait pas à pas.
+  let aeOrientCommitted = 0;
+  const aeOrientQuat = (deg: number): [number, number, number, number] | null => {
+    const vol = aeVolumes().find((v) => v.id === aeVolume.value);
+    if (!vol) return null;
+    return quatFromAxisAngle(volumeRadialAt(vol, Number(aeX.value)), (deg * Math.PI) / 180);
+  };
+  const aeOrientPreview = (): void => {
+    if (!aeRef) return;
+    aeShowVals();
+    if (!aeGestureBase) aeGestureBase = stagingInstanceCentroid(aeRef.pid, aeRef.instance);
+    if (!aeGestureBase) return;
+    const q = aeOrientQuat(Number(aeOrient.value) - aeOrientCommitted);
+    if (!q) return;
+    for (const range of gizmoRangesOf(aeRef.pid, aeRef.instance)) {
+      system.rotateRange(range.first, range.count, q, aeGestureBase);
+    }
+  };
+  /** Grave une rotation rigide de l'instance saisie (orientation, miroirs). */
+  const aeGraveQuat = (q: [number, number, number, number], toast: string): boolean => {
+    if (!aeRef || !draft) return false;
+    pushHistory();
+    let piece = draftPieceOf(aeRef.pid);
+    if (!piece) {
+      draftHistory.pop();
+      syncUndoButton();
+      return false;
+    }
+    if (aeRef.pid === 1 && !draft.back) piece = structuredClone(draft.piece);
+    replaceDraftPiece(aeRef.pid, rotatePieceInstanceInStaging(piece, aeRef.instance, q));
+    draftTouched = true;
+    atelierDesign = true;
+    build();
+    aeGestureBase = null;
+    showToast(`« ${draftPieceLabel(draftPieceOf(aeRef.pid), aeRef.pid)} » ${toast}`);
+    return true;
+  };
+  const aeOrientCommit = (): void => {
+    const deg = Number(aeOrient.value) - aeOrientCommitted;
+    if (Math.abs(deg) < 0.5) return;
+    const q = aeOrientQuat(deg);
+    if (!q) return;
+    if (aeGraveQuat(q, `tournée de ${deg > 0 ? '+' : ''}${Math.round(deg)}° face au corps.`)) {
+      aeOrientCommitted = Number(aeOrient.value);
+    }
+  };
+  aeOrient.addEventListener('input', aeOrientPreview);
+  aeOrient.addEventListener('change', aeOrientCommit);
+  // MIROIRS (UpDownReverse / LeftRightReverse de CLO) : rotation rigide de
+  // 180° dans le plan de la pièce face au corps — haut↔bas autour de l'axe
+  // `right` du plan, gauche↔droite autour de `up`. Cumulatif : re-cliquer
+  // remet (2×180° = identité), l'undo défait. Le retournement change aussi
+  // la face présentée au corps — le comportement CLO (retourner une crêpe).
+  const aeFlip = (which: 'ud' | 'lr'): void => {
+    if (!aeRef) return;
+    const vol = aeVolumes().find((v) => v.id === aeVolume.value);
+    if (!vol) return;
+    const axes = volumePlaneAxesAt(vol, Number(aeX.value));
+    const q = quatFromAxisAngle(which === 'ud' ? axes.right : axes.up, Math.PI);
+    aeGraveQuat(q, which === 'ud' ? 'retournée tête-bêche.' : 'retournée gauche-droite.');
+  };
+  (document.getElementById('ae-flip-ud') as HTMLElement).addEventListener('click', () => aeFlip('ud'));
+  (document.getElementById('ae-flip-lr') as HTMLElement).addEventListener('click', () => aeFlip('lr'));
+  for (const input of [aeX, aeY, aeOff]) {
+    input.addEventListener('input', aePreview);
+    input.addEventListener('change', aeCommit);
+  }
+  // Hook dev : état de l'éditeur + centroïde réel de la pièce saisie (tests).
+  (window as unknown as { __toileAe?: () => unknown }).__toileAe = () =>
+    aeRef && {
+      pid: aeRef.pid,
+      instance: aeRef.instance,
+      centroid: stagingInstanceCentroid(aeRef.pid, aeRef.instance)?.map((v) => +v.toFixed(3)),
+      vals: { volume: aeVolume.value, x: +aeX.value, y: +aeY.value, off: +aeOff.value },
+      orients: draftPieceOf(aeRef.pid)?.stagingOrients?.map((q) => q && q.map((v) => +v.toFixed(3))),
+    };
+  aeVolume.addEventListener('change', () => {
+    aePreview();
+    aeCommit();
+  });
+  // Le panneau suit l'état ⊹ (la pièce saisie peut se perdre par 8 chemins —
+  // un poll léger est plus sûr que 8 points d'accroche).
+  window.setInterval(() => {
+    const show = sceneMode === 'atelier' && atelierDesign && arrangeMode && !!arrangePick && !!aeRef;
+    if (!show) {
+      if (!aeRoot.hidden) aeRoot.hidden = true;
+      if (!arrangePick) {
+        aeRef = null;
+        aeGestureBase = null;
+      }
+    } else if (aeRoot.hidden) {
+      aeRoot.hidden = false;
+    }
+  }, 300);
 
   // ⊹ PRÉ-ASSEMBLAGE ANATOMIQUE (auto) — range TOUTES les pièces sur le corps
   // en UNE passe : torse devant/dos par construction (pid 0/1), les autres
@@ -8015,8 +8276,9 @@ async function main(): Promise<void> {
         arrangePick = { pid: target.pid, instance: target.instance };
         activeStagingInstance = { pid: target.pid, instance: target.instance };
         patternView.selectPiece(target.pid);
+        openArrangeEditor(target.pid, target.instance);
         const label = draftPieceLabel(draftPieceOf(target.pid), target.pid);
-        showToast(`Pièce saisie : « ${label} » — cliquez une pastille pour la ranger.`);
+        showToast(`Pièce saisie : « ${label} » — pastille pour la ranger, ou réglez X/Y/décalage à droite.`);
         return false;
       }
       if (anchor) {

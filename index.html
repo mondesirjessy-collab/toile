@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TOILE — du brief au patron · v218</title>
+  <title>TOILE — du brief au patron · v260</title>
   <style>
     :root {
       color-scheme: dark;
@@ -563,6 +563,60 @@
       background: rgba(80, 150, 220, 0.12);
     }
     /* Choix de placement d'une pièce tracée (contextuel, sous la barre). */
+    /* v258 — éditeur fin d'arrangement (façon éditeur de propriétés CLO) */
+    #arrange-editor {
+      position: fixed;
+      z-index: 25;
+      top: 60px;
+      right: 12px;
+      width: 232px;
+      padding: 10px 12px;
+      display: grid;
+      gap: 7px;
+      pointer-events: auto;
+      background: rgba(20, 23, 29, 0.96);
+      border: 1px solid rgba(120, 170, 255, 0.28);
+      border-radius: 10px;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+      font-size: 12px;
+      color: #cfd6e4;
+    }
+    #arrange-editor[hidden] { display: none; }
+    #arrange-editor .ae-head {
+      font-weight: 600;
+      color: #e8edf7;
+      letter-spacing: 0.02em;
+    }
+    #arrange-editor .ae-head small { color: #8fa0bd; font-weight: 400; }
+    #arrange-editor select {
+      width: 100%;
+      background: #141821;
+      color: #dfe6f2;
+      border: 1px solid #2b3342;
+      border-radius: 6px;
+      padding: 4px 6px;
+      font-size: 12px;
+    }
+    #arrange-editor label {
+      display: grid;
+      grid-template-columns: 58px 1fr 44px;
+      align-items: center;
+      gap: 6px;
+      color: #9fb0cb;
+    }
+    #arrange-editor input[type="range"] { width: 100%; accent-color: #78aaff; min-width: 0; }
+    #arrange-editor .ae-flips { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    #arrange-editor .ae-flips button {
+      background: #1a2030;
+      color: #cfd6e4;
+      border: 1px solid #2b3342;
+      border-radius: 6px;
+      padding: 5px 4px;
+      font-size: 11.5px;
+      cursor: pointer;
+    }
+    #arrange-editor .ae-flips button:hover { border-color: #78aaff; color: #e8edf7; }
+    #arrange-editor .ae-val { text-align: right; color: #dfe6f2; font-variant-numeric: tabular-nums; }
     #place-chooser {
       position: absolute;
       z-index: 5;
@@ -1292,7 +1346,7 @@
   <canvas id="view" tabindex="-1" aria-label="Vue 3D du vêtement et du mannequin"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 5 — du brief au patron · v218</small></span>
+    <span class="title">TOILE<small>phase 5 — du brief au patron · v260</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
       <span id="resolution-rebuild-status" role="status" aria-live="polite" hidden></span>
@@ -1834,5 +1888,17 @@
   </div>
   <div id="overlay" hidden></div>
   <script type="module" src="/src/main.ts"></script>
-</body>
+    <div id="arrange-editor" hidden>
+      <div class="ae-head">Arrangement · <small id="ae-piece">—</small></div>
+      <select id="ae-volume" title="Volume d'encadrement : la pièce se règle autour de lui (X autour, Y le long, décalage radial)"></select>
+      <label>X (tour) <input id="ae-x" type="range" min="0" max="100" step="1" value="25"><span class="ae-val" id="ae-xv">25</span></label>
+      <label>Y (axe) <input id="ae-y" type="range" min="0" max="100" step="1" value="50"><span class="ae-val" id="ae-yv">50</span></label>
+      <label>Décal. mm <input id="ae-off" type="range" min="-60" max="120" step="5" value="0"><span class="ae-val" id="ae-offv">0</span></label>
+      <label title="Tourner la pièce sur elle-même, face au corps (l'Orientation de CLO) — relatif à sa position actuelle">Orient. ° <input id="ae-orient" type="range" min="-180" max="180" step="5" value="0"><span class="ae-val" id="ae-orientv">0</span></label>
+      <div class="ae-flips">
+        <button id="ae-flip-ud" type="button" title="Retourner la pièce tête-bêche face au corps (UpDownReverse de CLO) — re-cliquer la remet">⇅ Haut-bas</button>
+        <button id="ae-flip-lr" type="button" title="Retourner la pièce gauche-droite face au corps (LeftRightReverse de CLO) — re-cliquer la remet">⇄ Gauche-droite</button>
+      </div>
+    </div>
+  </body>
 </html>
