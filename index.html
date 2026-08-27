@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TOILE — du brief au patron · v264</title>
+  <title>TOILE — du brief au patron · v265</title>
   <style>
     :root {
       color-scheme: dark;
@@ -1346,7 +1346,7 @@
   <canvas id="view" tabindex="-1" aria-label="Vue 3D du vêtement et du mannequin"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 5 — du brief au patron · v264</small></span>
+    <span class="title">TOILE<small>phase 5 — du brief au patron · v265</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
       <span id="resolution-rebuild-status" role="status" aria-live="polite" hidden></span>
@@ -1553,6 +1553,7 @@
           <button id="at-linkedit" aria-pressed="false" title="ÉDITION LIÉE (le « Linked Editing » de Clo) : quand elle est active, déplacer un sommet posé sur un bord COUSU déplace aussi son vis-à-vis sur la pièce partenaire — forme comprise, sens de couture respecté (marche aussi depuis ⬦ Retoucher contour). S’il n’y a pas de sommet en face, un point d’accord s’insère. Préférence conservée d’un geste à l’autre.">⛓ Édition liée</button>
           <button id="at-precision" aria-pressed="false" title="ÉTABLI DE PRÉCISION — quatre gestes « au chiffre » : cliquez un SOMMET (équerrer l’angle à 90° ou aligner sur un autre sommet), un BORD du contour (le diviser en 2/3/4/6 parts égales), le BOUT d’une ligne interne (la prolonger jusqu’au contour) ou son MILIEU (la scinder en deux).">⌖ Précision</button>
           <button id="at-sew" data-first-tip aria-pressed="false" title="Coudre deux bords : cliquez le bouton, puis le premier bord et le second. Pour une poche posée, cliquez directement un côté pointillé.">🪡 Coudre</button>
+          <button id="at-sew-serial" aria-pressed="false" title="Coudre un bord à PLUSIEURS pièces d'un coup : cliquez le bord receveur (le long), puis les bords à raccorder dans l'ordre, puis Entrée. Le bord long est réparti par largeur des pièces.">🪡⁺ En série</button>
           <button id="at-sew-free" data-first-tip aria-pressed="false" title="Couture libre : cliquez un point de départ sur un contour (même au milieu d’un bord), suivez le bord — les coins passent —, cliquez la fin. Puis tracez pareil le bord à assembler. Les points d’accord s’ajoutent tout seuls.">🧵 Couture libre</button>
           <button id="at-zipper" data-first-tip aria-pressed="false" title="Ajouter une fermeture éclair : cliquez le premier bord, puis le bord opposé. Les deux rubans restent identifiables dans le patron et sont fermés au premier essayage.">⚡ Fermeture éclair</button>
         </div>

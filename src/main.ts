@@ -25,7 +25,7 @@ import {
   type FabricDynamics,
 } from './engine/solver/FabricMaterial';
 import { generateClothGrid, generateSeamedPanels, combineClothMeshes, plugJunctionLeaks, scaleMeshInverseMassesToReferenceCellArea, type CrossSeam, type ClothMeshData } from './engine/cloth/ClothMesh';
-import { defaultDraft, blankBaseDraft, tshirtDraft, compileDraft, compileAssembly, compileAssemblyGroups, compileCrossSeams, compileQuiltSeams, boundaryRunCells, compileSurfaceContacts, compileSurfaceSeams, crossSewnOpenCells, cutPieceAlongChord, docPieces, freeSeamBetween, mirrorDuplicatePiece, graphicLocalUV, GRAPHIC_IMAGE_MAX_CHARS, INTERNAL_LINES_MAX, offsetPieceOutline, generateFittedSleeves, addFisheyeDart, roundOutlineCorner, cutPieceAlongInternalLine, toggleNotchAt, addSeamNotches, slashSpreadFullness, mergePiecesAlongSeam, toggleInternalHole, linkedVertexEdit, divideOutlineEdge, alignOutlineVertex, squareCorner, extendInternalLineEnd, divideInternalLineAt, pieceHolePolygons, isSelfIntersecting, fitCapWidthToArmhole, draftPieceLabel, gatherSeamSide, neckOpeningCells, removeFreePiece, reboxPiece, pieceIdOf, nearestOutlineEdgeInfo, syncPieceFrames, sanitizeDraft, pointInPolygon, pointInTriangle, surfaceAttachmentUV, type DraftDoc, type AssemblySeam, type DraftPiece, type PieceGraphic, type PiecePlacementRole, type UV } from './engine/pattern/Draft';
+import { defaultDraft, blankBaseDraft, tshirtDraft, compileDraft, compileAssembly, compileAssemblyGroups, compileCrossSeams, compileQuiltSeams, boundaryRunCells, compileSurfaceContacts, compileSurfaceSeams, crossSewnOpenCells, cutPieceAlongChord, docPieces, freeSeamBetween, mirrorDuplicatePiece, graphicLocalUV, GRAPHIC_IMAGE_MAX_CHARS, INTERNAL_LINES_MAX, offsetPieceOutline, generateFittedSleeves, addFisheyeDart, roundOutlineCorner, cutPieceAlongInternalLine, toggleNotchAt, addSeamNotches, slashSpreadFullness, mergePiecesAlongSeam, toggleInternalHole, linkedVertexEdit, divideOutlineEdge, alignOutlineVertex, squareCorner, extendInternalLineEnd, divideInternalLineAt, pieceHolePolygons, isSelfIntersecting, fitCapWidthToArmhole, draftPieceLabel, gatherSeamSide, sewEdgeToMany, neckOpeningCells, removeFreePiece, reboxPiece, pieceIdOf, nearestOutlineEdgeInfo, syncPieceFrames, sanitizeDraft, pointInPolygon, pointInTriangle, surfaceAttachmentUV, type DraftDoc, type AssemblySeam, type DraftPiece, type PieceGraphic, type PiecePlacementRole, type UV } from './engine/pattern/Draft';
 import {
   applyStagingOffset,
   applyStagingOrient,
@@ -1045,6 +1045,13 @@ async function main(): Promise<void> {
       e.preventDefault();
       undoDraft();
     }
+    // Entrée valide la couture en série ; Échap l'annule.
+    if (patternView.serialSewing && e.key === 'Enter') {
+      e.preventDefault();
+      if (!patternView.commitSerial()) showToast('Choisissez le bord receveur puis au moins une pièce à raccorder.');
+      setPressed('at-sew-serial', patternView.serialSewing);
+      refreshHint();
+    }
   });
 
   const setPressed = (id: string, on: boolean): void => {
@@ -1059,6 +1066,7 @@ async function main(): Promise<void> {
     setPressed('at-snap', patternView.lengthSnapping);
     setPressed('at-link', patternView.linkingSegments);
     setPressed('at-sew', patternView.sewing || !!patternView.seamPick);
+    setPressed('at-sew-serial', patternView.serialSewing);
     setPressed(
       'at-zipper',
       patternView.zippering || !!patternView.zipperPick,
@@ -3850,8 +3858,34 @@ async function main(): Promise<void> {
     document.getElementById('at-length')?.classList.remove('active');
     document.getElementById('at-snap')?.classList.remove('active');
     document.getElementById('at-link')?.classList.remove('active');
+    document.getElementById('at-sew-serial')?.classList.remove('active');
     syncAtelierControls();
     refreshHint(); // l'aide guide la couture pendant que 🪡 est armé
+  });
+  // 🪡⁺ COUDRE EN SÉRIE : un bord receveur (long) cousu à plusieurs pièces
+  // d'un coup, scindé par largeur (sewEdgeToMany). Entrée valide.
+  patternView.onSerialSeam = (receiver, partners) => {
+    if (!draft) return;
+    const res = sewEdgeToMany(draft, receiver, partners, resolution);
+    if (!res.ok) {
+      showToast(res.reason);
+      return;
+    }
+    pushHistory();
+    draft = res.doc;
+    draftTouched = true;
+    atelierDesign = true;
+    build();
+    showToast(`Couture en série : ${res.seams} bord${res.seams > 1 ? 's' : ''} raccordé${res.seams > 1 ? 's' : ''} sur le receveur.`);
+  };
+  (document.getElementById('at-sew-serial') as HTMLElement | null)?.addEventListener('click', (e) => {
+    const on = patternView.toggleSerialSew();
+    (e.currentTarget as HTMLElement).classList.toggle('active', on);
+    document.getElementById('at-sew')?.classList.remove('active');
+    document.getElementById('at-length')?.classList.remove('active');
+    document.getElementById('at-link')?.classList.remove('active');
+    syncAtelierControls();
+    refreshHint();
   });
   // ⚡ FERMETURE ÉCLAIR : même sélection guidée à deux bords que la couture,
   // mais le lien reste identifiable et pourra être simulé ouvert ou fermé.

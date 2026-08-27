@@ -1545,6 +1545,13 @@ export class PatternView {
   // deux choix de couture (plus besoin de connaître Maj+clic) ; le mode se
   // referme après la couture. Maj+clic reste disponible en raccourci expert.
   private sewMode = false;
+  // Mode COUDRE EN SÉRIE (atelier pro) : 1er clic = le bord RECEVEUR (long),
+  // clics suivants = les bords partenaires ; validation → le receveur est
+  // scindé par largeur et cousu à chacun (sewEdgeToMany). Entrée valide,
+  // re-clic sur le receveur annule.
+  private serialMode = false;
+  private serialReceiver: { pieceId: number; edge: number } | null = null;
+  private serialPartners: { pieceId: number; edge: number }[] = [];
   // Mode COUPER & COUDRE (bouton ✂) : deux clics sur le contour d'une pièce,
   // la corde la scinde et la couture se pose seule (géométrie dans Draft.ts).
   private cutMode = false;
@@ -1605,6 +1612,9 @@ export class PatternView {
   // symétrie et coud la paire le long de cet axe (mirrorDuplicatePiece).
   private mirrorMode = false;
   onMirrorPiece: (pieceId: number, axisEdge: number) => void = () => {};
+  /** 🪡⁺ Couture en série validée : un bord receveur + les bords partenaires,
+   * en runs résolus. main.ts appelle sewEdgeToMany puis reconstruit. */
+  onSerialSeam: (receiver: FaceRun, partners: FaceRun[]) => void = () => {};
   /** ▱ Ligne interne terminée (polyligne ou polygone fermé) sur une pièce. */
   onInternalLine: (pieceId: number, line: InternalLine) => void = () => {};
   /** ▱ Suppression d'une ligne interne existante (clic dessus, outil armé). */
@@ -2207,6 +2217,9 @@ export class PatternView {
       this.cutMode = false;
       this.cutPick = null;
       this.gatherMode = false;
+      this.serialMode = false;
+      this.serialReceiver = null;
+      this.serialPartners = [];
       this.clearFreeSew();
     }
     this.seamPickA = null;
@@ -2837,6 +2850,64 @@ export class PatternView {
       this.render();
       this.onAssemblySeam(seam);
     }
+  }
+
+  /** Arme/désarme la couture en série. Renvoie l'état. */
+  toggleSerialSew(): boolean {
+    this.serialMode = !this.serialMode;
+    this.serialReceiver = null;
+    this.serialPartners = [];
+    if (this.serialMode) {
+      this.sewMode = false;
+      this.zipperMode = false;
+      this.cutMode = false;
+    }
+    this.render();
+    return this.serialMode;
+  }
+
+  get serialSewing(): boolean {
+    return this.serialMode;
+  }
+
+  /** Bords sélectionnés en série (pour le surlignage 3D et l'aide). */
+  get serialPick(): { receiver: { pieceId: number; edge: number } | null; partners: { pieceId: number; edge: number }[] } {
+    return { receiver: this.serialReceiver, partners: this.serialPartners };
+  }
+
+  /** Un clic edge en mode série : 1er = receveur, suivants = partenaires
+   * (re-clic d'un partenaire le retire ; re-clic du receveur ANNULE tout). */
+  pickEdgeForSerial(pid: number, edge: number): void {
+    edge = this.logicalEdgeRepresentative(pid, edge);
+    if (this.serialReceiver === null) {
+      this.serialReceiver = { pieceId: pid, edge };
+      this.render();
+      return;
+    }
+    if (this.serialReceiver.pieceId === pid && this.serialReceiver.edge === edge) {
+      // Re-clic du receveur = tout annuler.
+      this.serialReceiver = null;
+      this.serialPartners = [];
+      this.render();
+      return;
+    }
+    const at = this.serialPartners.findIndex((p) => p.pieceId === pid && p.edge === edge);
+    if (at >= 0) this.serialPartners.splice(at, 1); // re-clic partenaire → retire
+    else this.serialPartners.push({ pieceId: pid, edge });
+    this.render();
+  }
+
+  /** Valide la couture en série (Entrée ou bouton ✓). Émet les runs résolus. */
+  commitSerial(): boolean {
+    if (!this.serialMode || !this.serialReceiver || this.serialPartners.length === 0) return false;
+    const receiver = this.runForEdge(this.serialReceiver.pieceId, this.serialReceiver.edge);
+    const partners = this.serialPartners.map((p) => this.runForEdge(p.pieceId, p.edge));
+    this.serialMode = false;
+    this.serialReceiver = null;
+    this.serialPartners = [];
+    this.render();
+    this.onSerialSeam(receiver, partners);
+    return true;
   }
 
   /** Same two-click state machine as sewing, emitting a closed zipper link. */
@@ -4292,6 +4363,15 @@ export class PatternView {
       // edges can be on different columns (front shoulder ↔ back shoulder, or a
       // free piece ↔ the body) — the column the pointer went down in (pickColumn,
       // above) sets the piece.
+      if (this.serialMode) {
+        const ne = this.nearestEdge(p[0], p[1]);
+        if (ne && ne.dist <= EDGE_HIT) {
+          this.pickEdgeForSerial(this.activePiece, ne.edge);
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        return;
+      }
       if (e.shiftKey || this.sewMode) {
         const ne = this.nearestEdge(p[0], p[1]);
         if (ne && ne.dist <= EDGE_HIT) {
@@ -7115,6 +7195,19 @@ export class PatternView {
       ctx.strokeStyle = PAL.a78;
       strokeRun(this.seamPickA.pieceId, this.runForEdge(this.seamPickA.pieceId, this.seamPickA.edge));
     }
+    // Couture en série : receveur en VERT épais (a69), partenaires en ORANGE.
+    if (this.serialReceiver) {
+      ctx.lineWidth = 5;
+      ctx.strokeStyle = PAL.a69;
+      ctx.setLineDash([]);
+      strokeRun(this.serialReceiver.pieceId, this.runForEdge(this.serialReceiver.pieceId, this.serialReceiver.edge));
+    }
+    for (const pk of this.serialPartners) {
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = PAL.a78;
+      ctx.setLineDash([]);
+      strokeRun(pk.pieceId, this.runForEdge(pk.pieceId, pk.edge));
+    }
     const zipperTarget = this.zipperPickA ?? this.zipperHover;
     if (zipperTarget) {
       ctx.lineWidth = 6;
@@ -7322,6 +7415,14 @@ export class PatternView {
         8,
         this.canvas.height - 20,
       );
+    } else if (this.serialMode) {
+      ctx.fillStyle = PAL.a75;
+      const msg = !this.serialReceiver
+        ? 'COUTURE EN SÉRIE · cliquez le bord RECEVEUR (le long)'
+        : this.serialPartners.length === 0
+          ? 'Cliquez les bords à raccorder, dans l’ordre — puis Entrée pour coudre'
+          : `${this.serialPartners.length} pièce${this.serialPartners.length > 1 ? 's' : ''} à raccorder — Entrée pour coudre, re-clic du bord vert pour annuler`;
+      ctx.fillText(msg, 8, this.canvas.height - 20);
     } else if (this.zipperPickA) {
       ctx.fillStyle = PAL.a75;
       ctx.fillText(

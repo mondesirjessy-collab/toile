@@ -2648,6 +2648,88 @@ function ensureVertexAtRunFraction(
   return { doc, vertex: run.from };
 }
 
+/**
+ * COUTURE EN SÉRIE (atelier pro) — coudre UN bord receveur (long) à
+ * PLUSIEURS bords partenaires bout à bout. Le receveur est scindé en autant
+ * de segments, chacun à la fraction de sa longueur donnée par la LARGEUR
+ * (longueur de bord) du partenaire — l'embu du modéliste : un panneau large
+ * prend plus de ceinture qu'un étroit. Purement de la géométrie de patron :
+ * insertion de crans (ensureVertexAtRunFraction) + coutures d'assemblage
+ * classiques. AUCUN changement au moteur d'assemblage — chaque segment part
+ * dans pairRunCells comme une couture ordinaire.
+ *
+ * Robuste aux décalages d'indices : les points de découpe sont suivis par
+ * leur UV (fixe), pas par leur index (qui bouge à chaque insertion).
+ */
+export function sewEdgeToMany(
+  doc: DraftDoc,
+  receiver: FaceRun,
+  partners: readonly FaceRun[],
+  _n: number,
+): { ok: true; doc: DraftDoc; seams: number } | { ok: false; reason: string } {
+  if (partners.length === 0) return { ok: false, reason: 'Aucune pièce à raccorder.' };
+  const recvPid = pieceIdOf(receiver);
+  const recvPiece0 = docPieces(doc)[recvPid];
+  if (!recvPiece0 || recvPiece0.outline.length < 3) return { ok: false, reason: 'Bord receveur introuvable.' };
+  if (partners.some((p) => pieceIdOf(p) === recvPid)) {
+    return { ok: false, reason: 'Un partenaire est sur la pièce receveuse — choisissez d’autres pièces.' };
+  }
+  // Fractions par LARGEUR : la longueur de bord de chaque partenaire.
+  const lens: number[] = [];
+  for (const pr of partners) {
+    const pp = docPieces(doc)[pieceIdOf(pr)];
+    if (!pp || pp.outline.length < 3) return { ok: false, reason: 'Pièce partenaire introuvable.' };
+    const L = runLengthM(pp, { from: pr.from, to: pr.to });
+    if (L < 1e-6) return { ok: false, reason: 'Un bord partenaire est dégénéré.' };
+    lens.push(L);
+  }
+  const total = lens.reduce((s, l) => s + l, 0);
+  const cum: number[] = [0];
+  for (const l of lens) cum.push(cum[cum.length - 1]! + l / total); // cum[0..N] : 0 → 1
+  // Sommet du contour le plus proche d'un UV (les extrémités et crans du run
+  // sont suivis par position, jamais par index — l'index bouge à l'insertion).
+  const findVertex = (piece: DraftPiece, uv: UV): number => {
+    let best = 0;
+    let bd = Infinity;
+    for (let i = 0; i < piece.outline.length; i++) {
+      const p = piece.outline[i]!;
+      const d = (p[0] - uv[0]) ** 2 + (p[1] - uv[1]) ** 2;
+      if (d < bd) { bd = d; best = i; }
+    }
+    return best;
+  };
+  const uvFrom = recvPiece0.outline[((receiver.from % recvPiece0.outline.length) + recvPiece0.outline.length) % recvPiece0.outline.length]!;
+  const uvTo = recvPiece0.outline[((receiver.to % recvPiece0.outline.length) + recvPiece0.outline.length) % recvPiece0.outline.length]!;
+  let work = doc;
+  const cutUV: UV[] = [];
+  // Insérer les crans intérieurs cum[1..N-1] en ordre CROISSANT ; re-résoudre
+  // le run receveur par UV avant chaque insertion (from/to ne bougent pas de
+  // position, seulement d'index).
+  for (let i = 1; i < partners.length; i++) {
+    const rp = docPieces(work)[recvPid]!;
+    const run: EdgeRun = { from: findVertex(rp, uvFrom), to: findVertex(rp, uvTo) };
+    const ensured = ensureVertexAtRunFraction(work, recvPid, run, cum[i]!);
+    work = ensured.doc;
+    cutUV.push([...docPieces(work)[recvPid]!.outline[ensured.vertex]!] as UV);
+  }
+  // Points de découpe finaux, re-résolus par UV : [from, cran1…, to].
+  const rpFinal = docPieces(work)[recvPid]!;
+  const boundary = [uvFrom, ...cutUV, uvTo].map((uv) => findVertex(rpFinal, uv));
+  const faceFields = (r: FaceRun): { pieceId: number } | { face?: 'front' | 'back' } =>
+    r.pieceId !== undefined ? { pieceId: r.pieceId } : { face: r.face };
+  const seams: AssemblySeam[] = [...(work.seams ?? [])];
+  let made = 0;
+  for (let i = 0; i < partners.length; i++) {
+    const from = boundary[i]!;
+    const to = boundary[i + 1]!;
+    if (from === to) continue; // segment de fraction nulle
+    seams.push({ a: { ...faceFields(receiver), from, to }, b: { ...partners[i]! } });
+    made += 1;
+  }
+  if (made === 0) return { ok: false, reason: 'Aucun segment cousable.' };
+  return { ok: true, doc: { ...work, seams }, seams: made };
+}
+
 /** Remplace la pièce `pieceId` dans le doc (slots 0/1 et pièces libres). */
 function replaceDocPiece(doc: DraftDoc, pieceId: number, piece: DraftPiece): DraftDoc {
   if (pieceId === 0) return { ...doc, piece };
