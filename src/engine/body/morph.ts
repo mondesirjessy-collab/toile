@@ -21,7 +21,10 @@ export interface Morphs {
   taille: number;
   hanches: number;
   cuisse: number;
-  jambe: number; // rise / leg-to-torso ratio (vertical warp, stature preserved)
+  jambe: number; // leg length (vertical warp, stature preserved)
+  buste: number; // torso length (vertical warp, stature preserved)
+  cou: number; // neck length (vertical warp, stature preserved)
+  bras: number; // arm length (lateral warp beyond the shoulder root, T-pose)
 }
 
 export interface MorphMarks {
@@ -30,6 +33,9 @@ export interface MorphMarks {
   waistY: number;
   hipY: number;
   thighY: number;
+  neckY: number; // neck top (base of the head) — the head stays fixed above it
+  armRootX: number; // |x| of the shoulder root; arms extend beyond it in T-pose (0 = no arm)
+  armY: number; // height of the arm axis (where arms extend sideways)
 }
 
 export const NO_MORPH: Morphs = {
@@ -40,6 +46,9 @@ export const NO_MORPH: Morphs = {
   hanches: 1,
   cuisse: 1,
   jambe: 1,
+  buste: 1,
+  cou: 1,
+  bras: 1,
 };
 
 export function isNeutral(m: Morphs): boolean {
@@ -50,51 +59,105 @@ export function isNeutral(m: Morphs): boolean {
     m.taille === 1 &&
     m.hanches === 1 &&
     m.cuisse === 1 &&
-    m.jambe === 1
+    m.jambe === 1 &&
+    m.buste === 1 &&
+    m.cou === 1 &&
+    m.bras === 1
   );
 }
 
 const bell = (dy: number, width: number): number => Math.exp(-((dy / width) ** 2));
 
 /**
- * Vertical warp = leg-to-torso ratio at CONSTANT stature. `jambe > 1` lengthens
- * everything below the hip pivot and shortens the torso above it by the same
- * amount, so the overall height is preserved. All heights are in the
- * stature-scaled space (feature marks already multiplied by m.stature).
+ * Vertical warp = body proportions at CONSTANT stature. The body up to the neck
+ * TOP is split into three segments — LEGS (`jambe`, 0 → hip), TORSO (`buste`,
+ * hip → shoulder) and NECK (`cou`, shoulder → neck top) — and redistributed so
+ * their total stays put; the head (above the neck top) never moves, so overall
+ * height is unchanged. A factor > 1 lengthens its segment and the others shorten
+ * to compensate. Heights are in the stature-scaled space (feature marks already
+ * multiplied by m.stature).
  */
-function risePivot(
+function verticalWarp(
   m: Morphs,
   marks: MorphMarks,
   st: number,
-): { pivot: number; top: number; pivotNew: number } {
-  const pivot = marks.hipY * st; // legs = everything below the hip line
-  const top = (marks.shoulderY / 0.82) * st; // crown ≈ shoulder / 0.82 of stature
+): { s1: number; s2: number; s3: number; t1: number; t2: number; kLeg: number; kTorso: number; kNeck: number } {
+  const s1 = marks.hipY * st; // hip line
+  const s2 = marks.shoulderY * st; // shoulder line
+  const s3 = Math.max(s2 + 1e-3, marks.neckY * st); // neck top — head fixed above
   const jambe = Math.min(1.3, Math.max(0.8, m.jambe));
-  const pivotNew = Math.min(top - 0.02, Math.max(0.02, pivot * jambe));
-  return { pivot, top, pivotNew };
+  const buste = Math.min(1.3, Math.max(0.8, m.buste));
+  const cou = Math.min(1.3, Math.max(0.8, m.cou));
+  // Keep the neck top: rescale the three lower segments so they still sum to s3.
+  const scale = s3 / Math.max(1e-6, s1 * jambe + (s2 - s1) * buste + (s3 - s2) * cou);
+  const t1 = s1 * jambe * scale; // new hip height
+  const t2 = t1 + (s2 - s1) * buste * scale; // new shoulder height
+  return {
+    s1, s2, s3, t1, t2,
+    kLeg: jambe * scale, // stretch of [0, s1]
+    kTorso: buste * scale, // stretch of [s1, s2]
+    kNeck: cou * scale, // stretch of [s2, s3]
+  };
 }
 
-/** Remap a stature-scaled height through the vertical (rise) warp. */
+/** Remap a stature-scaled height through the vertical warp. */
 export function warpY(y: number, m: Morphs, marks: MorphMarks, st: number): number {
-  if (m.jambe === 1) return y;
-  const { pivot, top, pivotNew } = risePivot(m, marks, st);
-  if (y <= pivot) return y * (pivotNew / pivot);
-  return pivotNew + (y - pivot) * ((top - pivotNew) / (top - pivot));
+  if (m.jambe === 1 && m.buste === 1 && m.cou === 1) return y;
+  const { s1, s2, s3, t1, t2, kLeg, kTorso, kNeck } = verticalWarp(m, marks, st);
+  if (y <= s1) return y * kLeg;
+  if (y <= s2) return t1 + (y - s1) * kTorso;
+  if (y <= s3) return t2 + (y - s2) * kNeck;
+  return y; // head and above: unchanged (neck top preserved)
 }
 
 /** d(warpY)/dy — the vertical stretch factor, piecewise constant. */
 function warpYDeriv(y: number, m: Morphs, marks: MorphMarks, st: number): number {
-  if (m.jambe === 1) return 1;
-  const { pivot, top, pivotNew } = risePivot(m, marks, st);
-  return y <= pivot ? pivotNew / pivot : (top - pivotNew) / (top - pivot);
+  if (m.jambe === 1 && m.buste === 1 && m.cou === 1) return 1;
+  const { s1, s2, s3, kLeg, kTorso, kNeck } = verticalWarp(m, marks, st);
+  if (y <= s1) return kLeg;
+  if (y <= s2) return kTorso;
+  if (y <= s3) return kNeck;
+  return 1;
 }
 
 /** Inverse of warpY: from a warped height back to the source height. */
 function warpYInverse(y: number, m: Morphs, marks: MorphMarks, st: number): number {
-  if (m.jambe === 1) return y;
-  const { pivot, top, pivotNew } = risePivot(m, marks, st);
-  if (y <= pivotNew) return y * (pivot / pivotNew);
-  return pivot + (y - pivotNew) * ((top - pivot) / (top - pivotNew));
+  if (m.jambe === 1 && m.buste === 1 && m.cou === 1) return y;
+  const { s1, s2, s3, t1, t2, kLeg, kTorso, kNeck } = verticalWarp(m, marks, st);
+  if (y <= t1) return y / Math.max(1e-6, kLeg);
+  if (y <= t2) return s1 + (y - t1) / Math.max(1e-6, kTorso);
+  if (y <= s3) return s2 + (y - t2) / Math.max(1e-6, kNeck);
+  return y;
+}
+
+/**
+ * Arm length. In the native T-pose the arms reach sideways beyond the shoulder
+ * root. Past |x| = armRootX (measured at the arm height, laterally warped by
+ * `s`) we stretch x away from the root by `bras`, leaving the torso untouched.
+ * `px` is the already-laterally-warped x. `apply` picks forward or inverse.
+ */
+function armStretchAt(m: Morphs, marks: MorphMarks, y: number, st: number): number {
+  if (m.bras === 1 || marks.armRootX <= 0) return 0;
+  if (Math.abs(y - marks.armY * st) > 0.25) return 0; // only near the arm height
+  return Math.min(1.3, Math.max(0.8, m.bras));
+}
+
+/** Forward arm-length warp of an already-laterally-warped x. `s` = lateral scale. */
+function warpArmX(px: number, m: Morphs, marks: MorphMarks, y: number, s: number, st: number): number {
+  const bras = armStretchAt(m, marks, y, st);
+  if (bras === 0) return px;
+  const rootXw = marks.armRootX * s;
+  const apx = Math.abs(px);
+  return apx <= rootXw ? px : Math.sign(px) * (rootXw + (apx - rootXw) * bras);
+}
+
+/** Inverse arm-length warp (for resampling the collision grid). */
+function warpArmXInverse(px: number, m: Morphs, marks: MorphMarks, y: number, s: number, st: number): number {
+  const bras = armStretchAt(m, marks, y, st);
+  if (bras === 0) return px;
+  const rootXw = marks.armRootX * s;
+  const apx = Math.abs(px);
+  return apx <= rootXw ? px : Math.sign(px) * (rootXw + (apx - rootXw) / bras);
 }
 
 /**
@@ -122,8 +185,8 @@ export function morphPrims(prims: SdfPrim[], m: Morphs, marks: MorphMarks): SdfP
     const sa = morphScale(ay, m, marks);
     const sb = morphScale(by, m, marks);
     return {
-      a: [p.a[0] * st * sa, warpY(ay, m, marks, st), p.a[2] * st * sa] as V3,
-      b: [p.b[0] * st * sb, warpY(by, m, marks, st), p.b[2] * st * sb] as V3,
+      a: [warpArmX(p.a[0] * st * sa, m, marks, ay, st * sa, st), warpY(ay, m, marks, st), p.a[2] * st * sa] as V3,
+      b: [warpArmX(p.b[0] * st * sb, m, marks, by, st * sb, st), warpY(by, m, marks, st), p.b[2] * st * sb] as V3,
       ra: p.ra * st * sa,
       rb: p.rb * st * sb,
       s: p.s,
@@ -141,7 +204,7 @@ export interface Grid {
 /** Scanned body: resample the SDF grid through the inverse warp. */
 export function morphGrid(grid: Grid, m: Morphs, marks: MorphMarks): Grid {
   const st = m.stature;
-  const sMax = Math.max(m.carrure, m.poitrine, m.taille, m.hanches, m.cuisse, 1) * st;
+  const sMax = Math.max(m.carrure, m.poitrine, m.taille, m.hanches, m.cuisse, m.bras, 1) * st;
   const min: [number, number, number] = [grid.min[0] * sMax, grid.min[1] * st, grid.min[2] * sMax];
   const max: [number, number, number] = [grid.max[0] * sMax, grid.max[1] * st, grid.max[2] * sMax];
   const [nx, ny, nz] = grid.dims;
@@ -156,11 +219,14 @@ export function morphGrid(grid: Grid, m: Morphs, marks: MorphMarks): Grid {
       const y0 = warpYInverse(y, m, marks, st);
       const s = morphScale(y0, m, marks) * st;
       const dY = warpYDeriv(y0, m, marks, st) * st;
+      const armBras = armStretchAt(m, marks, y0, st);
       for (let i = 0; i < nx; i++) {
         const x = min[0] + (i / (nx - 1)) * (max[0] - min[0]);
+        const xSrc = warpArmXInverse(x, m, marks, y0, s, st);
+        const xF = armBras !== 0 && Math.abs(x) > marks.armRootX * s ? armBras : 1;
         // Conservative distance estimate under the warp: never overestimates,
         // so contacts trigger a hair early rather than late.
-        data[(k * ny + j) * nx + i] = src(x / s, y0 / st, z / s) * Math.min(1, s, dY);
+        data[(k * ny + j) * nx + i] = src(xSrc / s, y0 / st, z / s) * Math.min(1, s, dY, s * xF);
       }
     }
   }
@@ -195,7 +261,8 @@ export function morphMesh<
     const sourceZ = mesh.positions[v + 2]!;
     const y = sourceY * st;
     const s = morphScale(y, m, marks) * st;
-    positions[v] = sourceX * s;
+    const pxLat = sourceX * s;
+    positions[v] = warpArmX(pxLat, m, marks, y, s, st);
     positions[v + 1] = warpY(y, m, marks, st);
     positions[v + 2] = sourceZ * s;
 
@@ -210,7 +277,10 @@ export function morphMesh<
     // Vertical stretch d(output_y)/d(source_y) = warpY'(y)*stature (was stature).
     const dY = warpYDeriv(y, m, marks, st) * st;
     const safeStature = Math.max(1e-6, Math.abs(dY));
-    const nx = mesh.normals[v]! / safeScale;
+    // On the stretched arm the x-scale is s*bras; the torso and z stay at s.
+    const armBras = armStretchAt(m, marks, y, st);
+    const xStretch = armBras !== 0 && Math.abs(pxLat) > marks.armRootX * s ? armBras : 1;
+    const nx = mesh.normals[v]! / Math.max(1e-6, safeScale * xStretch);
     const nz = mesh.normals[v + 2]! / safeScale;
     const ny = (
       mesh.normals[v + 1]! - sourceX * derivative * nx - sourceZ * derivative * nz

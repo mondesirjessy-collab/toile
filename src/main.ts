@@ -890,12 +890,14 @@ async function main(): Promise<void> {
       const num = measureNum(id);
       if (num && document.activeElement !== num) num.value = fmtNum(v);
     }
-    // La longueur de jambe n'est pas une cm : c'est le ratio de proportion.
-    const jPct = String(Math.round(morphs.jambe * 100));
-    const jInput = document.getElementById('at-m-jambe') as HTMLInputElement | null;
-    const jNum = document.getElementById('at-m-jambe-num') as HTMLInputElement | null;
-    if (jInput) jInput.value = jPct;
-    if (jNum && document.activeElement !== jNum) jNum.value = jPct;
+    // Les proportions verticales ne sont pas des cm : ce sont des ratios.
+    for (const id of ['jambe', 'buste', 'cou', 'bras'] as const) {
+      const pct = String(Math.round(morphs[id] * 100));
+      const inp = document.getElementById(`at-m-${id}`) as HTMLInputElement | null;
+      const nm = document.getElementById(`at-m-${id}-num`) as HTMLInputElement | null;
+      if (inp) inp.value = pct;
+      if (nm && document.activeElement !== nm) nm.value = pct;
+    }
   };
   const simBtn = (): HTMLButtonElement =>
     document.getElementById('at-sim') as HTMLButtonElement;
@@ -5334,6 +5336,9 @@ async function main(): Promise<void> {
       waistY: base.waist.y,
       hipY: base.hip.y,
       thighY: base.thigh.y,
+      neckY: base.neckY,
+      armRootX: base.arm?.rootX ?? 0, // 0 = bras non dégagés → pas de warp de bras
+      armY: base.arm?.y ?? 0,
     };
   };
   /** The selected body's natural prêt-à-porter measurements, in cm. */
@@ -9035,7 +9040,10 @@ async function main(): Promise<void> {
           taille: r(cm.taille, b.taille!),
           hanches: r(cm.hanches, b.hanches!),
           cuisse: r(cm.cuisse, b.cuisse!),
-          jambe: morphs.jambe, // proportion jambes/buste : réglée à part, préservée
+          jambe: morphs.jambe, // proportions verticales : réglées à part, préservées
+          buste: morphs.buste,
+          cou: morphs.cou,
+          bras: morphs.bras,
         };
         syncAvatarStature(cm.stature);
         syncAtelierMeasures(); // l'atelier reflète le panneau avancé (v182)
@@ -10251,31 +10259,37 @@ async function main(): Promise<void> {
     num.addEventListener('change', applyNum);
     num.addEventListener('keydown', (e) => { if (e.key === 'Enter') num.blur(); });
   }
-  // Longueur des jambes = proportion jambes/buste (warp vertical, taille globale
-  // constante). Ce n'est pas une cm : le curseur pilote directement le ratio.
-  const jambeInput = document.getElementById('at-m-jambe') as HTMLInputElement | null;
-  const jambeNum = document.getElementById('at-m-jambe-num') as HTMLInputElement | null;
-  const applyJambe = (pct: number): void => {
-    const clamped = Math.round(Math.min(120, Math.max(85, pct)));
-    morphs = { ...morphs, jambe: clamped / 100 };
-    if (jambeInput) jambeInput.value = String(clamped);
-    if (jambeNum && document.activeElement !== jambeNum) jambeNum.value = String(clamped);
-    if (sceneMode !== 'drapé' && sceneMode !== 'couture') build();
-    guidanceEl.textContent = `Longueur des jambes : ${clamped} % · proportions remodelées (taille constante).`;
+  // Proportions VERTICALES (longueur des jambes / du buste) = warp vertical à
+  // taille globale constante. Ce ne sont pas des cm : le curseur pilote le ratio.
+  const wireProportion = (id: 'jambe' | 'buste' | 'cou' | 'bras', label: string): void => {
+    const input = document.getElementById(`at-m-${id}`) as HTMLInputElement | null;
+    const num = document.getElementById(`at-m-${id}-num`) as HTMLInputElement | null;
+    const apply = (pct: number): void => {
+      const clamped = Math.round(Math.min(120, Math.max(85, pct)));
+      morphs = { ...morphs, [id]: clamped / 100 };
+      if (input) input.value = String(clamped);
+      if (num && document.activeElement !== num) num.value = String(clamped);
+      if (sceneMode !== 'drapé' && sceneMode !== 'couture') build();
+      guidanceEl.textContent = `${label} : ${clamped} % · proportions remodelées (taille constante).`;
+    };
+    if (input) {
+      input.addEventListener('input', () => {
+        if (num) num.value = String(Math.round(input.valueAsNumber));
+      });
+      input.addEventListener('change', () => apply(input.valueAsNumber));
+    }
+    if (num) {
+      num.addEventListener('change', () => {
+        if (Number.isFinite(num.valueAsNumber)) apply(num.valueAsNumber);
+      });
+      num.addEventListener('keydown', (e) => { if (e.key === 'Enter') num.blur(); });
+      num.value = String(Math.round(morphs[id] * 100));
+    }
   };
-  if (jambeInput) {
-    jambeInput.addEventListener('input', () => {
-      if (jambeNum) jambeNum.value = String(Math.round(jambeInput.valueAsNumber));
-    });
-    jambeInput.addEventListener('change', () => applyJambe(jambeInput.valueAsNumber));
-  }
-  if (jambeNum) {
-    jambeNum.addEventListener('change', () => {
-      if (Number.isFinite(jambeNum.valueAsNumber)) applyJambe(jambeNum.valueAsNumber);
-    });
-    jambeNum.addEventListener('keydown', (e) => { if (e.key === 'Enter') jambeNum.blur(); });
-    jambeNum.value = String(Math.round(morphs.jambe * 100));
-  }
+  wireProportion('jambe', 'Longueur des jambes');
+  wireProportion('buste', 'Longueur du buste');
+  wireProportion('cou', 'Longueur du cou');
+  wireProportion('bras', 'Longueur des bras');
   document.getElementById('at-measures-reset')?.addEventListener('click', () => {
     (document.activeElement as HTMLElement | null)?.blur?.(); // v184 : reprendre la main sur les champs
     const scan = bodyKind.startsWith('scan') ? (scans[bodyKind] ?? null) : null;

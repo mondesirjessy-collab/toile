@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TOILE — du brief au patron · v272</title>
+  <title>TOILE — du brief au patron · v275</title>
   <style>
     :root {
       color-scheme: dark;
@@ -1346,7 +1346,7 @@
   <canvas id="view" tabindex="-1" aria-label="Vue 3D du vêtement et du mannequin"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 5 — du brief au patron · v272</small></span>
+    <span class="title">TOILE<small>phase 5 — du brief au patron · v275</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
       <span id="resolution-rebuild-status" role="status" aria-live="polite" hidden></span>
@@ -1411,6 +1411,12 @@
             <input id="at-m-cuisse" type="range" min="40" max="78" step="0.5" value="55" class="avatar-measure-range">
             <label class="avatar-size-label" for="at-m-jambe"><span>Longueur des jambes</span><span class="avatar-size-value"><input id="at-m-jambe-num" type="number" class="avatar-num" min="85" max="120" step="1" inputmode="decimal" aria-label="Longueur des jambes en pourcentage"> %</span></label>
             <input id="at-m-jambe" type="range" min="85" max="120" step="1" value="100" class="avatar-measure-range" title="Proportion jambes / buste, a taille globale constante">
+            <label class="avatar-size-label" for="at-m-buste"><span>Longueur du buste</span><span class="avatar-size-value"><input id="at-m-buste-num" type="number" class="avatar-num" min="85" max="120" step="1" inputmode="decimal" aria-label="Longueur du buste en pourcentage"> %</span></label>
+            <input id="at-m-buste" type="range" min="85" max="120" step="1" value="100" class="avatar-measure-range" title="Longueur du torse, a taille globale constante">
+            <label class="avatar-size-label" for="at-m-cou"><span>Longueur du cou</span><span class="avatar-size-value"><input id="at-m-cou-num" type="number" class="avatar-num" min="85" max="120" step="1" inputmode="decimal" aria-label="Longueur du cou en pourcentage"> %</span></label>
+            <input id="at-m-cou" type="range" min="85" max="120" step="1" value="100" class="avatar-measure-range" title="Longueur du cou, a taille globale constante (la tete reste fixe)">
+            <label class="avatar-size-label" for="at-m-bras"><span>Longueur des bras</span><span class="avatar-size-value"><input id="at-m-bras-num" type="number" class="avatar-num" min="85" max="120" step="1" inputmode="decimal" aria-label="Longueur des bras en pourcentage"> %</span></label>
+            <input id="at-m-bras" type="range" min="85" max="120" step="1" value="100" class="avatar-measure-range" title="Longueur des bras, mesuree depuis l'epaule">
             <p class="avatar-size-help">Les tours remodèlent le mannequin ; l’essayage épouse le nouveau corps.</p>
             <span class="avatar-silhouette-label">Silhouette</span>
             <div class="avatar-silhouettes" role="group" aria-label="Silhouettes préréglées">
