@@ -99,17 +99,43 @@ function sleeveWrap(
   };
 }
 
-/** Modèle de mesures FreeSewing complet, écrasé par les mensurations que
- * TOILE connaît (les autres gardent le modèle → le draft réussit toujours).
- * FreeSewing travaille en MILLIMÈTRES. */
+// Mesures FreeSewing qui varient avec la STATURE (des longueurs). FreeSewing
+// n'a PAS de mesure « height » : les vêtements tracent d'après ces longueurs.
+// On les met à l'échelle de la stature mesurée (le modèle par défaut gardait
+// une longueur fixe → le pantalon tombait toujours à la même hauteur).
+const FS_LENGTHS = [
+  'bustFront', 'bustPointToUnderbust', 'crossSeam', 'crossSeamFront', 'crotchDepth',
+  'highBustFront', 'hpsToBust', 'hpsToWaistBack', 'hpsToWaistFront', 'inseam',
+  'seatBack', 'shoulderToElbow', 'shoulderToWrist', 'waistBack', 'waistToArmpit',
+  'waistToFloor', 'waistToHips', 'waistToKnee', 'waistToSeat', 'waistToUnderbust',
+  'waistToUpperLeg',
+] as const;
+// Tours secondaires (poignet, biceps, genou, cou…) : mis à l'échelle de la
+// corpulence (rapport de tour de poitrine), faute de mesure dédiée dans TOILE.
+const FS_GIRTHS = ['ankle', 'biceps', 'bustSpan', 'head', 'heel', 'knee', 'neck', 'underbust', 'wrist'] as const;
+// Stature de référence du modèle FreeSewing (mm), estimée de ses longueurs.
+const FS_MODEL_HEIGHT_MM = 1750;
+
+/** Modèle de mesures FreeSewing complet, ADAPTÉ aux mensurations de TOILE : les
+ * tours connus sont exacts, les LONGUEURS mises à l'échelle de la stature et
+ * les tours secondaires à l'échelle de la corpulence — pour que les vêtements
+ * (le pantalon surtout) tombent à la bonne longueur. FreeSewing est en MM. */
 function fsMeasurements(m: BodyMeasure): Record<string, number> {
-  const base: Record<string, number> = { ...(models.cisFemaleAdult38 as Record<string, number>) };
+  const model = models.cisFemaleAdult38 as Record<string, number>;
+  const base: Record<string, number> = { ...model };
+  const fv = (m.height * 1000) / FS_MODEL_HEIGHT_MM; // facteur vertical (longueurs)
+  const fh = (m.chest.circ * 1000) / model.chest!; // facteur de corpulence (tours secondaires)
+  for (const k of FS_LENGTHS) if (typeof model[k] === 'number') base[k] = model[k]! * fv;
+  for (const k of FS_GIRTHS) if (typeof model[k] === 'number') base[k] = model[k]! * fh;
+  // Mesures connues exactement par TOILE (mm) :
   base.chest = m.chest.circ * 1000;
+  base.highBust = m.chest.circ * 1000 * 0.95;
   base.waist = m.waist.circ * 1000;
   base.hips = m.hip.circ * 1000;
   base.seat = m.hip.circ * 1000;
-  base.height = m.height * 1000;
+  base.upperLeg = m.thigh.circ * 1000;
   base.shoulderToShoulder = m.shoulderHalfW * 2 * 1000;
+  base.height = m.height * 1000; // conservé même si FreeSewing l'ignore
   return base;
 }
 
