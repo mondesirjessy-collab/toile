@@ -165,6 +165,22 @@ import { bodyRestVertices } from './app/SceneGeometry';
 const DEFAULT_RESOLUTION: SupportedResolution = 64;
 const DEFAULT_SUBSTEPS = 20;
 const CLOTH_SIZE = 1.6;
+
+// Tassement exact du plan de découpe (compactNest, clipper2-ts ~1,6 Mo) :
+// chargé À LA DEMANDE au premier export marker/bilan matière, jamais dans le
+// bundle initial. Mémoïsé ; en cas d'échec de chargement, on renvoie le
+// placement grille brut (les exports marchent, sans le gain de tassement).
+let compactNestFn: import('./app/markerLayout').CompactFn | null = null;
+async function loadCompactNest(): Promise<import('./app/markerLayout').CompactFn | undefined> {
+  if (compactNestFn) return compactNestFn;
+  try {
+    const mod = await import('./app/nfpNesting');
+    compactNestFn = mod.compactNest;
+    return compactNestFn;
+  } catch {
+    return undefined; // clipper2 indisponible → exports sans tassement
+  }
+}
 const CLOTH_TOP_Y = 1.7;
 
 // Shared scene definitions: the solver collides against these, the renderer draws them.
@@ -8953,9 +8969,10 @@ async function main(): Promise<void> {
         });
         showToast(`Fiche de production exportee - ${res.pieces} pieces - ~${res.yardageM} m de tissu`);
       },
-      onMarker: () => {
+      onMarker: async () => {
         if (!draft) return;
-        const res = exportMarker(draft, +(seamAllowanceM * 100).toFixed(1));
+        const compact = await loadCompactNest();
+        const res = exportMarker(draft, +(seamAllowanceM * 100).toFixed(1), compact);
         showToast(`Plan de decoupe - ${res.pieces} pieces - ~${res.lengthM} m sur laize 150 cm`);
       },
       onDxf: () => {
@@ -8977,7 +8994,7 @@ async function main(): Promise<void> {
         const res = exportGradedDxf(entries);
         showToast(`DXF grade - ${res.sizes} tailles (${res.pieces} pieces) - un calque par taille`);
       },
-      onMaterialReport: (sizeCurve: string) => {
+      onMaterialReport: async (sizeCurve: string) => {
         // Bilan matiere multi-tailles : le metrage de placement pour TOUTE la
         // gradation standard (XS-XXL) du tee, avec les blocs courants. Toujours
         // les tailles standard (le sur-mesure est propre a un corps).
@@ -8997,19 +9014,20 @@ async function main(): Promise<void> {
           qty: qty[size] ?? 0,
           draft: boxyTee(size, lastMeasure, REF, boxySleeves, boxyCollar, boxyNeck, boxyLen, false),
         }));
+        const compact = await loadCompactNest();
         const res = exportMaterialReport(entries, {
           garment: 'T-shirt',
           fabric: String(globalFabricPreset),
           config: cfg,
           seamAllowanceCm: +(seamAllowanceM * 100).toFixed(1),
-        });
+        }, compact);
         showToast(
           `Bilan matiere - ${res.units} pieces - placement melange ${res.mixed_m} m` +
             (res.estimated ? ' (estime)' : '') +
             ` (economie ${res.saved_m} m vs separe)`,
         );
       },
-      onMultiMarker: (sizeCurve: string) => {
+      onMultiMarker: async (sizeCurve: string) => {
         // Plan de decoupe visuel du matelas MELANGE (vraies positions). Borne
         // en nombre de pieces : le SVG doit rester lisible/telechargeable.
         if (loadedPattern !== 'boxy') {
@@ -9022,7 +9040,8 @@ async function main(): Promise<void> {
           qty: qtyMap[size] ?? 0,
           draft: boxyTee(size, lastMeasure, REF, boxySleeves, boxyCollar, boxyNeck, boxyLen, false),
         }));
-        const res = exportMultiSizeMarker(entries, +(seamAllowanceM * 100).toFixed(1));
+        const compact = await loadCompactNest();
+        const res = exportMultiSizeMarker(entries, +(seamAllowanceM * 100).toFixed(1), 200, compact);
         if (res.capped) {
           showToast(`Plan multi-tailles : ${res.pieces} pieces, trop pour un SVG lisible - reduis la commande (le bilan chiffre les grosses)`);
         } else if (res.pieces === 0) {

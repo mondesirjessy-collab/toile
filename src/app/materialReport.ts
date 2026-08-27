@@ -1,6 +1,6 @@
 import type { DraftDoc, DraftPiece, UV } from '../engine/pattern/Draft';
 import { downloadBrowserBlob } from './browserDownload';
-import { nestMarker, nestPieces, draftMarkerPieces, type MarkerPiece } from './markerLayout';
+import { nestMarker, nestPieces, draftMarkerPieces, type CompactFn, type MarkerNest, type MarkerPiece } from './markerLayout';
 
 // Bilan matière multi-tailles (BLUEPRINT §16) : pour une gradation complète, le
 // métrage de placement — le MÊME nesting serré que le plan de découpe (marker)
@@ -87,15 +87,17 @@ export interface MaterialReportInput {
 export function buildMaterialReport(
   entries: ReadonlyArray<{ size: string; draft: DraftDoc; qty: number }>,
   input: MaterialReportInput,
+  compact?: CompactFn,
 ): {
   rows: MaterialRow[];
   laize_cm: number;
   total: { quantite: number; metrage_total_m: number };
   mixed: { metrage_m: number; estimated: boolean; pieces: number };
 } {
+  const packed = (n: MarkerNest): MarkerNest => (compact ? compact(n, input.seamAllowanceCm) : n);
   let laizeCm = 150;
   const rows: MaterialRow[] = entries.map(({ size, draft, qty }) => {
-    const nest = nestMarker(draft, input.seamAllowanceCm);
+    const nest = packed(nestMarker(draft, input.seamAllowanceCm));
     laizeCm = nest.rollWidthCm;
     const metrage = +(nest.lengthCm / 100).toFixed(2);
     const surface = +draftAreaM2(draft).toFixed(3);
@@ -137,7 +139,7 @@ export function buildMaterialReport(
   if (totalPieces > 0 && totalPieces <= SAMPLE_TARGET) {
     const combined: MarkerPiece[] = [];
     for (const e of perSize) for (let i = 0; i < e.qty; i++) for (const p of e.pcs) combined.push(p);
-    mixedM = +(nestPieces(combined, input.seamAllowanceCm).lengthCm / 100).toFixed(2);
+    mixedM = +(packed(nestPieces(combined, input.seamAllowanceCm)).lengthCm / 100).toFixed(2);
   } else if (totalPieces > SAMPLE_TARGET) {
     const scale = SAMPLE_TARGET / totalPieces;
     const sample: MarkerPiece[] = [];
@@ -147,7 +149,7 @@ export function buildMaterialReport(
       for (let i = 0; i < sq; i++) for (const p of e.pcs) sample.push(p);
       sampleSurface += e.area * sq;
     }
-    const sampleLenM = nestPieces(sample, input.seamAllowanceCm).lengthCm / 100;
+    const sampleLenM = packed(nestPieces(sample, input.seamAllowanceCm)).lengthCm / 100;
     const usedM2 = rollM * sampleLenM;
     const rendement = usedM2 > 0 ? sampleSurface / usedM2 : 0;
     mixedM = rendement > 0 ? +(fullSurface / (rollM * rendement)).toFixed(2) : 0;
@@ -161,8 +163,9 @@ export function buildMaterialReport(
 export function exportMaterialReport(
   entries: ReadonlyArray<{ size: string; draft: DraftDoc; qty: number }>,
   input: MaterialReportInput,
+  compact?: CompactFn,
 ): { total_m: number; units: number; sizes: number; mixed_m: number; saved_m: number; estimated: boolean } {
-  const rep = buildMaterialReport(entries, input);
+  const rep = buildMaterialReport(entries, input, compact);
   const esc = (s: string): string => `"${s.replace(/"/g, '""')}"`;
   const lines: string[] = [];
   lines.push('Bilan matiere multi-tailles - TOILE');

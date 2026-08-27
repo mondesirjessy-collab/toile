@@ -20,6 +20,7 @@
     "vitest": "^4.1.9"
   },
   "dependencies": {
+    "clipper2-ts": "^2.0.1-18",
     "jspdf": "^4.2.1",
     "lil-gui": "^0.21.0"
   }

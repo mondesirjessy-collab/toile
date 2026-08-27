@@ -22,6 +22,12 @@ export interface MarkerPiece { name: string; wCm: number; hCm: number; outline: 
 export interface Placement extends MarkerPiece { x: number; y: number; rot: 0 | 180; }
 export interface MarkerNest { placements: Placement[]; rollWidthCm: number; lengthCm: number }
 
+/** Post-traitement optionnel d'un nest (le tassement exact NFP vit dans
+ * nfpNesting.ts / clipper2-ts, 1,6 Mo — injecté par IMPORT DYNAMIQUE aux
+ * points d'export pour rester HORS du bundle principal). Absent ⇒ le
+ * placement grille brut, comportement historique inchangé. */
+export type CompactFn = (nest: MarkerNest, saCm: number) => MarkerNest;
+
 function collect(draft: DraftDoc): MarkerPiece[] {
   const out: MarkerPiece[] = [];
   const hasAttach = (draft.pieces ?? []).some(
@@ -254,9 +260,15 @@ export function markerSvg(nest: MarkerNest): string {
   );
 }
 
-/** Nest + SVG + téléchargement. Renvoie le métrage (toast). */
-export function exportMarker(draft: DraftDoc, saCm: number): { lengthM: number; pieces: number } {
-  const nest = nestMarker(withSeamNotches(draft), saCm);
+/** Nest + SVG + téléchargement. Renvoie le métrage (toast). `compact`
+ * optionnel : le tassement exact (NFP) appliqué après le placement grille. */
+export function exportMarker(
+  draft: DraftDoc,
+  saCm: number,
+  compact?: CompactFn,
+): { lengthM: number; pieces: number } {
+  let nest = nestMarker(withSeamNotches(draft), saCm);
+  if (compact) nest = compact(nest, saCm);
   const blob = new Blob([markerSvg(nest)], { type: 'image/svg+xml' });
   downloadBrowserBlob(blob, 'toile-plan-decoupe.svg');
   return { lengthM: +(nest.lengthCm / 100).toFixed(2), pieces: nest.placements.length };
@@ -271,6 +283,7 @@ export function exportMultiSizeMarker(
   entries: ReadonlyArray<{ size: string; draft: DraftDoc; qty: number }>,
   saCm: number,
   cap = 200,
+  compact?: CompactFn,
 ): { lengthM: number; pieces: number; capped: boolean } {
   const combined: MarkerPiece[] = [];
   for (const { size, draft, qty } of entries) {
@@ -284,7 +297,8 @@ export function exportMultiSizeMarker(
   if (combined.length === 0 || combined.length > cap) {
     return { lengthM: 0, pieces: combined.length, capped: combined.length > cap };
   }
-  const nest = nestPieces(combined, saCm);
+  let nest = nestPieces(combined, saCm);
+  if (compact) nest = compact(nest, saCm);
   const blob = new Blob([markerSvg(nest)], { type: 'image/svg+xml' });
   downloadBrowserBlob(blob, 'toile-plan-decoupe-multi-tailles.svg');
   return { lengthM: +(nest.lengthCm / 100).toFixed(2), pieces: combined.length, capped: false };
