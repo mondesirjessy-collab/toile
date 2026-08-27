@@ -57,8 +57,17 @@ export function teeRuns(piece: DraftPiece): TeeRuns {
   const tipL = idxWhere((q) => (shoulderBand(q) ? q[0] : 10)); // min u
   // Dessous de bras = u extrême dans la bande [minV, 0,6·spanV].
   const upper = (q: UV): boolean => q[1] <= minV + 0.6 * spanV;
-  const underarmR = idxWhere((q) => (upper(q) ? -q[0] : 10)); // max u
-  const underarmL = idxWhere((q) => (upper(q) ? q[0] : 10)); // min u
+  let underarmR = idxWhere((q) => (upper(q) ? -q[0] : 10)); // max u
+  let underarmL = idxWhere((q) => (upper(q) ? q[0] : 10)); // min u
+  // Épaule TOMBANTE (drop shoulder, ex. sweat Sven) : si le dessous-de-bras
+  // coïncide avec la pointe d'épaule (le point le plus large est l'épaule
+  // elle-même), l'emmanchure serait un run NUL. On redescend alors l'aisselle
+  // SOUS la bande d'épaule. Défensif : ne s'active QUE dans ce cas dégénéré,
+  // donc les vêtements à emmanchure creusée (tee, bloc, cloTee…) sont inchangés.
+  const midBand = (q: UV): boolean =>
+    q[1] > minV + 0.16 * spanV && q[1] <= minV + 0.6 * spanV;
+  if (underarmR === tipR) underarmR = idxWhere((q) => (midBand(q) ? -q[0] : 10));
+  if (underarmL === tipL) underarmL = idxWhere((q) => (midBand(q) ? q[0] : 10));
   // Ourlet = deux coins bas.
   const low = (q: UV): boolean => q[1] >= maxV - 0.03 * spanV;
   const hemR = idxWhere((q) => (low(q) ? -q[0] : 10));

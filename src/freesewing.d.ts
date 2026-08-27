@@ -25,6 +25,18 @@ declare module '@freesewing/teagan' {
   export const Teagan: import('@freesewing/aaron').FsDesign;
 }
 
+declare module '@freesewing/sven' {
+  export const Sven: import('@freesewing/aaron').FsDesign;
+}
+
+declare module '@freesewing/titan' {
+  export const Titan: import('@freesewing/aaron').FsDesign;
+}
+
+declare module '@freesewing/sandy' {
+  export const Sandy: import('@freesewing/aaron').FsDesign;
+}
+
 declare module '@freesewing/models' {
   /** Un modèle de mesures FreeSewing (nom de mesure → millimètres). */
   export const cisFemaleAdult38: Record<string, number>;

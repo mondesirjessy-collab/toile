@@ -11,6 +11,10 @@
  */
 import { Aaron } from '@freesewing/aaron';
 import { Teagan } from '@freesewing/teagan';
+import { Sven } from '@freesewing/sven';
+import { Brian } from '@freesewing/brian';
+import { Titan } from '@freesewing/titan';
+import { Sandy } from '@freesewing/sandy';
 import * as models from '@freesewing/models';
 import type { BodyMeasure } from '../body/measure';
 import type { AssemblySeam, DraftDoc, DraftPiece, EdgeRun, UV } from './Draft';
@@ -50,34 +54,39 @@ function sleeveWrap(
 ): DraftPiece {
   const sleeveH = sleeveHCm / 100;
   void sleeveWCm; // la LARGEUR est résolue sur l'emmanchure, pas prise du patron
-  // La BOUCHE du demi-panneau (haut, tête de manche) doit ÉGALER l'emmanchure
-  // mesurée. Le tour de manche FreeSewing (largeur de tête à plat) ne
-  // correspond pas au modèle wrap ; on résout donc la largeur `sleeveW` à CAP
-  // nominal pour que la bouche colle à l'emmanchure — la manche monte sans
-  // tirer (le CAP saturé de la version précédente ouvrait les coutures).
-  const cap = 0.13; // flèche de tête de tee normale
+  // Profil de TÊTE DE MANCHE ÉPROUVÉ (identique au tee natif de TOILE,
+  // boxyData) : tête profonde (0,17) finement échantillonnée (17 points),
+  // poignet quasi droit. Le tee natif en manches LONGUES monte à 0 mm avec ce
+  // profil ; mon arc synthétique précédent (tête peu profonde 0,13, 5 points)
+  // faisait ÉCLATER les manches longues (bloc Brian 61 cm → 634 mm d'écart
+  // Devant↔Dos) — mesuré : à longueur courte il tenait, à 61 cm il cassait.
+  // La LARGEUR reste RÉSOLUE pour que la bouche (l'arc de tête) épouse
+  // l'emmanchure mesurée du corps assemblé.
+  const HEAD: UV[] = [
+    [-0.01, 0.17], [0.0625, 0.1597], [0.125, 0.1365], [0.1875, 0.0983],
+    [0.25, 0.0599], [0.3125, 0.0314], [0.375, 0.0132], [0.4375, 0.0032],
+    [0.5, 0.0], [0.5625, 0.0032], [0.625, 0.0132], [0.6875, 0.0314],
+    [0.75, 0.0599], [0.8125, 0.0983], [0.875, 0.1365], [0.9375, 0.1597], [1.01, 0.17],
+  ];
   const mouthAt = (sw: number): number => {
-    const us = [-0.01, 0.1, 0.28, 0.5, 0.72, 0.9, 1.01];
-    const vs = us.map((u) => cap * (1 - Math.sin(Math.PI * Math.min(1, Math.max(0, u)))));
     let len = 0;
-    for (let i = 1; i < us.length; i++) {
-      len += Math.hypot((us[i]! - us[i - 1]!) * sw, (vs[i]! - vs[i - 1]!) * sleeveH);
+    for (let i = 1; i < HEAD.length; i++) {
+      len += Math.hypot(
+        (HEAD[i]![0] - HEAD[i - 1]![0]) * sw,
+        (HEAD[i]![1] - HEAD[i - 1]![1]) * sleeveH,
+      );
     }
     return len;
   };
   let sleeveW = armholeM; // init proche (la bouche ≈ largeur × facteur ~1)
-  for (let k = 0; k < 16; k++) {
+  for (let k = 0; k < 20; k++) {
     const err = mouthAt(sleeveW) - armholeM;
     if (Math.abs(err) < 0.0005) break;
-    // dérivée ≈ (largeur horizontale totale) ≈ 1,02 ; pas de sécante amortie
+    // dérivée ≈ (largeur horizontale totale) ≈ 1,02 ; sécante amortie
     sleeveW = Math.max(0.04, Math.min(0.5, sleeveW - err / 1.02));
   }
-  const CUFF = 0.9;
-  const capArc: UV[] = [];
-  for (const u of [0.1, 0.28, 0.5, 0.72, 0.9]) capArc.push([u, cap * (1 - Math.sin(Math.PI * u))]);
-  const cuffIn = (1.02 * (1 - CUFF)) / 2;
   return {
-    outline: [[-0.01, cap], ...capArc, [1.01, cap], [1.01 - cuffIn, 1.01], [-0.01 + cuffIn, 1.01]],
+    outline: [...HEAD, [0.9819, 1.01], [0.0181, 1.01]],
     darts: [],
     seams: [],
     openEdges: [],
@@ -185,4 +194,248 @@ export function buildTeagan(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
     sleeveWrap(sleeveWCm, sleeveHCm, armholeM, m, 'armR'),
     sleeveWrap(sleeveWCm, sleeveHCm, armholeM, m, 'armL'),
   ]);
+}
+
+/** Le sweat-shirt Sven de FreeSewing, gradé aux mensurations — devant + dos +
+ * DEUX manches longues montées en demi-panneau wrap. Les bandes de finition
+ * (poignets `cuff`, bord-côte `waistband`) sont écartées du premier montage,
+ * comme les bandes d'Aaron : le corps tient sur ses coutures d'épaule/côté. */
+export function buildSven(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
+  const pattern = new Sven({ measurements: fsMeasurements(m) }) as unknown as {
+    draft(): void;
+  } & FsPattern;
+  pattern.draft();
+  const pieces = freeSewingPieces(pattern);
+  const front = pieces.find((p) => p.name === 'front')?.piece;
+  const back = pieces.find((p) => p.name === 'back')?.piece;
+  const sleeve = pieces.find((p) => p.name === 'sleeve')?.piece;
+  if (!front || !back) {
+    throw new Error('FreeSewing Sven : devant ou dos introuvable après draft.');
+  }
+  const sleeveWCm = sleeve ? sleeve.width * 100 : 40;
+  const sleeveHCm = sleeve ? sleeve.height * 100 : 58;
+  return assembleTwoFaces(front, back, m, ref, (armholeM) => [
+    sleeveWrap(sleeveWCm, sleeveHCm, armholeM, m, 'armR'),
+    sleeveWrap(sleeveWCm, sleeveHCm, armholeM, m, 'armL'),
+  ]);
+}
+
+/** Le bloc de base Brian de FreeSewing, gradé aux mensurations — devant + dos +
+ * DEUX manches LONGUES. Le patron torse fondamental d'un atelier (contour
+ * lisse, sans pince). Sert aussi de cas de test des manches longues wrap. */
+export function buildBrian(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
+  const pattern = new Brian({ measurements: fsMeasurements(m) }) as unknown as {
+    draft(): void;
+  } & FsPattern;
+  pattern.draft();
+  const pieces = freeSewingPieces(pattern);
+  const front = pieces.find((p) => p.name === 'front')?.piece;
+  const back = pieces.find((p) => p.name === 'back')?.piece;
+  const sleeve = pieces.find((p) => p.name === 'sleeve')?.piece;
+  if (!front || !back) {
+    throw new Error('FreeSewing Brian : devant ou dos introuvable après draft.');
+  }
+  const sleeveWCm = sleeve ? sleeve.width * 100 : 40;
+  const sleeveHCm = sleeve ? sleeve.height * 100 : 61;
+  return assembleTwoFaces(front, back, m, ref, (armholeM) => [
+    sleeveWrap(sleeveWCm, sleeveHCm, armholeM, m, 'armR'),
+    sleeveWrap(sleeveWCm, sleeveHCm, armholeM, m, 'armL'),
+  ]);
+}
+
+/** Indice du sommet du contour le plus proche d'un point UV. */
+function nearestOutlineIdx(outline: readonly UV[], target: UV): number {
+  let best = 0;
+  let bd = Infinity;
+  for (let i = 0; i < outline.length; i++) {
+    const d = Math.hypot(outline[i]![0] - target[0], outline[i]![1] - target[1]);
+    if (d < bd) { bd = d; best = i; }
+  }
+  return best;
+}
+
+/** Les 5 bords d'une jambe de pantalon, ancrés sur les points NOMMÉS FreeSewing
+ * (fork, floorOut, seatOut, cf/cbSeat) plutôt que sur la détection géométrique
+ * `pantsRuns` — que le tracé FreeSewing met en défaut (taille inclinée, fourche
+ * qui coïncide avec la taille). L'ourlet intérieur, sans point nommé, est le
+ * coin bas OPPOSÉ à l'ourlet extérieur. Le contour est ré-orienté pour
+ * parcourir fork → entrejambe → ourlet → côté → taille → fourche en avançant,
+ * afin que les runs et l'appariement devant/dos soient cohérents. */
+function legRunsFromPoints(
+  piece: DraftPiece,
+  pts: Record<string, UV>,
+  waistCenterName: 'cfSeat' | 'cbSeat',
+): { center: EdgeRun; waist: EdgeRun; outseam: EdgeRun; hem: EdgeRun; inseam: EdgeRun } {
+  const N = piece.outline.length;
+  const maxV = Math.max(...piece.outline.map((p) => p[1]));
+  const minV = Math.min(...piece.outline.map((p) => p[1]));
+  const spanV = Math.max(1e-6, maxV - minV);
+  const hemOuter = nearestOutlineIdx(piece.outline, pts.floorOut!);
+  const outerU = piece.outline[hemOuter]![0];
+  let hemInner = hemOuter;
+  let bestDu = -1;
+  for (let i = 0; i < N; i++) {
+    if (piece.outline[i]![1] < maxV - 0.03 * spanV) continue; // bande d'ourlet
+    const du = Math.abs(piece.outline[i]![0] - outerU);
+    if (du > bestDu) { bestDu = du; hemInner = i; }
+  }
+  const idx = {
+    fork: nearestOutlineIdx(piece.outline, pts.fork!),
+    hemInner,
+    hemOuter,
+    waistSide: nearestOutlineIdx(piece.outline, pts.seatOut!),
+    waistCenter: nearestOutlineIdx(piece.outline, pts[waistCenterName]!),
+  };
+  const ahead = (a: number, b: number): number => (b - a + N) % N;
+  // Sens voulu : depuis la fourche, rencontrer l'ourlet intérieur AVANT le
+  // centre-taille. Sinon le contour tourne à l'envers → on l'inverse.
+  if (ahead(idx.fork, idx.waistCenter) < ahead(idx.fork, idx.hemInner)) {
+    piece.outline.reverse();
+    for (const k of Object.keys(idx) as (keyof typeof idx)[]) idx[k] = N - 1 - idx[k];
+  }
+  return {
+    inseam: { from: idx.fork, to: idx.hemInner },
+    hem: { from: idx.hemInner, to: idx.hemOuter },
+    outseam: { from: idx.hemOuter, to: idx.waistSide },
+    waist: { from: idx.waistSide, to: idx.waistCenter },
+    center: { from: idx.waistCenter, to: idx.fork },
+  };
+}
+
+/** Le bloc PANTALON Titan de FreeSewing, gradé aux mensurations — jambe devant
+ * + jambe dos (chacune coupée ×2). Réutilise le montage 4 panneaux ÉPROUVÉ de
+ * TOILE (preset 'loose-pants') : les 2 jambes en miroir, la fourche avant/
+ * arrière et les tubes de jambe s'assemblent automatiquement. Les bords sont
+ * ancrés sur les points nommés du patron (voir legRunsFromPoints). */
+export function buildTitan(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
+  void ref;
+  const pattern = new Titan({ measurements: fsMeasurements(m) }) as unknown as {
+    draft(): void;
+  } & FsPattern;
+  pattern.draft();
+  // Contour fin (peu de simplification) : les coins d'ourlet/fourche voisins
+  // doivent rester des sommets distincts pour ancrer les coutures.
+  const pieces = freeSewingPieces(pattern, { samples: 200, rdpMm: 0.8 });
+  const fe = pieces.find((p) => p.name === 'front');
+  const be = pieces.find((p) => p.name === 'back');
+  if (!fe?.points || !be?.points) {
+    throw new Error('FreeSewing Titan : pièces ou points nommés introuvables.');
+  }
+  const front = fe.piece;
+  const back = be.piece;
+  let fpts = fe.points;
+  const bpts = be.points;
+  // Aligner la fourche des deux jambes du même côté : le montage superpose
+  // devant/dos d'UNE jambe, leurs bords doivent coïncider en X. Le dos a la
+  // fourche à gauche ; on MIROITE le devant en u s'il l'a à droite.
+  if ((fpts.fork?.[0] ?? 0) > 0.5) {
+    for (const p of front.outline) p[0] = 1 - p[0];
+    fpts = Object.fromEntries(
+      Object.entries(fpts).map(([k, uv]) => [k, [1 - uv[0], uv[1]] as UV]),
+    ) as Record<string, UV>;
+  }
+  const topY = m.waist.y + 0.055;
+  const gap = Math.min(0.34, Math.max(0.22, (m.hip.circ / Math.PI) * 0.72));
+  for (const pc of [front, back]) {
+    pc.topY = topY;
+    pc.gap = gap;
+    pc.cut = 2; // chaque jambe est coupée deux fois (gauche + droite)
+  }
+  front.name = 'devant ×2';
+  back.name = 'dos ×2';
+  const fr = legRunsFromPoints(front, fpts, 'cfSeat');
+  const br = legRunsFromPoints(back, bpts, 'cbSeat');
+  front.openEdges = [fr.center, fr.waist, fr.hem];
+  back.openEdges = [br.center, br.waist, br.hem];
+  const seam = (a: EdgeRun, b: EdgeRun): AssemblySeam => ({
+    a: { pieceId: 0, ...a },
+    b: { pieceId: 1, ...b },
+  });
+  return {
+    format: 'toile-draft',
+    version: 1,
+    gridN: 64,
+    piece: front,
+    back,
+    manual: true,
+    pieces: [],
+    seams: [
+      seam(fr.outseam, br.outseam), // couture de côté
+      seam(fr.inseam, br.inseam), // entrejambe
+    ],
+    preset: 'loose-pants',
+  };
+}
+
+/** La jupe CERCLE Sandy de FreeSewing, gradée aux mensurations. Le patron est un
+ * secteur d'anneau (courbe) qui ne se monte pas tel quel dans le montage jupe de
+ * TOILE (qui attend un trapèze taille→ourlet). On le DÉROULE : on lit l'évasement
+ * (rayon ourlet / rayon taille) et la longueur radiale du secteur, puis on émet
+ * un trapèze évasé (tour de taille du corps, évasement + longueur de Sandy) monté
+ * par le preset 'jupe' éprouvé — devant + dos, deux coutures de côté, l'ourlet
+ * et la taille ouverts, la jupe tient car la taille cousue reste sous les hanches. */
+export function buildSandy(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
+  void ref;
+  const pattern = new Sandy({ measurements: fsMeasurements(m) }) as unknown as {
+    draft(): void;
+  } & FsPattern;
+  pattern.draft();
+  const set = pattern.parts?.[0] ?? {};
+  const skirtKey = Object.keys(set).find((k) => /skirt/i.test(k));
+  const pts = (skirtKey ? set[skirtKey]?.points : undefined) ?? {};
+  // Évasement et longueur lus sur le secteur : center → taille (in) et ourlet (ex).
+  let flare = 2;
+  let lengthM = 0.5;
+  const c = pts.center;
+  const inPt = pts.in1 ?? pts.in2;
+  const exPt = pts.ex1 ?? pts.ex2;
+  if (c && inPt && exPt) {
+    const rTaille = Math.hypot(inPt.x - c.x, inPt.y - c.y) / 1000;
+    const rOurlet = Math.hypot(exPt.x - c.x, exPt.y - c.y) / 1000;
+    if (rTaille > 0.01 && rOurlet > rTaille) {
+      flare = Math.min(3.2, rOurlet / rTaille); // borne l'évasement extrême
+      lengthM = rOurlet - rTaille;
+    }
+  }
+  const halfWaist = m.waist.circ / 4; // demi-largeur d'une face (le devant couvre taille/2)
+  const halfHem = halfWaist * flare;
+  const width = 2 * (halfHem + 0.02);
+  const height = lengthM + 0.02;
+  const u = (xM: number): number => 0.5 + xM / width;
+  const vHem = lengthM / height;
+  const topY = m.waist.y + 0.01;
+  const face = (): DraftPiece => ({
+    outline: [
+      [u(halfWaist), 0], // 0 taille D
+      [u(halfHem), vHem], // 1 ourlet D
+      [u(-halfHem), vHem], // 2 ourlet G
+      [u(-halfWaist), 0], // 3 taille G
+    ],
+    darts: [],
+    seams: [],
+    openEdges: [
+      { from: 1, to: 2 }, // ourlet
+      { from: 3, to: 0 }, // ligne de taille
+    ],
+    width,
+    height,
+    topY,
+    gap: 0.9,
+  });
+  const front = face();
+  const back = face();
+  const seam = (from: number, to: number): AssemblySeam => ({
+    a: { face: 'front', from, to },
+    b: { face: 'back', from, to },
+  });
+  return {
+    format: 'toile-draft',
+    version: 1,
+    gridN: 64,
+    piece: front,
+    back,
+    manual: true,
+    preset: 'jupe',
+    seams: [seam(0, 1), seam(2, 3)], // côté D (taille→ourlet), côté G
+  };
 }

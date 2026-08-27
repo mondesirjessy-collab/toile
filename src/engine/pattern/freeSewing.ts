@@ -96,11 +96,11 @@ function unfoldOnAxis(pts: readonly [number, number][]): [number, number][] {
 export function freeSewingPieces(
   pattern: FsPattern,
   opts: FsPieceOptions = {},
-): Array<{ name: string; piece: DraftPiece }> {
+): Array<{ name: string; piece: DraftPiece; points?: Record<string, UV> }> {
   const samples = Math.max(24, Math.min(400, opts.samples ?? 120));
   const rdpMm = opts.rdpMm ?? 2;
   const set = pattern.parts?.[0] ?? {};
-  const out: Array<{ name: string; piece: DraftPiece }> = [];
+  const out: Array<{ name: string; piece: DraftPiece; points?: Record<string, UV> }> = [];
   for (const [name, part] of Object.entries(set)) {
     const seam = part.paths?.seam;
     if (!seam || part.hidden) continue;
@@ -138,8 +138,20 @@ export function freeSewingPieces(
       +((y - minY) / hMm).toFixed(4),
     ]);
     const shortName = name.replace(/^[^.]*\./, ''); // "aaron.front" → "front"
+    // Points NOMMÉS du patron (fork, waist, knee, floor…) dans le MÊME repère UV
+    // que le contour — pour des coutures sémantiques (pantalon). Non fournis
+    // pour une pièce sur pliure (le dépliage rendrait le mapping ambigu).
+    let points: Record<string, UV> | undefined;
+    if (!onFold) {
+      points = {};
+      for (const [pname, pt] of Object.entries(part.points ?? {})) {
+        if (!pt || !Number.isFinite(pt.x) || !Number.isFinite(pt.y)) continue;
+        points[pname] = [+((pt.x - minX) / wMm).toFixed(4), +((pt.y - minY) / hMm).toFixed(4)];
+      }
+    }
     out.push({
       name: shortName,
+      points,
       piece: {
         outline,
         darts: [],

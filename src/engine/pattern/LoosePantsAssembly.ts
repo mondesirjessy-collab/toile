@@ -81,8 +81,12 @@ export function buildLoosePantsMesh(
   }
 
   const panelSize = n * n;
-  const frontCenter = pantsRuns(front).center;
-  const backCenter = pantsRuns(back).center;
+  // La couture de fourche/tir suit le run `center`, qui est TOUJOURS openEdges[0]
+  // (loosePants/cloPants le posent ainsi). On le lit donc depuis la pièce, ce
+  // qui permet à un patron importé (FreeSewing) de fournir un center calculé
+  // autrement que par la détection géométrique `pantsRuns` (repli natif).
+  const frontCenter = front.openEdges?.[0] ?? pantsRuns(front).center;
+  const backCenter = back.openEdges?.[0] ?? pantsRuns(back).center;
   const frontPairs = pairOutlineRuns(front, front, frontCenter, frontCenter, n);
   const backPairs = pairOutlineRuns(back, back, backCenter, backCenter, n);
   const cross: CrossSeam[] = [];

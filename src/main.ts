@@ -2582,7 +2582,7 @@ async function main(): Promise<void> {
   let vesteSize: VesteSize | 'avatar' = 'M';
   let doudouneSize: DoudouneSize | 'avatar' = 'M';
   let hoodieSize: LucasHoodieSize = 'S';
-  let loadedPattern: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee' | 'fs-aaron' | 'fs-teagan' = 'boxy';
+  let loadedPattern: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee' | 'fs-aaron' | 'fs-teagan' | 'fs-sven' | 'fs-brian' | 'fs-titan' | 'fs-sandy' = 'boxy';
   const sizeSel = document.getElementById('at-size') as HTMLSelectElement | null;
   let opTeeSize: OpLooseTeeSize = 'M';
   const teeSleevesRow = document.getElementById('at-tee-sleeves-row');
@@ -2651,7 +2651,7 @@ async function main(): Promise<void> {
     avatarStatureHelp.textContent =
       `Redimensionne le mannequin et ses collisions. ${fixedGarmentSizeMessage(selectedSize)}`;
   };
-  const showSizes = (kind: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee' | 'fs-aaron' | 'fs-teagan'): void => {
+  const showSizes = (kind: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee' | 'fs-aaron' | 'fs-teagan' | 'fs-sven' | 'fs-brian' | 'fs-titan' | 'fs-sandy'): void => {
     if (!sizeSel) return;
     loadedPattern = kind;
     // Bloc manche : sélecteur visible pour le tee seulement (1er bloc composable).
@@ -2677,6 +2677,18 @@ async function main(): Promise<void> {
       sizeSel.value = 'avatar';
     } else if (kind === 'fs-teagan') {
       sizeSel.innerHTML = `<option value="avatar">T-shirt FreeSewing ajusté au mannequin · poitrine ${(lastMeasure.chest.circ * 100).toFixed(0)} cm</option>`;
+      sizeSel.value = 'avatar';
+    } else if (kind === 'fs-sven') {
+      sizeSel.innerHTML = `<option value="avatar">Sweat FreeSewing ajusté au mannequin · poitrine ${(lastMeasure.chest.circ * 100).toFixed(0)} cm</option>`;
+      sizeSel.value = 'avatar';
+    } else if (kind === 'fs-brian') {
+      sizeSel.innerHTML = `<option value="avatar">Bloc de base FreeSewing ajusté au mannequin · poitrine ${(lastMeasure.chest.circ * 100).toFixed(0)} cm</option>`;
+      sizeSel.value = 'avatar';
+    } else if (kind === 'fs-titan') {
+      sizeSel.innerHTML = `<option value="avatar">Pantalon FreeSewing ajusté au mannequin · tour de taille ${(lastMeasure.waist.circ * 100).toFixed(0)} cm</option>`;
+      sizeSel.value = 'avatar';
+    } else if (kind === 'fs-sandy') {
+      sizeSel.innerHTML = `<option value="avatar">Jupe cercle FreeSewing ajustée au mannequin · tour de taille ${(lastMeasure.waist.circ * 100).toFixed(0)} cm</option>`;
       sizeSel.value = 'avatar';
     } else if (kind === 'op-tee') {
       sizeSel.innerHTML = OP_LOOSE_TEE_SIZES.map(
@@ -3079,6 +3091,111 @@ async function main(): Promise<void> {
   (document.getElementById('at-fs-teagan') as HTMLElement | null)?.addEventListener('click', () => {
     void loadFsTeagan();
   });
+  // Sweat-shirt Sven de FreeSewing (MIT) : devant + dos + manches longues wrap.
+  const loadFsSven = async (): Promise<void> => {
+    if (!bigPanel) setBig(true);
+    patternView.resetView();
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    resetPlacement();
+    try {
+      const mod = await import('./engine/pattern/freeSewingGarments');
+      pushHistory();
+      showSizes('fs-sven');
+      teePreset = false;
+      draft = mod.buildSven(lastMeasure, REF);
+      draftTouched = true;
+      atelierSleeves = false;
+      atelierCollar = false;
+      document.getElementById('at-sleeves')?.classList.remove('active');
+      build();
+    } catch (e) {
+      showToast(`FreeSewing indisponible : ${(e as Error).message}`);
+    }
+  };
+  (document.getElementById('at-fs-sven') as HTMLElement | null)?.addEventListener('click', () => {
+    void loadFsSven();
+  });
+  // Bloc de base Brian de FreeSewing (MIT) : le patron torse fondamental, avec
+  // manches LONGUES (le profil de tête éprouvé permet enfin de les monter).
+  const loadFsBrian = async (): Promise<void> => {
+    if (!bigPanel) setBig(true);
+    patternView.resetView();
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    resetPlacement();
+    try {
+      const mod = await import('./engine/pattern/freeSewingGarments');
+      pushHistory();
+      showSizes('fs-brian');
+      teePreset = false;
+      draft = mod.buildBrian(lastMeasure, REF);
+      draftTouched = true;
+      atelierSleeves = false;
+      atelierCollar = false;
+      document.getElementById('at-sleeves')?.classList.remove('active');
+      build();
+    } catch (e) {
+      showToast(`FreeSewing indisponible : ${(e as Error).message}`);
+    }
+  };
+  (document.getElementById('at-fs-brian') as HTMLElement | null)?.addEventListener('click', () => {
+    void loadFsBrian();
+  });
+  // Pantalon Titan de FreeSewing (MIT) : le bloc PANTALON — jambe devant + dos,
+  // monté par le chemin 4 panneaux de TOILE (2 jambes + fourche). Premier BAS
+  // du pont FreeSewing. Les bords sont ancrés sur les points nommés du patron.
+  const loadFsTitan = async (): Promise<void> => {
+    if (!bigPanel) setBig(true);
+    patternView.resetView();
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    resetPlacement();
+    try {
+      const mod = await import('./engine/pattern/freeSewingGarments');
+      pushHistory();
+      showSizes('fs-titan');
+      teePreset = false;
+      draft = mod.buildTitan(lastMeasure, REF);
+      draftTouched = true;
+      atelierSleeves = false;
+      atelierCollar = false;
+      document.getElementById('at-sleeves')?.classList.remove('active');
+      build();
+    } catch (e) {
+      showToast(`FreeSewing indisponible : ${(e as Error).message}`);
+    }
+  };
+  (document.getElementById('at-fs-titan') as HTMLElement | null)?.addEventListener('click', () => {
+    void loadFsTitan();
+  });
+  // Jupe cercle Sandy de FreeSewing (MIT) : le patron est un secteur d'anneau,
+  // déroulé en trapèze évasé (cotes de Sandy, tour de taille du corps) et monté
+  // par le preset 'jupe' de TOILE. Premier vêtement JUPE du pont FreeSewing.
+  const loadFsSandy = async (): Promise<void> => {
+    if (!bigPanel) setBig(true);
+    patternView.resetView();
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    resetPlacement();
+    try {
+      const mod = await import('./engine/pattern/freeSewingGarments');
+      pushHistory();
+      showSizes('fs-sandy');
+      teePreset = false;
+      draft = mod.buildSandy(lastMeasure, REF);
+      draftTouched = true;
+      atelierSleeves = false;
+      atelierCollar = false;
+      document.getElementById('at-sleeves')?.classList.remove('active');
+      build();
+    } catch (e) {
+      showToast(`FreeSewing indisponible : ${(e as Error).message}`);
+    }
+  };
+  (document.getElementById('at-fs-sandy') as HTMLElement | null)?.addEventListener('click', () => {
+    void loadFsSandy();
+  });
 
   // Loose Fit T-Shirt d'openpattern.io (CC BY) : tailles absolues S-XXL du
   // patron, lignes de couture nettes du DXF — l'assemblage générique éprouvé
@@ -3225,6 +3342,14 @@ async function main(): Promise<void> {
         if (sceneMode === 'atelier') void loadFsAaron();
       } else if (loadedPattern === 'fs-teagan') {
         if (sceneMode === 'atelier') void loadFsTeagan();
+      } else if (loadedPattern === 'fs-sven') {
+        if (sceneMode === 'atelier') void loadFsSven();
+      } else if (loadedPattern === 'fs-brian') {
+        if (sceneMode === 'atelier') void loadFsBrian();
+      } else if (loadedPattern === 'fs-titan') {
+        if (sceneMode === 'atelier') void loadFsTitan();
+      } else if (loadedPattern === 'fs-sandy') {
+        if (sceneMode === 'atelier') void loadFsSandy();
       } else if (loadedPattern === 'op-tee') {
         opTeeSize = sizeSel.value as OpLooseTeeSize;
         if (sceneMode === 'atelier') loadOpTee();
@@ -9042,6 +9167,10 @@ async function main(): Promise<void> {
           : loadedPattern === 'op-tee' ? 'T-shirt openpattern'
           : loadedPattern === 'fs-aaron' ? 'Débardeur FreeSewing'
           : loadedPattern === 'fs-teagan' ? 'T-shirt FreeSewing'
+          : loadedPattern === 'fs-sven' ? 'Sweat FreeSewing'
+          : loadedPattern === 'fs-brian' ? 'Bloc de base FreeSewing'
+          : loadedPattern === 'fs-titan' ? 'Pantalon FreeSewing'
+          : loadedPattern === 'fs-sandy' ? 'Jupe FreeSewing'
           : loadedPattern === 'pants' || loadedPattern === 'clo-pants' ? 'Pantalon'
           : loadedPattern === 'hoodie' ? 'Hoodie'
           : loadedPattern === 'jupe' ? 'Jupe'
@@ -10469,6 +10598,10 @@ async function main(): Promise<void> {
       'op-tee': 't-shirt loose openpattern',
       'fs-aaron': 'débardeur FreeSewing',
       'fs-teagan': 't-shirt FreeSewing',
+      'fs-sven': 'sweat-shirt FreeSewing',
+      'fs-brian': 'bloc de base FreeSewing',
+      'fs-titan': 'pantalon FreeSewing',
+      'fs-sandy': 'jupe cercle FreeSewing',
     };
     const briefContext = (): Record<string, unknown> => {
       const ctx: Record<string, unknown> = {};
