@@ -2582,7 +2582,7 @@ async function main(): Promise<void> {
   let vesteSize: VesteSize | 'avatar' = 'M';
   let doudouneSize: DoudouneSize | 'avatar' = 'M';
   let hoodieSize: LucasHoodieSize = 'S';
-  let loadedPattern: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee' = 'boxy';
+  let loadedPattern: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee' | 'fs-aaron' | 'fs-teagan' = 'boxy';
   const sizeSel = document.getElementById('at-size') as HTMLSelectElement | null;
   let opTeeSize: OpLooseTeeSize = 'M';
   const teeSleevesRow = document.getElementById('at-tee-sleeves-row');
@@ -2651,7 +2651,7 @@ async function main(): Promise<void> {
     avatarStatureHelp.textContent =
       `Redimensionne le mannequin et ses collisions. ${fixedGarmentSizeMessage(selectedSize)}`;
   };
-  const showSizes = (kind: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee'): void => {
+  const showSizes = (kind: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee' | 'fs-aaron' | 'fs-teagan'): void => {
     if (!sizeSel) return;
     loadedPattern = kind;
     // Bloc manche : sélecteur visible pour le tee seulement (1er bloc composable).
@@ -2672,7 +2672,13 @@ async function main(): Promise<void> {
       teeEaseSlider.value = String(Math.round(boxyEase * 100));
       syncEaseLabel();
     }
-    if (kind === 'op-tee') {
+    if (kind === 'fs-aaron') {
+      sizeSel.innerHTML = `<option value="avatar">Débardeur FreeSewing ajusté au mannequin · poitrine ${(lastMeasure.chest.circ * 100).toFixed(0)} cm</option>`;
+      sizeSel.value = 'avatar';
+    } else if (kind === 'fs-teagan') {
+      sizeSel.innerHTML = `<option value="avatar">T-shirt FreeSewing ajusté au mannequin · poitrine ${(lastMeasure.chest.circ * 100).toFixed(0)} cm</option>`;
+      sizeSel.value = 'avatar';
+    } else if (kind === 'op-tee') {
       sizeSel.innerHTML = OP_LOOSE_TEE_SIZES.map(
         (s) => `<option value="${s}">${s} · vêtement ${opLooseTeeChestCm(s)} cm</option>`,
       ).join('');
@@ -3021,6 +3027,59 @@ async function main(): Promise<void> {
   };
   (document.getElementById('at-clo-tee') as HTMLElement | null)?.addEventListener('click', loadCloTee);
 
+  // Débardeur Aaron de FreeSewing (MIT), gradé sur l'avatar — FreeSewing est
+  // chargé par import() DYNAMIQUE (hors bundle principal). buildAaron mappe
+  // les mensurations, drape le design et l'assemble par teeRuns.
+  const loadFsAaron = async (): Promise<void> => {
+    if (!bigPanel) setBig(true);
+    patternView.resetView();
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    resetPlacement();
+    try {
+      const mod = await import('./engine/pattern/freeSewingGarments');
+      pushHistory();
+      showSizes('fs-aaron');
+      teePreset = false;
+      draft = mod.buildAaron(lastMeasure, REF);
+      draftTouched = true;
+      atelierSleeves = false;
+      atelierCollar = false;
+      document.getElementById('at-sleeves')?.classList.remove('active');
+      build();
+    } catch (e) {
+      showToast(`FreeSewing indisponible : ${(e as Error).message}`);
+    }
+  };
+  (document.getElementById('at-fs-aaron') as HTMLElement | null)?.addEventListener('click', () => {
+    void loadFsAaron();
+  });
+  // T-shirt Teagan de FreeSewing (MIT) : devant + dos + manches wrap, gradé.
+  const loadFsTeagan = async (): Promise<void> => {
+    if (!bigPanel) setBig(true);
+    patternView.resetView();
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    resetPlacement();
+    try {
+      const mod = await import('./engine/pattern/freeSewingGarments');
+      pushHistory();
+      showSizes('fs-teagan');
+      teePreset = false;
+      draft = mod.buildTeagan(lastMeasure, REF);
+      draftTouched = true;
+      atelierSleeves = false;
+      atelierCollar = false;
+      document.getElementById('at-sleeves')?.classList.remove('active');
+      build();
+    } catch (e) {
+      showToast(`FreeSewing indisponible : ${(e as Error).message}`);
+    }
+  };
+  (document.getElementById('at-fs-teagan') as HTMLElement | null)?.addEventListener('click', () => {
+    void loadFsTeagan();
+  });
+
   // Loose Fit T-Shirt d'openpattern.io (CC BY) : tailles absolues S-XXL du
   // patron, lignes de couture nettes du DXF — l'assemblage générique éprouvé
   // (devant + dos cousus épaules/côtés, manches WRAP, bande de col WRAP).
@@ -3162,6 +3221,10 @@ async function main(): Promise<void> {
       } else if (loadedPattern === 'doudoune') {
         doudouneSize = sizeSel.value as DoudouneSize | 'avatar';
         if (sceneMode === 'atelier') loadDoudoune();
+      } else if (loadedPattern === 'fs-aaron') {
+        if (sceneMode === 'atelier') void loadFsAaron();
+      } else if (loadedPattern === 'fs-teagan') {
+        if (sceneMode === 'atelier') void loadFsTeagan();
       } else if (loadedPattern === 'op-tee') {
         opTeeSize = sizeSel.value as OpLooseTeeSize;
         if (sceneMode === 'atelier') loadOpTee();
@@ -8977,6 +9040,8 @@ async function main(): Promise<void> {
           loadedPattern === 'boxy' ? 'T-shirt'
           : loadedPattern === 'clo-tee' ? 'T-shirt CLO'
           : loadedPattern === 'op-tee' ? 'T-shirt openpattern'
+          : loadedPattern === 'fs-aaron' ? 'Débardeur FreeSewing'
+          : loadedPattern === 'fs-teagan' ? 'T-shirt FreeSewing'
           : loadedPattern === 'pants' || loadedPattern === 'clo-pants' ? 'Pantalon'
           : loadedPattern === 'hoodie' ? 'Hoodie'
           : loadedPattern === 'jupe' ? 'Jupe'
@@ -10402,6 +10467,8 @@ async function main(): Promise<void> {
       'clo-tee': 'import CLO (tee, hors catalogue)',
       'clo-pants': 'import CLO (pantalon, hors catalogue)',
       'op-tee': 't-shirt loose openpattern',
+      'fs-aaron': 'débardeur FreeSewing',
+      'fs-teagan': 't-shirt FreeSewing',
     };
     const briefContext = (): Record<string, unknown> => {
       const ctx: Record<string, unknown> = {};

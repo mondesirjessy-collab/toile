@@ -20,6 +20,17 @@
     "vitest": "^4.1.9"
   },
   "dependencies": {
+    "@freesewing/aaron": "^4.10.1",
+    "@freesewing/brian": "^4.10.1",
+    "@freesewing/collection": "^4.10.1",
+    "@freesewing/config": "^4.10.1",
+    "@freesewing/core": "^4.10.1",
+    "@freesewing/i18n": "^4.10.1",
+    "@freesewing/models": "^4.10.1",
+    "@freesewing/plugin-theme": "^4.10.1",
+    "@freesewing/plugin-transform": "^4.10.1",
+    "@freesewing/snapseries": "^4.10.1",
+    "@freesewing/teagan": "^4.10.1",
     "clipper2-ts": "^2.0.1-18",
     "jspdf": "^4.2.1",
     "lil-gui": "^0.21.0"
