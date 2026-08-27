@@ -21,6 +21,7 @@ export interface Morphs {
   taille: number;
   hanches: number;
   cuisse: number;
+  jambe: number; // rise / leg-to-torso ratio (vertical warp, stature preserved)
 }
 
 export interface MorphMarks {
@@ -31,15 +32,70 @@ export interface MorphMarks {
   thighY: number;
 }
 
-export const NO_MORPH: Morphs = { stature: 1, carrure: 1, poitrine: 1, taille: 1, hanches: 1, cuisse: 1 };
+export const NO_MORPH: Morphs = {
+  stature: 1,
+  carrure: 1,
+  poitrine: 1,
+  taille: 1,
+  hanches: 1,
+  cuisse: 1,
+  jambe: 1,
+};
 
 export function isNeutral(m: Morphs): boolean {
   return (
-    m.stature === 1 && m.carrure === 1 && m.poitrine === 1 && m.taille === 1 && m.hanches === 1 && m.cuisse === 1
+    m.stature === 1 &&
+    m.carrure === 1 &&
+    m.poitrine === 1 &&
+    m.taille === 1 &&
+    m.hanches === 1 &&
+    m.cuisse === 1 &&
+    m.jambe === 1
   );
 }
 
 const bell = (dy: number, width: number): number => Math.exp(-((dy / width) ** 2));
+
+/**
+ * Vertical warp = leg-to-torso ratio at CONSTANT stature. `jambe > 1` lengthens
+ * everything below the hip pivot and shortens the torso above it by the same
+ * amount, so the overall height is preserved. All heights are in the
+ * stature-scaled space (feature marks already multiplied by m.stature).
+ */
+function risePivot(
+  m: Morphs,
+  marks: MorphMarks,
+  st: number,
+): { pivot: number; top: number; pivotNew: number } {
+  const pivot = marks.hipY * st; // legs = everything below the hip line
+  const top = (marks.shoulderY / 0.82) * st; // crown ≈ shoulder / 0.82 of stature
+  const jambe = Math.min(1.3, Math.max(0.8, m.jambe));
+  const pivotNew = Math.min(top - 0.02, Math.max(0.02, pivot * jambe));
+  return { pivot, top, pivotNew };
+}
+
+/** Remap a stature-scaled height through the vertical (rise) warp. */
+export function warpY(y: number, m: Morphs, marks: MorphMarks, st: number): number {
+  if (m.jambe === 1) return y;
+  const { pivot, top, pivotNew } = risePivot(m, marks, st);
+  if (y <= pivot) return y * (pivotNew / pivot);
+  return pivotNew + (y - pivot) * ((top - pivotNew) / (top - pivot));
+}
+
+/** d(warpY)/dy — the vertical stretch factor, piecewise constant. */
+function warpYDeriv(y: number, m: Morphs, marks: MorphMarks, st: number): number {
+  if (m.jambe === 1) return 1;
+  const { pivot, top, pivotNew } = risePivot(m, marks, st);
+  return y <= pivot ? pivotNew / pivot : (top - pivotNew) / (top - pivot);
+}
+
+/** Inverse of warpY: from a warped height back to the source height. */
+function warpYInverse(y: number, m: Morphs, marks: MorphMarks, st: number): number {
+  if (m.jambe === 1) return y;
+  const { pivot, top, pivotNew } = risePivot(m, marks, st);
+  if (y <= pivotNew) return y * (pivot / pivotNew);
+  return pivot + (y - pivotNew) * ((top - pivot) / (top - pivotNew));
+}
 
 /**
  * Radial (x,z) scale at height y for the given measurements. `y` is in the
@@ -66,8 +122,8 @@ export function morphPrims(prims: SdfPrim[], m: Morphs, marks: MorphMarks): SdfP
     const sa = morphScale(ay, m, marks);
     const sb = morphScale(by, m, marks);
     return {
-      a: [p.a[0] * st * sa, ay, p.a[2] * st * sa] as V3,
-      b: [p.b[0] * st * sb, by, p.b[2] * st * sb] as V3,
+      a: [p.a[0] * st * sa, warpY(ay, m, marks, st), p.a[2] * st * sa] as V3,
+      b: [p.b[0] * st * sb, warpY(by, m, marks, st), p.b[2] * st * sb] as V3,
       ra: p.ra * st * sa,
       rb: p.rb * st * sb,
       s: p.s,
@@ -95,12 +151,16 @@ export function morphGrid(grid: Grid, m: Morphs, marks: MorphMarks): Grid {
     const z = min[2] + (k / (nz - 1)) * (max[2] - min[2]);
     for (let j = 0; j < ny; j++) {
       const y = min[1] + (j / (ny - 1)) * (max[1] - min[1]);
-      const s = morphScale(y, m, marks) * st;
+      // Undo the vertical (rise) warp to find the SOURCE height, then apply the
+      // lateral warp measured at that source height (as morphMesh does).
+      const y0 = warpYInverse(y, m, marks, st);
+      const s = morphScale(y0, m, marks) * st;
+      const dY = warpYDeriv(y0, m, marks, st) * st;
       for (let i = 0; i < nx; i++) {
         const x = min[0] + (i / (nx - 1)) * (max[0] - min[0]);
         // Conservative distance estimate under the warp: never overestimates,
         // so contacts trigger a hair early rather than late.
-        data[(k * ny + j) * nx + i] = src(x / s, y / st, z / s) * Math.min(1, s, st);
+        data[(k * ny + j) * nx + i] = src(x / s, y0 / st, z / s) * Math.min(1, s, dY);
       }
     }
   }
@@ -136,10 +196,10 @@ export function morphMesh<
     const y = sourceY * st;
     const s = morphScale(y, m, marks) * st;
     positions[v] = sourceX * s;
-    positions[v + 1] = y;
+    positions[v + 1] = warpY(y, m, marks, st);
     positions[v + 2] = sourceZ * s;
 
-    // Exact inverse-transpose of F(x,y,z)=(s(y)x, stature*y, s(y)z).
+    // Exact inverse-transpose of F(x,y,z)=(s(y)x, warpY(stature*y), s(y)z).
     // Transforming source normals (instead of re-smoothing triangles) keeps
     // coincident vertices on opposite sides of a UV seam bit-identical.
     const epsilon = 1e-4;
@@ -147,7 +207,9 @@ export function morphMesh<
     const scaleAfter = morphScale((sourceY + epsilon) * st, m, marks) * st;
     const derivative = (scaleAfter - scaleBefore) / (2 * epsilon);
     const safeScale = Math.max(1e-6, Math.abs(s));
-    const safeStature = Math.max(1e-6, Math.abs(st));
+    // Vertical stretch d(output_y)/d(source_y) = warpY'(y)*stature (was stature).
+    const dY = warpYDeriv(y, m, marks, st) * st;
+    const safeStature = Math.max(1e-6, Math.abs(dY));
     const nx = mesh.normals[v]! / safeScale;
     const nz = mesh.normals[v + 2]! / safeScale;
     const ny = (
@@ -160,7 +222,7 @@ export function morphMesh<
     if (tangents && mesh.tangents) {
       const tangent = (v / 3) * 4;
       let tx = s * mesh.tangents[tangent]! + sourceX * derivative * mesh.tangents[tangent + 1]!;
-      let ty = st * mesh.tangents[tangent + 1]!;
+      let ty = dY * mesh.tangents[tangent + 1]!;
       let tz = s * mesh.tangents[tangent + 2]! + sourceZ * derivative * mesh.tangents[tangent + 1]!;
       // Mikk tangents must stay perpendicular to the transformed normal.
       const projection = tx * normals[v]! + ty * normals[v + 1]! + tz * normals[v + 2]!;
