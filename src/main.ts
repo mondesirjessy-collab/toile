@@ -10439,18 +10439,30 @@ async function main(): Promise<void> {
   // navigateur depuis 6 phénotypes (combinaison linéaire base + deltas, chargée
   // en asset ~1,5 Mo), puis se voxelise comme un import — mesuré et morphable.
   let annyModelCache: import('./engine/body/annyBody').AnnyModel | null = null;
-  document.getElementById('at-body-anny')?.addEventListener('click', () => {
+  // Phénotypes Anny réglables (∈ [0,1], 0,5 = neutre). Le genre est MÉMORISÉ
+  // (fixé depuis le gabarit Femme/Homme au clic du bouton) pour qu'un homme
+  // Anny reste un homme quand on règle ensuite poids/muscle/âge.
+  const annyPhenotypes: Record<string, number> = { weight: 0.5, muscle: 0.5, age: 0.5, gender: 0.15 };
+  const genAnnyBody = (preserveMeasures: boolean): void => {
     void (async () => {
       (document.activeElement as HTMLElement | null)?.blur?.();
       guidanceEl.textContent = 'Corps Anny — génération du maillage…';
+      // Régler un phénotype ne doit pas effacer les réglages déjà saisis : on
+      // garde les cotes (cm : stature + tours) ET les proportions verticales
+      // (jambe/buste/cou/bras) et on les ré-applique au nouveau corps.
+      const savedCm = preserveMeasures ? { ...panel.measurementsCm() } : null;
+      const savedProps = preserveMeasures
+        ? { jambe: morphs.jambe, buste: morphs.buste, cou: morphs.cou, bras: morphs.bras }
+        : null;
       try {
         const mod = await import('./engine/body/annyBody');
         annyModelCache ??= await mod.loadAnnyModel(`${import.meta.env.BASE_URL}avatars/anny-body.bin`);
         await new Promise((r) => requestAnimationFrame(() => r(null)));
-        const mesh = mod.annyMesh(annyModelCache, { gender: bodyKind.includes('homme') ? 0.85 : 0.15 });
-        const built = buildImportedBody(mesh);
-        scans['scan import'] = built;
+        scans['scan import'] = buildImportedBody(mod.annyMesh(annyModelCache, annyPhenotypes));
         applyBody('scan import');
+        if (savedProps) morphs = { ...morphs, ...savedProps }; // onMorph préserve ces valeurs
+        if (savedCm) panel.applyMeasurementsCm(savedCm); // ré-atteint tours+stature (+ build)
+        if (savedProps) syncAtelierMeasures(); // resync les curseurs de proportions
         showToast('Corps Anny généré — règle sa taille et ses tours dans « Mannequin ».');
         guidanceEl.textContent = 'Corps génératif Anny prêt à l’essayage.';
       } catch (e) {
@@ -10458,7 +10470,53 @@ async function main(): Promise<void> {
         guidanceEl.textContent = 'Corps Anny abandonné.';
       }
     })();
+  };
+  // Estime le phénotype « poids » d'Anny depuis la corpulence CIBLE (tour de
+  // taille rapporté à la stature = ratio taille/hauteur anthropométrique) : le
+  // corps naît à ta forme, sans réglage manuel. On lit les mensurations du
+  // panneau (les vraies cibles réglées), pas la mesure du corps de base.
+  const estimateAnnyWeight = (): number => {
+    const cm = panel.measurementsCm();
+    const whtr = cm.taille / Math.max(1, cm.stature); // ~0,45 = silhouette saine
+    return Math.min(0.9, Math.max(0.1, 0.5 + (whtr - 0.45) * 3));
+  };
+  // Phénotype « taille » d'Anny depuis la stature cible : un grand corps naît
+  // avec des proportions de grand (membres longs, tête relative plus petite),
+  // ensuite ramené à la stature exacte par le warp. 170 cm = neutre.
+  const estimateAnnyHeight = (): number => {
+    const cm = panel.measurementsCm();
+    return Math.min(0.95, Math.max(0.05, 0.5 + (cm.stature - 170) / 60));
+  };
+  document.getElementById('at-body-anny')?.addEventListener('click', () => {
+    annyPhenotypes.gender = bodyKind.includes('homme') ? 0.85 : 0.15; // suit le gabarit choisi
+    annyPhenotypes.weight = estimateAnnyWeight();
+    annyPhenotypes.height = estimateAnnyHeight();
+    const pct = String(Math.round(annyPhenotypes.weight * 100));
+    const wi = document.getElementById('at-anny-weight') as HTMLInputElement | null;
+    const wn = document.getElementById('at-anny-weight-num') as HTMLInputElement | null;
+    if (wi) wi.value = pct;
+    if (wn) wn.value = pct;
+    genAnnyBody(true); // corps à tes cotes, corpulence estimée de tes mensurations
   });
+  // Curseurs de phénotypes : au relâcher, régénère le corps Anny (voxelisation
+  // lourde, donc pas en direct). Bouger un curseur génère le corps s'il ne l'est pas.
+  for (const [id, key] of [['at-anny-weight', 'weight'], ['at-anny-muscle', 'muscle'], ['at-anny-age', 'age']] as const) {
+    const input = document.getElementById(id) as HTMLInputElement | null;
+    const num = document.getElementById(`${id}-num`) as HTMLInputElement | null;
+    input?.addEventListener('input', () => { if (num) num.value = String(Math.round(input.valueAsNumber)); });
+    input?.addEventListener('change', () => {
+      annyPhenotypes[key] = Math.min(1, Math.max(0, input.valueAsNumber / 100));
+      genAnnyBody(true); // garde les cotes déjà réglées
+    });
+    num?.addEventListener('change', () => {
+      if (!Number.isFinite(num.valueAsNumber)) return;
+      const v = Math.min(100, Math.max(0, Math.round(num.valueAsNumber)));
+      num.value = String(v);
+      if (input) input.value = String(v);
+      annyPhenotypes[key] = v / 100;
+      genAnnyBody(true);
+    });
+  }
   document.getElementById('at-frame-avatar')?.addEventListener('click', () => {
     const aspect = canvas.width / Math.max(1, canvas.height);
     if (lastAvatarBounds) camera.frameBounds(lastAvatarBounds, aspect);

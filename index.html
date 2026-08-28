@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TOILE — du brief au patron · v277</title>
+  <title>TOILE — du brief au patron · v283</title>
   <style>
     :root {
       color-scheme: dark;
@@ -1346,7 +1346,7 @@
   <canvas id="view" tabindex="-1" aria-label="Vue 3D du vêtement et du mannequin"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 5 — du brief au patron · v277</small></span>
+    <span class="title">TOILE<small>phase 5 — du brief au patron · v283</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
       <span id="resolution-rebuild-status" role="status" aria-live="polite" hidden></span>
@@ -1386,6 +1386,18 @@
         <button id="at-import-body" type="button" class="avatar-import" title="Importer un corps au format OBJ (scan 3D, MakeHuman, Blender…) : le maillage devient un mannequin mesuré et morphable. Normalisé debout à 1,70 m — réglez ensuite sa taille et ses tours.">⬆ Importer un corps (OBJ)</button>
         <input id="at-import-body-file" type="file" accept=".obj,model/obj,text/plain" hidden>
         <button id="at-body-anny" type="button" class="avatar-import" title="Générer un corps paramétrique Anny (naver, MakeHuman) : un mannequin réaliste construit par 6 phénotypes (genre, âge, muscle, poids, taille), puis réglable à tes cotes exactes.">🧬 Corps génératif (Anny)</button>
+        <details class="avatar-measures">
+          <summary title="Régler la morphologie du corps Anny — poids, muscle, âge (le corps se régénère au relâcher)">🧬 Morphologie Anny</summary>
+          <div class="avatar-measures-body">
+            <label class="avatar-size-label" for="at-anny-weight"><span>Poids</span><span class="avatar-size-value"><input id="at-anny-weight-num" type="number" class="avatar-num" min="0" max="100" step="1" inputmode="decimal" aria-label="Poids Anny en pourcentage"> %</span></label>
+            <input id="at-anny-weight" type="range" min="0" max="100" step="1" value="50" class="avatar-measure-range" title="Corpulence : 50 % = moyen">
+            <label class="avatar-size-label" for="at-anny-muscle"><span>Muscle</span><span class="avatar-size-value"><input id="at-anny-muscle-num" type="number" class="avatar-num" min="0" max="100" step="1" inputmode="decimal" aria-label="Muscle Anny en pourcentage"> %</span></label>
+            <input id="at-anny-muscle" type="range" min="0" max="100" step="1" value="50" class="avatar-measure-range" title="Musculature : 50 % = moyen">
+            <label class="avatar-size-label" for="at-anny-age"><span>Âge</span><span class="avatar-size-value"><input id="at-anny-age-num" type="number" class="avatar-num" min="0" max="100" step="1" inputmode="decimal" aria-label="Âge Anny en pourcentage"> %</span></label>
+            <input id="at-anny-age" type="range" min="0" max="100" step="1" value="50" class="avatar-measure-range" title="Âge : de l'enfant (0) à la personne âgée (100), 50 % = adulte">
+            <p class="avatar-size-help">Régénère le corps Anny au relâcher du curseur (calcul de collision).</p>
+          </div>
+        </details>
         <div class="avatar-gabarit avatar-pose" role="group" aria-label="Pose d'essayage du mannequin">
           <button id="at-pose-native" type="button" data-pose="native" aria-pressed="true" title="Pose couture (bras en T) — la pose où l'on coud et où le corps se mesure">T</button>
           <button id="at-pose-apose" type="button" data-pose="a-pose" aria-pressed="false" title="Bras à 45° — l'essayage se recale sur le corps posé (patron et cotes inchangés)">Bras 45°</button>
