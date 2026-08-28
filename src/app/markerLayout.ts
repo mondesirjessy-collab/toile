@@ -1,5 +1,5 @@
 import type { DraftDoc, DraftPiece, UV } from '../engine/pattern/Draft';
-import { pointInPolygon, addSeamNotches } from '../engine/pattern/Draft';
+import { pointInPolygon, addSeamNotches, seamAllowanceOutline } from '../engine/pattern/Draft';
 import { downloadBrowserBlob } from './browserDownload';
 
 // Plan de découpe (BLUEPRINT §16.7 #2). Nesting SERRÉ : bottom-left-fill sur une
@@ -202,20 +202,31 @@ export function placedPoint(pl: Placement, u: number, v: number): [number, numbe
   return [pl.x + uu * pl.wCm, pl.y + vv * pl.hCm];
 }
 
-/** Schéma de coupe 1:1 en SVG (mm). Contours réels posés sur la laize. */
-export function markerSvg(nest: MarkerNest): string {
+/** Schéma de coupe 1:1 en SVG (mm). Contours réels posés sur la laize.
+ * `saCm` > 0 : on trace le TRAIT DE COUPE (ligne de couture décalée de la marge
+ * vers l'extérieur — le bord réel du tissu) plein, et la ligne de couture en
+ * pointillé à l'intérieur. Le nesting espace déjà les pièces de la marge, donc
+ * les traits de coupe voisins se touchent bord à bord sans se recouvrir. */
+export function markerSvg(nest: MarkerNest, saCm = 0): string {
   const { placements, rollWidthCm, lengthCm } = nest;
   const pad = 30;
   const rollW = rollWidthCm * 10;
   const rollH = Math.max(lengthCm * 10, 40);
   const svgW = rollW + 2 * pad;
-  const svgH = rollH + 2 * pad + 60; // place pour la legende des crans
+  const svgH = rollH + 2 * pad + (saCm > 0 ? 92 : 60); // place pour la légende
   const yardM = (lengthCm / 100).toFixed(2);
+  const toPts = (uv: readonly UV[], pl: Placement): string =>
+    uv
+      .map(([u, v]) => { const [x, y] = placedPoint(pl, u, v); return `${(pad + x * 10).toFixed(1)},${(pad + y * 10).toFixed(1)}`; })
+      .join(' ');
   const shapes = placements
     .map((pl) => {
-      const pts = pl.outline
-        .map(([u, v]) => { const [x, y] = placedPoint(pl, u, v); return `${(pad + x * 10).toFixed(1)},${(pad + y * 10).toFixed(1)}`; })
-        .join(' ');
+      const seamPts = toPts(pl.outline, pl);
+      // Trait de coupe = couture décalée de la marge vers l'extérieur.
+      const cutUV = saCm > 0
+        ? seamAllowanceOutline(pl.outline, pl.wCm / 100, pl.hCm / 100, saCm / 100)
+        : pl.outline;
+      const cutPts = saCm > 0 ? toPts(cutUV, pl) : seamPts;
       const [cxCm, cyCm] = placedPoint(pl, 0.5, 0.5);
       const marks = (pl.notches ?? [])
         .map(({ at: [u, v], kind }) => {
@@ -233,14 +244,17 @@ export function markerSvg(nest: MarkerNest): string {
           return `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" class="ntch${c}"/><circle cx="${x1.toFixed(1)}" cy="${y1.toFixed(1)}" r="2.4" class="ntchd${c}"/>`;
         })
         .join('');
-      return `<polygon points="${pts}" class="pc"/>${marks}<text x="${(pad + cxCm * 10).toFixed(0)}" y="${(pad + cyCm * 10).toFixed(0)}" class="lbl">${pl.name}</text>`;
+      const cutPoly = `<polygon points="${cutPts}" class="cut"/>`;
+      const seamPoly = saCm > 0 ? `<polygon points="${seamPts}" class="seam"/>` : '';
+      return `${cutPoly}${seamPoly}${marks}<text x="${(pad + cxCm * 10).toFixed(0)}" y="${(pad + cyCm * 10).toFixed(0)}" class="lbl">${pl.name}</text>`;
     })
     .join('');
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${svgW.toFixed(0)}mm" height="${svgH.toFixed(0)}mm" ` +
     `viewBox="0 0 ${svgW.toFixed(0)} ${svgH.toFixed(0)}">` +
     `<style>.roll{fill:#fbfaf7;stroke:#111;stroke-width:2;stroke-dasharray:9 5}` +
-    `.pc{fill:#e9eefb;stroke:#2a2a2a;stroke-width:1.4;stroke-linejoin:round}` +
+    `.cut{fill:#e9eefb;stroke:#2a2a2a;stroke-width:1.4;stroke-linejoin:round}` +
+    `.seam{fill:none;stroke:#8a94a8;stroke-width:1;stroke-dasharray:5 3;stroke-linejoin:round}` +
     `.lbl{font:11px sans-serif;fill:#333;text-anchor:middle}` +
     `.ntch{stroke:#c0392b;stroke-width:2.2;stroke-linecap:round}.ntchd{fill:#c0392b}` +
     `.ntchA{stroke:#0e7c86;stroke-width:2.2;stroke-linecap:round}.ntchdA{fill:#0e7c86}` +
@@ -256,6 +270,12 @@ export function markerSvg(nest: MarkerNest): string {
     `<line x1="${pad}" y1="${(rollH + pad + 54).toFixed(0)}" x2="${(pad + 14).toFixed(0)}" y2="${(rollH + pad + 54).toFixed(0)}" class="ntchA"/>` +
     `<circle cx="${pad}" cy="${(rollH + pad + 54).toFixed(0)}" r="2.4" class="ntchdA"/>` +
     `<text x="${(pad + 22).toFixed(0)}" y="${(rollH + pad + 58).toFixed(0)}" class="leg">crans de raccord (manche / col)</text>` +
+    (saCm > 0
+      ? `<line x1="${pad}" y1="${(rollH + pad + 72).toFixed(0)}" x2="${(pad + 14).toFixed(0)}" y2="${(rollH + pad + 72).toFixed(0)}" style="stroke:#2a2a2a;stroke-width:1.6"/>` +
+        `<text x="${(pad + 22).toFixed(0)}" y="${(rollH + pad + 76).toFixed(0)}" class="leg">trait de coupe — bord du tissu (marge ${saCm.toFixed(1)} cm incluse)</text>` +
+        `<line x1="${pad}" y1="${(rollH + pad + 88).toFixed(0)}" x2="${(pad + 14).toFixed(0)}" y2="${(rollH + pad + 88).toFixed(0)}" style="stroke:#8a94a8;stroke-width:1.2;stroke-dasharray:5 3"/>` +
+        `<text x="${(pad + 22).toFixed(0)}" y="${(rollH + pad + 92).toFixed(0)}" class="leg">ligne de couture</text>`
+      : '') +
     `</svg>`
   );
 }
@@ -269,7 +289,7 @@ export function exportMarker(
 ): { lengthM: number; pieces: number } {
   let nest = nestMarker(withSeamNotches(draft), saCm);
   if (compact) nest = compact(nest, saCm);
-  const blob = new Blob([markerSvg(nest)], { type: 'image/svg+xml' });
+  const blob = new Blob([markerSvg(nest, saCm)], { type: 'image/svg+xml' });
   downloadBrowserBlob(blob, 'toile-plan-decoupe.svg');
   return { lengthM: +(nest.lengthCm / 100).toFixed(2), pieces: nest.placements.length };
 }
@@ -299,7 +319,7 @@ export function exportMultiSizeMarker(
   }
   let nest = nestPieces(combined, saCm);
   if (compact) nest = compact(nest, saCm);
-  const blob = new Blob([markerSvg(nest)], { type: 'image/svg+xml' });
+  const blob = new Blob([markerSvg(nest, saCm)], { type: 'image/svg+xml' });
   downloadBrowserBlob(blob, 'toile-plan-decoupe-multi-tailles.svg');
   return { lengthM: +(nest.lengthCm / 100).toFixed(2), pieces: combined.length, capped: false };
 }

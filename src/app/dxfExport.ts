@@ -1,20 +1,23 @@
-import type { DraftDoc } from '../engine/pattern/Draft';
+import type { DraftDoc, UV } from '../engine/pattern/Draft';
+import { seamAllowanceOutline } from '../engine/pattern/Draft';
 import { downloadBrowserBlob } from './browserDownload';
 import { nestMarker, placedPoint, draftMarkerPieces, type Placement, type MarkerPiece } from './markerLayout';
 
 // Export DXF (BLUEPRINT §16.7 #3) — le fichier de découpe que les usines
 // attendent. DXF R12 ASCII (AC1009), le plus largement lisible : une POLYLINE
 // FERMÉE par pièce (contour réel en mm), posée via le même nesting que le
-// marker, + un label TEXT. Calques CUT (coupe) et TEXT.
+// marker, + un label TEXT. Calque CUT = trait de coupe (marge incluse),
+// STITCH = ligne de couture, TEXT = labels.
 const g = (code: number | string, val: number | string): string => `${code}\n${val}\n`;
 
-function polyline(pl: Placement): string {
-  let s = g(0, 'POLYLINE') + g(8, 'CUT') + g(66, 1) + g(70, 1); // 66=vertices suivent, 70=1 fermée
-  for (const [u, v] of pl.outline) {
+/** POLYLINE fermée d'un contour (UV) posé sur la laize (rotation comprise), calque donné. */
+function polyline(pl: Placement, outline: readonly UV[], layer: string): string {
+  let s = g(0, 'POLYLINE') + g(8, layer) + g(66, 1) + g(70, 1); // 66=vertices suivent, 70=1 fermée
+  for (const [u, v] of outline) {
     const [xCm, yCm] = placedPoint(pl, u, v); // position absolue (rotation comprise)
-    s += g(0, 'VERTEX') + g(8, 'CUT') + g(10, (xCm * 10).toFixed(2)) + g(20, (yCm * 10).toFixed(2)) + g(30, '0.0');
+    s += g(0, 'VERTEX') + g(8, layer) + g(10, (xCm * 10).toFixed(2)) + g(20, (yCm * 10).toFixed(2)) + g(30, '0.0');
   }
-  s += g(0, 'SEQEND') + g(8, 'CUT');
+  s += g(0, 'SEQEND') + g(8, layer);
   return s;
 }
 
@@ -27,7 +30,12 @@ export function buildDxf(draft: DraftDoc, saCm: number): { dxf: string; pieces: 
   const nest = nestMarker(draft, saCm);
   let ents = '';
   for (const pl of nest.placements) {
-    ents += polyline(pl);
+    // Trait de coupe (calque CUT) = couture décalée de la marge vers l'extérieur.
+    const cutUV = saCm > 0
+      ? seamAllowanceOutline(pl.outline, pl.wCm / 100, pl.hCm / 100, saCm / 100)
+      : pl.outline;
+    ents += polyline(pl, cutUV, 'CUT');
+    if (saCm > 0) ents += polyline(pl, pl.outline, 'STITCH'); // ligne de couture
     const [cxCm, cyCm] = placedPoint(pl, 0.5, 0.5);
     ents += textLabel(pl.name, cxCm, cyCm);
   }
@@ -38,8 +46,9 @@ export function buildDxf(draft: DraftDoc, saCm: number): { dxf: string; pieces: 
     g(0, 'ENDSEC');
   const tables =
     g(0, 'SECTION') + g(2, 'TABLES') +
-    g(0, 'TABLE') + g(2, 'LAYER') + g(70, 2) +
-    g(0, 'LAYER') + g(2, 'CUT') + g(70, 0) + g(62, 1) + g(6, 'CONTINUOUS') +
+    g(0, 'TABLE') + g(2, 'LAYER') + g(70, 3) +
+    g(0, 'LAYER') + g(2, 'CUT') + g(70, 0) + g(62, 1) + g(6, 'CONTINUOUS') + // 62=1 rouge
+    g(0, 'LAYER') + g(2, 'STITCH') + g(70, 0) + g(62, 8) + g(6, 'CONTINUOUS') + // 62=8 gris
     g(0, 'LAYER') + g(2, 'TEXT') + g(70, 0) + g(62, 7) + g(6, 'CONTINUOUS') +
     g(0, 'ENDTAB') + g(0, 'ENDSEC');
   const entities = g(0, 'SECTION') + g(2, 'ENTITIES') + ents + g(0, 'ENDSEC');

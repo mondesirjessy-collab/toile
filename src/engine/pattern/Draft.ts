@@ -3544,6 +3544,71 @@ export interface OffsetOutlineResult {
   reason?: string;
 }
 
+/**
+ * Contour de COUPE d'une pièce : sa ligne de couture (`outline`) décalée vers
+ * l'EXTÉRIEUR de `marginM` mètres — le trait où le tissu est réellement coupé,
+ * la marge de couture. PUR et non destructif (la ligne de couture reste
+ * `outline`), pour tracer/exporter le trait de coupe à côté d'elle. Même miter
+ * borné et même contrôle du sens par l'aire que `offsetPieceOutline` (donc
+ * bulletproof quel que soit l'enroulement), mais renvoie juste un nouvel
+ * `UV[]` de même longueur (crans/coutures préservés). `marginM ≤ 0` ⇒ le
+ * contour est renvoyé inchangé.
+ */
+export function seamAllowanceOutline(
+  outline: readonly UV[],
+  widthM: number,
+  heightM: number,
+  marginM: number,
+): UV[] {
+  const N = outline.length;
+  const same = (): UV[] => outline.map(([u, v]) => [u, v]);
+  if (N < 3 || !(marginM > 0) || !(widthM > 0) || !(heightM > 0)) return same();
+  const pts: [number, number][] = outline.map(([u, v]) => [u * widthM, v * heightM]);
+  const signedArea = (poly: readonly [number, number][]): number => {
+    let a = 0;
+    for (let i = 0; i < poly.length; i++) {
+      const p = poly[i]!;
+      const q = poly[(i + 1) % poly.length]!;
+      a += p[0] * q[1] - q[0] * p[1];
+    }
+    return a / 2;
+  };
+  const offsetBy = (d: number): [number, number][] => {
+    const normals: [number, number][] = [];
+    for (let i = 0; i < N; i++) {
+      const a = pts[i]!;
+      const b = pts[(i + 1) % N]!;
+      const ex = b[0] - a[0];
+      const ey = b[1] - a[1];
+      const len = Math.hypot(ex, ey);
+      normals.push(len > 1e-9 ? [ey / len, -ex / len] : [0, 0]);
+    }
+    return pts.map((p, i) => {
+      let np = normals[(i - 1 + N) % N]!;
+      let nn = normals[i]!;
+      if (np[0] === 0 && np[1] === 0) np = nn;
+      if (nn[0] === 0 && nn[1] === 0) nn = np;
+      const denom = 1 + (np[0] * nn[0] + np[1] * nn[1]);
+      const safe = Math.max(denom, 2 / 16); // miter borné : pointe aiguë ≤ 4×d
+      let mx = (np[0] + nn[0]) / safe;
+      let my = (np[1] + nn[1]) / safe;
+      const m = Math.hypot(mx, my);
+      if (m > 4) {
+        mx = (mx / m) * 4;
+        my = (my / m) * 4;
+      }
+      return [p[0] + d * mx, p[1] + d * my];
+    });
+  };
+  const areaBefore = signedArea(pts);
+  if (Math.abs(areaBefore) < 1e-8) return same();
+  let next = offsetBy(marginM);
+  // Une distance positive doit AGRANDIR l'aire ; sinon le contour tourne à
+  // l'envers et on décale de l'autre côté.
+  if ((Math.abs(signedArea(next)) - Math.abs(areaBefore)) * marginM < 0) next = offsetBy(-marginM);
+  return next.map(([x, y]) => [x / widthM, y / heightM]);
+}
+
 export function offsetPieceOutline(
   doc: DraftDoc,
   pieceId: number,
