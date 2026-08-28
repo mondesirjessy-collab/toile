@@ -67,6 +67,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let d4 = distance(nb4, x); if (d4 > 1e-6 && d4 < limit) { sum += d4 / grid.spacing_v; cnt += 1.0; }
   var strain = 0.0;
   if (cnt > 0.0) { strain = sum / cnt - 1.0; }
+  // Cellule de BORD (moins de 4 voisins de grille valides) : elle est PARTIELLE
+  // (coupée par le contour de la pièce), sa longueur de repos est faussée → le
+  // strain y est artificiellement gonflé et peignait un liseré rouge factice au
+  // col / à l'ourlet / aux bords libres. On le PLAFONNE au niveau « juste »
+  // (jamais rouge) pour lire le VRAI tombé du corps du vêtement.
+  if (cnt < 3.5) { strain = min(strain, 0.10); }
   normals[i] = vec4f(nor, strain);
 }
 `;
@@ -179,7 +185,8 @@ fn vs(
 
 // Fit map: blue (slack) → green (easy) → yellow (snug) → red (tight).
 fn heatmap(strain: f32) -> vec3f {
-  let t = clamp(strain / 0.10, 0.0, 1.0); // 10 % elongation = full red
+  let t = clamp(strain / 0.20, 0.0, 1.0); // 20 % elongation = full red (calibré :
+  // 10 % rendait un tee normal tout rouge à la poitrine — le rouge = vraiment serré)
   if (t < 0.33) { return mix(vec3f(0.2, 0.4, 0.9), vec3f(0.2, 0.85, 0.4), t / 0.33); }
   if (t < 0.66) { return mix(vec3f(0.2, 0.85, 0.4), vec3f(0.95, 0.85, 0.2), (t - 0.33) / 0.33); }
   return mix(vec3f(0.95, 0.85, 0.2), vec3f(0.9, 0.15, 0.1), (t - 0.66) / 0.34);
@@ -355,6 +362,14 @@ fn fsRibbon(in: VSOut) -> @location(0) vec4f {
   var n = in.ribbonNormal;
   if (dot(n, n) < 1e-8) { n = normalize(vec3f(0.4, 0.9, 0.35)); }
   else { n = normalize(n); }
+  // CARTE D'AJUSTEMENT : le surplus de couture n'est PAS du tombé (c'est de la
+  // construction, en tension par la fermeture) — le colorer en rouge faussait
+  // la lecture (liserés rouges au col/ourlet/emmanchures). On le rend neutre.
+  if (fabric.options.x > 0.5) {
+    let up = normalize(vec3f(0.3, 1.0, 0.2));
+    let w = clamp(dot(n, up) * 0.5 + 0.5, 0.0, 1.0);
+    return vec4f(vec3f(0.62) * (0.55 + 0.45 * w), 1.0);
+  }
   // A closed seam allowance is narrower than one cloth cell. The shared,
   // continuously interpolated normal keeps it readable without revealing the
   // internal cap triangulation.
