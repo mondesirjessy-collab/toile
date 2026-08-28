@@ -76,6 +76,63 @@ export interface ImportBodyOptions {
   voxel?: number;
   /** Hard cap per grid axis (keeps the voxelisation responsive). */
   maxDim?: [number, number, number];
+  /** Rotate a MakeHuman/Anny A-pose (arms hanging ~50°) to a clean horizontal
+   *  T-pose, so the generative body matches the elegant shipped scans instead of
+   *  reading as an eerie half-realistic mannequin. */
+  tPoseArms?: boolean;
+}
+
+/**
+ * Swing hanging A-pose arms up to a horizontal T-pose, in place, on a body
+ * already normalised Y-up (feet at 0, height `H`, centred on x/z). Each vertex
+ * rotates about the shoulder joint (in the frontal x-y plane) by `w · φ`, where
+ * φ is the angle that makes the shoulder→hand axis horizontal and `w` is a
+ * CONTINUOUS field: it ramps in with how far the vertex sits beyond the shoulder
+ * (`smoothstep` in x) and is gated to the shoulder/arm height band so legs, feet
+ * and head stay put. A continuous weight (rather than a hard tube mask) means
+ * neighbouring vertices share almost the same weight, so no triangle gets
+ * stretched into a spike at the armpit. Pivot and angle are measured from THIS
+ * mesh, so it adapts to whatever phenotype/stature the body was built with.
+ * Tuned offline against the Anny mesh (hand lands horizontal at shoulder height,
+ * waist untouched, no spikes).
+ */
+function tPoseArmsInPlace(positions: Float32Array, H: number): void {
+  const smoothstep = (a: number, b: number, x: number): number => {
+    if (x <= a) return 0;
+    if (x >= b) return 1;
+    const t = (x - a) / (b - a);
+    return t * t * (3 - 2 * t);
+  };
+  for (const sign of [1, -1] as const) {
+    // Hand = furthest-out vertex on this side; shoulder edge = furthest-out
+    // vertex in the 78–87 % height band; pivot sits a little inboard of it.
+    let hx = 0, hy = 0, hbest = -Infinity;
+    let ex = 0, ey = 0, ebest = -Infinity;
+    for (let v = 0; v < positions.length; v += 3) {
+      const x = positions[v]!;
+      const y = positions[v + 1]!;
+      if (sign * x > hbest) { hbest = sign * x; hx = x; hy = y; }
+      if (y >= 0.78 * H && y <= 0.87 * H && sign * x > ebest) { ebest = sign * x; ex = x; ey = y; }
+    }
+    const px = 0.7 * ex, py = ey; // pivot z = 0 (shoulder near body centre depth)
+    const cur = Math.atan2(hy - py, hx - px);
+    const tgt = sign > 0 ? 0 : Math.PI; // arm should point straight out to the side
+    const phi = Math.atan2(Math.sin(tgt - cur), Math.cos(tgt - cur));
+    const x0 = Math.abs(px) + 0.02, x1 = Math.abs(px) + 0.16; // ramp beyond the shoulder
+    for (let v = 0; v < positions.length; v += 3) {
+      const x = positions[v]!;
+      if (sign * x <= 0) continue;
+      const y = positions[v + 1]!;
+      // Only the shoulder/arm height band turns — legs/feet below, head above.
+      const gate = smoothstep(0.42 * H, 0.52 * H, y) * (1 - smoothstep(0.9 * H, 0.98 * H, y));
+      const w = smoothstep(x0, x1, sign * x) * gate;
+      if (w <= 0) continue;
+      const a = w * phi, c = Math.cos(a), s = Math.sin(a);
+      const lx = x - px, ly = y - py;
+      positions[v] = px + c * lx - s * ly;
+      positions[v + 1] = py + s * lx + c * ly;
+    }
+  }
 }
 
 /** Rotate positions in place so the tallest bounding axis becomes +Y (up),
@@ -137,6 +194,10 @@ export function buildImportedBody(raw: ObjMesh, opts: ImportBodyOptions = {}): S
     positions[v + 1] = (positions[v + 1]! - minY) * scale;
     positions[v + 2] = (positions[v + 2]! - cz) * scale;
   }
+
+  // Optional: straighten a MakeHuman A-pose into a T-pose BEFORE meshing so both
+  // the render mesh and the collision grid share the horizontal-arm stance.
+  if (opts.tPoseArms) tPoseArmsInPlace(positions, targetHeight);
 
   // Winding varies wildly between exporters, and MeshProximity trusts face
   // orientation for its cheap "outside" path — an inward-facing mesh reads as

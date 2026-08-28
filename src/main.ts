@@ -10458,7 +10458,9 @@ async function main(): Promise<void> {
         const mod = await import('./engine/body/annyBody');
         annyModelCache ??= await mod.loadAnnyModel(`${import.meta.env.BASE_URL}avatars/anny-body.bin`);
         await new Promise((r) => requestAnimationFrame(() => r(null)));
-        scans['scan import'] = buildImportedBody(mod.annyMesh(annyModelCache, annyPhenotypes));
+        scans['scan import'] = buildImportedBody(mod.annyMesh(annyModelCache, annyPhenotypes), {
+          tPoseArms: true, // A-pose brute MakeHuman → T-pose propre comme mia/leo
+        });
         applyBody('scan import');
         if (savedProps) morphs = { ...morphs, ...savedProps }; // onMorph préserve ces valeurs
         if (savedCm) panel.applyMeasurementsCm(savedCm); // ré-atteint tours+stature (+ build)
@@ -10478,7 +10480,10 @@ async function main(): Promise<void> {
   const estimateAnnyWeight = (): number => {
     const cm = panel.measurementsCm();
     const whtr = cm.taille / Math.max(1, cm.stature); // ~0,45 = silhouette saine
-    return Math.min(0.9, Math.max(0.1, 0.5 + (whtr - 0.45) * 3));
+    // Sobre : centré bas (0,30) et amplitude réduite/bornée (0,1..0,6) — un corps
+    // net par défaut, la corpulence répond aux mensurations sans jamais paraître
+    // lourd (le neutre MakeHuman à 0,5 est déjà bien rempli).
+    return Math.min(0.6, Math.max(0.1, 0.3 + (whtr - 0.45) * 2.5));
   };
   // Phénotype « taille » d'Anny depuis la stature cible : un grand corps naît
   // avec des proportions de grand (membres longs, tête relative plus petite),

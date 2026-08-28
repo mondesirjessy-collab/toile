@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TOILE — du brief au patron · v283</title>
+  <title>TOILE — du brief au patron · v286</title>
   <style>
     :root {
       color-scheme: dark;
@@ -1346,7 +1346,7 @@
   <canvas id="view" tabindex="-1" aria-label="Vue 3D du vêtement et du mannequin"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 5 — du brief au patron · v283</small></span>
+    <span class="title">TOILE<small>phase 5 — du brief au patron · v286</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
       <span id="resolution-rebuild-status" role="status" aria-live="polite" hidden></span>
@@ -1385,8 +1385,11 @@
         </div>
         <button id="at-import-body" type="button" class="avatar-import" title="Importer un corps au format OBJ (scan 3D, MakeHuman, Blender…) : le maillage devient un mannequin mesuré et morphable. Normalisé debout à 1,70 m — réglez ensuite sa taille et ses tours.">⬆ Importer un corps (OBJ)</button>
         <input id="at-import-body-file" type="file" accept=".obj,model/obj,text/plain" hidden>
-        <button id="at-body-anny" type="button" class="avatar-import" title="Générer un corps paramétrique Anny (naver, MakeHuman) : un mannequin réaliste construit par 6 phénotypes (genre, âge, muscle, poids, taille), puis réglable à tes cotes exactes.">🧬 Corps génératif (Anny)</button>
-        <details class="avatar-measures">
+        <!-- Corps génératif Anny mis de côté (28/08) : maillage MakeHuman brut aux
+             proportions trop approximatives face à mia/leo. Code conservé (annyBody.ts,
+             main.ts, public/avatars/anny-body.bin) ; retirer les `hidden` pour réactiver. -->
+        <button id="at-body-anny" type="button" class="avatar-import" hidden title="Générer un corps paramétrique Anny (naver, MakeHuman) : un mannequin réaliste construit par 6 phénotypes (genre, âge, muscle, poids, taille), puis réglable à tes cotes exactes.">🧬 Corps génératif (Anny)</button>
+        <details class="avatar-measures" hidden>
           <summary title="Régler la morphologie du corps Anny — poids, muscle, âge (le corps se régénère au relâcher)">🧬 Morphologie Anny</summary>
           <div class="avatar-measures-body">
             <label class="avatar-size-label" for="at-anny-weight"><span>Poids</span><span class="avatar-size-value"><input id="at-anny-weight-num" type="number" class="avatar-num" min="0" max="100" step="1" inputmode="decimal" aria-label="Poids Anny en pourcentage"> %</span></label>
