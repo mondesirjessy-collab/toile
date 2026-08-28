@@ -10435,6 +10435,30 @@ async function main(): Promise<void> {
       guidanceEl.textContent = 'Import du corps abandonné.';
     }
   });
+  // Corps GÉNÉRATIF Anny (naver, MakeHuman) : le maillage se construit dans le
+  // navigateur depuis 6 phénotypes (combinaison linéaire base + deltas, chargée
+  // en asset ~1,5 Mo), puis se voxelise comme un import — mesuré et morphable.
+  let annyModelCache: import('./engine/body/annyBody').AnnyModel | null = null;
+  document.getElementById('at-body-anny')?.addEventListener('click', () => {
+    void (async () => {
+      (document.activeElement as HTMLElement | null)?.blur?.();
+      guidanceEl.textContent = 'Corps Anny — génération du maillage…';
+      try {
+        const mod = await import('./engine/body/annyBody');
+        annyModelCache ??= await mod.loadAnnyModel(`${import.meta.env.BASE_URL}avatars/anny-body.bin`);
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+        const mesh = mod.annyMesh(annyModelCache, { gender: bodyKind.includes('homme') ? 0.85 : 0.15 });
+        const built = buildImportedBody(mesh);
+        scans['scan import'] = built;
+        applyBody('scan import');
+        showToast('Corps Anny généré — règle sa taille et ses tours dans « Mannequin ».');
+        guidanceEl.textContent = 'Corps génératif Anny prêt à l’essayage.';
+      } catch (e) {
+        showToast(`Corps Anny impossible : ${e instanceof Error ? e.message : 'erreur'}`);
+        guidanceEl.textContent = 'Corps Anny abandonné.';
+      }
+    })();
+  });
   document.getElementById('at-frame-avatar')?.addEventListener('click', () => {
     const aspect = canvas.width / Math.max(1, canvas.height);
     if (lastAvatarBounds) camera.frameBounds(lastAvatarBounds, aspect);

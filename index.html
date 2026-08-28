@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TOILE — du brief au patron · v276</title>
+  <title>TOILE — du brief au patron · v277</title>
   <style>
     :root {
       color-scheme: dark;
@@ -1346,7 +1346,7 @@
   <canvas id="view" tabindex="-1" aria-label="Vue 3D du vêtement et du mannequin"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 5 — du brief au patron · v276</small></span>
+    <span class="title">TOILE<small>phase 5 — du brief au patron · v277</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
       <span id="resolution-rebuild-status" role="status" aria-live="polite" hidden></span>
@@ -1385,6 +1385,7 @@
         </div>
         <button id="at-import-body" type="button" class="avatar-import" title="Importer un corps au format OBJ (scan 3D, MakeHuman, Blender…) : le maillage devient un mannequin mesuré et morphable. Normalisé debout à 1,70 m — réglez ensuite sa taille et ses tours.">⬆ Importer un corps (OBJ)</button>
         <input id="at-import-body-file" type="file" accept=".obj,model/obj,text/plain" hidden>
+        <button id="at-body-anny" type="button" class="avatar-import" title="Générer un corps paramétrique Anny (naver, MakeHuman) : un mannequin réaliste construit par 6 phénotypes (genre, âge, muscle, poids, taille), puis réglable à tes cotes exactes.">🧬 Corps génératif (Anny)</button>
         <div class="avatar-gabarit avatar-pose" role="group" aria-label="Pose d'essayage du mannequin">
           <button id="at-pose-native" type="button" data-pose="native" aria-pressed="true" title="Pose couture (bras en T) — la pose où l'on coud et où le corps se mesure">T</button>
           <button id="at-pose-apose" type="button" data-pose="a-pose" aria-pressed="false" title="Bras à 45° — l'essayage se recale sur le corps posé (patron et cotes inchangés)">Bras 45°</button>
