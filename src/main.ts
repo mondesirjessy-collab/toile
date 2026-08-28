@@ -2590,7 +2590,7 @@ async function main(): Promise<void> {
   let vesteSize: VesteSize | 'avatar' = 'M';
   let doudouneSize: DoudouneSize | 'avatar' = 'M';
   let hoodieSize: LucasHoodieSize = 'S';
-  let loadedPattern: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee' | 'fs-aaron' | 'fs-teagan' | 'fs-sven' | 'fs-brian' | 'fs-titan' | 'fs-sandy' = 'boxy';
+  let loadedPattern: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee' | 'fs-aaron' | 'fs-teagan' | 'fs-sven' | 'fs-brian' | 'fs-titan' | 'fs-sandy' | 'fs-diana' = 'boxy';
   const sizeSel = document.getElementById('at-size') as HTMLSelectElement | null;
   let opTeeSize: OpLooseTeeSize = 'M';
   const teeSleevesRow = document.getElementById('at-tee-sleeves-row');
@@ -2659,7 +2659,7 @@ async function main(): Promise<void> {
     avatarStatureHelp.textContent =
       `Redimensionne le mannequin et ses collisions. ${fixedGarmentSizeMessage(selectedSize)}`;
   };
-  const showSizes = (kind: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee' | 'fs-aaron' | 'fs-teagan' | 'fs-sven' | 'fs-brian' | 'fs-titan' | 'fs-sandy'): void => {
+  const showSizes = (kind: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee' | 'fs-aaron' | 'fs-teagan' | 'fs-sven' | 'fs-brian' | 'fs-titan' | 'fs-sandy' | 'fs-diana'): void => {
     if (!sizeSel) return;
     loadedPattern = kind;
     // Bloc manche : sélecteur visible pour le tee seulement (1er bloc composable).
@@ -2685,6 +2685,9 @@ async function main(): Promise<void> {
       sizeSel.value = 'avatar';
     } else if (kind === 'fs-teagan') {
       sizeSel.innerHTML = `<option value="avatar">T-shirt FreeSewing ajusté au mannequin · poitrine ${(lastMeasure.chest.circ * 100).toFixed(0)} cm</option>`;
+      sizeSel.value = 'avatar';
+    } else if (kind === 'fs-diana') {
+      sizeSel.innerHTML = `<option value="avatar">Robe FreeSewing ajustée au mannequin · poitrine ${(lastMeasure.chest.circ * 100).toFixed(0)} cm</option>`;
       sizeSel.value = 'avatar';
     } else if (kind === 'fs-sven') {
       sizeSel.innerHTML = `<option value="avatar">Sweat FreeSewing ajusté au mannequin · poitrine ${(lastMeasure.chest.circ * 100).toFixed(0)} cm</option>`;
@@ -3099,6 +3102,31 @@ async function main(): Promise<void> {
   (document.getElementById('at-fs-teagan') as HTMLElement | null)?.addEventListener('click', () => {
     void loadFsTeagan();
   });
+  // Robe Diana de FreeSewing (MIT) : devant + dos + manches wrap, en longueur robe.
+  const loadFsDiana = async (): Promise<void> => {
+    if (!bigPanel) setBig(true);
+    patternView.resetView();
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    resetPlacement();
+    try {
+      const mod = await import('./engine/pattern/freeSewingGarments');
+      pushHistory();
+      showSizes('fs-diana');
+      teePreset = false;
+      draft = mod.buildDiana(lastMeasure, REF);
+      draftTouched = true;
+      atelierSleeves = false;
+      atelierCollar = false;
+      document.getElementById('at-sleeves')?.classList.remove('active');
+      build();
+    } catch (e) {
+      showToast(`FreeSewing indisponible : ${(e as Error).message}`);
+    }
+  };
+  (document.getElementById('at-fs-diana') as HTMLElement | null)?.addEventListener('click', () => {
+    void loadFsDiana();
+  });
   // Sweat-shirt Sven de FreeSewing (MIT) : devant + dos + manches longues wrap.
   const loadFsSven = async (): Promise<void> => {
     if (!bigPanel) setBig(true);
@@ -3350,6 +3378,8 @@ async function main(): Promise<void> {
         if (sceneMode === 'atelier') void loadFsAaron();
       } else if (loadedPattern === 'fs-teagan') {
         if (sceneMode === 'atelier') void loadFsTeagan();
+      } else if (loadedPattern === 'fs-diana') {
+        if (sceneMode === 'atelier') void loadFsDiana();
       } else if (loadedPattern === 'fs-sven') {
         if (sceneMode === 'atelier') void loadFsSven();
       } else if (loadedPattern === 'fs-brian') {
@@ -9182,6 +9212,7 @@ async function main(): Promise<void> {
           : loadedPattern === 'op-tee' ? 'T-shirt openpattern'
           : loadedPattern === 'fs-aaron' ? 'Débardeur FreeSewing'
           : loadedPattern === 'fs-teagan' ? 'T-shirt FreeSewing'
+          : loadedPattern === 'fs-diana' ? 'Robe FreeSewing'
           : loadedPattern === 'fs-sven' ? 'Sweat FreeSewing'
           : loadedPattern === 'fs-brian' ? 'Bloc de base FreeSewing'
           : loadedPattern === 'fs-titan' ? 'Pantalon FreeSewing'
@@ -10731,6 +10762,7 @@ async function main(): Promise<void> {
       'op-tee': 't-shirt loose openpattern',
       'fs-aaron': 'débardeur FreeSewing',
       'fs-teagan': 't-shirt FreeSewing',
+      'fs-diana': 'robe FreeSewing',
       'fs-sven': 'sweat-shirt FreeSewing',
       'fs-brian': 'bloc de base FreeSewing',
       'fs-titan': 'pantalon FreeSewing',

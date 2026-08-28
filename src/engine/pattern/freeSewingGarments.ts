@@ -15,6 +15,7 @@ import { Sven } from '@freesewing/sven';
 import { Brian } from '@freesewing/brian';
 import { Titan } from '@freesewing/titan';
 import { Sandy } from '@freesewing/sandy';
+import { Diana } from '@freesewing/diana';
 import * as models from '@freesewing/models';
 import type { BodyMeasure } from '../body/measure';
 import type { AssemblySeam, DraftDoc, DraftPiece, EdgeRun, UV } from './Draft';
@@ -51,6 +52,8 @@ function sleeveWrap(
   armholeM: number,
   m: BodyMeasure,
   wrap: 'armL' | 'armR',
+  frontArm?: number,
+  backArm?: number,
 ): DraftPiece {
   const sleeveH = sleeveHCm / 100;
   void sleeveWCm; // la LARGEUR est résolue sur l'emmanchure, pas prise du patron
@@ -68,6 +71,51 @@ function sleeveWrap(
     [0.5, 0.0], [0.5625, 0.0032], [0.625, 0.0132], [0.6875, 0.0314],
     [0.75, 0.0599], [0.8125, 0.0983], [0.875, 0.1365], [0.9375, 0.1597], [1.01, 0.17],
   ];
+  // TÊTE ASYMÉTRIQUE (Diana : emmanchure devant ≠ dos). La tête est un demi-
+  // panneau qui se MIROITE, donc chaque moitié doit valoir la MOITIÉ de son
+  // emmanchure (devant à gauche du sommet u<0,5, dos à droite). On résout deux
+  // demi-largeurs wF, wB indépendantes. Chemin activé UNIQUEMENT si des
+  // emmanchures distinctes sont fournies → Teagan/Sven/Brian (symétriques)
+  // n'y passent jamais et gardent leur tête symétrique éprouvée intacte.
+  if (frontArm !== undefined && backArm !== undefined && Math.abs(frontArm - backArm) > 0.01) {
+    const PEAK = 8; // sommet de la tête (u=0,5, v=0)
+    const px = (u: number, wF: number, wB: number): number =>
+      ((u - 0.5) / 0.5) * (u < 0.5 ? wF : wB); // 0 au sommet, ∓ vers les aisselles
+    const halfArc = (w: number, from: number, to: number): number => {
+      let len = 0;
+      for (let i = from + 1; i <= to; i++) {
+        const dx = px(HEAD[i]![0], w, w) - px(HEAD[i - 1]![0], w, w);
+        const dy = (HEAD[i]![1] - HEAD[i - 1]![1]) * sleeveH;
+        len += Math.hypot(dx, dy);
+      }
+      return len;
+    };
+    const solveHalf = (target: number, from: number, to: number): number => {
+      let w = 0.15;
+      for (let k = 0; k < 24; k++) {
+        const err = halfArc(w, from, to) - target;
+        if (Math.abs(err) < 0.0004) break;
+        w = Math.max(0.02, Math.min(0.4, w - err / 1.02));
+      }
+      return w;
+    };
+    const wF = solveHalf(frontArm / 2, 0, PEAK);
+    const wB = solveHalf(backArm / 2, PEAK, HEAD.length - 1);
+    const phys: [number, number][] = HEAD.map(([u, v]) => [px(u, wF, wB), v * sleeveH]);
+    phys.push([px(0.9819, wF, wB), 1.01 * sleeveH]); // coin poignet dos
+    phys.push([px(0.0181, wF, wB), 1.01 * sleeveH]); // coin poignet devant
+    let minX = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const [x, y] of phys) { if (x < minX) minX = x; if (x > maxX) maxX = x; if (y > maxY) maxY = y; }
+    const width = Math.max(1e-4, maxX - minX);
+    const height = Math.max(1e-4, maxY);
+    return {
+      outline: phys.map(([x, y]) => [(x - minX) / width, y / height] as UV),
+      darts: [], seams: [], openEdges: [],
+      width, height,
+      topY: m.shoulderY + 0.01, gap: 0.2,
+      wrap, placement: { role: wrap, autoAlign: true },
+    };
+  }
   const mouthAt = (sw: number): number => {
     let len = 0;
     for (let i = 1; i < HEAD.length; i++) {
@@ -148,7 +196,7 @@ function assembleTwoFaces(
   back: DraftPiece,
   m: BodyMeasure,
   ref: BodyMeasure,
-  makeExtra: (armholeM: number) => DraftPiece[] = () => [],
+  makeExtra: (armholeM: number, frontArm: number, backArm: number) => DraftPiece[] = () => [],
 ): DraftDoc {
   const topY = 1.5 + (m.shoulderY - ref.shoulderY);
   front.topY = back.topY = topY;
@@ -157,7 +205,9 @@ function assembleTwoFaces(
   const br = teeRuns(back);
   front.openEdges = [fr.neckline, fr.armholeR, fr.hem, fr.armholeL];
   back.openEdges = [br.neckline, br.armholeR, br.hem, br.armholeL];
-  const armholeM = (runLenM(front, fr.armholeR) + runLenM(back, br.armholeR)) / 2;
+  const frontArm = runLenM(front, fr.armholeR);
+  const backArm = runLenM(back, br.armholeR);
+  const armholeM = (frontArm + backArm) / 2;
   const seam = (a: EdgeRun, b: EdgeRun): AssemblySeam => ({
     a: { face: 'front', ...a },
     b: { face: 'back', ...b },
@@ -169,7 +219,7 @@ function assembleTwoFaces(
     piece: front,
     back,
     manual: true,
-    pieces: makeExtra(armholeM),
+    pieces: makeExtra(armholeM, frontArm, backArm),
     seams: [
       seam(fr.shoulderR, br.shoulderR),
       seam(fr.shoulderL, br.shoulderL),
@@ -219,6 +269,37 @@ export function buildTeagan(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
   return assembleTwoFaces(front, back, m, ref, (armholeM) => [
     sleeveWrap(sleeveWCm, sleeveHCm, armholeM, m, 'armR'),
     sleeveWrap(sleeveWCm, sleeveHCm, armholeM, m, 'armL'),
+  ]);
+}
+
+/** La ROBE Diana de FreeSewing, gradée aux mensurations — devant + dos + DEUX
+ * manches montées en demi-panneau wrap. Contour sans pince (comme le tee) mais
+ * en longueur ROBE : la première robe du pont FreeSewing. Même montage que
+ * Teagan (assembleTwoFaces + têtes de manche calées sur l'emmanchure mesurée). */
+export function buildDiana(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
+  // lengthBonus 0,5 (max) : Diana par défaut tombe à mi-cuisse (62 cm) ; +50 %
+  // → ~90 cm depuis l'épaule = longueur genou, une vraie robe.
+  const pattern = new Diana({
+    measurements: fsMeasurements(m),
+    options: { lengthBonus: 0.5 },
+  }) as unknown as {
+    draft(): void;
+  } & FsPattern;
+  pattern.draft();
+  const pieces = freeSewingPieces(pattern);
+  const front = pieces.find((p) => p.name === 'front')?.piece;
+  const back = pieces.find((p) => p.name === 'back')?.piece;
+  const sleeve = pieces.find((p) => p.name === 'sleeve')?.piece;
+  if (!front || !back) {
+    throw new Error('FreeSewing Diana : devant ou dos introuvable après draft.');
+  }
+  // Diana a un DEVANT et un DOS asymétriques (emmanchures devant ≠ dos) : on
+  // monte des manches à TÊTE ASYMÉTRIQUE (sleeveWrap reçoit frontArm/backArm →
+  // chaque moitié de tête épouse son emmanchure). Symétriques, elles cassaient.
+  const sleeveHCm = sleeve ? sleeve.height * 100 : 58;
+  return assembleTwoFaces(front, back, m, ref, (armholeM, frontArm, backArm) => [
+    sleeveWrap(34, sleeveHCm, armholeM, m, 'armR', frontArm, backArm),
+    sleeveWrap(34, sleeveHCm, armholeM, m, 'armL', frontArm, backArm),
   ]);
 }
 

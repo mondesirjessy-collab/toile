@@ -9,7 +9,10 @@
  */
 declare module '@freesewing/aaron' {
   export interface FsDesign {
-    new (opts: { measurements: Record<string, number> }): {
+    new (opts: {
+      measurements: Record<string, number>;
+      options?: Record<string, number | boolean>;
+    }): {
       draft(): void;
       parts: Array<Record<string, unknown>>;
     };
@@ -35,6 +38,10 @@ declare module '@freesewing/titan' {
 
 declare module '@freesewing/sandy' {
   export const Sandy: import('@freesewing/aaron').FsDesign;
+}
+
+declare module '@freesewing/diana' {
+  export const Diana: import('@freesewing/aaron').FsDesign;
 }
 
 declare module '@freesewing/models' {
