@@ -16,6 +16,7 @@ import { Brian } from '@freesewing/brian';
 import { Titan } from '@freesewing/titan';
 import { Sandy } from '@freesewing/sandy';
 import { Diana } from '@freesewing/diana';
+import { Bella } from '@freesewing/bella';
 import * as models from '@freesewing/models';
 import type { BodyMeasure } from '../body/measure';
 import type { AssemblySeam, DraftDoc, DraftPiece, EdgeRun, UV } from './Draft';
@@ -301,6 +302,115 @@ export function buildDiana(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
     sleeveWrap(34, sleeveHCm, armholeM, m, 'armR', frontArm, backArm),
     sleeveWrap(34, sleeveHCm, armholeM, m, 'armL', frontArm, backArm),
   ]);
+}
+
+/** Une pince TOILE {apex, legA, legB} depuis 3 points NOMMÉS FreeSewing (déjà
+ * dans le repère UV de la pièce), ou null si un point manque. Le moteur
+ * (compileDraft) crée le coin en V à l'apex et coud les jambes → cintrage. */
+function namedDart(
+  pts: Record<string, UV> | undefined,
+  tip: string,
+  cornerA: string,
+  cornerB: string,
+): { apex: UV; legA: UV; legB: UV } | null {
+  const a = pts?.[tip], b = pts?.[cornerA], c = pts?.[cornerB];
+  if (!a || !b || !c) return null;
+  return { apex: [a[0], a[1]], legA: [b[0], b[1]], legB: [c[0], c[1]] };
+}
+
+/** Coud une pince nommée sur une pièce, en DEUX temps. (1) REBOUCHE l'encoche
+ * en V que le tracé FreeSewing détoure pour cette pince (le seam plonge
+ * jusqu'à la pointe et revient — mesuré sur Bella : ce détour de ~2×20 cm
+ * fausserait les longueurs de couture du montage) : tout point du contour dans
+ * le polygone bouche→jambe→pointe→jambe→bouche (les Cp des jambes courbes
+ * inclus — l'enveloppe corner→Cp→pointe contient toute la Bézier) est retiré,
+ * le bord redevient droit. (2) Pose la pince dans piece.darts — c'est le
+ * MOTEUR (compileDraft) qui coupe le triangle et coud les jambes.
+ * Renvoie false si un point nommé manque (pince non posée, contour intact). */
+function sewNamedDart(
+  entry: { piece: DraftPiece; points?: Record<string, UV> },
+  tip: string,
+  cornerA: string,
+  cornerB: string,
+  cpA?: string,
+  cpB?: string,
+): boolean {
+  const dart = namedDart(entry.points, tip, cornerA, cornerB);
+  if (!dart) return false;
+  const { width: w, height: h } = entry.piece;
+  // Pince à bouche NULLE : quand les mesures n'exigent aucun creusage, FreeSewing
+  // trace des jambes confondues (vérifié sur le dos Bella) — rien à COUDRE.
+  // Mais le tracé seam détoure QUAND MÊME une fente de largeur zéro (ourlet →
+  // pointe → ourlet) : il faut la REBOUCHER, sinon le masque garde une entaille
+  // que la gravité ouvre en trou béant (vu au banc : dos fendu du milieu).
+  const mouthM = Math.hypot((dart.legA[0] - dart.legB[0]) * w, (dart.legA[1] - dart.legB[1]) * h);
+  const sewIt = mouthM >= 0.004; // en deçà : on rebouche sans coudre
+  const P = (p: UV): [number, number] => [p[0] * w, p[1] * h]; // UV → mètres
+  const polyUV: UV[] = [dart.legA];
+  const ca = cpA ? entry.points?.[cpA] : undefined;
+  const cb = cpB ? entry.points?.[cpB] : undefined;
+  if (ca) polyUV.push(ca);
+  polyUV.push(dart.apex);
+  if (cb) polyUV.push(cb);
+  polyUV.push(dart.legB);
+  const poly = polyUV.map(P);
+  const eps = 0.003; // 3 mm : rattrape l'arrondi d'échantillonnage sur les jambes
+  const inside = (q: [number, number]): boolean => {
+    let ins = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const [xi, yi] = poly[i]!;
+      const [xj, yj] = poly[j]!;
+      if (yi > q[1] !== yj > q[1] && q[0] < ((xj - xi) * (q[1] - yi)) / (yj - yi) + xi) ins = !ins;
+    }
+    return ins;
+  };
+  const nearEdge = (q: [number, number]): boolean => {
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const [ax, ay] = poly[j]!;
+      const [bx, by] = poly[i]!;
+      const dx = bx - ax, dy = by - ay;
+      const l2 = dx * dx + dy * dy;
+      const t = l2 === 0 ? 0 : Math.max(0, Math.min(1, ((q[0] - ax) * dx + (q[1] - ay) * dy) / l2));
+      if (Math.hypot(q[0] - (ax + t * dx), q[1] - (ay + t * dy)) < eps) return true;
+    }
+    return false;
+  };
+  const kept = entry.piece.outline.filter((uv) => {
+    const q = P(uv);
+    return !(inside(q) || nearEdge(q));
+  });
+  if (kept.length >= 3 && kept.length < entry.piece.outline.length) entry.piece.outline = kept;
+  if (sewIt) entry.piece.darts.push(dart);
+  return sewIt;
+}
+
+/** Le BUSTE AJUSTÉ Bella de FreeSewing (bloc corsage cintré, épaules→taille),
+ * gradé aux mensurations — le PREMIER vêtement À PINCES du pont : 6 pinces
+ * cousues par le moteur (devant : poitrine ×2 + taille ×2 ; dos : taille ×2).
+ * Le devant est déplié de sa pliure milieu ; le DOS (demi-pièce coupée ×2 à
+ * couture milieu) est DÉPLIÉ DE FORCE en dos entier — la couture dos-milieu
+ * droite devient une pliure (approximation assumée, on perd la fermeture).
+ * Sans manches (montage Aaron) : la manche tailleur de Bella reste à monter. */
+export function buildBella(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
+  const pattern = new Bella({ measurements: fsMeasurements(m) }) as unknown as {
+    draft(): void;
+  } & FsPattern;
+  pattern.draft();
+  const pieces = freeSewingPieces(pattern, { unfold: ['back'] });
+  const frontE = pieces.find((p) => p.name === 'frontSideDart');
+  const backE = pieces.find((p) => p.name === 'back');
+  if (!frontE || !backE) {
+    throw new Error('FreeSewing Bella : devant ou dos introuvable après draft.');
+  }
+  // Devant (déplié) : pince de poitrine + pince de taille, côté dessiné + miroir.
+  sewNamedDart(frontE, 'bustDartTip', 'bustDartTop', 'bustDartBottom', 'bustDartCpTop', 'bustDartCpBottom');
+  sewNamedDart(frontE, 'bustDartTip~m', 'bustDartTop~m', 'bustDartBottom~m', 'bustDartCpTop~m', 'bustDartCpBottom~m');
+  sewNamedDart(frontE, 'waistDartTip', 'waistDartLeft', 'waistDartRight', 'waistDartLeftCp', 'waistDartRightCp');
+  sewNamedDart(frontE, 'waistDartTip~m', 'waistDartLeft~m', 'waistDartRight~m', 'waistDartLeftCp~m', 'waistDartRightCp~m');
+  // Dos (déplié de force) : pince de taille, moitié dessinée + miroir.
+  sewNamedDart(backE, 'dartTip', 'dartBottomLeft', 'dartBottomRight', 'dartLeftCp', 'dartRightCp');
+  sewNamedDart(backE, 'dartTip~m', 'dartBottomLeft~m', 'dartBottomRight~m', 'dartLeftCp~m', 'dartRightCp~m');
+  return assembleTwoFaces(frontE.piece, backE.piece, m, ref);
 }
 
 /** Le sweat-shirt Sven de FreeSewing, gradé aux mensurations — devant + dos +

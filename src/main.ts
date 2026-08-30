@@ -2121,6 +2121,30 @@ async function main(): Promise<void> {
     }
     return out;
   };
+  // Hook dev : boîte englobante monde de chaque pièce (diagnostic de drapé —
+  // dit si une pièce est ÉTALÉE sur le corps ou tassée en paquet).
+  (window as unknown as { __toileBbox?: () => unknown }).__toileBbox = () => {
+    if (!posCache) return null;
+    const out: { pid: number; n: number; min: number[]; max: number[] }[] = [];
+    for (const [pid, ranges] of pieceParticleRanges) {
+      const mn = [Infinity, Infinity, Infinity];
+      const mx = [-Infinity, -Infinity, -Infinity];
+      let n = 0;
+      for (const range of ranges) {
+        for (let i = range.first; i < range.first + range.count; i++) {
+          if (!system.isMovable(i)) continue;
+          for (let a = 0; a < 3; a++) {
+            const v = posCache[i * 4 + a]!;
+            if (v < mn[a]!) mn[a] = v;
+            if (v > mx[a]!) mx[a] = v;
+          }
+          n++;
+        }
+      }
+      out.push({ pid, n, min: mn.map((v) => +v.toFixed(3)), max: mx.map((v) => +v.toFixed(3)) });
+    }
+    return out;
+  };
   // Hook dev : état de l'éditeur + centroïde réel de la pièce saisie (tests).
   (window as unknown as { __toileAe?: () => unknown }).__toileAe = () =>
     aeRef && {
@@ -2590,7 +2614,7 @@ async function main(): Promise<void> {
   let vesteSize: VesteSize | 'avatar' = 'M';
   let doudouneSize: DoudouneSize | 'avatar' = 'M';
   let hoodieSize: LucasHoodieSize = 'S';
-  let loadedPattern: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee' | 'fs-aaron' | 'fs-teagan' | 'fs-sven' | 'fs-brian' | 'fs-titan' | 'fs-sandy' | 'fs-diana' = 'boxy';
+  let loadedPattern: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee' | 'fs-aaron' | 'fs-teagan' | 'fs-sven' | 'fs-brian' | 'fs-titan' | 'fs-sandy' | 'fs-diana' | 'fs-bella' = 'boxy';
   const sizeSel = document.getElementById('at-size') as HTMLSelectElement | null;
   let opTeeSize: OpLooseTeeSize = 'M';
   const teeSleevesRow = document.getElementById('at-tee-sleeves-row');
@@ -2659,7 +2683,7 @@ async function main(): Promise<void> {
     avatarStatureHelp.textContent =
       `Redimensionne le mannequin et ses collisions. ${fixedGarmentSizeMessage(selectedSize)}`;
   };
-  const showSizes = (kind: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee' | 'fs-aaron' | 'fs-teagan' | 'fs-sven' | 'fs-brian' | 'fs-titan' | 'fs-sandy' | 'fs-diana'): void => {
+  const showSizes = (kind: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee' | 'fs-aaron' | 'fs-teagan' | 'fs-sven' | 'fs-brian' | 'fs-titan' | 'fs-sandy' | 'fs-diana' | 'fs-bella'): void => {
     if (!sizeSel) return;
     loadedPattern = kind;
     // Bloc manche : sélecteur visible pour le tee seulement (1er bloc composable).
@@ -2688,6 +2712,9 @@ async function main(): Promise<void> {
       sizeSel.value = 'avatar';
     } else if (kind === 'fs-diana') {
       sizeSel.innerHTML = `<option value="avatar">Robe FreeSewing ajustée au mannequin · poitrine ${(lastMeasure.chest.circ * 100).toFixed(0)} cm</option>`;
+      sizeSel.value = 'avatar';
+    } else if (kind === 'fs-bella') {
+      sizeSel.innerHTML = `<option value="avatar">Buste à pinces FreeSewing ajusté au mannequin · poitrine ${(lastMeasure.chest.circ * 100).toFixed(0)} cm</option>`;
       sizeSel.value = 'avatar';
     } else if (kind === 'fs-sven') {
       sizeSel.innerHTML = `<option value="avatar">Sweat FreeSewing ajusté au mannequin · poitrine ${(lastMeasure.chest.circ * 100).toFixed(0)} cm</option>`;
@@ -3127,6 +3154,32 @@ async function main(): Promise<void> {
   (document.getElementById('at-fs-diana') as HTMLElement | null)?.addEventListener('click', () => {
     void loadFsDiana();
   });
+  // Buste ajusté Bella de FreeSewing (MIT) : le PREMIER vêtement À PINCES du
+  // pont — 6 pinces (poitrine + taille) cousues par le moteur. Sans manches.
+  const loadFsBella = async (): Promise<void> => {
+    if (!bigPanel) setBig(true);
+    patternView.resetView();
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    resetPlacement();
+    try {
+      const mod = await import('./engine/pattern/freeSewingGarments');
+      pushHistory();
+      showSizes('fs-bella');
+      teePreset = false;
+      draft = mod.buildBella(lastMeasure, REF);
+      draftTouched = true;
+      atelierSleeves = false;
+      atelierCollar = false;
+      document.getElementById('at-sleeves')?.classList.remove('active');
+      build();
+    } catch (e) {
+      showToast(`FreeSewing indisponible : ${(e as Error).message}`);
+    }
+  };
+  (document.getElementById('at-fs-bella') as HTMLElement | null)?.addEventListener('click', () => {
+    void loadFsBella();
+  });
   // Sweat-shirt Sven de FreeSewing (MIT) : devant + dos + manches longues wrap.
   const loadFsSven = async (): Promise<void> => {
     if (!bigPanel) setBig(true);
@@ -3380,6 +3433,8 @@ async function main(): Promise<void> {
         if (sceneMode === 'atelier') void loadFsTeagan();
       } else if (loadedPattern === 'fs-diana') {
         if (sceneMode === 'atelier') void loadFsDiana();
+      } else if (loadedPattern === 'fs-bella') {
+        if (sceneMode === 'atelier') void loadFsBella();
       } else if (loadedPattern === 'fs-sven') {
         if (sceneMode === 'atelier') void loadFsSven();
       } else if (loadedPattern === 'fs-brian') {
@@ -9213,6 +9268,7 @@ async function main(): Promise<void> {
           : loadedPattern === 'fs-aaron' ? 'Débardeur FreeSewing'
           : loadedPattern === 'fs-teagan' ? 'T-shirt FreeSewing'
           : loadedPattern === 'fs-diana' ? 'Robe FreeSewing'
+          : loadedPattern === 'fs-bella' ? 'Buste à pinces FreeSewing'
           : loadedPattern === 'fs-sven' ? 'Sweat FreeSewing'
           : loadedPattern === 'fs-brian' ? 'Bloc de base FreeSewing'
           : loadedPattern === 'fs-titan' ? 'Pantalon FreeSewing'
@@ -10763,6 +10819,7 @@ async function main(): Promise<void> {
       'fs-aaron': 'débardeur FreeSewing',
       'fs-teagan': 't-shirt FreeSewing',
       'fs-diana': 'robe FreeSewing',
+      'fs-bella': 'buste à pinces FreeSewing',
       'fs-sven': 'sweat-shirt FreeSewing',
       'fs-brian': 'bloc de base FreeSewing',
       'fs-titan': 'pantalon FreeSewing',

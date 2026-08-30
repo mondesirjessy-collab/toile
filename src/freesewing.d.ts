@@ -44,6 +44,10 @@ declare module '@freesewing/diana' {
   export const Diana: import('@freesewing/aaron').FsDesign;
 }
 
+declare module '@freesewing/bella' {
+  export const Bella: import('@freesewing/aaron').FsDesign;
+}
+
 declare module '@freesewing/models' {
   /** Un modèle de mesures FreeSewing (nom de mesure → millimètres). */
   export const cisFemaleAdult38: Record<string, number>;

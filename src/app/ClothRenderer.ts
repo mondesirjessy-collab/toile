@@ -134,6 +134,7 @@ struct VSOut {
   @location(4) @interpolate(flat) material: u32,
   @location(5) ribbonNormal: vec3f,
   @location(6) graphicUV: vec4f, // xy = UV graphique continu, z = tuile, w = répétition
+  @location(7) world: vec3f, // position monde (test endroit-dehors du fragment)
 };
 
 fn cloth_vertex(vid: u32, pos: vec4f, nrm: vec4f, material: u32, graphicUV: vec4f) -> VSOut {
@@ -143,6 +144,7 @@ fn cloth_vertex(vid: u32, pos: vec4f, nrm: vec4f, material: u32, graphicUV: vec4
   // Rentré de rendu : la doublure recule le long de sa normale (v201).
   out.clip = camera.viewProj * vec4f(worldPosition + worldNormal * layer_tuck(vid), 1.0);
   out.normal = worldNormal;
+  out.world = worldPosition;
   // A cap interpolates normals from two independently parameterised panels.
   // Put every endpoint in one deterministic light hemisphere BEFORE
   // interpolation and add a small common bias. Opposite front/back normals can
@@ -354,7 +356,18 @@ fn shade_fabric(in: VSOut, n: vec3f, visualFront: bool, minimumShade: f32) -> ve
 fn fs(in: VSOut, @builtin(front_facing) front: bool) -> @location(0) vec4f {
   var n = normalize(in.normal);
   if (!front) { n = -n; }
-  return shade_fabric(in, n, front, 0.0);
+  // ENDROIT-DEHORS : sur un vêtement porté, la face vue depuis l'EXTÉRIEUR du
+  // corps est l'endroit du tissu, quel que soit l'enroulement du panneau — le
+  // panneau DOS des montages 2 faces montrait son ENVERS assombri, qui se
+  // confondait avec la peau (« dos déshabillé », vu au banc sur le tee natif
+  // comme sur Bella). Test radial au torse (le mannequin est centré) ; près
+  // des crêtes (dessus de manche) on garde la lecture par enroulement.
+  var visualFront = front;
+  let radial = vec3f(in.world.x, 0.0, in.world.z);
+  if (!visualFront && dot(radial, radial) > 1e-6 && dot(n, normalize(radial)) > 0.25) {
+    visualFront = true;
+  }
+  return shade_fabric(in, n, visualFront, 0.0);
 }
 
 @fragment
