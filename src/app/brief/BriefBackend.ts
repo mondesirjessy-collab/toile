@@ -23,6 +23,20 @@ export interface BriefImageAttachment {
   dataBase64: string;
 }
 
+/**
+ * Un échange passé du Studio (v295 — « le Studio se souvient ») : le brief
+ * tapé et la réponse JSON validée qui lui a été appliquée. Envoyé au proxy
+ * pour que « d'accord, fais ça » ou « la même en rouge » se comprennent.
+ * Les règles locales restent SANS état : la mémoire est invisible sans clé.
+ */
+export interface BriefHistoryEntry {
+  brief: string;
+  reponse: string;
+}
+
+/** Profondeur de mémoire : les 4 derniers échanges suffisent aux reprises. */
+export const BRIEF_HISTORY_MAX = 4;
+
 export class RulesBackend implements BriefBackend {
   readonly label = 'règles locales';
 
@@ -55,6 +69,8 @@ export class RemoteBackend implements BriefBackend {
     private readonly contextProvider: (() => Record<string, unknown> | null) | null = null,
     /** Brief visuel : image jointe {mediaType, dataBase64} — optionnel. */
     private readonly imageProvider: (() => BriefImageAttachment | null) | null = null,
+    /** Mémoire de session : les derniers échanges {brief, reponse} — optionnel. */
+    private readonly historyProvider: (() => BriefHistoryEntry[] | null) | null = null,
   ) {}
 
   async interpret(briefText: string): Promise<BriefResult> {
@@ -68,6 +84,8 @@ export class RemoteBackend implements BriefBackend {
         const payload: Record<string, unknown> = { format: 'toile-brief', version: 1, brief: briefText };
         const context = this.contextProvider?.() ?? null;
         if (context && Object.keys(context).length > 0) payload.context = context;
+        const history = this.historyProvider?.() ?? null;
+        if (history?.length) payload.history = history.slice(-BRIEF_HISTORY_MAX);
         const image = this.imageProvider?.() ?? null;
         if (image) payload.image = image;
         const response = await this.fetchImpl(this.endpoint, {

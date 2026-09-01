@@ -51,7 +51,7 @@ import { draftRobe, robeCm, ROBE_SIZES, type RobeSize } from './engine/pattern/r
 import { draftVeste, vesteCm, VESTE_AVATAR_EASE_CM, VESTE_SIZES, type VesteSize } from './engine/pattern/veste';
 import { draftDoudoune, doudouneCm, DOUDOUNE_AVATAR_EASE_CM, DOUDOUNE_SIZES, type DoudouneSize } from './engine/pattern/doudoune';
 import { cloTee, cloPants } from './engine/pattern/cloBlocks';
-import { opLooseTee, opLooseTeeChestCm, OP_LOOSE_TEE_SIZES, type OpLooseTeeSize } from './engine/pattern/openPattern';
+import { opLooseTee, opLooseTeeChestCm, opNavySweater, OP_LOOSE_TEE_SIZES, type OpLooseTeeSize } from './engine/pattern/openPattern';
 import {
   loosePants,
   loosePantsSizeLabel,
@@ -108,11 +108,14 @@ import {
 } from './app/ControlStateSync';
 import { showToast, undoToastMessage } from './app/ToastQueue';
 import { claimFirstUseTip } from './app/FirstUseTip';
-import { BRIEF_ENDPOINT_STORAGE_KEY, probeBriefEndpoint, RemoteBackend, RulesBackend, type BriefBackend, type BriefImageAttachment } from './app/brief/BriefBackend';
+import { BRIEF_ENDPOINT_STORAGE_KEY, BRIEF_HISTORY_MAX, probeBriefEndpoint, RemoteBackend, RulesBackend, type BriefBackend, type BriefHistoryEntry, type BriefImageAttachment } from './app/brief/BriefBackend';
 import { validateFitAdvice, type FitAdviceResult, type FitSuggestion } from './app/brief/FitContract';
 import { executeBrief, type BriefHooks } from './app/brief/BriefExecutor';
 import { fitProofLines } from './app/brief/FitProof';
-import type { BriefOp } from './app/brief/BriefContract';
+import { validateNotice, type NoticeResult } from './app/brief/NoticeContract';
+import { buildNoticeReport, fallbackNotice, renderNoticeHtml } from './app/notice';
+import { downloadBrowserBlob } from './app/browserDownload';
+import type { BriefOp, BriefResult } from './app/brief/BriefContract';
 import { PatternView, SEAM_COLORS, type PatternHandleSpec, type SystemLink } from './app/PatternView';
 import { setPatternTheme, type PatternTheme } from './app/patternPalette';
 import { exportDraftPatternPdf, exportDraftPatternSvg } from './app/draftPatternExport';
@@ -2616,7 +2619,7 @@ async function main(): Promise<void> {
   let vesteSize: VesteSize | 'avatar' = 'M';
   let doudouneSize: DoudouneSize | 'avatar' = 'M';
   let hoodieSize: LucasHoodieSize = 'S';
-  let loadedPattern: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee' | 'fs-aaron' | 'fs-teagan' | 'fs-sven' | 'fs-brian' | 'fs-titan' | 'fs-sandy' | 'fs-diana' | 'fs-bella' = 'boxy';
+  let loadedPattern: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee' | 'op-sweater' | 'fs-aaron' | 'fs-teagan' | 'fs-sven' | 'fs-brian' | 'fs-titan' | 'fs-sandy' | 'fs-diana' | 'fs-bella' = 'boxy';
   const sizeSel = document.getElementById('at-size') as HTMLSelectElement | null;
   let opTeeSize: OpLooseTeeSize = 'M';
   const teeSleevesRow = document.getElementById('at-tee-sleeves-row');
@@ -2685,7 +2688,7 @@ async function main(): Promise<void> {
     avatarStatureHelp.textContent =
       `Redimensionne le mannequin et ses collisions. ${fixedGarmentSizeMessage(selectedSize)}`;
   };
-  const showSizes = (kind: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee' | 'fs-aaron' | 'fs-teagan' | 'fs-sven' | 'fs-brian' | 'fs-titan' | 'fs-sandy' | 'fs-diana' | 'fs-bella'): void => {
+  const showSizes = (kind: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee' | 'op-sweater' | 'fs-aaron' | 'fs-teagan' | 'fs-sven' | 'fs-brian' | 'fs-titan' | 'fs-sandy' | 'fs-diana' | 'fs-bella'): void => {
     if (!sizeSel) return;
     loadedPattern = kind;
     // Bloc manche : sélecteur visible pour le tee seulement (1er bloc composable).
@@ -2730,6 +2733,9 @@ async function main(): Promise<void> {
     } else if (kind === 'fs-sandy') {
       sizeSel.innerHTML = `<option value="avatar">Jupe cercle FreeSewing ajustée au mannequin · tour de taille ${(lastMeasure.waist.circ * 100).toFixed(0)} cm</option>`;
       sizeSel.value = 'avatar';
+    } else if (kind === 'op-sweater') {
+      sizeSel.innerHTML = '<option value="M">Navy Sweater openpattern · taille unique M du patron</option>';
+      sizeSel.value = 'M';
     } else if (kind === 'op-tee') {
       sizeSel.innerHTML = OP_LOOSE_TEE_SIZES.map(
         (s) => `<option value="${s}">${s} · vêtement ${opLooseTeeChestCm(s)} cm</option>`,
@@ -3309,6 +3315,26 @@ async function main(): Promise<void> {
   };
   (document.getElementById('at-op-tee') as HTMLElement | null)?.addEventListener('click', loadOpTee);
 
+  // Navy Sweater d'openpattern.io (CC BY, lot DXF téléchargé) : taille unique
+  // M du patron, manches longues — même montage générique que le tee.
+  const loadOpSweater = (): void => {
+    if (!bigPanel) setBig(true);
+    patternView.resetView();
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    resetPlacement();
+    pushHistory();
+    showSizes('op-sweater');
+    teePreset = false;
+    draft = opNavySweater(lastMeasure, REF);
+    draftTouched = true;
+    atelierSleeves = false;
+    atelierCollar = false;
+    document.getElementById('at-sleeves')?.classList.remove('active');
+    build();
+  };
+  (document.getElementById('at-op-sweater') as HTMLElement | null)?.addEventListener('click', loadOpSweater);
+
   const loadCloPants = (): void => {
     if (!bigPanel) setBig(true);
     patternView.resetView();
@@ -3445,6 +3471,8 @@ async function main(): Promise<void> {
         if (sceneMode === 'atelier') void loadFsTitan();
       } else if (loadedPattern === 'fs-sandy') {
         if (sceneMode === 'atelier') void loadFsSandy();
+      } else if (loadedPattern === 'op-sweater') {
+        if (sceneMode === 'atelier') loadOpSweater();
       } else if (loadedPattern === 'op-tee') {
         opTeeSize = sizeSel.value as OpLooseTeeSize;
         if (sceneMode === 'atelier') loadOpTee();
@@ -9109,6 +9137,9 @@ async function main(): Promise<void> {
   // désormais la maison. Les scènes moteur se rejoignent via Réglages ⚙ →
   // sélecteur de scène. Plus de bascule surprise vers la démo physique.)
 
+  // v296 — Notice de montage : assignée dans le bloc Brief (même proxy Studio
+  // IA + repli standard sans clé) ; le bouton du panneau passe par ce relais.
+  let runNotice: (() => void) | null = null;
   panel = new ControlPanel(
     {
       onScene: (m) => {
@@ -9261,12 +9292,16 @@ async function main(): Promise<void> {
         build();
       },
       onFitMap: (v) => applyFitMap(v),
+      // v296 — la notice vit dans le bloc Brief (elle parle au même proxy
+      // Studio IA) ; le panneau ne connaît que ce relais.
+      onNotice: () => runNotice?.(),
       onTechPack: () => {
         if (!draft) return;
         const garment =
           loadedPattern === 'boxy' ? 'T-shirt'
           : loadedPattern === 'clo-tee' ? 'T-shirt CLO'
           : loadedPattern === 'op-tee' ? 'T-shirt openpattern'
+        : loadedPattern === 'op-sweater' ? 'Sweater openpattern'
           : loadedPattern === 'fs-aaron' ? 'Débardeur FreeSewing'
           : loadedPattern === 'fs-teagan' ? 'T-shirt FreeSewing'
           : loadedPattern === 'fs-diana' ? 'Robe FreeSewing'
@@ -10878,6 +10913,7 @@ async function main(): Promise<void> {
       'clo-tee': 'import CLO (tee, hors catalogue)',
       'clo-pants': 'import CLO (pantalon, hors catalogue)',
       'op-tee': 't-shirt loose openpattern',
+      'op-sweater': 'sweater openpattern',
       'fs-aaron': 'débardeur FreeSewing',
       'fs-teagan': 't-shirt FreeSewing',
       'fs-diana': 'robe FreeSewing',
@@ -10930,6 +10966,18 @@ async function main(): Promise<void> {
       ctx.essayage = document.body.classList.contains('atelier-simulating');
       return ctx;
     };
+    // Le Studio se souvient (v295) : les derniers échanges {brief, réponse
+    // appliquée} accompagnent chaque brief distant — « d'accord, fais ça »
+    // se résout depuis eux. Mémoire de SESSION (vive), invisible sans clé.
+    const briefHistory: BriefHistoryEntry[] = [];
+    const briefHistoryProvider = (): BriefHistoryEntry[] | null =>
+      briefHistory.length ? briefHistory.slice(-BRIEF_HISTORY_MAX) : null;
+    const rememberBrief = (briefText: string, result: BriefResult): void => {
+      const brief = briefText.trim();
+      if (!brief) return;
+      briefHistory.push({ brief, reponse: JSON.stringify(result) });
+      if (briefHistory.length > BRIEF_HISTORY_MAX) briefHistory.splice(0, briefHistory.length - BRIEF_HISTORY_MAX);
+    };
     {
       let explicit: string | null = null;
       try {
@@ -10939,12 +10987,12 @@ async function main(): Promise<void> {
         explicit = null; // storage interdit (webview privée) : sonde même origine.
       }
       if (explicit) {
-        briefBackend = new RemoteBackend(explicit, undefined, undefined, undefined, briefContext, briefImageProvider);
+        briefBackend = new RemoteBackend(explicit, undefined, undefined, undefined, briefContext, briefImageProvider, briefHistoryProvider);
         briefEndpointUrl = explicit;
       } else {
         void probeBriefEndpoint('/api/brief').then((ready) => {
           if (!ready) return;
-          briefBackend = new RemoteBackend('/api/brief', undefined, undefined, undefined, briefContext, briefImageProvider);
+          briefBackend = new RemoteBackend('/api/brief', undefined, undefined, undefined, briefContext, briefImageProvider, briefHistoryProvider);
           briefEndpointUrl = '/api/brief';
           briefSay('✨ Studio IA actif — Claude interprète les briefs (règles locales en secours).', true);
         });
@@ -11408,6 +11456,100 @@ async function main(): Promise<void> {
       }
     };
     fitCheckBtn?.addEventListener('click', () => void runFitCheck());
+    // ---- IA 3 : Notice de montage (v296) — la gamme d'assemblage rédigée ----
+    // Les FAITS viennent du patron (buildNoticeReport : pièces, coutures aux
+    // longueurs mesurées, pinces) ; la RÉDACTION vient de Claude quand le
+    // proxy répond, sinon de la gamme standard déterministe. Le document
+    // imprimé affiche sa provenance ET son statut indicatif.
+    runNotice = () => {
+      if (!draft) {
+        briefSay('Charge d’abord un vêtement — la notice se rédige depuis son patron.', false);
+        return;
+      }
+      const garment =
+        loadedPattern === 'boxy' ? 'T-shirt'
+        : loadedPattern === 'clo-tee' ? 'T-shirt CLO'
+        : loadedPattern === 'op-tee' ? 'T-shirt openpattern'
+        : loadedPattern === 'op-sweater' ? 'Sweater openpattern'
+        : loadedPattern === 'fs-aaron' ? 'Débardeur FreeSewing'
+        : loadedPattern === 'fs-teagan' ? 'T-shirt FreeSewing'
+        : loadedPattern === 'fs-diana' ? 'Robe FreeSewing'
+        : loadedPattern === 'fs-bella' ? 'Buste à pinces FreeSewing'
+        : loadedPattern === 'fs-sven' ? 'Sweat FreeSewing'
+        : loadedPattern === 'fs-brian' ? 'Bloc de base FreeSewing'
+        : loadedPattern === 'fs-titan' ? 'Pantalon FreeSewing'
+        : loadedPattern === 'fs-sandy' ? 'Jupe FreeSewing'
+        : loadedPattern === 'pants' || loadedPattern === 'clo-pants' ? 'Pantalon'
+        : loadedPattern === 'hoodie' ? 'Hoodie'
+        : loadedPattern === 'jupe' ? 'Jupe'
+        : loadedPattern === 'robe' ? 'Robe'
+        : loadedPattern === 'veste' ? 'Veste'
+        : loadedPattern === 'doudoune' ? 'Doudoune'
+        : 'Vetement';
+      const size =
+        loadedPattern === 'boxy'
+          ? boxySurMesure ? 'sur-mesure (mannequin)' : boxySize
+          : 'ajuste au mannequin';
+      const report = buildNoticeReport(draft, {
+        garment,
+        size,
+        fabric: String(globalFabricPreset),
+        seamAllowanceCm: +(seamAllowanceM * 100).toFixed(1),
+      });
+      // La fenêtre s'ouvre PENDANT le clic (après un await, le navigateur la
+      // bloquerait) ; elle patiente pendant la rédaction. Bloquée quand même
+      // (pane piloté, réglages stricts) → la notice se TÉLÉCHARGE en .html.
+      const win = window.open('', '_blank');
+      if (win) {
+        win.document.write(
+          '<!doctype html><title>Notice de montage…</title><body style="font:14px system-ui;padding:40px">🧵 Rédaction de la gamme de montage…</body>',
+        );
+        win.document.close();
+      }
+      void (async () => {
+        let notice: NoticeResult | null = null;
+        let provenance = 'gamme standard (sans IA)';
+        if (briefEndpointUrl) {
+          briefSay('🧵 Claude rédige la gamme de montage…', true);
+          try {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 25_000);
+            try {
+              const response = await fetch(briefEndpointUrl, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ format: 'toile-notice', version: 1, report }),
+                signal: controller.signal,
+              });
+              if (response.ok) {
+                notice = validateNotice(await response.json().catch(() => null));
+                if (notice) provenance = 'rédigée par ✨ Claude';
+              } else {
+                console.error('[toile] notice refusée par le proxy :', response.status);
+              }
+            } finally {
+              clearTimeout(timer);
+            }
+          } catch (error) {
+            console.error('[toile] notice — échec réseau :', error);
+          }
+        }
+        if (!notice) notice = fallbackNotice(report);
+        const html = renderNoticeHtml(notice, report, provenance);
+        if (win && !win.closed) {
+          win.document.open();
+          win.document.write(html);
+          win.document.close();
+        } else {
+          const slug = garment.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'vetement';
+          downloadBrowserBlob(new Blob([html], { type: 'text/html' }), `toile-notice-${slug}.html`);
+        }
+        briefSay(
+          `🧵 Notice de montage — ${notice.etapes.length} étapes · ${provenance}${win && !win.closed ? '' : ' · téléchargée (.html)'}`,
+          true,
+        );
+      })();
+    };
     const runBrief = async (): Promise<void> => {
       const text = briefInput?.value ?? '';
       if (!text.trim() && !briefImage) {
@@ -11424,6 +11566,9 @@ async function main(): Promise<void> {
       }
       try {
         const result = await briefBackend.interpret(text);
+        // Mémoriser AUSSI les clarify/refuse : « d'accord, fais ça » reprend
+        // souvent la suggestion d'un refus outillé.
+        rememberBrief(text, result);
         const execution = executeBrief(result, briefHooks);
         // Image consommée une fois le vêtement appliqué : les briefs suivants
         // (« une taille au-dessus ») ne doivent pas re-payer ni re-lire la photo.

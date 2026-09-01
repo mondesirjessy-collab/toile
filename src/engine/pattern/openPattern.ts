@@ -14,6 +14,7 @@ import type { BodyMeasure } from '../body/measure';
 import type { AssemblySeam, DraftDoc, DraftPiece, EdgeRun, UV } from './Draft';
 import { teeRuns } from './cloBlocks';
 import { OP_LOOSE_TEE, type OpLooseTeeSize, type OpPieceData } from './openPatternData';
+import { OP_NAVY_SWEATER } from './openPatternSweaterData';
 
 export { OP_LOOSE_TEE_SIZES, type OpLooseTeeSize } from './openPatternData';
 
@@ -49,8 +50,36 @@ function runLenM(piece: DraftPiece, run: EdgeRun): number {
  * en demi-panneau wrap, sa flèche de tête calée sur l'emmanchure MESURÉE du
  * corps (bouche ≈ emmanchure — sinon l'excédent godaille, leçon cloTee).
  */
+/**
+ * Navy Sweater openpattern (taille unique M du lot) : même chemin d'assemblage
+ * que le Loose Fit T-Shirt — devant + dos aux vraies courbes du DXF, manches
+ * LONGUES ré-émises en demi-panneau wrap (flèche de tête résolue sur
+ * l'emmanchure mesurée, fuselage poignet = le ratio RÉEL de la pièce), bande
+ * de col à la cote du patron. Bords-côtes du lot écartés du 1er montage.
+ */
+export function opNavySweater(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
+  const D = OP_NAVY_SWEATER;
+  const doc = assembleOpTwoFaces(
+    { front: D.front, back: D.back, sleeveWCm: D.sleeveWCm, sleeveHCm: D.sleeveHCm, collarWCm: D.collarWCm, collarHCm: D.collarHCm },
+    m,
+    ref,
+    D.sleeveCuffRatio,
+  );
+  return doc;
+}
+
 export function opLooseTee(size: OpLooseTeeSize, m: BodyMeasure, ref: BodyMeasure): DraftDoc {
-  const D = OP_LOOSE_TEE[size];
+  // CUFF 0,9 historique du tee : manche courte loose, léger fuselage.
+  return assembleOpTwoFaces(OP_LOOSE_TEE[size], m, ref, 0.9);
+}
+
+/** Montage 2 faces openpattern partagé (tee ET sweater) — inchangé du tee. */
+function assembleOpTwoFaces(
+  D: { front: OpPieceData; back: OpPieceData; sleeveWCm: number; sleeveHCm: number; collarWCm: number; collarHCm: number },
+  m: BodyMeasure,
+  ref: BodyMeasure,
+  cuffRatio: number,
+): DraftDoc {
   const topY = 1.52 + (m.shoulderY - ref.shoulderY);
 
   const face = (data: OpPieceData): DraftPiece => {
@@ -79,28 +108,39 @@ export function opLooseTee(size: OpLooseTeeSize, m: BodyMeasure, ref: BodyMeasur
   // suit v = CAP·(1−sin(πu)) — sa longueur ≈ hypoténuses cumulées ; on résout
   // par sécante sur la polyline réelle (robuste, pas d'approximation).
   const armholeM = (runLenM(front, fr.armholeR) + runLenM(back, br.armholeR)) / 2;
-  const sleeveW = (D.sleeveWCm / 100) * 0.5;
+  let sleeveW = (D.sleeveWCm / 100) * 0.5;
   const sleeveH = D.sleeveHCm / 100;
-  const mouthLen = (cap: number): number => {
+  const mouthLen = (cap: number, w: number): number => {
     const us = [-0.01, 0.1, 0.28, 0.5, 0.72, 0.9, 1.01];
     const vs = us.map((u) => cap * (1 - Math.sin(Math.PI * Math.min(1, Math.max(0, u)))));
     let len = 0;
     for (let i = 1; i < us.length; i++) {
-      len += Math.hypot((us[i]! - us[i - 1]!) * sleeveW, (vs[i]! - vs[i - 1]!) * sleeveH);
+      len += Math.hypot((us[i]! - us[i - 1]!) * w, (vs[i]! - vs[i - 1]!) * sleeveH);
     }
     return len;
   };
   let cap = 0.11;
   for (let k = 0; k < 12; k++) {
-    const err = mouthLen(cap) - armholeM;
+    const err = mouthLen(cap, sleeveW) - armholeM;
     if (Math.abs(err) < 0.001) break;
     cap = Math.max(0.03, Math.min(0.35, cap - err / sleeveH));
   }
-  const CUFF = 0.9; // manche loose : ouverture large, léger fuselage
+  // Tête à plat plus LARGE que l'emmanchure (manche tombante du sweater) : le
+  // cap bute sur sa borne sans converger → leçon v267 (pont FreeSewing) : cap
+  // nominal FIXE et largeur résolue par sécante, la bouche épouse l'emmanchure
+  // PAR CONSTRUCTION (sinon l'excédent godaille — leçon cloTee).
+  if (Math.abs(mouthLen(cap, sleeveW) - armholeM) > 0.003) {
+    cap = 0.11;
+    for (let k = 0; k < 16; k++) {
+      const err = mouthLen(cap, sleeveW) - armholeM;
+      if (Math.abs(err) < 0.001) break;
+      sleeveW = Math.max(0.04, Math.min(0.5, sleeveW - err / 1.02));
+    }
+  }
   const sleeve = (wrap: 'armL' | 'armR'): DraftPiece => {
     const capArc: UV[] = [];
     for (const u of [0.1, 0.28, 0.5, 0.72, 0.9]) capArc.push([u, cap * (1 - Math.sin(Math.PI * u))]);
-    const cuffIn = (1.02 * (1 - CUFF)) / 2;
+    const cuffIn = (1.02 * (1 - cuffRatio)) / 2;
     return {
       outline: [[-0.01, cap], ...capArc, [1.01, cap], [1.01 - cuffIn, 1.01], [-0.01 + cuffIn, 1.01]],
       darts: [],

@@ -618,6 +618,44 @@ describe('backends du Brief', () => {
     if (r.intent === 'create') expect(r.garment.size).toBe('38');
   });
 
+  it('le Studio se souvient (v295) : l’historique part dans le payload, borné à 4', async () => {
+    let sent: Record<string, unknown> | null = null;
+    const history = Array.from({ length: 6 }, (_, i) => ({ brief: `b${i}`, reponse: `r${i}` }));
+    const remote = new RemoteBackend(
+      'https://exemple.test/brief',
+      new RulesBackend(),
+      async (_url, init) => {
+        sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return okJson({ intent: 'clarify', resumeFr: '?' });
+      },
+      undefined,
+      null,
+      null,
+      () => history,
+    );
+    await remote.interpret('d’accord, fais ça');
+    expect(sent).not.toBeNull();
+    const sentHistory = sent!.history as Array<{ brief: string }>;
+    expect(sentHistory).toHaveLength(4);
+    expect(sentHistory[0]!.brief).toBe('b2'); // les 4 DERNIERS échanges
+    // Sans historique : pas de champ history dans le payload.
+    let sent2: Record<string, unknown> | null = null;
+    const remoteVide = new RemoteBackend(
+      'https://exemple.test/brief',
+      new RulesBackend(),
+      async (_url, init) => {
+        sent2 = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return okJson({ intent: 'clarify', resumeFr: '?' });
+      },
+      undefined,
+      null,
+      null,
+      () => null,
+    );
+    await remoteVide.interpret('un brief');
+    expect(sent2!.history).toBeUndefined();
+  });
+
   it('retombe sur les règles locales si la réponse sort du contrat', async () => {
     const remote = new RemoteBackend('https://exemple.test/brief', new RulesBackend(), async () =>
       okJson({ intent: 'create', garment: { archetype: 'robe de bal' }, resumeFr: 'x' }),

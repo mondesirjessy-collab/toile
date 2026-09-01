@@ -13,6 +13,7 @@
 
 import { validateBriefResult, type BriefResult } from '../src/app/brief/BriefContract';
 import { validateFitAdvice, type FitAdviceResult } from '../src/app/brief/FitContract';
+import { validateNotice, type NoticeResult } from '../src/app/brief/NoticeContract';
 
 /** Bloc de contenu multimodal (sous-ensemble de l'API Messages d'Anthropic). */
 export type ModelContentBlock =
@@ -74,7 +75,8 @@ const STYLE = `RÈGLES :
 5. Tu peux interpréter les synonymes et l'à-peu-près (« coton léger » → Popeline ; « petits carreaux » → vichy ; « tricot » → Maille ; « 1m85 » → statureCm 185) mais JAMAIS inventer hors catalogue.
 6. Réponds en JSON compact sur une seule ligne. Aucun commentaire, aucune balise de code.
 7. Un « ÉTAT ACTUEL : … » peut précéder le brief : c'est le vêtement déjà chargé dans l'atelier. Les retouches relatives (« une taille au-dessus », « plus grand », « l'autre mannequin », « enlève le motif ») se calculent depuis cet état, dans la liste de tailles de CE patron.
-8. BRIEF VISUEL : une image (photo, croquis, moodboard) peut accompagner ou remplacer le texte. Identifie le vêtement porté ou dessiné et rapproche-le du catalogue : silhouette → archétype le plus proche, texture/aspect → tissu le plus proche, imprimé → motif le plus proche (uni/rayures/vichy/pois). Le texte, s'il existe, PRIME sur l'image en cas de conflit. Ne devine jamais une taille depuis une photo. Vêtement photographié non constructible → "refuse" + suggestion du catalogue ; image sans vêtement identifiable → "clarify". Mentionne « d'après la photo » (ou « d'après le croquis ») dans resumeFr.`;
+8. MÉMOIRE DE SESSION : les tout derniers échanges avant le brief courant peuvent être l'historique RÉEL de cette session (tes propres réponses JSON). Les reprises (« d'accord, fais ça », « oui vas-y », « la même en rouge », « reviens à la robe ») se résolvent depuis ces échanges. Un acquiescement après TON refus/clarify outillé = CONSTRUIS la suggestion que tu viens de faire (intent "create", en gardant tissu/taille/mannequin exprimés avant) — ne redemande JAMAIS ce que tu viens toi-même de proposer. En cas de conflit, l'« ÉTAT ACTUEL : … » reste la vérité de l'atelier.
+9. BRIEF VISUEL : une image (photo, croquis, moodboard) peut accompagner ou remplacer le texte. Identifie le vêtement porté ou dessiné et rapproche-le du catalogue : silhouette → archétype le plus proche, texture/aspect → tissu le plus proche, imprimé → motif le plus proche (uni/rayures/vichy/pois). Le texte, s'il existe, PRIME sur l'image en cas de conflit. Ne devine jamais une taille depuis une photo. Vêtement photographié non constructible → "refuse" + suggestion du catalogue ; image sans vêtement identifiable → "clarify". Mentionne « d'après la photo » (ou « d'après le croquis ») dans resumeFr.`;
 
 export function buildBriefSystemPrompt(): string {
   return `Tu es l'interprète de briefs de TOILE, un atelier de patronage 3D dans le navigateur. Tu traduis un brief français (parfois anglais) en une action JSON du contrat — tu ne dessines jamais, tu pilotes des capacités existantes.
@@ -170,6 +172,18 @@ export const BRIEF_FEW_SHOT: ReadonlyArray<{ user: string; assistant: string }> 
     assistant:
       '{"intent":"clarify","resumeFr":"La retouche de longueur au centimètre reste manuelle.","suggestionFr":"À la voix, le tee connaît 3 crans (« plus court », « plus long », « crop »). Pour une cote exacte : outil « Longueur » (étape 2), la cote s\'affiche en direct."}',
   },
+  // Mini-dialogue (v295) : les DEUX exemples suivants s'enchaînent — un refus
+  // outillé puis l'acquiescement qui CONSTRUIT la suggestion, sans redemander.
+  {
+    user: 'un manteau long en laine',
+    assistant:
+      '{"intent":"refuse","resumeFr":"Pas encore de patron « manteau long » dans l\'atelier.","suggestionFr":"Le plus proche aujourd\'hui : la veste zippée doublée — ou le Hoodie zippé."}',
+  },
+  {
+    user: 'd\'accord, fais ça',
+    assistant:
+      '{"intent":"create","garment":{"archetype":"veste"},"fabric":"Laine","tryOn":true,"resumeFr":"Va pour la veste zippée doublée en laine — le plus proche du manteau long demandé."}',
+  },
   {
     user: 'mets un col V et rends-le plus ample',
     assistant:
@@ -239,6 +253,32 @@ export function briefContextLine(raw: unknown): string | null {
   return parts.length ? parts.join(', ') : null;
 }
 
+/** Mémoire de session (v295) : profondeur et taille bornées côté proxy aussi. */
+export const BRIEF_HISTORY_MAX = 4;
+export const BRIEF_HISTORY_REPONSE_MAX = 1500;
+
+/**
+ * Rejoue l'historique client en tours user/assistant, borné et assaini : au
+ * plus 4 échanges, briefs et réponses tronqués, entrées difformes écartées.
+ * L'historique n'entre jamais dans le contrat de sortie — il ne fait
+ * qu'informer le modèle, comme l'« ÉTAT ACTUEL ».
+ */
+export function briefHistoryTurns(
+  raw: unknown,
+): Array<{ role: 'user' | 'assistant'; content: string }> {
+  if (!Array.isArray(raw)) return [];
+  const turns: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  for (const rawEntry of raw.slice(-BRIEF_HISTORY_MAX)) {
+    const entry = rawEntry as { brief?: unknown; reponse?: unknown };
+    if (typeof entry?.brief !== 'string' || typeof entry?.reponse !== 'string') continue;
+    const brief = entry.brief.trim().slice(0, BRIEF_MAX_CHARS);
+    const reponse = entry.reponse.trim().slice(0, BRIEF_HISTORY_REPONSE_MAX);
+    if (!brief || !reponse) continue;
+    turns.push({ role: 'user', content: brief }, { role: 'assistant', content: reponse });
+  }
+  return turns;
+}
+
 export interface BriefProxyResponse {
   status: number;
   body: BriefResult | { error: string };
@@ -256,6 +296,7 @@ export async function handleBrief(rawBody: unknown, callModel: ModelCaller): Pro
     brief?: unknown;
     context?: unknown;
     image?: unknown;
+    history?: unknown;
   } | null;
   const brief = typeof req?.brief === 'string' ? req.brief.trim() : '';
   // Brief visuel : image optionnelle {mediaType, dataBase64}, bornée et typée.
@@ -290,6 +331,9 @@ export async function handleBrief(rawBody: unknown, callModel: ModelCaller): Pro
       { role: 'user' as const, content: ex.user },
       { role: 'assistant' as const, content: ex.assistant },
     ]),
+    // Mémoire de session (v295) : les vrais échanges précédents de CE Studio,
+    // rejoués juste avant le brief courant — « d'accord, fais ça » s'y résout.
+    ...briefHistoryTurns(req.history),
     {
       role: 'user' as const,
       // L'état atelier précède le brief quand le client le fournit — même
@@ -459,13 +503,100 @@ export async function handleFit(rawBody: unknown, callModel: ModelCaller): Promi
   };
 }
 
+// ---------------------------------------------------------------------------
+// Notice de montage — la gamme d'assemblage rédigée (IA 3, v296).
+// ---------------------------------------------------------------------------
+
+const NOTICE_CONTRACT = `CONTRAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON, sans texte autour :
+{"intent":"notice","titreFr":"…","etapes":[{"n":1,"titreFr":"…","detailFr":"…"}],"conseilsFr":["…"]}
+"etapes" : 5 à 15 opérations numérotées dans l'ORDRE DE MONTAGE (préparation/coupe → pinces → petites pièces → grands assemblages → fermetures → finitions/repassage). "titreFr" = l'opération en 3-6 mots ; "detailFr" = 1-2 phrases concrètes de mécanicien·ne (point utilisé, endroit contre endroit, crans, surfilage, fer).
+"conseilsFr" : 0 à 5 conseils transverses (aiguille, point, repassage) adaptés au TISSU donné.`;
+
+export function buildNoticeSystemPrompt(): string {
+  return `Tu es la mécanicienne modèle de TOILE, un atelier de patronage 3D. On te donne les FAITS d'un patron réel — pièces (dimensions, pinces), coutures d'assemblage (quelles pièces, longueur mesurée en cm, zip ou couture), marge incluse — et tu rédiges la gamme de montage française du vêtement.
+
+RÈGLES ABSOLUES :
+1. Tu n'inventes AUCUNE pièce ni couture : chaque étape d'assemblage cite uniquement les pièces et coutures fournies, avec leurs longueurs réelles quand tu les cites.
+2. Les pinces se cousent AVANT les assemblages ; les finitions (ourlets, encolure, emmanchures laissées ouvertes) ferment la gamme ; le repassage jalonne.
+3. Adapte le point et l'aiguille au tissu donné (jersey/maille → point extensible ou surjet ; popeline/denim → point droit ; soie → aiguille fine).
+4. Ton concret d'atelier, pas de storytelling. La gamme est INDICATIVE (le document l'affiche) : n'affirme jamais qu'elle a été testée.
+5. Réponds en JSON compact sur une seule ligne, sans balises de code.
+
+${NOTICE_CONTRACT}`;
+}
+
+/** Un exemple ancre le format (tee 2 pièces + manches, chiffres réalistes). */
+export const NOTICE_FEW_SHOT: ReadonlyArray<{ user: string; assistant: string }> = [
+  {
+    user:
+      '{"vetement":{"type":"T-shirt","taille":"M","tissu":"Jersey"},"marge_couture_cm":1,"pieces":[{"nom":"Devant","largeur_cm":54,"hauteur_cm":70,"pinces":[]},{"nom":"Dos","largeur_cm":54,"hauteur_cm":70,"pinces":[]},{"nom":"Manche gauche","largeur_cm":38,"hauteur_cm":22,"pinces":[]},{"nom":"Manche droite","largeur_cm":38,"hauteur_cm":22,"pinces":[]}],"coutures":[{"de":"Devant","vers":"Dos","longueur_cm":12.5,"type":"couture","fermee":true},{"de":"Devant","vers":"Dos","longueur_cm":12.5,"type":"couture","fermee":true},{"de":"Devant","vers":"Dos","longueur_cm":38.2,"type":"couture","fermee":true},{"de":"Devant","vers":"Dos","longueur_cm":38.2,"type":"couture","fermee":true},{"de":"Manche gauche","vers":"Devant","longueur_cm":41.6,"type":"couture","fermee":true},{"de":"Manche droite","vers":"Devant","longueur_cm":41.6,"type":"couture","fermee":true}]}',
+    assistant:
+      '{"intent":"notice","titreFr":"Gamme de montage — T-shirt (M, Jersey)","etapes":[{"n":1,"titreFr":"Préparer les pièces","detailFr":"Vérifier les 4 pièces coupées (Devant, Dos, 2 manches), marge 1 cm incluse. Surfiler ou surjeter les bords qui restent apparents."},{"n":2,"titreFr":"Assembler les épaules","detailFr":"Piquer Devant sur Dos aux 2 épaules (12,5 cm chacune), endroit contre endroit, au point extensible. Coucher les marges vers le dos au fer."},{"n":3,"titreFr":"Monter les manches à plat","detailFr":"Manches ouvertes sur l\'emmanchure (41,6 cm par manche), crans en vis-à-vis, endroit contre endroit."},{"n":4,"titreFr":"Fermer les côtés","detailFr":"En une passe par côté : du bas du corps au bout de manche (38,2 cm au corps), endroit contre endroit."},{"n":5,"titreFr":"Finitions","detailFr":"Ourler bas de corps et bas de manches au point extensible ou à l\'aiguille double ; finir l\'encolure (bande ou revers). Repassage final."}],"conseilsFr":["Jersey : aiguille stretch 75/11 et point légèrement zigzag pour que les coutures suivent l\'élasticité."]}',
+  },
+];
+
+export const NOTICE_REPORT_MAX_CHARS = 8000;
+
+/** Traite une requête {format:"toile-notice", version:1, report} de bout en bout. */
+export async function handleNotice(rawBody: unknown, callModel: ModelCaller): Promise<BriefProxyResponse> {
+  const req = rawBody as { format?: unknown; version?: unknown; report?: unknown } | null;
+  if (req?.format !== 'toile-notice' || req?.version !== 1 || !req.report || typeof req.report !== 'object') {
+    return { status: 400, body: { error: 'Requête invalide — attendu {format:"toile-notice", version:1, report}.' } };
+  }
+  let reportJson: string;
+  try {
+    reportJson = JSON.stringify(req.report);
+  } catch {
+    return { status: 400, body: { error: 'Rapport non sérialisable.' } };
+  }
+  if (reportJson.length > NOTICE_REPORT_MAX_CHARS) {
+    return { status: 400, body: { error: `Rapport trop long (max ${NOTICE_REPORT_MAX_CHARS} caractères).` } };
+  }
+  const system = buildNoticeSystemPrompt();
+  const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
+    ...NOTICE_FEW_SHOT.flatMap((ex) => [
+      { role: 'user' as const, content: ex.user },
+      { role: 'assistant' as const, content: ex.assistant },
+    ]),
+    { role: 'user' as const, content: reportJson },
+  ];
+  let lastModelText = '';
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let text: string;
+    try {
+      text = await callModel(system, messages);
+    } catch (error) {
+      return { status: 502, body: { error: `Modèle injoignable : ${String(error)}` } };
+    }
+    lastModelText = text;
+    const parsed = extractJson(text);
+    const validated = parsed === null ? null : validateNotice(parsed);
+    if (validated) return { status: 200, body: validated as unknown as BriefResult & NoticeResult };
+    messages.push(
+      { role: 'assistant', content: text },
+      {
+        role: 'user',
+        content:
+          'Réponse hors contrat. Réponds UNIQUEMENT avec l\'objet JSON {"intent":"notice",…} du contrat, sur une ligne.',
+      },
+    );
+  }
+  return {
+    status: 502,
+    body: {
+      error: `Notice hors contrat après relance. Dernière réponse du modèle : ${lastModelText.slice(0, 260)}`,
+    },
+  };
+}
+
 /**
  * Routeur du Studio IA : une seule route HTTP, le champ `format` du corps
- * choisit le service (brief ou bilan du tombé). Les proxies (middleware dev,
- * Worker) appellent ceci et restent ignorants des contrats.
+ * choisit le service (brief, bilan du tombé ou notice de montage). Les
+ * proxies (middleware dev, Worker) appellent ceci, ignorants des contrats.
  */
 export async function handleStudioRequest(rawBody: unknown, callModel: ModelCaller): Promise<BriefProxyResponse> {
   const format = (rawBody as { format?: unknown } | null)?.format;
   if (format === 'toile-fit') return handleFit(rawBody, callModel);
+  if (format === 'toile-notice') return handleNotice(rawBody, callModel);
   return handleBrief(rawBody, callModel);
 }

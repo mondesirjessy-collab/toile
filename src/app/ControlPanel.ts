@@ -105,6 +105,8 @@ export interface PanelCallbacks {
   onSeamAllowance(cm: number): void;
   onGltf(): string | null | Promise<string | null>;
   onTechPack?(): void;
+  /** Notice de montage (v296) : gamme d'assemblage imprimable, rédigée depuis le patron réel. */
+  onNotice?(): void;
   onMarker?(): void;
   onDxf?(): void;
   onMaterialReport?(sizeCurve: string): void;
@@ -539,6 +541,7 @@ export class ControlPanel {
     );
     file.add({ glb: () => void this.exportGltf() }, 'glb').name('exporter en 3D (.glb)');
     file.add({ techpack: () => this.cb.onTechPack?.() }, 'techpack').name('fiche de production (.json)');
+    file.add({ notice: () => this.cb.onNotice?.() }, 'notice').name('🧵 notice de montage (imprimable)');
     file.add({ marker: () => this.cb.onMarker?.() }, 'marker').name('plan de découpe (SVG)');
     file.add({ dxf: () => this.cb.onDxf?.() }, 'dxf').name('découpe usine (DXF)');
     file.add({ dxfgrade: () => this.cb.onDxfGraded?.() }, 'dxfgrade').name('découpe usine · toutes tailles (DXF gradé)');

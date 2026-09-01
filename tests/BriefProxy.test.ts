@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   BRIEF_FEW_SHOT,
+  BRIEF_HISTORY_MAX,
+  BRIEF_HISTORY_REPONSE_MAX,
   BRIEF_MAX_CHARS,
+  briefHistoryTurns,
   buildBriefSystemPrompt,
   extractJson,
   handleBrief,
@@ -58,6 +61,41 @@ describe('proxy Brief→LLM (v191)', () => {
     const messages = (model as ReturnType<typeof vi.fn>).mock.calls[0]![1] as Array<{ role: string; content: string }>;
     expect(messages.length).toBe(BRIEF_FEW_SHOT.length * 2 + 1);
     expect(messages.at(-1)!.content).toBe('t-shirt en popeline taille M');
+  });
+
+  it('le Studio se souvient (v295) : l’historique rejoué en tours, borné et assaini', async () => {
+    // briefHistoryTurns : bornes et assainissement.
+    expect(briefHistoryTurns(undefined)).toEqual([]);
+    expect(briefHistoryTurns('pas un tableau')).toEqual([]);
+    const turns = briefHistoryTurns([
+      { brief: 'une robe', reponse: '{"intent":"create"}' },
+      { brief: '', reponse: 'jamais' }, // brief vide : écarté
+      { brief: 'trop long '.repeat(200), reponse: 'r'.repeat(5000) }, // tronqué
+    ]);
+    expect(turns).toHaveLength(4);
+    expect(turns[0]).toEqual({ role: 'user', content: 'une robe' });
+    expect(turns[1]).toEqual({ role: 'assistant', content: '{"intent":"create"}' });
+    expect((turns[2]!.content as string).length).toBe(BRIEF_MAX_CHARS);
+    expect((turns[3]!.content as string).length).toBe(BRIEF_HISTORY_REPONSE_MAX);
+    // Seuls les BRIEF_HISTORY_MAX derniers échanges sont gardés.
+    const many = briefHistoryTurns(
+      Array.from({ length: 9 }, (_, i) => ({ brief: `b${i}`, reponse: `r${i}` })),
+    );
+    expect(many).toHaveLength(BRIEF_HISTORY_MAX * 2);
+    expect(many[0]!.content).toBe(`b${9 - BRIEF_HISTORY_MAX}`);
+    // handleBrief : l'historique s'insère entre le few-shot et le brief courant.
+    const model: ModelCaller = vi.fn(async () => '{"intent":"clarify","resumeFr":"?"}');
+    await handleBrief(
+      { ...req('d’accord, fais ça'), history: [{ brief: 'une jupe ?', reponse: '{"intent":"clarify","resumeFr":"Quelle jupe ?"}' }] },
+      model,
+    );
+    const messages = (model as ReturnType<typeof vi.fn>).mock.calls[0]![1] as Array<{ role: string; content: string }>;
+    expect(messages.length).toBe(BRIEF_FEW_SHOT.length * 2 + 2 + 1);
+    expect(messages.at(-3)!).toEqual({ role: 'user', content: 'une jupe ?' });
+    expect(messages.at(-2)!.role).toBe('assistant');
+    expect(messages.at(-1)!.content).toBe('d’accord, fais ça');
+    // Le system prompt enseigne la mémoire de session.
+    expect(buildBriefSystemPrompt()).toContain('MÉMOIRE DE SESSION');
   });
 
   it('réponse hors contrat → UNE relance avec l’erreur, puis 200 si corrigée', async () => {
