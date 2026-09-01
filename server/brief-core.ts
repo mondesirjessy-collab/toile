@@ -46,20 +46,25 @@ MOTIFS : uni, rayures, vichy, pois.
 COULEURS D'IMPRIMÉ (motifCouleur — nuancier fermé, UNIQUEMENT avec un motif rayures/vichy/pois, jamais pour un uni) : rouge, bordeaux, rose, orange, jaune, vert, bleu, "bleu marine", violet, marron, beige, gris, noir, blanc.
 ÉCHELLE D'IMPRIMÉ (motifCm — en cm, 1 à 30) : « petits carreaux / rayures fines » ≈ 1.5, « gros pois / larges rayures » ≈ 8, valeur explicite si donnée (« carreaux de 3 cm » → 3). motifCouleur et motifCm sont des ENRICHISSEMENTS OPTIONNELS : un motif sans couleur ni échelle se construit tel quel (couleur et taille par défaut) — ne demande JAMAIS de précision pour ça, réponds "create". Seul cas à signaler : un vêtement UNI d'une couleur (« t-shirt rouge », sans imprimé) n'est PAS constructible par le motif — construis-le quand même (sans couleur) et dis dans resumeFr que la couleur unie n'est pas encore disponible, ou qu'un imprimé coloré l'est.
 CORPS : "scan femme", "scan homme". Stature : 140 à 210 cm.
-OPS DE RETOUCHE (intent "modify") : resize{size}, change_fabric{preset}, change_motif{motif, couleur?, cm?}, set_body{kind}, set_stature{statureCm}, set_sleeves{on}, try_on{}.
+BLOCS DU T-SHIRT BOXY (retouches parlées — UNIQUEMENT pour tshirt_boxy, aucun autre archétype) :
+- longueur du corps (teeLength / set_tee_length) : "crop" (court), "regular" (normal), "long". Relatif : delta -1 (un cran plus court) ou +1 (plus long) — préférer delta quand le brief est relatif (« raccourcis-le »).
+- encolure (teeNeck / set_tee_neck) : "ras" (ras du cou), "v" (col V).
+- col (teeCollar / set_tee_collar) : "sans", "cote" (bord côte), "montant". Le « col roulé » n'existe pas : refuser de le promettre, proposer "montant".
+- aisance (teeEasePct / set_tee_ease) : 90 à 120 (%, pas de 2, 100 = standard). Relatif : deltaPct (± depuis la valeur courante, ex. « plus ample » → +10). ATTENTION : l'aisance n'existe qu'en SUR-MESURE (taille "avatar") — à la création, un tee avec aisance sans taille explicite prend size "avatar" ; en retouche, si l'ÉTAT ACTUEL ne montre pas teeAisance, ajouter d'abord {"op":"resize","size":"avatar"}.
+OPS DE RETOUCHE (intent "modify") : resize{size}, change_fabric{preset}, change_motif{motif, couleur?, cm?}, set_tee_length{value?|delta?}, set_tee_neck{value}, set_tee_collar{value}, set_tee_ease{pct?|deltaPct?}, set_body{kind}, set_stature{statureCm}, set_sleeves{on}, try_on{}.
 
 NON CONSTRUCTIBLES aujourd'hui (⇒ intent "refuse" + suggestionFr) :
 - chemise/chemisier → suggérer : « Le plus proche : le t-shirt BOXY en popeline. »
 - manteau long/parka/trench → suggérer : « Le plus proche aujourd'hui : la veste zippée doublée — ou le Hoodie zippé. »
 - corset/traîne/baleines/dentelle — même portés par une robe → suggérer : « Constructible aujourd'hui : t-shirt, pantalon large, hoodie zippé, jupe trapèze, robe cintrée, veste doublée — et toute pièce tracée à la main. »
-- retouche de longueur (« allonge de 10 cm ») → intent "clarify" : « La retouche de longueur reste manuelle pour l'instant. » + suggestionFr sur l'outil Longueur.`;
+- retouche de longueur AU CENTIMÈTRE (« allonge de 10 cm ») → intent "clarify" : les blocs du tee n'ont que 3 crans ; cote exacte = outil Longueur. Les crans (« plus court », « crop ») passent par set_tee_length. Sur les AUTRES vêtements, toute retouche de longueur reste manuelle (outil Longueur).`;
 
 const CONTRACT = `CONTRAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON, sans texte autour, d'une des formes :
-{"intent":"create","garment":{"archetype":"...","size":"..."},"fabric":"...","motif":"...","motifCouleur":"...","motifCm":1.5,"body":{"kind":"...","statureCm":170},"sleeves":true,"tryOn":true,"resumeFr":"..."}
+{"intent":"create","garment":{"archetype":"...","size":"..."},"fabric":"...","motif":"...","motifCouleur":"...","motifCm":1.5,"teeLength":"crop","teeNeck":"v","teeCollar":"cote","teeEasePct":110,"body":{"kind":"...","statureCm":170},"sleeves":true,"tryOn":true,"resumeFr":"..."}
 {"intent":"modify","ops":[{"op":"...",...}],"tryOn":false,"resumeFr":"..."}
 {"intent":"clarify","resumeFr":"...","suggestionFr":"..."}
 {"intent":"refuse","resumeFr":"...","suggestionFr":"..."}
-Champs optionnels omis s'ils ne sont pas exprimés dans le brief (size, fabric, motif, motifCouleur, motifCm, body, sleeves). "tryOn" vaut true par défaut pour "create" (l'essayage est le moment attendu) sauf si le brief dit « sans essayage ». "resumeFr" : une phrase française claire résumant ce qui va être fait (ou pourquoi non).`;
+Champs optionnels omis s'ils ne sont pas exprimés dans le brief (size, fabric, motif, motifCouleur, motifCm, teeLength, teeNeck, teeCollar, teeEasePct, body, sleeves) ; les champs tee* seulement pour l'archétype tshirt_boxy. "tryOn" vaut true par défaut pour "create" (l'essayage est le moment attendu) sauf si le brief dit « sans essayage ». "resumeFr" : une phrase française claire résumant ce qui va être fait (ou pourquoi non).`;
 
 const STYLE = `RÈGLES :
 1. Vocabulaire STRICTEMENT fermé : toute valeur hors catalogue rend la réponse invalide.
@@ -163,7 +168,23 @@ export const BRIEF_FEW_SHOT: ReadonlyArray<{ user: string; assistant: string }> 
   {
     user: 'allonge-la de 10 cm',
     assistant:
-      '{"intent":"clarify","resumeFr":"La retouche de longueur reste manuelle pour l\'instant.","suggestionFr":"Active l\'outil « Longueur » (étape 2) et tire l\'extrémité du bord dans son axe — la cote s\'affiche en direct."}',
+      '{"intent":"clarify","resumeFr":"La retouche de longueur au centimètre reste manuelle.","suggestionFr":"À la voix, le tee connaît 3 crans (« plus court », « plus long », « crop »). Pour une cote exacte : outil « Longueur » (étape 2), la cote s\'affiche en direct."}',
+  },
+  {
+    user: 'mets un col V et rends-le plus ample',
+    assistant:
+      '{"intent":"modify","ops":[{"op":"set_tee_neck","value":"v"},{"op":"set_tee_ease","deltaPct":10}],"tryOn":false,"resumeFr":"Encolure passée en V, aisance élargie d\'un cran."}',
+  },
+  {
+    user: 'un tee crop col montant bien ample',
+    assistant:
+      '{"intent":"create","garment":{"archetype":"tshirt_boxy","size":"avatar"},"teeLength":"crop","teeCollar":"montant","teeEasePct":116,"tryOn":true,"resumeFr":"T-shirt boxy crop à col montant, coupé au mannequin avec une aisance large — essayage lancé."}',
+  },
+  {
+    user:
+      'ÉTAT ACTUEL : patron=tshirt_boxy, taille=M, tissu=Jersey, motif=uni, mannequin=scan femme, stature=175 cm, manches auto=non, teeLongueur=regular, teeEncolure=ras, teeCol=cote, essayage 3D=actif\nBRIEF : raccourcis-le et rends-le plus ample',
+    assistant:
+      '{"intent":"modify","ops":[{"op":"set_tee_length","delta":-1},{"op":"resize","size":"avatar"},{"op":"set_tee_ease","deltaPct":10}],"tryOn":false,"resumeFr":"Un cran plus court ; passé en sur-mesure pour élargir l\'aisance d\'un cran."}',
   },
 ];
 
@@ -205,6 +226,15 @@ export function briefContextLine(raw: unknown): string | null {
     parts.push(`stature=${Math.round(ctx.statureCm)} cm`);
   }
   if (typeof ctx.manchesAuto === 'boolean') parts.push(`manches auto=${ctx.manchesAuto ? 'oui' : 'non'}`);
+  const teeLongueur = str(ctx.teeLongueur);
+  if (teeLongueur) parts.push(`teeLongueur=${teeLongueur}`);
+  const teeEncolure = str(ctx.teeEncolure);
+  if (teeEncolure) parts.push(`teeEncolure=${teeEncolure}`);
+  const teeCol = str(ctx.teeCol);
+  if (teeCol) parts.push(`teeCol=${teeCol}`);
+  if (typeof ctx.teeAisancePct === 'number' && Number.isFinite(ctx.teeAisancePct)) {
+    parts.push(`teeAisance=${Math.round(ctx.teeAisancePct)} %`);
+  }
   if (typeof ctx.essayage === 'boolean') parts.push(`essayage 3D=${ctx.essayage ? 'actif' : 'non'}`);
   return parts.length ? parts.join(', ') : null;
 }

@@ -9,6 +9,7 @@
 import {
   BRIEF_BOXY_SIZES,
   clampMotifCm,
+  clampTeeEase,
   BRIEF_HOODIE_SIZES,
   BRIEF_JUPE_SIZES,
   BRIEF_DOUDOUNE_SIZES,
@@ -23,6 +24,9 @@ import {
   type BriefMotifCouleur,
   type BriefOp,
   type BriefResult,
+  type BriefTeeCollar,
+  type BriefTeeLength,
+  type BriefTeeNeck,
 } from './BriefContract';
 
 /** Minuscules + accents retirés : les règles matchent « évasée » comme « evasee ». */
@@ -174,6 +178,65 @@ function detectMotifCm(t: string): number | undefined {
   return undefined;
 }
 
+/** Retouches parlées du tee boxy (v293) — blocs longueur / encolure / col / aisance. */
+interface TeeTouch {
+  length?: BriefTeeLength;
+  /** Un cran plus court (−1) ou plus long (+1) depuis la valeur courante. */
+  lengthDelta?: -1 | 1;
+  neck?: BriefTeeNeck;
+  collar?: BriefTeeCollar;
+  easePct?: number;
+  easeDelta?: number;
+}
+
+const TEE_BODY_WORDS = String.raw`tee(?:[- ]?shirt)?|t[- ]?shirt|haut|corps|coupe|version`;
+
+function detectTeeTouch(t: string): TeeTouch {
+  const touch: TeeTouch = {};
+  // Col (bloc) AVANT encolure : « col montant » / « sans col » doivent gagner
+  // sur le « col » générique. « col roulé » reste hors vocabulaire (honnêteté).
+  if (/\bcol montant\b/.test(t)) touch.collar = 'montant';
+  else if (/\bsans col\b/.test(t)) touch.collar = 'sans';
+  else if (/\bbord[- ]cote\b|\bcol cote\b/.test(t)) touch.collar = 'cote';
+  if (/\b(?:col|encolure) (?:en )?v\b/.test(t)) touch.neck = 'v';
+  else if (/\bras du cou\b|\bcol rond\b|\bencolure ronde?\b/.test(t)) touch.neck = 'ras';
+  // Longueur du CORPS : relatif d'abord, absolu ensuite. Les manches sont
+  // exclues (« manches plus longues », « raccourcis les manches » = bloc manche).
+  const mancheLength = /\b(?:allonge|raccourci)[a-z]*\b[^.,;]{0,12}\bmanches?\b/.test(t);
+  if (!mancheLength) {
+    if (/(?<!manches? )\bplus court(?:e)?\b|\braccourci[a-z]*\b/.test(t)) touch.lengthDelta = -1;
+    else if (/(?<!manches? )\bplus long(?:ue)?\b|\ballonge[a-z]*\b/.test(t)) touch.lengthDelta = 1;
+    else if (
+      /\bcrop(?:pe|pee)?\b/.test(t) ||
+      new RegExp(String.raw`\b(?:${TEE_BODY_WORDS}) court\b`).test(t)
+    ) {
+      touch.length = 'crop';
+    } else if (new RegExp(String.raw`\b(?:${TEE_BODY_WORDS}) long\b`).test(t)) touch.length = 'long';
+    else if (/\blongueur normale\b/.test(t)) touch.length = 'regular';
+  }
+  // Aisance : relatif (« plus ample ») ou absolu (« oversize », « près du corps »).
+  // « ajusté au mannequin » = TAILLE avatar (detectSize), jamais l'aisance.
+  if (/\bplus ample\b|\bplus large\b|\bplus loose\b/.test(t)) touch.easeDelta = 10;
+  else if (/\bmoins ample\b|\bplus pres du corps\b|\bplus cintre(?:e)?\b|\bplus ajuste(?:e)?\b/.test(t)) {
+    touch.easeDelta = -10;
+  } else if (/\btres ample\b|\boversize\b/.test(t)) touch.easePct = clampTeeEase(116);
+  else if (/\bample\b|\bloose\b/.test(t)) touch.easePct = clampTeeEase(110);
+  else if (/\bpres du corps\b|\bcintre(?:e|es)?\b/.test(t)) touch.easePct = clampTeeEase(92);
+  return touch;
+}
+
+/** Les ops de retouche du tee, dans l'ordre stable longueur → encolure → col → aisance. */
+function teeTouchOps(touch: TeeTouch): BriefOp[] {
+  const ops: BriefOp[] = [];
+  if (touch.length !== undefined) ops.push({ op: 'set_tee_length', value: touch.length });
+  else if (touch.lengthDelta !== undefined) ops.push({ op: 'set_tee_length', delta: touch.lengthDelta });
+  if (touch.neck !== undefined) ops.push({ op: 'set_tee_neck', value: touch.neck });
+  if (touch.collar !== undefined) ops.push({ op: 'set_tee_collar', value: touch.collar });
+  if (touch.easePct !== undefined) ops.push({ op: 'set_tee_ease', pct: touch.easePct });
+  else if (touch.easeDelta !== undefined) ops.push({ op: 'set_tee_ease', deltaPct: touch.easeDelta });
+  return ops;
+}
+
 function detectBodyKind(t: string): BriefBodyKind | undefined {
   if (/\bjericho\b|\bneutres?\b|\bhommes?\b|\bmasculins?\b|\bmec\b/.test(t)) return 'scan homme';
   if (/\bfemmes?\b|\bfeminin(e|es)?\b|\bmeuf\b/.test(t)) return 'scan femme';
@@ -191,6 +254,12 @@ function detectStature(t: string): number | undefined {
 }
 
 function detectSize(t: string, archetype: BriefArchetype | null): string | undefined {
+  // Retouche du vêtement courant (« la même ajustée au mannequin ») : l'op
+  // resize('avatar') n'aboutit que si le sélecteur du patron courant propose
+  // vraiment cette option — sinon l'exécuteur note honnêtement.
+  if (archetype === null && /ajust(e|ee)? au mannequin|sur[- ]mesure|a mes mesures/.test(t)) {
+    return 'avatar';
+  }
   if (archetype === 'pantalon') {
     const eu = t.match(/\b(?:taille|eu)\s?(2[68]|3[02468]|4[0246]|26|46)\b/)?.[1];
     if (eu && (BRIEF_PANTS_SIZES as readonly string[]).includes(eu)) return eu;
@@ -255,16 +324,20 @@ export function interpretBrief(rawText: string): BriefResult {
     : '';
   const bodyKind = detectBodyKind(t);
   const stature = detectStature(t);
+  const teeTouch = detectTeeTouch(t);
   const tryOn = !/sans (essayage|essayer|simulation|simuler)/.test(t);
 
-  // « allonge / raccourcis » : l'édition de longueur reste un geste manuel
-  // (outil Longueur) tant que l'exécuteur ne pilote pas les bords un à un.
-  if (/\ballonge|\braccourci|\bplus long|\bplus court/.test(t) && !archetype) {
+  // Cote de longueur PRÉCISE (« allonge de 10 cm ») : les blocs du tee n'ont
+  // que 3 crans — la retouche au centimètre reste un geste manuel (honnêteté).
+  if (
+    /\b(?:allonge|raccourci)[a-z]*\b[^.,;]{0,16}\bde \d+(?:[.,]\d+)? ?cm\b/.test(t) &&
+    !/\bmanches?\b/.test(t)
+  ) {
     return {
       intent: 'clarify',
-      resumeFr: 'La retouche de longueur reste manuelle pour l’instant.',
+      resumeFr: 'La retouche de longueur au centimètre reste manuelle.',
       suggestionFr:
-        'Active l’outil « Longueur » (étape 2) et tire l’extrémité du bord dans son axe — la carte d’aide affiche la cote en direct.',
+        'À la voix, le tee connaît 3 crans (« plus court », « plus long », « crop »). Pour une cote exacte : outil « Longueur » (étape 2), la carte d’aide affiche la cote en direct.',
     };
   }
 
@@ -293,8 +366,10 @@ export function interpretBrief(rawText: string): BriefResult {
     }
     const ops: BriefOp[] = [];
     const size = detectSize(t, null);
-    if (MODIFY_HINT.test(t) || fabric || motif || bodyKind || stature || size) {
+    const teeOps = teeTouchOps(teeTouch);
+    if (MODIFY_HINT.test(t) || fabric || motif || bodyKind || stature || size || teeOps.length) {
       if (size) ops.push({ op: 'resize', size });
+      ops.push(...teeOps);
       if (fabric) ops.push({ op: 'change_fabric', preset: fabric });
       if (motif) {
         ops.push({
@@ -334,9 +409,41 @@ export function interpretBrief(rawText: string): BriefResult {
     };
   }
 
-  const size = detectSize(t, archetype.archetype);
+  let size = detectSize(t, archetype.archetype);
+  const isTee = archetype.archetype === 'tshirt_boxy';
+  // Blocs du tee à la CRÉATION : les crans relatifs se résolvent depuis les
+  // valeurs par défaut (longueur normale, aisance 100 %).
+  const teeLength = isTee
+    ? (teeTouch.length ?? (teeTouch.lengthDelta === -1 ? 'crop' : teeTouch.lengthDelta === 1 ? 'long' : undefined))
+    : undefined;
+  const teeEasePct = isTee
+    ? (teeTouch.easePct ??
+      (teeTouch.easeDelta !== undefined ? clampTeeEase(100 + teeTouch.easeDelta) : undefined))
+    : undefined;
+  // L'aisance n'existe qu'en sur-mesure : un « tee ample » sans taille bascule
+  // sur la coupe au mannequin (et le dit), sinon l'aisance resterait lettre morte.
+  const easeForcesAvatar = teeEasePct !== undefined && !size;
+  if (easeForcesAvatar) size = 'avatar';
+  // Honnêteté : un bloc parlé (col V, longueur, aisance) demandé sur un AUTRE
+  // vêtement que le tee est écarté EN LE DISANT, jamais en silence.
+  const teeBlocksAsked =
+    teeTouch.neck === 'v' ||
+    teeTouch.collar !== undefined ||
+    teeTouch.length !== undefined ||
+    teeTouch.lengthDelta !== undefined ||
+    teeTouch.easeDelta !== undefined;
+  const teeNote =
+    !isTee && teeBlocksAsked
+      ? ' (col, longueur et aisance parlés : blocs du t-shirt boxy pour l’instant)'
+      : '';
   const parts: string[] = [archetype.labelFr];
   if (size) parts.push(size === 'avatar' ? 'ajusté au mannequin' : `taille ${size}`);
+  if (teeLength) parts.push(`longueur ${teeLength === 'crop' ? 'courte' : teeLength === 'long' ? 'longue' : 'normale'}`);
+  if (isTee && teeTouch.neck) parts.push(teeTouch.neck === 'v' ? 'encolure V' : 'ras du cou');
+  if (isTee && teeTouch.collar) {
+    parts.push(teeTouch.collar === 'sans' ? 'sans col' : teeTouch.collar === 'cote' ? 'col bord côte' : 'col montant');
+  }
+  if (teeEasePct !== undefined) parts.push(`aisance ${teeEasePct} %`);
   if (fabric) parts.push(`en ${fabric.toLowerCase()}`);
   if (motif && motif !== 'uni') {
     const details: string[] = [motif];
@@ -354,10 +461,14 @@ export function interpretBrief(rawText: string): BriefResult {
     ...(motif ? { motif } : {}),
     ...(motif && motif !== 'uni' && motifCouleur ? { motifCouleur } : {}),
     ...(motif && motif !== 'uni' && motifCm !== undefined ? { motifCm } : {}),
+    ...(teeLength ? { teeLength } : {}),
+    ...(isTee && teeTouch.neck ? { teeNeck: teeTouch.neck } : {}),
+    ...(isTee && teeTouch.collar ? { teeCollar: teeTouch.collar } : {}),
+    ...(teeEasePct !== undefined ? { teeEasePct } : {}),
     ...(bodyKind !== undefined || stature !== undefined
       ? { body: { ...(bodyKind ? { kind: bodyKind } : {}), ...(stature !== undefined ? { statureCm: stature } : {}) } }
       : {}),
     tryOn,
-    resumeFr: `Brief compris : ${parts.join(' · ')}.${couleurNote}`,
+    resumeFr: `Brief compris : ${parts.join(' · ')}.${couleurNote}${teeNote}`,
   };
 }

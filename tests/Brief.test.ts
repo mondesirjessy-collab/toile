@@ -294,6 +294,18 @@ function makeHooks(overrides: Partial<Record<keyof BriefHooks, boolean>> = {}): 
     setBody: (k) => (log.calls.push(`body:${k}`), yes('setBody')),
     setStature: (cm) => (log.calls.push(`stature:${cm}`), yes('setStature')),
     setSleeves: (on) => (log.calls.push(`sleeves:${on}`), yes('setSleeves')),
+    setTeeLength: (value, delta) => {
+      log.calls.push(`teeLength:${value ?? `Δ${delta}`}`);
+      if (!yes('setTeeLength')) return null;
+      return value ?? (delta < 0 ? 'crop' : 'long');
+    },
+    setTeeNeck: (v) => (log.calls.push(`teeNeck:${v}`), yes('setTeeNeck') ? v : null),
+    setTeeCollar: (v) => (log.calls.push(`teeCollar:${v}`), yes('setTeeCollar') ? v : null),
+    setTeeEase: (pct, deltaPct) => {
+      log.calls.push(`teeEase:${pct ?? `Δ${deltaPct}`}`);
+      if (!yes('setTeeEase')) return null;
+      return pct ?? 100 + deltaPct;
+    },
     tryOn: () => (log.calls.push('tryOn'), yes('tryOn')),
     say: (message, ok) => log.said.push({ message, ok }),
   };
@@ -388,6 +400,10 @@ describe('motif à la demande (couleur + échelle, v292)', () => {
       setBody: () => true,
       setStature: () => true,
       setSleeves: () => true,
+      setTeeLength: (value, delta) => value ?? (delta < 0 ? 'crop' : 'long'),
+      setTeeNeck: (v) => v,
+      setTeeCollar: (v) => v,
+      setTeeEase: (pct, deltaPct) => pct ?? 100 + deltaPct,
       tryOn: () => true,
       say: () => {},
     };
@@ -398,6 +414,104 @@ describe('motif à la demande (couleur + échelle, v292)', () => {
     expect(calls[0]!.motif).toBe('vichy');
     expect(calls[0]!.style).toMatchObject({ couleurRgb: [0.78, 0.16, 0.16], cm: 1.5 });
     expect(exec.applied.join(' ')).toContain('vichy rouge 1,5 cm');
+  });
+});
+
+describe('retouches parlées du tee (v293)', () => {
+  it('« mets un col V et rends-le plus ample » : encolure + aisance relative', () => {
+    const r = interpretBrief('mets un col V et rends-le plus ample');
+    expect(r.intent).toBe('modify');
+    if (r.intent !== 'modify') return;
+    expect(r.ops).toContainEqual({ op: 'set_tee_neck', value: 'v' });
+    expect(r.ops).toContainEqual({ op: 'set_tee_ease', deltaPct: 10 });
+  });
+
+  it('« raccourcis-le » = un cran plus court ; les MANCHES ne bougent pas la longueur', () => {
+    const r = interpretBrief('raccourcis-le');
+    expect(r.intent).toBe('modify');
+    if (r.intent !== 'modify') return;
+    expect(r.ops).toContainEqual({ op: 'set_tee_length', delta: -1 });
+    const manches = interpretBrief('raccourcis les manches');
+    if (manches.intent === 'modify') {
+      expect(manches.ops.some((o) => o.op === 'set_tee_length')).toBe(false);
+    }
+    const longues = interpretBrief('un tee manches longues');
+    expect(longues.intent).toBe('create');
+    if (longues.intent !== 'create') return;
+    expect(longues.teeLength).toBeUndefined();
+  });
+
+  it('création « tee crop col montant bien ample » : blocs posés + bascule sur-mesure', () => {
+    const r = interpretBrief('un tee crop col montant bien ample');
+    expect(r.intent).toBe('create');
+    if (r.intent !== 'create') return;
+    expect(r.teeLength).toBe('crop');
+    expect(r.teeCollar).toBe('montant');
+    expect(r.teeEasePct).toBe(110);
+    // L'aisance n'existe qu'en sur-mesure : sans taille explicite → avatar, DIT.
+    expect(r.garment.size).toBe('avatar');
+    expect(r.resumeFr).toContain('aisance');
+  });
+
+  it('HONNÊTETÉ : « une robe col V » écarte le bloc EN LE DISANT', () => {
+    const r = interpretBrief('une robe col V');
+    expect(r.intent).toBe('create');
+    if (r.intent !== 'create') return;
+    expect(r.teeNeck).toBeUndefined();
+    expect(r.resumeFr).toContain('t-shirt boxy');
+  });
+
+  it('cote au centimètre : « allonge-la de 10 cm » reste manuelle (clarify)', () => {
+    const r = interpretBrief('allonge-la de 10 cm');
+    expect(r.intent).toBe('clarify');
+    if (r.intent !== 'clarify') return;
+    expect(r.suggestionFr).toContain('Longueur');
+  });
+
+  it('la validation borne et filtre les ops tee', () => {
+    const v = validateBriefResult({
+      intent: 'modify',
+      ops: [
+        { op: 'set_tee_length', delta: -3 },
+        { op: 'set_tee_ease', pct: 300 },
+        { op: 'set_tee_neck', value: 'bateau' },
+        { op: 'set_tee_collar', value: 'montant' },
+      ],
+      resumeFr: 'x',
+    });
+    expect(v?.intent).toBe('modify');
+    if (v?.intent !== 'modify') return;
+    expect(v.ops).toContainEqual({ op: 'set_tee_length', delta: -1 });
+    expect(v.ops).toContainEqual({ op: 'set_tee_ease', pct: 120 });
+    expect(v.ops.some((o) => o.op === 'set_tee_neck')).toBe(false);
+    expect(v.ops).toContainEqual({ op: 'set_tee_collar', value: 'montant' });
+    // À la création, les blocs tee sont réservés au tshirt_boxy.
+    const robe = validateBriefResult({
+      intent: 'create',
+      garment: { archetype: 'robe' },
+      teeNeck: 'v',
+      teeEasePct: 110,
+      resumeFr: 'x',
+    });
+    if (robe?.intent !== 'create') return;
+    expect(robe.teeNeck).toBeUndefined();
+    expect(robe.teeEasePct).toBeUndefined();
+  });
+
+  it('l’exécuteur résume la valeur RÉELLEMENT posée et note l’indisponible', () => {
+    const { hooks, log } = makeHooks();
+    const r = interpretBrief('mets un col V et rends-le plus ample');
+    const exec = executeBrief(r, hooks);
+    expect(exec.ok).toBe(true);
+    expect(log.calls).toContain('teeNeck:v');
+    expect(log.calls).toContain('teeEase:Δ10');
+    expect(exec.applied).toContain('encolure en V');
+    expect(exec.applied).toContain('aisance 110 %');
+    // Pas un tee à l'écran : hooks null → notes honnêtes, rien d'appliqué en silence.
+    const { hooks: offHooks } = makeHooks({ setTeeNeck: false, setTeeEase: false });
+    const exec2 = executeBrief(r, offHooks);
+    expect(exec2.notes.join(' ')).toContain('t-shirt boxy');
+    expect(exec2.notes.join(' ')).toContain('sur-mesure');
   });
 });
 

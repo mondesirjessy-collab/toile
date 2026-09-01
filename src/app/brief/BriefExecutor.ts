@@ -11,7 +11,18 @@ import {
   BRIEF_MOTIF_COULEURS,
   type BriefMotifCouleur,
   type BriefResult,
+  type BriefTeeCollar,
+  type BriefTeeLength,
+  type BriefTeeNeck,
 } from './BriefContract';
+
+/** Libellés français des blocs du tee (résumés d'exécution). */
+const TEE_LENGTH_FR: Record<BriefTeeLength, string> = { crop: 'court', regular: 'normale', long: 'long' };
+const TEE_NECK_FR: Record<BriefTeeNeck, string> = { ras: 'ras du cou', v: 'en V' };
+const TEE_COLLAR_FR: Record<BriefTeeCollar, string> = { sans: 'sans col', cote: 'bord côte', montant: 'montant' };
+const TEE_ONLY_NOTE = 'retouche réservée au t-shirt boxy (blocs longueur/encolure/col)';
+const TEE_EASE_NOTE =
+  'aisance parlée réservée au tee boxy en sur-mesure — choisis la taille « Ajusté au mannequin »';
 
 /** Style d'imprimé résolu (RGB du nuancier fermé + échelle en cm). */
 export interface BriefMotifStyle {
@@ -46,6 +57,16 @@ export interface BriefHooks {
   setBody(kind: 'scan femme' | 'scan homme'): boolean;
   setStature(cm: number): boolean;
   setSleeves(on: boolean): boolean;
+  /**
+   * Retouches parlées du tee boxy — chaque hook pilote le sélecteur at-tee-*
+   * réel et rend la valeur EFFECTIVEMENT posée (null = bloc indisponible,
+   * c'est-à-dire pas un tee boxy à l'écran). Le pas relatif (delta) se calcule
+   * sur la valeur courante du sélecteur, jamais sur un état supposé.
+   */
+  setTeeLength(value: BriefTeeLength | null, delta: number): BriefTeeLength | null;
+  setTeeNeck(value: BriefTeeNeck): BriefTeeNeck | null;
+  setTeeCollar(value: BriefTeeCollar): BriefTeeCollar | null;
+  setTeeEase(pct: number | null, deltaPct: number): number | null;
   /** Lance l'essayage 3D (clic sur at-sim). */
   tryOn(): boolean;
   /** Feedback utilisateur (toast + ligne de statut du Brief). */
@@ -101,6 +122,26 @@ export function executeBrief(result: BriefResult, hooks: BriefHooks): BriefExecu
         applied.push(motifLabel(result.motif, result.motifCouleur, result.motifCm));
       } else note(notes, 'motif indisponible ici');
     }
+    if (result.teeLength !== undefined) {
+      const set = hooks.setTeeLength(result.teeLength, 0);
+      if (set) applied.push(`longueur ${TEE_LENGTH_FR[set]}`);
+      else note(notes, TEE_ONLY_NOTE);
+    }
+    if (result.teeNeck !== undefined) {
+      const set = hooks.setTeeNeck(result.teeNeck);
+      if (set) applied.push(`encolure ${TEE_NECK_FR[set]}`);
+      else note(notes, TEE_ONLY_NOTE);
+    }
+    if (result.teeCollar !== undefined) {
+      const set = hooks.setTeeCollar(result.teeCollar);
+      if (set) applied.push(`col ${TEE_COLLAR_FR[set]}`);
+      else note(notes, TEE_ONLY_NOTE);
+    }
+    if (result.teeEasePct !== undefined) {
+      const set = hooks.setTeeEase(result.teeEasePct, 0);
+      if (set !== null) applied.push(`aisance ${set} %`);
+      else note(notes, TEE_EASE_NOTE);
+    }
     if (result.sleeves !== undefined) {
       if (hooks.setSleeves(result.sleeves)) applied.push(result.sleeves ? 'manches auto' : 'sans manches');
       else note(notes, 'manches automatiques indisponibles sur ce patron');
@@ -131,6 +172,30 @@ export function executeBrief(result: BriefResult, hooks: BriefHooks): BriefExecu
           applied.push(motifLabel(op.motif, op.couleur, op.cm));
         } else note(notes, 'motif indisponible');
         break;
+      case 'set_tee_length': {
+        const set = hooks.setTeeLength(op.value ?? null, op.delta ?? 0);
+        if (set) applied.push(`longueur ${TEE_LENGTH_FR[set]}`);
+        else note(notes, TEE_ONLY_NOTE);
+        break;
+      }
+      case 'set_tee_neck': {
+        const set = hooks.setTeeNeck(op.value);
+        if (set) applied.push(`encolure ${TEE_NECK_FR[set]}`);
+        else note(notes, TEE_ONLY_NOTE);
+        break;
+      }
+      case 'set_tee_collar': {
+        const set = hooks.setTeeCollar(op.value);
+        if (set) applied.push(`col ${TEE_COLLAR_FR[set]}`);
+        else note(notes, TEE_ONLY_NOTE);
+        break;
+      }
+      case 'set_tee_ease': {
+        const set = hooks.setTeeEase(op.pct ?? null, op.deltaPct ?? 0);
+        if (set !== null) applied.push(`aisance ${set} %`);
+        else note(notes, TEE_EASE_NOTE);
+        break;
+      }
       case 'set_body':
         if (hooks.setBody(op.kind)) applied.push(`mannequin ${op.kind}`);
         else note(notes, 'mannequin inchangé');

@@ -10711,6 +10711,60 @@ async function main(): Promise<void> {
         if (pressed !== on) btn.click();
         return true;
       },
+      // Retouches parlées (v293) : chaque hook pilote le sélecteur at-tee-*
+      // réel, uniquement quand sa ligne est visible (= tee boxy à l'écran).
+      // Le pas relatif se lit sur la valeur COURANTE du sélecteur.
+      setTeeLength: (value, delta) => {
+        const row = document.getElementById('at-tee-length-row');
+        const sel = document.getElementById('at-tee-length');
+        if (!(row instanceof HTMLElement) || row.hidden || !(sel instanceof HTMLSelectElement)) return null;
+        const options = [...sel.options].map((o) => o.value);
+        const target =
+          value ??
+          options[Math.min(options.length - 1, Math.max(0, options.indexOf(sel.value) + delta))];
+        if (!target || !options.includes(target)) return null;
+        if (sel.value !== target) {
+          sel.value = target;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        return target as 'crop' | 'regular' | 'long';
+      },
+      setTeeNeck: (value) => {
+        const row = document.getElementById('at-tee-neck-row');
+        const sel = document.getElementById('at-tee-neck');
+        if (!(row instanceof HTMLElement) || row.hidden || !(sel instanceof HTMLSelectElement)) return null;
+        if (![...sel.options].some((o) => o.value === value)) return null;
+        if (sel.value !== value) {
+          sel.value = value;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        return value;
+      },
+      setTeeCollar: (value) => {
+        const row = document.getElementById('at-tee-collar-row');
+        const sel = document.getElementById('at-tee-collar');
+        if (!(row instanceof HTMLElement) || row.hidden || !(sel instanceof HTMLSelectElement)) return null;
+        if (![...sel.options].some((o) => o.value === value)) return null;
+        if (sel.value !== value) {
+          sel.value = value;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        return value;
+      },
+      setTeeEase: (pct, deltaPct) => {
+        const row = document.getElementById('at-tee-ease-row');
+        const input = document.getElementById('at-tee-ease');
+        if (!(row instanceof HTMLElement) || row.hidden || !(input instanceof HTMLInputElement)) return null;
+        const min = Number(input.min) || 90;
+        const max = Number(input.max) || 120;
+        const current = Number(input.value) || 100;
+        const wanted = pct ?? current + deltaPct;
+        const target = Math.min(max, Math.max(min, Math.round(wanted / 2) * 2));
+        input.value = String(target);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        return target;
+      },
       tryOn: () => {
         // Essayage déjà actif : les retouches s'appliquent en direct, recliquer
         // at-sim basculerait l'état à l'aveugle — on ne fait rien. (TOILE-24)
@@ -10848,6 +10902,28 @@ async function main(): Promise<void> {
       const sleevesBtn = document.getElementById('at-sleeves');
       if (sleevesBtn instanceof HTMLElement) {
         ctx.manchesAuto = sleevesBtn.getAttribute('aria-pressed') === 'true';
+      }
+      // Blocs du tee boxy (retouches parlées) : l'état exact des sélecteurs
+      // visibles, pour que « plus ample » ou « l'autre encolure » se calculent
+      // depuis le réel.
+      if (loadedPattern === 'boxy') {
+        const teeSel = (id: string): string | null => {
+          const row = document.getElementById(`${id}-row`);
+          const sel = document.getElementById(id);
+          if (!(row instanceof HTMLElement) || row.hidden || !(sel instanceof HTMLSelectElement)) return null;
+          return sel.value;
+        };
+        const longueur = teeSel('at-tee-length');
+        if (longueur) ctx.teeLongueur = longueur;
+        const encolure = teeSel('at-tee-neck');
+        if (encolure) ctx.teeEncolure = encolure;
+        const col = teeSel('at-tee-collar');
+        if (col) ctx.teeCol = col;
+        const easeRow = document.getElementById('at-tee-ease-row');
+        const easeInput = document.getElementById('at-tee-ease');
+        if (easeRow instanceof HTMLElement && !easeRow.hidden && easeInput instanceof HTMLInputElement) {
+          ctx.teeAisancePct = Number(easeInput.value) || 100;
+        }
       }
       ctx.essayage = document.body.classList.contains('atelier-simulating');
       return ctx;

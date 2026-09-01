@@ -71,6 +71,27 @@ export function isMotifCouleur(v: unknown): v is BriefMotifCouleur {
   return typeof v === 'string' && v in BRIEF_MOTIF_COULEURS;
 }
 
+/**
+ * Blocs composables du t-shirt boxy (sélecteurs at-tee-* de l'atelier) —
+ * les « retouches parlées » ne pilotent QUE ces valeurs réelles.
+ */
+export const BRIEF_TEE_LENGTHS = ['crop', 'regular', 'long'] as const;
+export type BriefTeeLength = (typeof BRIEF_TEE_LENGTHS)[number];
+export const BRIEF_TEE_NECKS = ['ras', 'v'] as const;
+export type BriefTeeNeck = (typeof BRIEF_TEE_NECKS)[number];
+export const BRIEF_TEE_COLLARS = ['sans', 'cote', 'montant'] as const;
+export type BriefTeeCollar = (typeof BRIEF_TEE_COLLARS)[number];
+
+/** Bornes du curseur « Aisance » du tee sur-mesure (at-tee-ease, pas de 2). */
+export const BRIEF_TEE_EASE_MIN = 90;
+export const BRIEF_TEE_EASE_MAX = 120;
+
+export function clampTeeEase(pct: number): number {
+  if (!Number.isFinite(pct)) return 100;
+  const evenSteps = Math.round(pct / 2) * 2;
+  return Math.min(BRIEF_TEE_EASE_MAX, Math.max(BRIEF_TEE_EASE_MIN, evenSteps));
+}
+
 export const BRIEF_BOXY_SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL'] as const;
 export const BRIEF_PANTS_SIZES = [
   '26', '28', '30', '32', '34', '36', '38', '40', '42', '44', '46',
@@ -107,6 +128,11 @@ export type BriefOp =
   | { op: 'resize'; size: string }
   | { op: 'change_fabric'; preset: BriefFabric }
   | { op: 'change_motif'; motif: BriefMotif; couleur?: BriefMotifCouleur; cm?: number }
+  /** Retouches parlées du tee boxy — valeur absolue OU pas relatif (« plus court »). */
+  | { op: 'set_tee_length'; value?: BriefTeeLength; delta?: -1 | 1 }
+  | { op: 'set_tee_neck'; value: BriefTeeNeck }
+  | { op: 'set_tee_collar'; value: BriefTeeCollar }
+  | { op: 'set_tee_ease'; pct?: number; deltaPct?: number }
   | { op: 'set_body'; kind: BriefBodyKind }
   | { op: 'set_stature'; statureCm: number }
   | { op: 'set_sleeves'; on: boolean }
@@ -121,6 +147,11 @@ export interface BriefCreate {
   motifCouleur?: BriefMotifCouleur;
   /** Échelle de l'imprimé en cm (bornée au curseur réel 1..30). */
   motifCm?: number;
+  /** Blocs du tee boxy à la création — ignorés sur tout autre archétype. */
+  teeLength?: BriefTeeLength;
+  teeNeck?: BriefTeeNeck;
+  teeCollar?: BriefTeeCollar;
+  teeEasePct?: number;
   body?: BriefBody;
   sleeves?: boolean;
   /** Lancer l'essayage 3D à la fin (défaut : oui — c'est le moment « waouh »). */
@@ -184,6 +215,12 @@ export function validateBriefResult(raw: unknown): BriefResult | null {
     if (out.motif && out.motif !== 'uni' && typeof r.motifCm === 'number') {
       out.motifCm = clampMotifCm(r.motifCm);
     }
+    if (out.garment.archetype === 'tshirt_boxy') {
+      if (BRIEF_TEE_LENGTHS.includes(r.teeLength as BriefTeeLength)) out.teeLength = r.teeLength as BriefTeeLength;
+      if (BRIEF_TEE_NECKS.includes(r.teeNeck as BriefTeeNeck)) out.teeNeck = r.teeNeck as BriefTeeNeck;
+      if (BRIEF_TEE_COLLARS.includes(r.teeCollar as BriefTeeCollar)) out.teeCollar = r.teeCollar as BriefTeeCollar;
+      if (typeof r.teeEasePct === 'number') out.teeEasePct = clampTeeEase(r.teeEasePct);
+    }
     if (typeof r.sleeves === 'boolean') out.sleeves = r.sleeves;
     const b = r.body as Record<string, unknown> | undefined;
     if (b && typeof b === 'object') {
@@ -231,6 +268,46 @@ export function validateBriefOps(rawOps: unknown): BriefOp[] {
           ops.push(op);
         }
         break;
+      case 'set_tee_length': {
+        const value = BRIEF_TEE_LENGTHS.includes(o.value as BriefTeeLength)
+          ? (o.value as BriefTeeLength)
+          : undefined;
+        const delta =
+          typeof o.delta === 'number' && o.delta !== 0 ? ((o.delta > 0 ? 1 : -1) as 1 | -1) : undefined;
+        if (value !== undefined || delta !== undefined) {
+          ops.push({
+            op: 'set_tee_length',
+            ...(value !== undefined ? { value } : {}),
+            ...(value === undefined && delta !== undefined ? { delta } : {}),
+          });
+        }
+        break;
+      }
+      case 'set_tee_neck':
+        if (BRIEF_TEE_NECKS.includes(o.value as BriefTeeNeck)) {
+          ops.push({ op: 'set_tee_neck', value: o.value as BriefTeeNeck });
+        }
+        break;
+      case 'set_tee_collar':
+        if (BRIEF_TEE_COLLARS.includes(o.value as BriefTeeCollar)) {
+          ops.push({ op: 'set_tee_collar', value: o.value as BriefTeeCollar });
+        }
+        break;
+      case 'set_tee_ease': {
+        const pct = typeof o.pct === 'number' ? clampTeeEase(o.pct) : undefined;
+        const deltaPct =
+          typeof o.deltaPct === 'number' && Number.isFinite(o.deltaPct) && o.deltaPct !== 0
+            ? Math.min(30, Math.max(-30, Math.round(o.deltaPct / 2) * 2))
+            : undefined;
+        if (pct !== undefined || deltaPct !== undefined) {
+          ops.push({
+            op: 'set_tee_ease',
+            ...(pct !== undefined ? { pct } : {}),
+            ...(pct === undefined && deltaPct !== undefined ? { deltaPct } : {}),
+          });
+        }
+        break;
+      }
       case 'set_body':
         if (o.kind === 'scan femme' || o.kind === 'scan homme') {
           ops.push({ op: 'set_body', kind: o.kind });
