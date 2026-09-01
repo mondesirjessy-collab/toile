@@ -109,8 +109,10 @@ import {
 import { showToast, undoToastMessage } from './app/ToastQueue';
 import { claimFirstUseTip } from './app/FirstUseTip';
 import { BRIEF_ENDPOINT_STORAGE_KEY, probeBriefEndpoint, RemoteBackend, RulesBackend, type BriefBackend, type BriefImageAttachment } from './app/brief/BriefBackend';
-import { validateFitAdvice, type FitAdviceResult } from './app/brief/FitContract';
+import { validateFitAdvice, type FitAdviceResult, type FitSuggestion } from './app/brief/FitContract';
 import { executeBrief, type BriefHooks } from './app/brief/BriefExecutor';
+import { fitProofLines } from './app/brief/FitProof';
+import type { BriefOp } from './app/brief/BriefContract';
 import { PatternView, SEAM_COLORS, type PatternHandleSpec, type SystemLink } from './app/PatternView';
 import { setPatternTheme, type PatternTheme } from './app/patternPalette';
 import { exportDraftPatternPdf, exportDraftPatternSvg } from './app/draftPatternExport';
@@ -11074,6 +11076,215 @@ async function main(): Promise<void> {
           : undefined,
       };
     };
+    // ---- 🪄 Ajuste pour moi (v294) : le bilan qui se PROUVE --------------------
+    // Au clic d'une suggestion : mesurer AVANT (solveur), appliquer les ops par
+    // l'exécuteur, attendre le repos du tissu (asleep = le certificat existant),
+    // re-mesurer, afficher l'évolution chiffrée par zone. Le verdict vient des
+    // mesures, jamais de la parole du conseiller. Zéro appel IA supplémentaire.
+    const waitUntil = async (cond: () => boolean, timeoutMs: number): Promise<boolean> => {
+      const t0 = performance.now();
+      while (performance.now() - t0 < timeoutMs) {
+        if (cond()) return true;
+        await new Promise((r) => setTimeout(r, 400));
+      }
+      return cond();
+    };
+    /**
+     * L'inverse d'une liste d'ops = la photographie des sélecteurs VISÉS avant
+     * le geste, rejouée par les mêmes hooks. (La couleur/échelle d'un motif ne
+     * sont pas photographiées — les suggestions du bilan n'en émettent pas.)
+     */
+    const inverseOfOps = (ops: BriefOp[]): BriefOp[] => {
+      const inv: BriefOp[] = [];
+      const seen = new Set<string>();
+      const selValue = (id: string): string | null => {
+        const row = document.getElementById(`${id}-row`);
+        const sel = document.getElementById(id);
+        if (row instanceof HTMLElement && row.hidden) return null;
+        return sel instanceof HTMLSelectElement ? sel.value : null;
+      };
+      for (const op of ops) {
+        if (seen.has(op.op)) continue;
+        seen.add(op.op);
+        switch (op.op) {
+          case 'resize': {
+            const v = sizeSel?.value;
+            if (v) inv.push({ op: 'resize', size: v });
+            break;
+          }
+          case 'change_fabric': {
+            const sel = panelSelect('Soie', (s2) =>
+              [...s2.options].some((o) => /Tissu global/.test(o.textContent ?? '')),
+            );
+            if (sel?.value) inv.push({ op: 'change_fabric', preset: sel.value as never });
+            break;
+          }
+          case 'change_motif': {
+            const sel = panelSelect('vichy');
+            if (sel?.value) inv.push({ op: 'change_motif', motif: sel.value as never });
+            break;
+          }
+          case 'set_body': {
+            const sel = panelSelect('scan homme');
+            if (sel?.value === 'scan femme' || sel?.value === 'scan homme') {
+              inv.push({ op: 'set_body', kind: sel.value });
+            }
+            break;
+          }
+          case 'set_stature': {
+            const cm = Number(avatarStatureInput.value);
+            if (Number.isFinite(cm) && cm > 0) inv.push({ op: 'set_stature', statureCm: Math.round(cm) });
+            break;
+          }
+          case 'set_sleeves': {
+            const btn = document.getElementById('at-sleeves');
+            if (btn instanceof HTMLElement) {
+              inv.push({ op: 'set_sleeves', on: btn.getAttribute('aria-pressed') === 'true' });
+            }
+            break;
+          }
+          case 'set_tee_length': {
+            const v = selValue('at-tee-length');
+            if (v) inv.push({ op: 'set_tee_length', value: v as never });
+            break;
+          }
+          case 'set_tee_neck': {
+            const v = selValue('at-tee-neck');
+            if (v) inv.push({ op: 'set_tee_neck', value: v as never });
+            break;
+          }
+          case 'set_tee_collar': {
+            const v = selValue('at-tee-collar');
+            if (v) inv.push({ op: 'set_tee_collar', value: v as never });
+            break;
+          }
+          case 'set_tee_ease': {
+            const row = document.getElementById('at-tee-ease-row');
+            const input = document.getElementById('at-tee-ease');
+            if (row instanceof HTMLElement && !row.hidden && input instanceof HTMLInputElement) {
+              inv.push({ op: 'set_tee_ease', pct: Number(input.value) || 100 });
+            }
+            break;
+          }
+          case 'try_on':
+            break;
+        }
+      }
+      return inv;
+    };
+    let fitProofRunning = false;
+    const proveSuggestion = async (
+      suggestion: FitSuggestion,
+      proofBox: HTMLElement,
+      buttons: HTMLButtonElement[],
+    ): Promise<void> => {
+      if (fitProofRunning) return;
+      fitProofRunning = true;
+      for (const b of buttons) b.disabled = true;
+      const proofSay = (msg: string): void => {
+        proofBox.hidden = false;
+        proofBox.replaceChildren();
+        proofBox.textContent = msg;
+      };
+      try {
+        const avant = asleep ? await collectFitReport() : null;
+        const inverse = inverseOfOps(suggestion.ops);
+        // tryOn: true — un resize peut redescendre l'atelier en préparation
+        // (pièces reconstruites, plus portées) : le hook relance alors le
+        // VRAI essayage, et reste sans effet si la simulation tourne déjà.
+        const exec = executeBrief(
+          { intent: 'modify', ops: suggestion.ops, tryOn: true, resumeFr: suggestion.labelFr },
+          briefHooks,
+        );
+        if (!exec.ok) {
+          proofSay('Suggestion inapplicable sur le vêtement courant — rien n’a été mesuré.');
+          return;
+        }
+        if (!avant) {
+          proofSay('Pas de mesure de départ (le tissu bougeait) — retouche appliquée sans preuve chiffrée.');
+          return;
+        }
+        proofSay('📏 Retouche appliquée — le tissu se repose avant la re-mesure…');
+        // Un resize reconstruit le vêtement en DIFFÉRÉ et redescend l'atelier
+        // en préparation APRÈS le passage de l'exécuteur (son tryOn tombe
+        // alors dans le vide — la classe atelier-simulating est encore posée
+        // au moment du clic). On relance donc l'essayage jusqu'à ce qu'il
+        // prenne, et on refuse de mesurer un vêtement pas porté.
+        const simulating = (): boolean => document.body.classList.contains('atelier-simulating');
+        await waitUntil(() => {
+          if (!simulating()) briefHooks.tryOn();
+          return simulating();
+        }, 15_000);
+        if (!simulating()) {
+          proofSay('L’essayage ne s’est pas relancé après la retouche — pas de chiffres. Relance-le à la main puis refais le bilan.');
+          return;
+        }
+        // Sans RÉVEIL observé, la veille qui suit est celle d'un vêtement pas
+        // encore re-drapé : mesurer là donnerait des chiffres inventés.
+        const woke = await waitUntil(() => !asleep, 20_000);
+        if (!woke) {
+          proofSay('Le moteur n’a pas re-drapé après la retouche — pas de chiffres. Relance l’essayage puis le bilan.');
+          return;
+        }
+        // Le tissu se pose, PORTÉ — et si une 2e reconstruction différée fait
+        // retomber l'atelier en préparation pendant l'attente, on relance.
+        const settled = await waitUntil(() => {
+          if (!simulating()) briefHooks.tryOn();
+          return asleep && simulating();
+        }, 90_000);
+        if (!settled) {
+          proofSay('Le tissu ne s’est pas reposé en 90 s — pas de chiffres. Relance le bilan quand il est en veille 💤.');
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 800));
+        const apres = await collectFitReport();
+        if (!apres) {
+          proofSay('Re-mesure indisponible — relance le bilan du tombé.');
+          return;
+        }
+        const lines = fitProofLines(avant, apres);
+        proofBox.hidden = false;
+        proofBox.replaceChildren();
+        const title = document.createElement('strong');
+        title.textContent = `📏 Preuve par les mesures — ${suggestion.labelFr}`;
+        title.style.cssText = 'display:block;margin-bottom:4px;color:#dff3e6';
+        proofBox.appendChild(title);
+        if (!lines.length) {
+          const p = document.createElement('div');
+          p.textContent = 'Zones non comparables entre les deux drapés (vêtement reconstruit trop différent).';
+          proofBox.appendChild(p);
+        }
+        for (const line of lines) {
+          const div = document.createElement('div');
+          div.style.marginTop = '2px';
+          div.textContent = line;
+          proofBox.appendChild(div);
+        }
+        if (inverse.length) {
+          const undoBtn = document.createElement('button');
+          undoBtn.type = 'button';
+          undoBtn.textContent = '↩ Revenir comme avant';
+          undoBtn.style.cssText =
+            'margin-top:8px;padding:4px 10px;border-radius:6px;border:1px solid rgba(222,178,151,.5);' +
+            'background:rgba(222,178,151,.12);color:#f3e6df;cursor:pointer;font:12px system-ui';
+          undoBtn.onclick = () => {
+            undoBtn.disabled = true;
+            executeBrief(
+              { intent: 'modify', ops: inverse, tryOn: true, resumeFr: 'Retour à l’état d’avant la suggestion.' },
+              briefHooks,
+            );
+            const back = document.createElement('div');
+            back.style.marginTop = '4px';
+            back.textContent = '↩ Retouche annulée — le tissu se repose.';
+            proofBox.appendChild(back);
+          };
+          proofBox.appendChild(undoBtn);
+        }
+      } finally {
+        fitProofRunning = false;
+        for (const b of buttons) b.disabled = false;
+      }
+    };
     const showFitCard = (advice: FitAdviceResult): void => {
       let card = document.getElementById('toile-fit-card');
       if (!card) {
@@ -11110,6 +11321,12 @@ async function main(): Promise<void> {
       if (advice.suggestions.length) {
         const actions = document.createElement('div');
         actions.style.cssText = 'margin-top:10px;display:flex;flex-wrap:wrap;gap:6px';
+        // v294 — « Ajuste pour moi » : le clic applique ET prouve (avant/après mesurés).
+        const proofBox = document.createElement('div');
+        proofBox.style.cssText =
+          'margin-top:10px;padding-top:8px;border-top:1px solid rgba(151,222,180,.25);color:#dfe8e2';
+        proofBox.hidden = true;
+        const buttons: HTMLButtonElement[] = [];
         for (const suggestion of advice.suggestions) {
           const btn = document.createElement('button');
           btn.type = 'button';
@@ -11117,15 +11334,12 @@ async function main(): Promise<void> {
           btn.style.cssText =
             'padding:5px 10px;border-radius:6px;border:1px solid rgba(151,222,180,.5);' +
             'background:rgba(151,222,180,.12);color:#dff3e6;cursor:pointer;font:12px system-ui';
-          btn.onclick = () => {
-            executeBrief(
-              { intent: 'modify', ops: suggestion.ops, tryOn: false, resumeFr: suggestion.labelFr },
-              briefHooks,
-            );
-          };
+          btn.onclick = () => void proveSuggestion(suggestion, proofBox, buttons);
+          buttons.push(btn);
           actions.appendChild(btn);
         }
         card.appendChild(actions);
+        card.appendChild(proofBox);
       }
     };
     const runFitCheck = async (): Promise<void> => {
