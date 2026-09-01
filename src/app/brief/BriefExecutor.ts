@@ -7,7 +7,32 @@
  * pourrait pas faire — et tout ce qu'il fait reste annulable par Cmd/Ctrl+Z.
  */
 
-import type { BriefResult } from './BriefContract';
+import {
+  BRIEF_MOTIF_COULEURS,
+  type BriefMotifCouleur,
+  type BriefResult,
+} from './BriefContract';
+
+/** Style d'imprimé résolu (RGB du nuancier fermé + échelle en cm). */
+export interface BriefMotifStyle {
+  couleurRgb?: [number, number, number];
+  cm?: number;
+}
+
+const motifStyle = (couleur?: BriefMotifCouleur, cm?: number): BriefMotifStyle | undefined => {
+  if (couleur === undefined && cm === undefined) return undefined;
+  return {
+    ...(couleur ? { couleurRgb: [...BRIEF_MOTIF_COULEURS[couleur]] as [number, number, number] } : {}),
+    ...(cm !== undefined ? { cm } : {}),
+  };
+};
+
+const motifLabel = (motif: string, couleur?: BriefMotifCouleur, cm?: number): string => {
+  const parts = [`motif ${motif}`];
+  if (couleur) parts.push(couleur);
+  if (cm !== undefined) parts.push(`${String(cm).replace('.', ',')} cm`);
+  return parts.join(' ');
+};
 
 export interface BriefHooks {
   /** Charge un template (clic sur at-tshirt / at-pants / at-hoodie / at-jupe / at-robe / at-veste / at-doudoune). */
@@ -17,7 +42,7 @@ export interface BriefHooks {
   /** Ne pose la valeur que si l'option existe réellement dans le sélecteur. */
   setSize(size: string): boolean;
   setFabric(preset: string): boolean;
-  setMotif(motif: string): boolean;
+  setMotif(motif: string, style?: BriefMotifStyle): boolean;
   setBody(kind: 'scan femme' | 'scan homme'): boolean;
   setStature(cm: number): boolean;
   setSleeves(on: boolean): boolean;
@@ -72,8 +97,9 @@ export function executeBrief(result: BriefResult, hooks: BriefHooks): BriefExecu
       else note(notes, 'tissu inchangé (préréglage indisponible)');
     }
     if (result.motif) {
-      if (hooks.setMotif(result.motif)) applied.push(`motif ${result.motif}`);
-      else note(notes, 'motif indisponible ici');
+      if (hooks.setMotif(result.motif, motifStyle(result.motifCouleur, result.motifCm))) {
+        applied.push(motifLabel(result.motif, result.motifCouleur, result.motifCm));
+      } else note(notes, 'motif indisponible ici');
     }
     if (result.sleeves !== undefined) {
       if (hooks.setSleeves(result.sleeves)) applied.push(result.sleeves ? 'manches auto' : 'sans manches');
@@ -101,8 +127,9 @@ export function executeBrief(result: BriefResult, hooks: BriefHooks): BriefExecu
         else note(notes, 'tissu inchangé');
         break;
       case 'change_motif':
-        if (hooks.setMotif(op.motif)) applied.push(`motif ${op.motif}`);
-        else note(notes, 'motif indisponible');
+        if (hooks.setMotif(op.motif, motifStyle(op.couleur, op.cm))) {
+          applied.push(motifLabel(op.motif, op.couleur, op.cm));
+        } else note(notes, 'motif indisponible');
         break;
       case 'set_body':
         if (hooks.setBody(op.kind)) applied.push(`mannequin ${op.kind}`);

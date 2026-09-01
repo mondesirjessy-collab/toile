@@ -43,8 +43,10 @@ const CATALOG = `ARCHÉTYPES CONSTRUCTIBLES (les seuls) :
 
 TISSUS (presets calibrés) : Jersey, Maille, Popeline, Denim, Lin, Laine, Soie.
 MOTIFS : uni, rayures, vichy, pois.
+COULEURS D'IMPRIMÉ (motifCouleur — nuancier fermé, UNIQUEMENT avec un motif rayures/vichy/pois, jamais pour un uni) : rouge, bordeaux, rose, orange, jaune, vert, bleu, "bleu marine", violet, marron, beige, gris, noir, blanc.
+ÉCHELLE D'IMPRIMÉ (motifCm — en cm, 1 à 30) : « petits carreaux / rayures fines » ≈ 1.5, « gros pois / larges rayures » ≈ 8, valeur explicite si donnée (« carreaux de 3 cm » → 3). motifCouleur et motifCm sont des ENRICHISSEMENTS OPTIONNELS : un motif sans couleur ni échelle se construit tel quel (couleur et taille par défaut) — ne demande JAMAIS de précision pour ça, réponds "create". Seul cas à signaler : un vêtement UNI d'une couleur (« t-shirt rouge », sans imprimé) n'est PAS constructible par le motif — construis-le quand même (sans couleur) et dis dans resumeFr que la couleur unie n'est pas encore disponible, ou qu'un imprimé coloré l'est.
 CORPS : "scan femme", "scan homme". Stature : 140 à 210 cm.
-OPS DE RETOUCHE (intent "modify") : resize{size}, change_fabric{preset}, change_motif{motif}, set_body{kind}, set_stature{statureCm}, set_sleeves{on}, try_on{}.
+OPS DE RETOUCHE (intent "modify") : resize{size}, change_fabric{preset}, change_motif{motif, couleur?, cm?}, set_body{kind}, set_stature{statureCm}, set_sleeves{on}, try_on{}.
 
 NON CONSTRUCTIBLES aujourd'hui (⇒ intent "refuse" + suggestionFr) :
 - chemise/chemisier → suggérer : « Le plus proche : le t-shirt BOXY en popeline. »
@@ -53,11 +55,11 @@ NON CONSTRUCTIBLES aujourd'hui (⇒ intent "refuse" + suggestionFr) :
 - retouche de longueur (« allonge de 10 cm ») → intent "clarify" : « La retouche de longueur reste manuelle pour l'instant. » + suggestionFr sur l'outil Longueur.`;
 
 const CONTRACT = `CONTRAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON, sans texte autour, d'une des formes :
-{"intent":"create","garment":{"archetype":"...","size":"..."},"fabric":"...","motif":"...","body":{"kind":"...","statureCm":170},"sleeves":true,"tryOn":true,"resumeFr":"..."}
+{"intent":"create","garment":{"archetype":"...","size":"..."},"fabric":"...","motif":"...","motifCouleur":"...","motifCm":1.5,"body":{"kind":"...","statureCm":170},"sleeves":true,"tryOn":true,"resumeFr":"..."}
 {"intent":"modify","ops":[{"op":"...",...}],"tryOn":false,"resumeFr":"..."}
 {"intent":"clarify","resumeFr":"...","suggestionFr":"..."}
 {"intent":"refuse","resumeFr":"...","suggestionFr":"..."}
-Champs optionnels omis s'ils ne sont pas exprimés dans le brief (size, fabric, motif, body, sleeves). "tryOn" vaut true par défaut pour "create" (l'essayage est le moment attendu) sauf si le brief dit « sans essayage ». "resumeFr" : une phrase française claire résumant ce qui va être fait (ou pourquoi non).`;
+Champs optionnels omis s'ils ne sont pas exprimés dans le brief (size, fabric, motif, motifCouleur, motifCm, body, sleeves). "tryOn" vaut true par défaut pour "create" (l'essayage est le moment attendu) sauf si le brief dit « sans essayage ». "resumeFr" : une phrase française claire résumant ce qui va être fait (ou pourquoi non).`;
 
 const STYLE = `RÈGLES :
 1. Vocabulaire STRICTEMENT fermé : toute valeur hors catalogue rend la réponse invalide.
@@ -109,7 +111,7 @@ export const BRIEF_FEW_SHOT: ReadonlyArray<{ user: string; assistant: string }> 
   {
     user: 'un haut ample manches courtes en coton léger, motif petits carreaux, pour une femme de 1m75',
     assistant:
-      '{"intent":"create","garment":{"archetype":"tshirt_boxy"},"fabric":"Popeline","motif":"vichy","body":{"kind":"scan femme","statureCm":175},"tryOn":true,"resumeFr":"T-shirt boxy en popeline vichy, mannequin femme 175 cm — essayage lancé."}',
+      '{"intent":"create","garment":{"archetype":"tshirt_boxy"},"fabric":"Popeline","motif":"vichy","motifCm":1.5,"body":{"kind":"scan femme","statureCm":175},"tryOn":true,"resumeFr":"T-shirt boxy en popeline vichy petits carreaux, mannequin femme 175 cm — essayage lancé."}',
   },
   {
     user: 'hoodie ajusté à mes mesures, sans essayage',

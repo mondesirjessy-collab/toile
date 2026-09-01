@@ -10690,7 +10690,13 @@ async function main(): Promise<void> {
           panelSelect('Soie', (sel) => [...sel.options].some((o) => /Tissu global/.test(o.textContent ?? ''))),
           preset,
         ),
-      setMotif: (motif) => setSelectValue(panelSelect('vichy'), motif),
+      setMotif: (motif, style) => {
+        const ok = setSelectValue(panelSelect('vichy'), motif);
+        // Couleur/échelle : via les contrôleurs du panneau (même chemin qu'une
+        // main — setValue déclenche onChange → pushStyle, affichage synchro).
+        if (ok && style) panel?.setMotifStyle(style);
+        return ok;
+      },
       setBody: (kind) => setSelectValue(panelSelect('scan homme'), kind),
       setStature: (cm) => {
         avatarStatureInput.value = String(cm);

@@ -300,6 +300,107 @@ function makeHooks(overrides: Partial<Record<keyof BriefHooks, boolean>> = {}): 
   return { hooks, log };
 }
 
+describe('motif à la demande (couleur + échelle, v292)', () => {
+  it('« t-shirt vichy rouge petits carreaux » : couleur + échelle comprises', () => {
+    const r = interpretBrief('un t-shirt en vichy rouge petits carreaux');
+    expect(r.intent).toBe('create');
+    if (r.intent !== 'create') return;
+    expect(r.motif).toBe('vichy');
+    expect(r.motifCouleur).toBe('rouge');
+    expect(r.motifCm).toBe(1.5);
+    expect(r.resumeFr).toContain('vichy rouge');
+  });
+
+  it('« bleu marine » prime sur « bleu », et l’échelle explicite est bornée', () => {
+    const r = interpretBrief('une robe a rayures bleu marine, rayures de 4 cm');
+    expect(r.intent).toBe('create');
+    if (r.intent !== 'create') return;
+    expect(r.motifCouleur).toBe('bleu marine');
+    expect(r.motifCm).toBe(4);
+    const large = interpretBrief('un t-shirt a carreaux de 99 cm');
+    if (large.intent !== 'create') return;
+    expect(large.motifCm).toBe(30);
+  });
+
+  it('retouche : « mets des pois jaunes » porte couleur sur l’op change_motif', () => {
+    const r = interpretBrief('mets des gros pois jaunes');
+    expect(r.intent).toBe('modify');
+    if (r.intent !== 'modify') return;
+    const op = r.ops.find((o) => o.op === 'change_motif');
+    expect(op).toMatchObject({ motif: 'pois', couleur: 'jaune', cm: 8 });
+  });
+
+  it('HONNÊTETÉ : couleur sans imprimé = ignorée et DITE, jamais silencieuse', () => {
+    const r = interpretBrief('une robe rouge taille 38');
+    expect(r.intent).toBe('create');
+    if (r.intent !== 'create') return;
+    expect(r.motifCouleur).toBeUndefined();
+    expect(r.resumeFr).toContain('couleur');
+    expect(r.resumeFr).toContain('ignorée');
+    const seule = interpretBrief('en rouge');
+    expect(seule.intent).toBe('clarify');
+  });
+
+  it('« grand mannequin à pois » ne grossit PAS les pois (adjacence stricte)', () => {
+    const r = interpretBrief('un t-shirt a pois pour un grand mannequin homme');
+    expect(r.intent).toBe('create');
+    if (r.intent !== 'create') return;
+    expect(r.motif).toBe('pois');
+    expect(r.motifCm).toBeUndefined();
+  });
+
+  it('la validation borne l’échelle et rejette une couleur hors nuancier', () => {
+    const v = validateBriefResult({
+      intent: 'create',
+      garment: { archetype: 'tshirt_boxy' },
+      motif: 'rayures',
+      motifCouleur: 'fuchsia-laser',
+      motifCm: 0.2,
+      resumeFr: 'x',
+    });
+    expect(v?.intent).toBe('create');
+    if (v?.intent !== 'create') return;
+    expect(v.motifCouleur).toBeUndefined();
+    expect(v.motifCm).toBe(1);
+    const uni = validateBriefResult({
+      intent: 'create',
+      garment: { archetype: 'robe' },
+      motif: 'uni',
+      motifCouleur: 'rouge',
+      motifCm: 3,
+      resumeFr: 'x',
+    });
+    if (uni?.intent !== 'create') return;
+    expect(uni.motifCouleur).toBeUndefined();
+    expect(uni.motifCm).toBeUndefined();
+  });
+
+  it('l’exécuteur transmet le style résolu (RGB + cm) au hook setMotif', () => {
+    const calls: Array<{ motif: string; style?: unknown }> = [];
+    const hooks: BriefHooks = {
+      loadArchetype: () => true,
+      setSize: () => true,
+      setFabric: () => true,
+      setMotif: (motif, style) => {
+        calls.push({ motif, style });
+        return true;
+      },
+      setBody: () => true,
+      setStature: () => true,
+      setSleeves: () => true,
+      tryOn: () => true,
+      say: () => {},
+    };
+    const r = interpretBrief('un t-shirt en vichy rouge petits carreaux');
+    const exec = executeBrief(r, hooks);
+    expect(exec.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.motif).toBe('vichy');
+    expect(calls[0]!.style).toMatchObject({ couleurRgb: [0.78, 0.16, 0.16], cm: 1.5 });
+    expect(exec.applied.join(' ')).toContain('vichy rouge 1,5 cm');
+  });
+});
+
 describe('executeBrief (exécuteur à hooks)', () => {
   it('applique un create complet dans le bon ordre (corps avant patron)', () => {
     const { hooks, log } = makeHooks();

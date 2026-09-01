@@ -34,6 +34,43 @@ export type BriefFabric = (typeof BRIEF_FABRICS)[number];
 export const BRIEF_MOTIFS = ['uni', 'rayures', 'vichy', 'pois'] as const;
 export type BriefMotif = (typeof BRIEF_MOTIFS)[number];
 
+/**
+ * Nuancier FERMÉ des couleurs d'imprimé (français → RGB [0..1] du panneau
+ * motif). La couleur ne s'applique qu'aux IMPRIMÉS (rayures, vichy, pois) —
+ * un « t-shirt rouge » uni relève du tissu, pas du motif : hors contrat ici.
+ */
+export const BRIEF_MOTIF_COULEURS = {
+  rouge: [0.78, 0.16, 0.16],
+  bordeaux: [0.45, 0.09, 0.16],
+  rose: [0.91, 0.55, 0.67],
+  orange: [0.89, 0.45, 0.13],
+  jaune: [0.93, 0.78, 0.2],
+  vert: [0.22, 0.55, 0.32],
+  'bleu marine': [0.1, 0.16, 0.32],
+  bleu: [0.2, 0.42, 0.72],
+  violet: [0.45, 0.28, 0.58],
+  marron: [0.42, 0.28, 0.18],
+  beige: [0.85, 0.78, 0.65],
+  gris: [0.55, 0.55, 0.58],
+  noir: [0.12, 0.12, 0.14],
+  blanc: [1, 1, 1],
+} as const;
+export type BriefMotifCouleur = keyof typeof BRIEF_MOTIF_COULEURS;
+
+/** Bornes du curseur « échelle (cm) » du panneau motif (lil-gui, pas 0,5). */
+export const BRIEF_MOTIF_CM_MIN = 1;
+export const BRIEF_MOTIF_CM_MAX = 30;
+
+export function clampMotifCm(cm: number): number {
+  if (!Number.isFinite(cm)) return 5;
+  const halfSteps = Math.round(cm * 2) / 2;
+  return Math.min(BRIEF_MOTIF_CM_MAX, Math.max(BRIEF_MOTIF_CM_MIN, halfSteps));
+}
+
+export function isMotifCouleur(v: unknown): v is BriefMotifCouleur {
+  return typeof v === 'string' && v in BRIEF_MOTIF_COULEURS;
+}
+
 export const BRIEF_BOXY_SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL'] as const;
 export const BRIEF_PANTS_SIZES = [
   '26', '28', '30', '32', '34', '36', '38', '40', '42', '44', '46',
@@ -69,7 +106,7 @@ export interface BriefBody {
 export type BriefOp =
   | { op: 'resize'; size: string }
   | { op: 'change_fabric'; preset: BriefFabric }
-  | { op: 'change_motif'; motif: BriefMotif }
+  | { op: 'change_motif'; motif: BriefMotif; couleur?: BriefMotifCouleur; cm?: number }
   | { op: 'set_body'; kind: BriefBodyKind }
   | { op: 'set_stature'; statureCm: number }
   | { op: 'set_sleeves'; on: boolean }
@@ -80,6 +117,10 @@ export interface BriefCreate {
   garment: BriefGarment;
   fabric?: BriefFabric;
   motif?: BriefMotif;
+  /** Couleur d'imprimé (nuancier fermé) — ignorée si motif absent ou uni. */
+  motifCouleur?: BriefMotifCouleur;
+  /** Échelle de l'imprimé en cm (bornée au curseur réel 1..30). */
+  motifCm?: number;
   body?: BriefBody;
   sleeves?: boolean;
   /** Lancer l'essayage 3D à la fin (défaut : oui — c'est le moment « waouh »). */
@@ -137,6 +178,12 @@ export function validateBriefResult(raw: unknown): BriefResult | null {
     if (isString(g.size)) out.garment.size = g.size;
     if (BRIEF_FABRICS.includes(r.fabric as BriefFabric)) out.fabric = r.fabric as BriefFabric;
     if (BRIEF_MOTIFS.includes(r.motif as BriefMotif)) out.motif = r.motif as BriefMotif;
+    if (out.motif && out.motif !== 'uni' && isMotifCouleur(r.motifCouleur)) {
+      out.motifCouleur = r.motifCouleur;
+    }
+    if (out.motif && out.motif !== 'uni' && typeof r.motifCm === 'number') {
+      out.motifCm = clampMotifCm(r.motifCm);
+    }
     if (typeof r.sleeves === 'boolean') out.sleeves = r.sleeves;
     const b = r.body as Record<string, unknown> | undefined;
     if (b && typeof b === 'object') {
@@ -178,7 +225,10 @@ export function validateBriefOps(rawOps: unknown): BriefOp[] {
         break;
       case 'change_motif':
         if (BRIEF_MOTIFS.includes(o.motif as BriefMotif)) {
-          ops.push({ op: 'change_motif', motif: o.motif as BriefMotif });
+          const op: BriefOp = { op: 'change_motif', motif: o.motif as BriefMotif };
+          if (op.motif !== 'uni' && isMotifCouleur(o.couleur)) op.couleur = o.couleur;
+          if (op.motif !== 'uni' && typeof o.cm === 'number') op.cm = clampMotifCm(o.cm);
+          ops.push(op);
         }
         break;
       case 'set_body':

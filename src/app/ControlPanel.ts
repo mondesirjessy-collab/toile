@@ -235,6 +235,11 @@ export class ControlPanel {
   private readonly cb: PanelCallbacks;
   private readonly settings: Settings;
   private readonly controllers: { updateDisplay(): void }[] = [];
+  /** Contrôleurs du dossier motif — pilotables par le Studio IA (setMotifStyle). */
+  private motifStyleControllers: {
+    cm: { setValue(v: number): unknown };
+    couleur: { setValue(v: [number, number, number]): unknown };
+  } | null = null;
   private readonly selectControllers: Partial<
     Record<
       'scene' | 'body' | 'resolution' | 'preset',
@@ -471,11 +476,20 @@ export class ControlPanel {
     const MOTIFS = ['uni', 'rayures', 'vichy', 'pois'];
     const motifFolder = this.gui.addFolder('motif');
     const pushMotif = (): void => this.pushStyle();
-    this.controllers.push(
-      motifFolder.add(this.settings, 'motif', MOTIFS).name('imprimé').onChange(pushMotif),
-      motifFolder.add(this.settings, 'motifCm', 1, 30, 0.5).name('échelle (cm)').onChange(pushMotif),
-      motifFolder.addColor(this.settings, 'motifCouleur').name('couleur').onChange(pushMotif),
-    );
+    const motifImprimeCtrl = motifFolder
+      .add(this.settings, 'motif', MOTIFS)
+      .name('imprimé')
+      .onChange(pushMotif);
+    const motifCmCtrl = motifFolder
+      .add(this.settings, 'motifCm', 1, 30, 0.5)
+      .name('échelle (cm)')
+      .onChange(pushMotif);
+    const motifCouleurCtrl = motifFolder
+      .addColor(this.settings, 'motifCouleur')
+      .name('couleur')
+      .onChange(pushMotif);
+    this.controllers.push(motifImprimeCtrl, motifCmCtrl, motifCouleurCtrl);
+    this.motifStyleControllers = { cm: motifCmCtrl, couleur: motifCouleurCtrl };
     motifFolder.close();
 
     // Parametric pattern (grading) — applies to the dress scene.
@@ -1356,6 +1370,19 @@ export class ControlPanel {
   }
 
   /** Current preset look + the print settings, merged. */
+  /**
+   * Studio IA : règle l'échelle (cm) et/ou la couleur de l'imprimé en tournant
+   * les VRAIS contrôleurs du panneau (setValue → onChange → pushStyle), comme
+   * une main le ferait — même chemin, même annulation, affichage synchronisé.
+   */
+  setMotifStyle(style: { cm?: number; couleurRgb?: [number, number, number] }): boolean {
+    const ctrls = this.motifStyleControllers;
+    if (!ctrls) return false;
+    if (style.cm !== undefined) ctrls.cm.setValue(style.cm);
+    if (style.couleurRgb) ctrls.couleur.setValue([...style.couleurRgb]);
+    return true;
+  }
+
   private pushStyle(): void {
     const p = PRESETS[this.settings.preset];
     if (!p) return;

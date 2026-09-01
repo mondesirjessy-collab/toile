@@ -8,6 +8,7 @@
 
 import {
   BRIEF_BOXY_SIZES,
+  clampMotifCm,
   BRIEF_HOODIE_SIZES,
   BRIEF_JUPE_SIZES,
   BRIEF_DOUDOUNE_SIZES,
@@ -19,6 +20,7 @@ import {
   type BriefBodyKind,
   type BriefFabric,
   type BriefMotif,
+  type BriefMotifCouleur,
   type BriefOp,
   type BriefResult,
 } from './BriefContract';
@@ -54,6 +56,42 @@ const MOTIF_RULES: Array<{ pattern: RegExp; motif: BriefMotif }> = [
   { pattern: /\bpois\b|\ba pois\b/, motif: 'pois' },
   { pattern: /\buni(e|es)?\b/, motif: 'uni' },
 ];
+
+/**
+ * Couleurs d'IMPRIMÉ (texte normalisé sans accents). Ordre = priorité :
+ * « bleu marine » avant « bleu ». La couleur n'est retenue que si un motif
+ * est présent — « robe rouge » (uni) relève du tissu, hors périmètre ici.
+ */
+const COULEUR_RULES: Array<{ pattern: RegExp; couleur: BriefMotifCouleur }> = [
+  { pattern: /\bbleu marine\b|\bmarines?\b/, couleur: 'bleu marine' },
+  { pattern: /\bbordeaux\b/, couleur: 'bordeaux' },
+  { pattern: /\brouges?\b/, couleur: 'rouge' },
+  { pattern: /\broses?\b/, couleur: 'rose' },
+  { pattern: /\boranges?\b/, couleur: 'orange' },
+  { pattern: /\bjaunes?\b/, couleur: 'jaune' },
+  { pattern: /\bvert(?:e|es|s)?\b/, couleur: 'vert' },
+  { pattern: /\bbleu(?:e|es|s)?\b/, couleur: 'bleu' },
+  { pattern: /\bviolet(?:te|tes|s)?\b|\bmauves?\b/, couleur: 'violet' },
+  { pattern: /\bmarrons?\b|\bchocolat\b/, couleur: 'marron' },
+  { pattern: /\bbeiges?\b|\becrus?\b/, couleur: 'beige' },
+  { pattern: /\bgris(?:e|es)?\b|\banthracite\b/, couleur: 'gris' },
+  { pattern: /\bnoir(?:e|es|s)?\b/, couleur: 'noir' },
+  { pattern: /\bblanc(?:he|hes|s)?\b/, couleur: 'blanc' },
+];
+
+const MOTIF_WORDS = String.raw`carreaux|rayures?|pois|vichy|motifs?|imprimes?`;
+/** « carreaux de 3 cm », « rayures 2,5 cm » — bornée au curseur réel (1..30). */
+const MOTIF_CM_EXPLICIT = new RegExp(
+  String.raw`(?:${MOTIF_WORDS})[^.,;]{0,16}?\b(\d{1,2}(?:[.,]\d)?)\s?cm\b`,
+);
+/** Qualificatifs ADJACENTS seulement (« petits carreaux », « rayures fines ») —
+ * un « grand mannequin à pois » ne doit pas grossir les pois. */
+const MOTIF_SMALL = new RegExp(
+  String.raw`\b(?:petit(?:s|es)?|fin(?:s|es?)?|minis?)\s+(?:${MOTIF_WORDS})|(?:${MOTIF_WORDS})\s+(?:fin(?:s|es?)?|serre(?:s|es)?|minis?)\b`,
+);
+const MOTIF_LARGE = new RegExp(
+  String.raw`\b(?:gros(?:ses)?|grand(?:s|es)?|larges?|maxis?)\s+(?:${MOTIF_WORDS})|(?:${MOTIF_WORDS})\s+larges?\b`,
+);
 
 /** Vêtements que l'atelier ne sait pas encore patronner → refus + alternative. */
 const UNSUPPORTED_GARMENTS: Array<{ pattern: RegExp; nameFr: string; suggestionFr: string }> = [
@@ -120,6 +158,19 @@ function detectFabric(t: string): BriefFabric | undefined {
 
 function detectMotif(t: string): BriefMotif | undefined {
   for (const rule of MOTIF_RULES) if (rule.pattern.test(t)) return rule.motif;
+  return undefined;
+}
+
+function detectMotifCouleur(t: string): BriefMotifCouleur | undefined {
+  for (const rule of COULEUR_RULES) if (rule.pattern.test(t)) return rule.couleur;
+  return undefined;
+}
+
+function detectMotifCm(t: string): number | undefined {
+  const explicit = t.match(MOTIF_CM_EXPLICIT)?.[1];
+  if (explicit) return clampMotifCm(Number(explicit.replace(',', '.')));
+  if (MOTIF_SMALL.test(t)) return 1.5;
+  if (MOTIF_LARGE.test(t)) return 8;
   return undefined;
 }
 
@@ -194,6 +245,14 @@ export function interpretBrief(rawText: string): BriefResult {
   const archetype = detectArchetype(t);
   const fabric = detectFabric(t);
   const motif = detectMotif(t);
+  const motifCouleur = detectMotifCouleur(t);
+  const motifCm = detectMotifCm(t);
+  // Honnêteté : la couleur ne s'applique qu'aux IMPRIMÉS. Sans motif (ou en
+  // uni), on l'écarte ET on le DIT — jamais d'à-peu-près silencieux.
+  const couleurSansMotif = motifCouleur !== undefined && (!motif || motif === 'uni');
+  const couleurNote = couleurSansMotif
+    ? ` (couleur « ${motifCouleur} » ignorée : elle s'applique aux imprimés — rayures, vichy ou pois)`
+    : '';
   const bodyKind = detectBodyKind(t);
   const stature = detectStature(t);
   const tryOn = !/sans (essayage|essayer|simulation|simuler)/.test(t);
@@ -237,7 +296,14 @@ export function interpretBrief(rawText: string): BriefResult {
     if (MODIFY_HINT.test(t) || fabric || motif || bodyKind || stature || size) {
       if (size) ops.push({ op: 'resize', size });
       if (fabric) ops.push({ op: 'change_fabric', preset: fabric });
-      if (motif) ops.push({ op: 'change_motif', motif });
+      if (motif) {
+        ops.push({
+          op: 'change_motif',
+          motif,
+          ...(motif !== 'uni' && motifCouleur ? { couleur: motifCouleur } : {}),
+          ...(motif !== 'uni' && motifCm !== undefined ? { cm: motifCm } : {}),
+        });
+      }
       if (bodyKind) ops.push({ op: 'set_body', kind: bodyKind });
       if (stature !== undefined) ops.push({ op: 'set_stature', statureCm: stature });
       if (/\bmanches?\b/.test(t)) ops.push({ op: 'set_sleeves', on: !/sans manches?/.test(t) });
@@ -248,7 +314,16 @@ export function interpretBrief(rawText: string): BriefResult {
         intent: 'modify',
         ops,
         tryOn: tryOn && ops.some((o) => o.op === 'try_on'),
-        resumeFr: `Retouches appliquées au vêtement courant (${ops.length}).`,
+        resumeFr: `Retouches appliquées au vêtement courant (${ops.length}).${couleurNote}`,
+      };
+    }
+    // Une couleur seule (« en rouge ») : le chemin constructible passe par un
+    // imprimé — l'expliquer vaut mieux qu'un clarify générique.
+    if (motifCouleur !== undefined) {
+      return {
+        intent: 'clarify',
+        resumeFr: `La couleur seule ne suffit pas : elle s'applique aux imprimés.`,
+        suggestionFr: `Précise l'imprimé : « mets des rayures ${motifCouleur} », « vichy ${motifCouleur} petits carreaux » ou « à pois ${motifCouleur} ».`,
       };
     }
     return {
@@ -263,7 +338,12 @@ export function interpretBrief(rawText: string): BriefResult {
   const parts: string[] = [archetype.labelFr];
   if (size) parts.push(size === 'avatar' ? 'ajusté au mannequin' : `taille ${size}`);
   if (fabric) parts.push(`en ${fabric.toLowerCase()}`);
-  if (motif && motif !== 'uni') parts.push(motif);
+  if (motif && motif !== 'uni') {
+    const details: string[] = [motif];
+    if (motifCouleur) details.push(motifCouleur);
+    if (motifCm !== undefined) details.push(`${String(motifCm).replace('.', ',')} cm`);
+    parts.push(details.join(' '));
+  }
   if (bodyKind) parts.push(bodyKind === 'scan homme' ? 'mannequin homme' : 'mannequin femme');
   if (stature !== undefined) parts.push(`stature ${stature} cm`);
 
@@ -272,10 +352,12 @@ export function interpretBrief(rawText: string): BriefResult {
     garment: { archetype: archetype.archetype, ...(size ? { size } : {}) },
     ...(fabric ? { fabric } : {}),
     ...(motif ? { motif } : {}),
+    ...(motif && motif !== 'uni' && motifCouleur ? { motifCouleur } : {}),
+    ...(motif && motif !== 'uni' && motifCm !== undefined ? { motifCm } : {}),
     ...(bodyKind !== undefined || stature !== undefined
       ? { body: { ...(bodyKind ? { kind: bodyKind } : {}), ...(stature !== undefined ? { statureCm: stature } : {}) } }
       : {}),
     tryOn,
-    resumeFr: `Brief compris : ${parts.join(' · ')}.`,
+    resumeFr: `Brief compris : ${parts.join(' · ')}.${couleurNote}`,
   };
 }
