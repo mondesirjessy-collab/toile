@@ -3953,7 +3953,7 @@ async function main(): Promise<void> {
       height: H,
       topY: dims.topY,
       gap: dims.gap,
-      name: 'Croquis corps',
+      name: 'Esquisse 3D',
     };
     draft.pieces = [...(draft.pieces ?? []), piece];
     const pid = 1 + (draft.pieces.length);
@@ -3962,11 +3962,12 @@ async function main(): Promise<void> {
     teePreset = false;
     refreshPatternDoc();
     refreshHint();
+    build();
     placePending = pid;
     showChooser(true);
     showPlacementStatus(
       [
-        `Zone dessinée SUR LE CORPS — ${world.length} points${patternView.penMirroring ? ', symétrisée sur l’axe du corps' : ''}.`,
+        `Zone dessinée — ${world.length} points${patternView.penMirroring ? ', symétrisée sur l’axe' : ''}.`,
         'Choisissez son placement : Devant/Dos remplacent la face, Bras = manche adaptée à l’emmanchure mesurée.',
       ],
       true,
@@ -4641,10 +4642,10 @@ async function main(): Promise<void> {
     showPlacementStatus(
       sketch3dMode
         ? [
-            'Croquis SUR LE CORPS : placez-vous de face et cliquez des points sur le mannequin — la zone fermée deviendra une pièce du patron.',
-            `Re-clic sur le 1er point = fermer et placer · sur le dernier = retirer le point · ⋈ Miroir au tracé ${patternView.penMirroring ? 'ACTIF : dessinez une moitié, l’axe du corps symétrise' : 'peut symétriser sur l’axe du corps'} · Échap annule.`,
+            'Esquisse 3D : placez-vous de face et cliquez des points dans la vue 3D — la zone fermée deviendra une pièce du patron.',
+            `Re-clic sur le 1er point = fermer et placer · sur le dernier = retirer le point · ⋈ Miroir au tracé ${patternView.penMirroring ? 'ACTIF : dessinez une moitié, l’axe symétrise' : 'peut symétriser sur l’axe'} · Échap annule.`,
           ]
-        : ['Croquis sur le corps désactivé.'],
+        : ['Esquisse 3D désactivée.'],
       true,
     );
     refreshHint();
@@ -6310,7 +6311,7 @@ async function main(): Promise<void> {
             }
             // Freeform piece: the user's drawn outline + darts + hand-seams
             // compiled straight to the mask / seam machinery (the atelier editor).
-            const doc = (draft ??= defaultDraft(resolution as 32 | 64 | 128));
+            const doc = (draft ??= blankBaseDraft(resolution as 32 | 64 | 128));
             const simulationDoc =
               !atelierDesign && simulationExcludedPieceIds.size
                 ? draftForSimulationExcluding(
@@ -7530,8 +7531,8 @@ async function main(): Promise<void> {
         : '⊹ arrangement : cliquez une pièce dans la vue 3D, puis une pastille (Devant, Dos, Bras…) — préparation seulement, coutures inchangées · Échap annule';
     } else if (sketch3dMode) {
       message = sketch3dPoints.length
-        ? '⛶ croquis en cours sur le corps — re-clic au 1er point = fermer et PLACER la zone · au dernier = retirer le point · Échap annule'
-        : '⛶ croquis sur le corps : de FACE, cliquez des points sur le mannequin — la zone fermée devient une pièce du patron, placée où vous voulez · ⋈ la symétrise sur l’axe · Échap désarme';
+        ? '⛶ esquisse 3D en cours — re-clic au 1er point = fermer et PLACER la zone · au dernier = retirer le point · Échap annule'
+        : '⛶ esquisse 3D : de FACE, cliquez des points dans la vue 3D — la zone fermée devient une pièce du patron, placée où vous voulez · ⋈ la symétrise sur l’axe · Échap désarme';
     } else if (edit3dMode) {
       message = edit3dDrag
         ? '⬦ sommet saisi — il suit votre main sur le plan de sa pièce · relâchez pour committer (cm affichés), Échap annule'
@@ -8366,7 +8367,7 @@ async function main(): Promise<void> {
         );
       }
     }
-    // ⛶ Croquis sur le corps : points + fil sur le plan frontal, écho miroir
+    // ⛶ Esquisse 3D : points + fil sur le plan frontal, écho miroir
     // en pointillé quand ⋈ est armé, 1er point allumé dès que fermable.
     if (sketch3dMode && sketch3dPoints.length) {
       const dimsS = draft.piece;
@@ -8674,7 +8675,7 @@ async function main(): Promise<void> {
     const count = Math.min(system.count, posCache.length / 4);
     // ⊹ Points d'arrangement : 1er clic = la pièce, 2e clic = l'ancre. Un clic
     // dans le vide (ni pièce ni pastille) rend la main à l'orbite caméra.
-    // ⛶ Croquis sur le corps : clics sur le plan frontal ; re-clic au 1er
+    // ⛶ Esquisse 3D : clics sur le plan frontal ; re-clic au 1er
     // (≥3) = zone fermée → pièce + place-chooser ; re-clic au dernier =
     // retirer le point (retouche).
     if (sceneMode === 'atelier' && sketch3dMode) {
