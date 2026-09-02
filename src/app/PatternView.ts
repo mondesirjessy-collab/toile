@@ -2221,6 +2221,8 @@ export class PatternView {
       this.serialReceiver = null;
       this.serialPartners = [];
       this.clearFreeSew();
+      this.selectedPiece = null;
+      this.selectedPieces.clear();
     }
     this.seamPickA = null;
     document.body.style.cursor = '';
@@ -2861,6 +2863,8 @@ export class PatternView {
       this.sewMode = false;
       this.zipperMode = false;
       this.cutMode = false;
+      this.selectedPiece = null;
+      this.selectedPieces.clear();
     }
     this.render();
     return this.serialMode;
@@ -4161,6 +4165,23 @@ export class PatternView {
         if (!piece || piece.blank) return;
         e.preventDefault();
         e.stopPropagation();
+        // Pince de bord : glisser un bord lance une pince sans touche Alt.
+        if (!this.dartTop) {
+          const ne = this.nearestEdge(p[0], p[1]);
+          if (ne && ne.dist <= EDGE_HIT) {
+            this.draftEdge = {
+              edge: ne.edge,
+              downUV: this.screenToUV(ne.sx, ne.sy),
+              downSX: ne.sx,
+              downSY: ne.sy,
+              pointerId: e.pointerId,
+              apex: null,
+              dart: true,
+              bend: null,
+            };
+            return;
+          }
+        }
         const uvPt = this.screenToUV(p[0], p[1]);
         if (!pointInPolygon(uvPt, piece.outline)) return;
         if (!this.dartTop) {
@@ -4495,7 +4516,7 @@ export class PatternView {
             downSY: ne.sy,
             pointerId: e.pointerId,
             apex: null,
-            dart: e.altKey,
+            dart: e.altKey || this.fisheyeDrawing,
             bend: null,
           };
           e.preventDefault();
@@ -7132,18 +7153,26 @@ export class PatternView {
       ctx.lineWidth = 2.5;
       strokeRun(pidA, { from: s.a.from, to: s.a.to });
       strokeRun(pidB, { from: s.b.from, to: s.b.to });
-      ctx.lineWidth = 1;
-      ctx.globalAlpha = 0.35;
+      ctx.lineWidth = 1.5;
+      ctx.globalAlpha = 0.55;
+      ctx.setLineDash([4, 3]);
       ctx.beginPath();
       ctx.moveTo(ma[0], ma[1]);
       ctx.lineTo(mb[0], mb[1]);
       ctx.stroke();
+      ctx.setLineDash([]);
       ctx.globalAlpha = 1;
+      // Étiquette de couture : le NUMÉRO s'affiche sur chaque bord pour que
+      // l'utilisateur voie immédiatement quel bord est cousu avec quel autre.
+      const seamLabel = `${k + 1}`;
+      ctx.font = '700 9px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = color;
+      ctx.fillText(seamLabel, ma[0], ma[1] - 7);
+      ctx.fillText(seamLabel, mb[0], mb[1] - 7);
       if (gathered) {
         ctx.font = '9px ui-monospace, monospace';
-        ctx.fillStyle = color;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
         ctx.fillText(`${ratio.toFixed(1).replace('.', ',')}:1 fronce`, (ma[0] + mb[0]) / 2, (ma[1] + mb[1]) / 2 - 6);
       }
     });

@@ -7502,7 +7502,7 @@ async function main(): Promise<void> {
     } else if (patternView.fisheyeDrawing) {
       message = patternView.fisheyeArmed
         ? '◆ pince losange — 2e clic = la pointe basse, 3e clic à côté de l’axe = la largeur de taille (cm en direct) · Échap annule'
-        : '◆ pince losange : cliquez la POINTE HAUTE dans une pièce (taille, poitrine), puis la pointe basse, puis la largeur · pince de bord = Alt + glisser un bord · Échap désarme';
+        : '◆ pince losange : cliquez la POINTE HAUTE dans une pièce (taille, poitrine), puis la pointe basse, puis la largeur · pince de bord = glisser un bord · Échap désarme';
     } else if (patternView.internalDrawing) {
       message = patternView.internalTraceArmed
         ? '▱ ligne interne en cours — cliquez point par point DANS la pièce · re-clic au 1er point = polygone fermé · re-clic au dernier = polyligne · Échap annule'
