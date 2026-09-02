@@ -51,7 +51,7 @@ import { draftRobe, robeCm, ROBE_SIZES, type RobeSize } from './engine/pattern/r
 import { draftVeste, vesteCm, VESTE_AVATAR_EASE_CM, VESTE_SIZES, type VesteSize } from './engine/pattern/veste';
 import { draftDoudoune, doudouneCm, DOUDOUNE_AVATAR_EASE_CM, DOUDOUNE_SIZES, type DoudouneSize } from './engine/pattern/doudoune';
 import { cloTee, cloPants } from './engine/pattern/cloBlocks';
-import { opLooseTee, opLooseTeeChestCm, opNavySweater, OP_LOOSE_TEE_SIZES, type OpLooseTeeSize } from './engine/pattern/openPattern';
+import { opCombatChestCm, opCombatShirt, opLooseTee, opLooseTeeChestCm, opNavySweater, OP_COMBAT_SIZES, OP_LOOSE_TEE_SIZES, type OpCombatSize, type OpLooseTeeSize } from './engine/pattern/openPattern';
 import {
   loosePants,
   loosePantsSizeLabel,
@@ -2619,7 +2619,7 @@ async function main(): Promise<void> {
   let vesteSize: VesteSize | 'avatar' = 'M';
   let doudouneSize: DoudouneSize | 'avatar' = 'M';
   let hoodieSize: LucasHoodieSize = 'S';
-  let loadedPattern: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee' | 'op-sweater' | 'fs-aaron' | 'fs-teagan' | 'fs-sven' | 'fs-brian' | 'fs-titan' | 'fs-sandy' | 'fs-diana' | 'fs-bella' = 'boxy';
+  let loadedPattern: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee' | 'op-sweater' | 'op-combat' | 'fs-aaron' | 'fs-teagan' | 'fs-sven' | 'fs-brian' | 'fs-titan' | 'fs-sandy' | 'fs-diana' | 'fs-bella' = 'boxy';
   const sizeSel = document.getElementById('at-size') as HTMLSelectElement | null;
   let opTeeSize: OpLooseTeeSize = 'M';
   const teeSleevesRow = document.getElementById('at-tee-sleeves-row');
@@ -2688,7 +2688,7 @@ async function main(): Promise<void> {
     avatarStatureHelp.textContent =
       `Redimensionne le mannequin et ses collisions. ${fixedGarmentSizeMessage(selectedSize)}`;
   };
-  const showSizes = (kind: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee' | 'op-sweater' | 'fs-aaron' | 'fs-teagan' | 'fs-sven' | 'fs-brian' | 'fs-titan' | 'fs-sandy' | 'fs-diana' | 'fs-bella'): void => {
+  const showSizes = (kind: 'boxy' | 'pants' | 'hoodie' | 'jupe' | 'robe' | 'veste' | 'doudoune' | 'clo-tee' | 'clo-pants' | 'op-tee' | 'op-sweater' | 'op-combat' | 'fs-aaron' | 'fs-teagan' | 'fs-sven' | 'fs-brian' | 'fs-titan' | 'fs-sandy' | 'fs-diana' | 'fs-bella'): void => {
     if (!sizeSel) return;
     loadedPattern = kind;
     // Bloc manche : sélecteur visible pour le tee seulement (1er bloc composable).
@@ -2733,6 +2733,11 @@ async function main(): Promise<void> {
     } else if (kind === 'fs-sandy') {
       sizeSel.innerHTML = `<option value="avatar">Jupe cercle FreeSewing ajustée au mannequin · tour de taille ${(lastMeasure.waist.circ * 100).toFixed(0)} cm</option>`;
       sizeSel.value = 'avatar';
+    } else if (kind === 'op-combat') {
+      sizeSel.innerHTML = OP_COMBAT_SIZES.map(
+        (sizeOption) => `<option value="${sizeOption}">${sizeOption} · vêtement ${opCombatChestCm(sizeOption)} cm</option>`,
+      ).join('');
+      sizeSel.value = opCombatSize;
     } else if (kind === 'op-sweater') {
       sizeSel.innerHTML = '<option value="M">Navy Sweater openpattern · taille unique M du patron</option>';
       sizeSel.value = 'M';
@@ -3315,6 +3320,27 @@ async function main(): Promise<void> {
   };
   (document.getElementById('at-op-tee') as HTMLElement | null)?.addEventListener('click', loadOpTee);
 
+  // British 95 Combat Shirt (CC BY, lot DXF téléchargé) : la 1re CHEMISE de
+  // TOILE — devants fusionnés (patte fermée), 6 tailles absolues du patron.
+  let opCombatSize: OpCombatSize = 'M';
+  const loadOpCombat = (): void => {
+    if (!bigPanel) setBig(true);
+    patternView.resetView();
+    atelierDesign = true;
+    simBtn().classList.remove('running');
+    resetPlacement();
+    pushHistory();
+    showSizes('op-combat');
+    teePreset = false;
+    draft = opCombatShirt(opCombatSize, lastMeasure, REF);
+    draftTouched = true;
+    atelierSleeves = false;
+    atelierCollar = false;
+    document.getElementById('at-sleeves')?.classList.remove('active');
+    build();
+  };
+  (document.getElementById('at-op-combat') as HTMLElement | null)?.addEventListener('click', loadOpCombat);
+
   // Navy Sweater d'openpattern.io (CC BY, lot DXF téléchargé) : taille unique
   // M du patron, manches longues — même montage générique que le tee.
   const loadOpSweater = (): void => {
@@ -3471,6 +3497,11 @@ async function main(): Promise<void> {
         if (sceneMode === 'atelier') void loadFsTitan();
       } else if (loadedPattern === 'fs-sandy') {
         if (sceneMode === 'atelier') void loadFsSandy();
+      } else if (loadedPattern === 'op-combat') {
+        opCombatSize = (OP_COMBAT_SIZES as readonly string[]).includes(sizeSel.value)
+          ? (sizeSel.value as OpCombatSize)
+          : opCombatSize;
+        if (sceneMode === 'atelier') loadOpCombat();
       } else if (loadedPattern === 'op-sweater') {
         if (sceneMode === 'atelier') loadOpSweater();
       } else if (loadedPattern === 'op-tee') {
@@ -9302,6 +9333,7 @@ async function main(): Promise<void> {
           : loadedPattern === 'clo-tee' ? 'T-shirt CLO'
           : loadedPattern === 'op-tee' ? 'T-shirt openpattern'
         : loadedPattern === 'op-sweater' ? 'Sweater openpattern'
+        : loadedPattern === 'op-combat' ? 'Chemise Combat openpattern'
           : loadedPattern === 'fs-aaron' ? 'Débardeur FreeSewing'
           : loadedPattern === 'fs-teagan' ? 'T-shirt FreeSewing'
           : loadedPattern === 'fs-diana' ? 'Robe FreeSewing'
@@ -10914,6 +10946,7 @@ async function main(): Promise<void> {
       'clo-pants': 'import CLO (pantalon, hors catalogue)',
       'op-tee': 't-shirt loose openpattern',
       'op-sweater': 'sweater openpattern',
+      'op-combat': 'chemise combat openpattern',
       'fs-aaron': 'débardeur FreeSewing',
       'fs-teagan': 't-shirt FreeSewing',
       'fs-diana': 'robe FreeSewing',
@@ -11471,6 +11504,7 @@ async function main(): Promise<void> {
         : loadedPattern === 'clo-tee' ? 'T-shirt CLO'
         : loadedPattern === 'op-tee' ? 'T-shirt openpattern'
         : loadedPattern === 'op-sweater' ? 'Sweater openpattern'
+        : loadedPattern === 'op-combat' ? 'Chemise Combat openpattern'
         : loadedPattern === 'fs-aaron' ? 'Débardeur FreeSewing'
         : loadedPattern === 'fs-teagan' ? 'T-shirt FreeSewing'
         : loadedPattern === 'fs-diana' ? 'Robe FreeSewing'
@@ -11489,6 +11523,7 @@ async function main(): Promise<void> {
       const size =
         loadedPattern === 'boxy'
           ? boxySurMesure ? 'sur-mesure (mannequin)' : boxySize
+          : loadedPattern === 'op-combat' ? opCombatSize
           : 'ajuste au mannequin';
       const report = buildNoticeReport(draft, {
         garment,

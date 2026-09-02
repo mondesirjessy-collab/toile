@@ -15,8 +15,10 @@ import type { AssemblySeam, DraftDoc, DraftPiece, EdgeRun, UV } from './Draft';
 import { teeRuns } from './cloBlocks';
 import { OP_LOOSE_TEE, type OpLooseTeeSize, type OpPieceData } from './openPatternData';
 import { OP_NAVY_SWEATER } from './openPatternSweaterData';
+import { OP_COMBAT_SHIRT, type OpCombatSize } from './openPatternCombatData';
 
 export { OP_LOOSE_TEE_SIZES, type OpLooseTeeSize } from './openPatternData';
+export { OP_COMBAT_SIZES, type OpCombatSize } from './openPatternCombatData';
 
 const clone = (o: readonly UV[]): UV[] => o.map(([u, v]) => [u, v]);
 
@@ -66,6 +68,25 @@ export function opNavySweater(m: BodyMeasure, ref: BodyMeasure): DraftDoc {
     D.sleeveCuffRatio,
   );
   return doc;
+}
+
+/**
+ * British 95 Combat Shirt openpattern — LA première chemise de TOILE.
+ * Devant = les 2 demi-devants du patron FUSIONNÉS (patte de boutonnage coupée
+ * au milieu, cousue fermée — les boutons ne s'ouvrent pas en simulation) ;
+ * dos à queue longue ; manches longues ré-émises en wrap (tour = les 2
+ * panneaux de la manche 2 pièces) ; col en bande (52,7×9,4 porté plié).
+ * Poches soufflet, rabats, velcros et pattes : écartés du 1er montage.
+ */
+export function opCombatShirt(size: OpCombatSize, m: BodyMeasure, ref: BodyMeasure): DraftDoc {
+  // 0,7 : fuselage de manche chemise (les pattes de serrage ne sont pas montées).
+  return assembleOpTwoFaces(OP_COMBAT_SHIRT[size], m, ref, 0.7);
+}
+
+/** Tour de poitrine du vêtement (cm) — étiquette du sélecteur de taille. */
+export function opCombatChestCm(size: OpCombatSize): number {
+  const D = OP_COMBAT_SHIRT[size];
+  return Math.round(D.front.wCm + D.back.wCm);
 }
 
 export function opLooseTee(size: OpLooseTeeSize, m: BodyMeasure, ref: BodyMeasure): DraftDoc {
