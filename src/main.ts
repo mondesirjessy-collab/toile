@@ -6555,7 +6555,7 @@ async function main(): Promise<void> {
               // qui renonce à son jumeau (singlePanel — sinon le panneau
               // arrière d'un demi-devant, ouvert ou cousu ailleurs sur tous
               // ses bords, n'est retenu par rien et tombe en fantôme).
-              const soloSheet = surfacePiece || fp.singlePanel === true;
+              const soloSheet = surfacePiece || fp.singlePanel === true || (!fp.wrap && (!fp.placement || fp.placement.role === 'free'));
               const firstPhysicalPanel = Math.floor(garment.count / panelSize);
               if (fp.wrap || fp.placement?.role === 'free') {
                 rigidFixedPanels.add(firstPhysicalPanel);

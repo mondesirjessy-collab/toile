@@ -1753,6 +1753,23 @@ export class PatternView {
     window.addEventListener('contextmenu', this.onContextMenu, true);
     window.addEventListener('wheel', this.onWheel, { capture: true, passive: false });
     if (import.meta.env.DEV) (window as unknown as { __toilePattern?: PatternView }).__toilePattern = this;
+    if (import.meta.env.DEV) (window as unknown as Record<string, unknown>).__toileDebugPieces = () => {
+      const summary = this.pieces.map((p, i) => {
+        if (!p) return `[${i}] null`;
+        const flags = [p.blank && 'BLANK', p.placement?.role].filter(Boolean).join(' ');
+        return `[${i}] ${p.outline?.length ?? 0} pts ${flags} name=${p.name ?? '-'}`;
+      });
+      console.table(summary);
+      const seen = new Map<string, number>();
+      for (let i = 0; i < this.pieces.length; i++) {
+        const p = this.pieces[i];
+        if (!p || p.blank || (p.outline?.length ?? 0) < 3) continue;
+        const key = p.outline.map(([u, v]) => `${u.toFixed(4)},${v.toFixed(4)}`).join('|');
+        if (seen.has(key)) console.warn(`⚠ DOUBLON : [${seen.get(key)}] et [${i}]`);
+        seen.set(key, i);
+      }
+      return `${this.pieces.length} pièces, activePiece=${this.activePiece}`;
+    };
   }
 
   get zoomPercent(): number {
@@ -3796,6 +3813,7 @@ export class PatternView {
       !this.zippering &&
       !this.lengthEditing &&
       !this.linkingSegments &&
+      !this.serialMode &&
       this.seamPick === null &&
       this.zipperPick === null
     );
