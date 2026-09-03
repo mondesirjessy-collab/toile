@@ -151,6 +151,32 @@ export interface InternalLine {
    * sortent du maillage, l'export l'imprime en trait de coupe plein.
    * Ignoré sur une polyligne ouverte. */
   hole?: boolean;
+  /** Courbe lisse : les points deviennent des points de passage d'une
+   * spline Catmull-Rom, le rendu interpole entre eux. */
+  smooth?: boolean;
+}
+
+export function catmullRomSubdivide(pts: readonly UV[], closed: boolean, samples = 8): UV[] {
+  const n = pts.length;
+  if (n < 2) return pts.map((p) => [...p] as UV);
+  const out: UV[] = [];
+  const segCount = closed ? n : n - 1;
+  for (let i = 0; i < segCount; i++) {
+    const p0 = pts[closed ? (i - 1 + n) % n : Math.max(0, i - 1)]!;
+    const p1 = pts[i]!;
+    const p2 = pts[(i + 1) % n]!;
+    const p3 = pts[closed ? (i + 2) % n : Math.min(n - 1, i + 2)]!;
+    for (let j = 0; j < samples; j++) {
+      const t = j / samples;
+      const t2 = t * t;
+      const t3 = t2 * t;
+      const u: number = 0.5 * (2 * p1[0] + (-p0[0] + p2[0]) * t + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3);
+      const v: number = 0.5 * (2 * p1[1] + (-p0[1] + p2[1]) * t + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3);
+      out.push([u, v]);
+    }
+  }
+  if (!closed) out.push([...pts[n - 1]!] as UV);
+  return out;
 }
 export const INTERNAL_LINES_MAX = 24;
 export const INTERNAL_LINE_POINTS_MAX = 64;
@@ -2793,6 +2819,8 @@ export function cutPieceAlongChord(
   /** Chemin INTÉRIEUR de la découpe (scission le long d'une ligne interne) :
    * points UV ordonnés du côté cutA vers le côté cutB. Vide = corde droite. */
   interiorPath: readonly UV[] = [],
+  /** Poser une couture d'assemblage le long de la découpe (Shift). */
+  withSeam = false,
 ): ChordCutResult {
   const pieces0 = docPieces(doc);
   const piece0 = pieces0[pieceId];
@@ -3120,6 +3148,7 @@ export function cutPieceAlongChord(
     openEdges: openA,
   };
   const labelBase = draftPieceLabel(cutPiece, pieceId);
+  const origSoloSheet = cutPiece.singlePanel === true || (!cutPiece.wrap && (!cutPiece.placement || cutPiece.placement.role === 'free'));
   const pieceB: DraftPiece = {
     ...cutPiece,
     outline: outlineB,
@@ -3127,9 +3156,10 @@ export function cutPieceAlongChord(
     seams: handB,
     openEdges: openB,
     name: `${labelBase} · découpe`,
-    placement: { role: 'auto', autoAlign: true },
+    placement: { role: 'auto', autoAlign: false },
     stagingOffset: undefined,
     stagingOffsets: undefined,
+    ...(origSoloSheet ? { singlePanel: true } : {}),
   };
   // Un LOGO suit LA moitié qui contient son ancre (comme les poches) — pas de
   // logo dupliqué des deux côtés de la découpe. Un MOTIF répété est un tissu
@@ -3204,17 +3234,20 @@ export function cutPieceAlongChord(
     docOut = replaceDocPiece(docOut, pid, updated);
   }
 
-  // 9 · La couture de la découpe elle-même : du dernier sommet de contour de
-  //     chaque moitié jusqu'au retour au sommet 0 — corde droite = 1 bord,
-  //     scission sur ligne interne = tout le chemin (m+1 bords).
-  const chordA: FaceRun = pieceId <= 1
-    ? { ...(pieceId === 1 ? { face: 'back' as const } : { face: 'front' as const }), pieceId, from: idxA.length - 1, to: 0 }
-    : { pieceId, from: idxA.length - 1, to: 0 };
-  const chordB: FaceRun = { pieceId: newPid, from: idxB.length - 1, to: 0 };
+  // 9 · Couture le long de la découpe : seulement si demandé (Shift).
+  const finalSeams = withSeam
+    ? (() => {
+        const chordA: FaceRun = pieceId <= 1
+          ? { ...(pieceId === 1 ? { face: 'back' as const } : { face: 'front' as const }), pieceId, from: idxA.length - 1, to: 0 }
+          : { pieceId, from: idxA.length - 1, to: 0 };
+        const chordB: FaceRun = { pieceId: newPid, from: idxB.length - 1, to: 0 };
+        return [...outSeams, { a: chordA, b: chordB }];
+      })()
+    : outSeams;
   docOut = {
     ...docOut,
     manual: true,
-    seams: [...outSeams, { a: chordA, b: chordB }],
+    seams: finalSeams,
     segmentLinks: outLinks.length ? outLinks : undefined,
   };
 

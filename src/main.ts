@@ -1058,6 +1058,33 @@ async function main(): Promise<void> {
       e.preventDefault();
       undoDraft();
     }
+    if ((e.key === 'Delete' || e.key === 'Backspace') && patternView.selectedInternalLine !== null) {
+      e.preventDefault();
+      const idx = patternView.selectedInternalLine;
+      patternView.deselectInternalLine();
+      patternView.onInternalLineDelete(patternView.activePieceId, idx);
+      return;
+    }
+    if ((e.key === 'c' || e.key === 'C') && patternView.selectedInternalLine !== null) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const pid = patternView.activePieceId;
+      const idx = patternView.selectedInternalLine;
+      const piece = draftPieceAt(pid);
+      const line = piece?.internalLines?.[idx];
+      if (line && draft) {
+        pushHistory();
+        const next = structuredClone(piece!);
+        const nl = next.internalLines![idx]!;
+        nl.smooth = !nl.smooth;
+        if (!nl.smooth) delete nl.smooth;
+        replaceDraftPiece(pid, next);
+        draftTouched = true;
+        refreshPatternDoc();
+        showToast(nl.smooth ? 'Courbe lisse activée (C = basculer)' : 'Courbe lisse désactivée — segments droits');
+      }
+      return;
+    }
     // Entrée valide la couture en série ; Échap l'annule.
     if (patternView.serialSewing && e.key === 'Enter') {
       e.preventDefault();
@@ -4191,6 +4218,17 @@ async function main(): Promise<void> {
     refreshPatternDoc();
     showToast('Ligne interne supprimée · Ctrl+Z la rend.');
   };
+  patternView.onInternalLineEdit = (pid, index, line) => {
+    if (!draft) return;
+    const piece = draftPieceAt(pid);
+    if (!piece?.internalLines?.[index]) return;
+    pushHistory();
+    const next = structuredClone(piece);
+    next.internalLines![index] = line;
+    replaceDraftPiece(pid, next);
+    draftTouched = true;
+    refreshPatternDoc();
+  };
   // 🪡 COUDRE guidé : bascule le mode « deux clics = une couture ». Les deux
   // clics marchent en 2D (le pied du plan guide) ET en 3D (près des bords,
   // directement sur les pièces autour de l'avatar) — le grand plan ne s'ouvre
@@ -4328,12 +4366,12 @@ async function main(): Promise<void> {
     syncAtelierControls();
     refreshHint();
   });
-  patternView.onCutPiece = (pid, a, b) => {
+  patternView.onCutPiece = (pid, a, b, withSeam) => {
     if (!draft) return;
     pushHistory();
-    const res = cutPieceAlongChord(draft, pid, a, b);
+    const res = cutPieceAlongChord(draft, pid, a, b, [], withSeam);
     if (!res.ok) {
-      draftHistory.pop(); // rien n'a changé : pas de cran d'annulation fantôme
+      draftHistory.pop();
       syncUndoButton();
       showToast(res.reason);
       syncAtelierControls();
@@ -4347,10 +4385,15 @@ async function main(): Promise<void> {
     simBtn().classList.remove('running');
     build();
     const cutLabel = draftPieceLabel(docPieces(draft)[res.newPieceId] ?? null, res.newPieceId);
-    const notes: string[] = [
-      `Pièce scindée — la couture est posée le long de la découpe (« ${cutLabel} »).`,
-      'Chaque moitié a maintenant son propre tissu : un clic sur une moitié, puis « Tissu de la sélection ».',
-    ];
+    const notes: string[] = withSeam
+      ? [
+          `Pièce scindée — couture posée le long de la découpe (« ${cutLabel} »).`,
+          'Chaque moitié a son propre tissu · Ctrl+Z annule.',
+        ]
+      : [
+          `Pièce scindée en deux (« ${cutLabel} ») — les moitiés sont indépendantes.`,
+          'Recoudre avec 🪡 si besoin · Shift+✂ = découper AVEC couture · Ctrl+Z annule.',
+        ];
     if (res.splitSeams) notes.push(`${res.splitSeams} couture(s) traversée(s) : point d'accord posé sur le bord partenaire.`);
     if (res.droppedLinks) notes.push(`${res.droppedLinks} lien(s)/couture(s) non transposables ont été défaits — recousez si besoin.`);
     showPlacementStatus(notes, true);
@@ -7510,8 +7553,8 @@ async function main(): Promise<void> {
         : '▱ ligne interne : cliquez DANS une pièce pour poser le 1er point (style, pliure, repère) · cliquer une ligne existante = la supprimer · Échap désarme';
     } else if (patternView.cutting) {
       message = patternView.cutPickArmed
-        ? '✂ 1er point posé (en orange) — cliquez le 2e point sur le contour de la MÊME pièce : elle se scinde et la couture se pose seule · Échap annule'
-        : '✂ découper : deux clics sur le contour = corde droite · un clic sur une LIGNE INTERNE (▱) = scinder le long de son tracé, courbes comprises · Échap annule';
+        ? '✂ 1er point posé (en orange) — cliquez le 2e point sur le contour · Shift = avec couture · Échap annule'
+        : '✂ découper : deux clics sur le contour = corde droite (Shift = avec couture) · clic sur une LIGNE INTERNE (▱) = scinder le long · Échap annule';
     } else if (!(document.getElementById('offset-chooser') as HTMLElement | null)?.hidden) {
       message =
         '⇱ offset : choisissez la distance — vers l’extérieur pour l’aisance, vers l’intérieur pour une doublure · les coutures restent posées';

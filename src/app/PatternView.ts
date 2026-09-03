@@ -34,6 +34,7 @@ import {
   type FaceRun,
   type PieceGraphic,
   type InternalLine,
+  catmullRomSubdivide,
 } from '../engine/pattern/Draft';
 
 /** Build the persisted assembly record emitted by the two-click ZIP tool. */
@@ -1561,6 +1562,9 @@ export class PatternView {
   private internalMode = false;
   private internalTrace: UV[] | null = null;
   private internalHover: [number, number] | null = null;
+  /** ▱ Ligne interne sélectionnée (index) + drag de point en cours. */
+  private selectedInternal: number | null = null;
+  private internalPtDrag: { lineIdx: number; ptIdx: number; orig: UV } | null = null;
   /** ⌵ Crans : outil armé. */
   private notchMode = false;
   private mergeMode = false;
@@ -1619,6 +1623,8 @@ export class PatternView {
   onInternalLine: (pieceId: number, line: InternalLine) => void = () => {};
   /** ▱ Suppression d'une ligne interne existante (clic dessus, outil armé). */
   onInternalLineDelete: (pieceId: number, index: number) => void = () => {};
+  /** ▱ Édition d'une ligne interne : points déplacés. */
+  onInternalLineEdit: (pieceId: number, index: number, line: InternalLine) => void = () => {};
   /** ◆ Pince losange terminée : pointes haute/basse (UV) + demi-largeur (m). */
   onFisheyeDart: (pieceId: number, top: UV, bottom: UV, halfWidthM: number) => void = () => {};
   /** ∿ Un sommet à arrondir : index + rayon métrique choisi au drag. */
@@ -1666,6 +1672,7 @@ export class PatternView {
     pieceId: number,
     a: { edge: number; t: number },
     b: { edge: number; t: number },
+    withSeam: boolean,
   ) => void = () => {};
   onGatherSeam: (seamIndex: number) => void = () => {};
   onFreeSeam: (
@@ -2007,6 +2014,8 @@ export class PatternView {
     this.internalMode = false;
     this.internalTrace = null;
     this.internalHover = null;
+    this.selectedInternal = null;
+    this.internalPtDrag = null;
     this.dartMode = false;
     this.dartTop = null;
     this.dartBottom = null;
@@ -2108,6 +2117,8 @@ export class PatternView {
     this.penPoints = [];
     this.penPointerInside = null;
     this.resetDraftTransient();
+    this.staticDirty = true;
+    this.render();
   }
 
   /** Replace the ACTIVE face after an edit (keeps the other face + which column). */
@@ -2259,6 +2270,8 @@ export class PatternView {
     this.internalMode = false;
     this.internalTrace = null;
     this.internalHover = null;
+    this.selectedInternal = null;
+    this.internalPtDrag = null;
     this.dartMode = false;
     this.dartTop = null;
     this.dartBottom = null;
@@ -2319,6 +2332,8 @@ export class PatternView {
     this.internalMode = next;
     this.internalTrace = null;
     this.internalHover = null;
+    this.selectedInternal = null;
+    this.internalPtDrag = null;
     document.body.style.cursor = next ? 'crosshair' : '';
     this.render();
     return this.internalMode;
@@ -2326,6 +2341,20 @@ export class PatternView {
 
   get internalDrawing(): boolean {
     return this.internalMode;
+  }
+
+  get selectedInternalLine(): number | null {
+    return this.selectedInternal;
+  }
+
+  get activePieceId(): number {
+    return this.activePiece;
+  }
+
+  deselectInternalLine(): void {
+    this.selectedInternal = null;
+    this.internalPtDrag = null;
+    this.render();
   }
 
   toggleFisheyeDart(): boolean {
@@ -3146,16 +3175,28 @@ export class PatternView {
   /** Index of the assembly seam whose link (between the two edge midpoints) is
    * clicked, or null — used to delete a seam. */
   private pickSeam(px: number, py: number): number | null {
+    let best: number | null = null;
+    let bestD = (HIT_RADIUS * 1.4) ** 2;
     for (let i = 0; i < this.assembly.length; i++) {
       const s = this.assembly[i]!;
       const ma = this.edgeMidScreen(pieceIdOf(s.a), s.a.from);
       const mb = this.edgeMidScreen(pieceIdOf(s.b), s.b.from);
       if (!ma || !mb) continue;
-      const mx = (ma[0] + mb[0]) / 2;
-      const my = (ma[1] + mb[1]) / 2;
-      if ((px - mx) ** 2 + (py - my) ** 2 <= HIT_RADIUS * HIT_RADIUS) return i;
+      const dx = mb[0] - ma[0];
+      const dy = mb[1] - ma[1];
+      const lenSq = dx * dx + dy * dy;
+      let d2: number;
+      if (lenSq < 1) {
+        d2 = (px - ma[0]) ** 2 + (py - ma[1]) ** 2;
+      } else {
+        const t = Math.max(0, Math.min(1, ((px - ma[0]) * dx + (py - ma[1]) * dy) / lenSq));
+        const cx = ma[0] + t * dx;
+        const cy = ma[1] + t * dy;
+        d2 = (px - cx) ** 2 + (py - cy) ** 2;
+      }
+      if (d2 < bestD) { bestD = d2; best = i; }
     }
-    return null;
+    return best;
   }
 
   /** Real length (cm) of an outline edge on a piece — for the walk/true-up
@@ -4226,7 +4267,8 @@ export class PatternView {
       }
       // ▱ LIGNE INTERNE : poser des points DANS la pièce active ; re-clic sur
       // le 1er point (≥ 3) = polygone fermé, re-clic sur le DERNIER (≥ 2) =
-      // polyligne ouverte. Sans tracé en cours, cliquer une ligne = supprimer.
+      // polyligne ouverte. Sans tracé en cours, cliquer une ligne = sélectionner
+      // (Suppr/Retour arrière efface la sélection).
       if (this.internalMode) {
         this.routePieceGesture(p[0], p[1]);
         const piece = this.pieceAt(this.activePiece);
@@ -4235,12 +4277,55 @@ export class PatternView {
         e.stopPropagation();
         const uvPt = this.screenToUV(p[0], p[1]);
         if (!this.internalTrace) {
+          // Point drag or insert on selected line?
+          if (this.selectedInternal !== null) {
+            const line = piece.internalLines?.[this.selectedInternal];
+            if (line) {
+              for (let pi = 0; pi < line.points.length; pi++) {
+                const sp = this.vertexScreen(line.points[pi]!);
+                if (sp && (p[0] - sp[0]) ** 2 + (p[1] - sp[1]) ** 2 <= (HIT_RADIUS * 1.4) ** 2) {
+                  this.internalPtDrag = { lineIdx: this.selectedInternal, ptIdx: pi, orig: [...line.points[pi]!] as UV };
+                  this.render();
+                  return;
+                }
+              }
+              // Click on the line body (not a point) → insert a new point and start dragging it
+              const sp = line.points
+                .map((uv) => this.vertexScreen(uv))
+                .filter((s): s is [number, number] => s !== null);
+              const nSeg = line.closed ? sp.length : sp.length - 1;
+              let bestSeg = -1;
+              let bestD = (HIT_RADIUS * 1.4) ** 2;
+              for (let k = 0; k < nSeg; k++) {
+                const a = sp[k]!;
+                const b = sp[(k + 1) % sp.length]!;
+                const vx = b[0] - a[0];
+                const vy = b[1] - a[1];
+                const len2 = vx * vx + vy * vy || 1e-6;
+                const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / len2));
+                const d2 = (p[0] - (a[0] + t * vx)) ** 2 + (p[1] - (a[1] + t * vy)) ** 2;
+                if (d2 < bestD) { bestD = d2; bestSeg = k; }
+              }
+              if (bestSeg >= 0) {
+                const insertIdx = bestSeg + 1;
+                line.points.splice(insertIdx, 0, uvPt);
+                this.internalPtDrag = { lineIdx: this.selectedInternal, ptIdx: insertIdx, orig: [...uvPt] as UV };
+                this.staticDirty = true;
+                this.render();
+                return;
+              }
+            }
+          }
           const hit = this.internalLineAt(p[0], p[1]);
           if (hit !== null) {
-            this.onInternalLineDelete(this.activePiece, hit);
+            this.selectedInternal = hit;
+            this.internalPtDrag = null;
+            this.render();
             return;
           }
-          if (!pointInPolygon(uvPt, piece.outline)) return;
+          this.selectedInternal = null;
+          this.internalPtDrag = null;
+          if (!pointInPolygon(uvPt, piece.outline)) { this.render(); return; }
           this.internalTrace = [uvPt];
           this.internalHover = [p[0], p[1]];
           this.render();
@@ -4293,7 +4378,7 @@ export class PatternView {
             this.cutHover = null;
             document.body.style.cursor = '';
             this.render();
-            this.onCutPiece(pid, a, b);
+            this.onCutPiece(pid, a, b, e.shiftKey);
           } else {
             // 1er point (ou changement de pièce : on repart de celle-ci).
             this.cutPick = { pieceId: this.activePiece, edge: ne.edge, t: ne.t };
@@ -4613,6 +4698,22 @@ export class PatternView {
         this.fullnessHover = [p[0], p[1]];
         this.render(); // l'entaille fantôme suit le curseur
       }
+      return;
+    }
+    if (this.internalPtDrag) {
+      const p = this.canvasPoint(e);
+      if (p) {
+        const piece = this.pieceAt(this.activePiece);
+        const line = piece?.internalLines?.[this.internalPtDrag.lineIdx];
+        if (line) {
+          const uv = this.screenToUV(p[0], p[1]);
+          line.points[this.internalPtDrag.ptIdx] = uv;
+          this.staticDirty = true;
+          this.render();
+        }
+      }
+      e.preventDefault();
+      e.stopPropagation();
       return;
     }
     if (this.internalMode && this.internalTrace) {
@@ -5094,6 +5195,30 @@ export class PatternView {
         const shortest = Math.min(Math.hypot(P[0] - A[0], P[1] - A[1]), Math.hypot(P[0] - B[0], P[1] - B[1]));
         const radius = d.radiusM > 0.004 ? d.radiusM : 0.4 * shortest;
         this.onRoundCorner(this.activePiece, d.vertex, radius);
+      }
+      this.render();
+      return;
+    }
+    if (this.internalPtDrag) {
+      const d = this.internalPtDrag;
+      this.internalPtDrag = null;
+      e.preventDefault();
+      e.stopPropagation();
+      const piece = this.pieceAt(this.activePiece);
+      const line = piece?.internalLines?.[d.lineIdx];
+      if (line) {
+        const moved = Math.hypot(
+          line.points[d.ptIdx]![0] - d.orig[0],
+          line.points[d.ptIdx]![1] - d.orig[1],
+        ) > 1e-5;
+        if (moved) {
+          this.onInternalLineEdit(this.activePiece, d.lineIdx, {
+            points: line.points.map((pt) => [...pt] as UV),
+            ...(line.closed ? { closed: true } : {}),
+            ...(line.hole ? { hole: true } : {}),
+            ...(line.smooth ? { smooth: true } : {}),
+          });
+        }
       }
       this.render();
       return;
@@ -5615,7 +5740,10 @@ export class PatternView {
       ctx.lineWidth = 1.2;
       ctx.setLineDash([6, 4]);
       for (const line of piece.internalLines) {
-        const lp = line.points
+        const renderPts = line.smooth && line.points.length >= 3
+          ? catmullRomSubdivide(line.points, !!line.closed)
+          : line.points;
+        const lp = renderPts
           .map((uv) => this.vertexScreen(uv, piece, offset, yOffset))
           .filter((s): s is [number, number] => s !== null);
         if (lp.length < 2) continue;
@@ -5623,7 +5751,6 @@ export class PatternView {
         lp.forEach((s, i) => (i === 0 ? ctx.moveTo(s[0], s[1]) : ctx.lineTo(s[0], s[1])));
         if (line.closed) ctx.closePath();
         if (line.hole && line.closed) {
-          // ⌾ TROU : évidé — fond sombre + trait de coupe PLEIN.
           ctx.save();
           ctx.fillStyle = PAL.a02;
           ctx.fill();
@@ -6920,6 +7047,62 @@ export class PatternView {
       drawDart(this.draftEdge.apex, [m[0] - dx * 0.045, m[1] - dy * 0.045], [m[0] + dx * 0.045, m[1] + dy * 0.045]);
     }
     ctx.setLineDash([]);
+    // ▱ Lignes internes de la pièce ACTIVE (style, pliures, repères).
+    if (this.draftPiece.internalLines?.length) {
+      const lines = this.draftPiece.internalLines;
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([6, 4]);
+      for (let li = 0; li < lines.length; li++) {
+        const line = lines[li]!;
+        const selected = this.selectedInternal === li;
+        const renderPts = line.smooth && line.points.length >= 3
+          ? catmullRomSubdivide(line.points, !!line.closed)
+          : line.points;
+        const lp = renderPts
+          .map((uv) => this.vertexScreen(uv))
+          .filter((s): s is [number, number] => s !== null);
+        if (lp.length < 2) continue;
+        ctx.strokeStyle = selected ? PAL.a42 : PAL.ligneInterne;
+        ctx.lineWidth = selected ? 2.2 : 1.2;
+        ctx.beginPath();
+        lp.forEach((s, i) => (i === 0 ? ctx.moveTo(s[0], s[1]) : ctx.lineTo(s[0], s[1])));
+        if (line.closed) ctx.closePath();
+        if (line.hole && line.closed) {
+          ctx.save();
+          ctx.fillStyle = PAL.a02;
+          ctx.fill();
+          ctx.setLineDash([]);
+          ctx.strokeStyle = selected ? PAL.a42 : PAL.ligneInterneForte;
+          ctx.lineWidth = selected ? 2.4 : 1.6;
+          ctx.stroke();
+          ctx.restore();
+          ctx.lineWidth = 1.2;
+          ctx.setLineDash([6, 4]);
+        } else {
+          ctx.stroke();
+        }
+        if (selected) {
+          ctx.setLineDash([]);
+          const ctrlPts = line.points
+            .map((uv) => this.vertexScreen(uv))
+            .filter((s): s is [number, number] => s !== null);
+          for (let pi = 0; pi < ctrlPts.length; pi++) {
+            const s = ctrlPts[pi]!;
+            const dragging = this.internalPtDrag?.lineIdx === li && this.internalPtDrag?.ptIdx === pi;
+            const r = dragging ? 6.5 : 4.5;
+            ctx.beginPath();
+            ctx.arc(s[0], s[1], r, 0, Math.PI * 2);
+            ctx.fillStyle = dragging ? PAL.a19 : PAL.pointNeutre;
+            ctx.fill();
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = dragging ? PAL.a42 : PAL.a49;
+            ctx.stroke();
+          }
+          ctx.setLineDash([6, 4]);
+        }
+      }
+      ctx.setLineDash([]);
+    }
     // Aperçu du BOMBER : l'arc que le segment deviendra au relâchement (bleu,
     // par-dessus le contour encore droit).
     if (this.draftEdge?.bend) {
