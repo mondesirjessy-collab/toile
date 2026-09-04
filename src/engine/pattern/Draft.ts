@@ -154,17 +154,23 @@ export interface InternalLine {
   /** Courbe lisse : les points deviennent des points de passage d'une
    * spline Catmull-Rom, le rendu interpole entre eux. */
   smooth?: boolean;
+  /** Indices des points « coin » (angle vif) dans une ligne lisse. */
+  corners?: number[];
 }
 
-export function catmullRomSubdivide(pts: readonly UV[], closed: boolean, samples = 8): UV[] {
+export function catmullRomSubdivide(pts: readonly UV[], closed: boolean, samples = 8, cornerSet?: ReadonlySet<number>): UV[] {
   const n = pts.length;
   if (n < 2) return pts.map((p) => [...p] as UV);
   const out: UV[] = [];
   const segCount = closed ? n : n - 1;
   for (let i = 0; i < segCount; i++) {
-    const p0 = pts[closed ? (i - 1 + n) % n : Math.max(0, i - 1)]!;
     const p1 = pts[i]!;
     const p2 = pts[(i + 1) % n]!;
+    if (cornerSet && (cornerSet.has(i) || cornerSet.has((i + 1) % n))) {
+      out.push([...p1] as UV);
+      continue;
+    }
+    const p0 = pts[closed ? (i - 1 + n) % n : Math.max(0, i - 1)]!;
     const p3 = pts[closed ? (i + 2) % n : Math.min(n - 1, i + 2)]!;
     for (let j = 0; j < samples; j++) {
       const t = j / samples;

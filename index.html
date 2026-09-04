@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TOILE — du brief au patron · v302</title>
+  <title>TOILE — du brief au patron · v304</title>
   <style>
     :root {
       color-scheme: dark;
@@ -1328,7 +1328,7 @@
     #resolution-rebuild-status[hidden] { display: none; }
     #hint { opacity: 0.4; font-size: 11px; }
     /* Drop lil-gui below the header bar so it doesn't overlap the HUD. */
-    .lil-gui.lil-root { top: 46px; z-index: 10; }
+    .lil-gui.lil-root { top: 46px; z-index: 10; max-height: calc(100vh - 46px - var(--atelier-status-h)); overflow-y: auto; }
     #overlay {
       position: fixed; inset: 0; display: grid; place-content: center;
       background: #0e0f12; text-align: center; padding: 24px; gap: 10px;
@@ -1346,7 +1346,7 @@
   <canvas id="view" tabindex="-1" aria-label="Vue 3D du vêtement et du mannequin"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 5 — du brief au patron · v302</small></span>
+    <span class="title">TOILE<small>phase 5 — du brief au patron · v304</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
       <span id="resolution-rebuild-status" role="status" aria-live="polite" hidden></span>

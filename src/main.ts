@@ -769,6 +769,7 @@ async function main(): Promise<void> {
   const splitButton = document.getElementById('at-big') as HTMLButtonElement;
   const advancedButton = document.getElementById('at-advanced') as HTMLButtonElement;
   const guidanceEl = document.getElementById('atelier-guidance') as HTMLElement;
+  let guidanceLockUntil = 0;
   const avatarStatureInput = document.getElementById('at-avatar-stature') as HTMLInputElement;
   const avatarStatureNum = document.getElementById('at-avatar-stature-num') as HTMLInputElement;
   const avatarStatureHelp = document.getElementById('at-avatar-stature-help') as HTMLElement;
@@ -1073,15 +1074,32 @@ async function main(): Promise<void> {
       const piece = draftPieceAt(pid);
       const line = piece?.internalLines?.[idx];
       if (line && draft) {
-        pushHistory();
-        const next = structuredClone(piece!);
-        const nl = next.internalLines![idx]!;
-        nl.smooth = !nl.smooth;
-        if (!nl.smooth) delete nl.smooth;
-        replaceDraftPiece(pid, next);
-        draftTouched = true;
-        refreshPatternDoc();
-        showToast(nl.smooth ? 'Courbe lisse activée (C = basculer)' : 'Courbe lisse désactivée — segments droits');
+        const ptIdx = patternView.selectedPointIndex;
+        if (ptIdx !== null && line.smooth) {
+          pushHistory();
+          const next = structuredClone(piece!);
+          const nl = next.internalLines![idx]!;
+          const corners: number[] = nl.corners ? [...nl.corners] : [];
+          const ci = corners.indexOf(ptIdx);
+          if (ci >= 0) corners.splice(ci, 1);
+          else corners.push(ptIdx);
+          if (corners.length > 0) nl.corners = corners;
+          else delete nl.corners;
+          replaceDraftPiece(pid, next);
+          draftTouched = true;
+          refreshPatternDoc();
+          showToast(ci >= 0 ? `Point ${ptIdx} lissé` : `Point ${ptIdx} en angle vif ◼`);
+        } else {
+          pushHistory();
+          const next = structuredClone(piece!);
+          const nl = next.internalLines![idx]!;
+          nl.smooth = !nl.smooth;
+          if (!nl.smooth) { delete nl.smooth; delete nl.corners; }
+          replaceDraftPiece(pid, next);
+          draftTouched = true;
+          refreshPatternDoc();
+          showToast(nl.smooth ? 'Courbe lisse activée (C = basculer)' : 'Courbe lisse désactivée — segments droits');
+        }
       }
       return;
     }
@@ -5487,7 +5505,7 @@ async function main(): Promise<void> {
   // Cache key over ALL the measurement sliders — dropping one serves a stale
   // body (frozen grading, stale morphed scan) as soon as it moves alone.
   const morphKey = (): string =>
-    `${morphs.stature}|${morphs.carrure}|${morphs.poitrine}|${morphs.taille}|${morphs.hanches}|${morphs.cuisse}`;
+    `${morphs.stature}|${morphs.carrure}|${morphs.poitrine}|${morphs.taille}|${morphs.hanches}|${morphs.cuisse}|${morphs.jambe}|${morphs.buste}|${morphs.cou}|${morphs.bras}`;
   const measureFor = (kind: string, prims: SdfPrim[] | null, scan: ScanAvatar['grid'] | null): BodyMeasure => {
     const poseKey = collisionAuditAnalyticTPose ? 'T' : 'A';
     const key = `${kind}|${poseKey}|${morphKey()}`;
@@ -7592,7 +7610,8 @@ async function main(): Promise<void> {
         'atelier : un clic pièce 2D = sélectionner (gauche ou droit) · Cmd/Ctrl + clic = groupe · tirer un coin = taille commune · Poche / applique = cliquer son support puis retirer les × voulus';
     }
     hintEl.textContent = message;
-    guidanceEl.textContent = message;
+    if (Date.now() < guidanceLockUntil) { /* slider feedback visible */ }
+    else guidanceEl.textContent = message;
     syncAtelierControls();
   };
 
@@ -10416,6 +10435,7 @@ async function main(): Promise<void> {
   avatarStatureInput.addEventListener('change', () => {
     panel.setStatureCm(avatarStatureInput.valueAsNumber);
     guidanceEl.textContent = `Mannequin réglé à ${fmtNum(avatarStatureInput.valueAsNumber)} cm · corps et collisions recalculés.`;
+    guidanceLockUntil = Date.now() + 2000;
   });
   // v184 : la stature aussi se tape au chiffre.
   const applyStatureNum = (): void => {
@@ -10425,6 +10445,7 @@ async function main(): Promise<void> {
     syncAvatarStature(clamped);
     panel.setStatureCm(clamped);
     guidanceEl.textContent = `Mannequin réglé à ${fmtNum(clamped)} cm · corps et collisions recalculés.`;
+    guidanceLockUntil = Date.now() + 2000;
   };
   avatarStatureNum.addEventListener('change', applyStatureNum);
   avatarStatureNum.addEventListener('keydown', (e) => { if (e.key === 'Enter') avatarStatureNum.blur(); });
@@ -10442,6 +10463,7 @@ async function main(): Promise<void> {
     input.addEventListener('change', () => {
       panel.setMeasurementCm(field, input.valueAsNumber); // → onMorph → morphs + build
       guidanceEl.textContent = `Mannequin remodelé (${measureLabel(id)} ${fmtNum(input.valueAsNumber)} cm) · l'essayage épousera le nouveau corps.`;
+      guidanceLockUntil = Date.now() + 2000;
     });
     // Le champ NUMÉRIQUE : tape ta cote exacte (v184). Borné aux mêmes limites
     // que le curseur ; Entrée valide (blur).
@@ -10455,6 +10477,7 @@ async function main(): Promise<void> {
       input.value = String(clamped);
       panel.setMeasurementCm(field, clamped);
       guidanceEl.textContent = `Mannequin remodelé (${measureLabel(id)} ${fmtNum(clamped)} cm) · l'essayage épousera le nouveau corps.`;
+      guidanceLockUntil = Date.now() + 2000;
     };
     num.addEventListener('change', applyNum);
     num.addEventListener('keydown', (e) => { if (e.key === 'Enter') num.blur(); });
@@ -10471,6 +10494,7 @@ async function main(): Promise<void> {
       if (num && document.activeElement !== num) num.value = String(clamped);
       if (sceneMode !== 'drapé' && sceneMode !== 'couture') build();
       guidanceEl.textContent = `${label} : ${clamped} % · proportions remodelées (taille constante).`;
+      guidanceLockUntil = Date.now() + 2000;
     };
     if (input) {
       input.addEventListener('input', () => {

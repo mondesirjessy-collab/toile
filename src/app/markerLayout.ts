@@ -100,8 +100,9 @@ function rasterize(outline: readonly UV[], wCm: number, hCm: number, saCm: numbe
       if (u >= 0 && u <= 1 && v >= 0 && v <= 1 && pointInPolygon([u, v], outline)) raw[r * cols + c] = 1;
     }
   }
-  // Dilate d'un rayon = marge de couture (≥ 1 cellule) → jeu réel entre pièces.
-  const rad = Math.max(1, Math.round(saCm / CELL_CM));
+  // Dilate d'un rayon = marge de couture + espace de coupe (≥ 2 cellules)
+  // → ~3 cm d'air visible entre les traits de coupe voisins.
+  const rad = Math.max(2, Math.ceil(saCm / CELL_CM) + 1);
   const mask = new Uint8Array(cols * rows);
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {

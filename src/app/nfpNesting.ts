@@ -36,13 +36,14 @@ import {
 } from 'clipper2-ts';
 import type { MarkerNest, MarkerPiece, Placement } from './markerLayout';
 
-/** Contour physique (cm) d'une pièce, avec marge de couture exacte. */
+/** Contour physique (cm) d'une pièce, avec marge de couture + espace de coupe. */
 function contourWithSeamAllowance(p: MarkerPiece, saCm: number, rot: 0 | 180): PathD {
   const path: PathD = p.outline.map(([u, v]) => ({
     x: (rot === 180 ? 1 - u : u) * p.wCm,
     y: (rot === 180 ? 1 - v : v) * p.hCm,
   }));
-  const inflated: PathsD = inflatePathsD([path], saCm, JoinType.Round, EndType.Polygon, 2, 0.1);
+  const CUT_GAP_CM = 1.5;
+  const inflated: PathsD = inflatePathsD([path], saCm + CUT_GAP_CM / 2, JoinType.Round, EndType.Polygon, 2, 0.1);
   // inflatePathsD peut renvoyer plusieurs contours (pièces très concaves) —
   // le plus grand est l'enveloppe extérieure.
   let best: PathD = inflated[0] ?? path;

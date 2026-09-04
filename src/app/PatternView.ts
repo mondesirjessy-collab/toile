@@ -1564,6 +1564,7 @@ export class PatternView {
   private internalHover: [number, number] | null = null;
   /** ▱ Ligne interne sélectionnée (index) + drag de point en cours. */
   private selectedInternal: number | null = null;
+  private selectedPoint: number | null = null;
   private internalPtDrag: { lineIdx: number; ptIdx: number; orig: UV } | null = null;
   /** ⌵ Crans : outil armé. */
   private notchMode = false;
@@ -2015,6 +2016,7 @@ export class PatternView {
     this.internalTrace = null;
     this.internalHover = null;
     this.selectedInternal = null;
+    this.selectedPoint = null;
     this.internalPtDrag = null;
     this.dartMode = false;
     this.dartTop = null;
@@ -2271,6 +2273,7 @@ export class PatternView {
     this.internalTrace = null;
     this.internalHover = null;
     this.selectedInternal = null;
+    this.selectedPoint = null;
     this.internalPtDrag = null;
     this.dartMode = false;
     this.dartTop = null;
@@ -2333,6 +2336,7 @@ export class PatternView {
     this.internalTrace = null;
     this.internalHover = null;
     this.selectedInternal = null;
+    this.selectedPoint = null;
     this.internalPtDrag = null;
     document.body.style.cursor = next ? 'crosshair' : '';
     this.render();
@@ -2347,12 +2351,17 @@ export class PatternView {
     return this.selectedInternal;
   }
 
+  get selectedPointIndex(): number | null {
+    return this.selectedPoint;
+  }
+
   get activePieceId(): number {
     return this.activePiece;
   }
 
   deselectInternalLine(): void {
     this.selectedInternal = null;
+    this.selectedPoint = null;
     this.internalPtDrag = null;
     this.render();
   }
@@ -4319,11 +4328,13 @@ export class PatternView {
           const hit = this.internalLineAt(p[0], p[1]);
           if (hit !== null) {
             this.selectedInternal = hit;
+            this.selectedPoint = null;
             this.internalPtDrag = null;
             this.render();
             return;
           }
           this.selectedInternal = null;
+          this.selectedPoint = null;
           this.internalPtDrag = null;
           if (!pointInPolygon(uvPt, piece.outline)) { this.render(); return; }
           this.internalTrace = [uvPt];
@@ -5217,7 +5228,10 @@ export class PatternView {
             ...(line.closed ? { closed: true } : {}),
             ...(line.hole ? { hole: true } : {}),
             ...(line.smooth ? { smooth: true } : {}),
+            ...(line.corners && line.corners.length > 0 ? { corners: [...line.corners] } : {}),
           });
+        } else {
+          this.selectedPoint = d.ptIdx;
         }
       }
       this.render();
@@ -5740,8 +5754,9 @@ export class PatternView {
       ctx.lineWidth = 1.2;
       ctx.setLineDash([6, 4]);
       for (const line of piece.internalLines) {
+        const cSet = line.corners && line.corners.length > 0 ? new Set(line.corners) : undefined;
         const renderPts = line.smooth && line.points.length >= 3
-          ? catmullRomSubdivide(line.points, !!line.closed)
+          ? catmullRomSubdivide(line.points, !!line.closed, 8, cSet)
           : line.points;
         const lp = renderPts
           .map((uv) => this.vertexScreen(uv, piece, offset, yOffset))
@@ -7055,8 +7070,9 @@ export class PatternView {
       for (let li = 0; li < lines.length; li++) {
         const line = lines[li]!;
         const selected = this.selectedInternal === li;
+        const cSet = line.corners && line.corners.length > 0 ? new Set(line.corners) : undefined;
         const renderPts = line.smooth && line.points.length >= 3
-          ? catmullRomSubdivide(line.points, !!line.closed)
+          ? catmullRomSubdivide(line.points, !!line.closed, 8, cSet)
           : line.points;
         const lp = renderPts
           .map((uv) => this.vertexScreen(uv))
@@ -7086,17 +7102,25 @@ export class PatternView {
           const ctrlPts = line.points
             .map((uv) => this.vertexScreen(uv))
             .filter((s): s is [number, number] => s !== null);
+          const cornerSet = line.corners && line.corners.length > 0 ? new Set(line.corners) : null;
           for (let pi = 0; pi < ctrlPts.length; pi++) {
             const s = ctrlPts[pi]!;
             const dragging = this.internalPtDrag?.lineIdx === li && this.internalPtDrag?.ptIdx === pi;
-            const r = dragging ? 6.5 : 4.5;
-            ctx.beginPath();
-            ctx.arc(s[0], s[1], r, 0, Math.PI * 2);
-            ctx.fillStyle = dragging ? PAL.a19 : PAL.pointNeutre;
-            ctx.fill();
+            const sel = this.selectedPoint === pi;
+            const isCorner = cornerSet !== null && cornerSet.has(pi);
+            const r = dragging ? 6.5 : sel ? 5.5 : 4.5;
+            ctx.fillStyle = dragging ? PAL.a19 : sel ? '#ff6600' : PAL.pointNeutre;
             ctx.lineWidth = 2;
-            ctx.strokeStyle = dragging ? PAL.a42 : PAL.a49;
-            ctx.stroke();
+            ctx.strokeStyle = dragging ? PAL.a42 : sel ? '#cc4400' : PAL.a49;
+            if (isCorner) {
+              ctx.fillRect(s[0] - r, s[1] - r, r * 2, r * 2);
+              ctx.strokeRect(s[0] - r, s[1] - r, r * 2, r * 2);
+            } else {
+              ctx.beginPath();
+              ctx.arc(s[0], s[1], r, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.stroke();
+            }
           }
           ctx.setLineDash([6, 4]);
         }
