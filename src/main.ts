@@ -6790,6 +6790,9 @@ async function main(): Promise<void> {
                     assemblySeams: compileAssembly(simulationDoc, resolution),
                   }
                 : {}),
+              // v308 — lisière adoucie sur le tee boxy (ligne d'épaule rasante
+              // → dents de scie) ; extension aux autres vêtements après mesure.
+              ...(loadedPattern === 'boxy' ? { smoothCutBoundary: true } : {}),
               ...(simulationDoc.preset === 'jupe'
                 ? {
                     // Jupe : une taille sans bretelles glisse le long d'un corps
@@ -6932,18 +6935,30 @@ async function main(): Promise<void> {
                   for (const dart of fp.darts) if (pointInTriangle([uu, vv], dart.apex, dart.legA, dart.legB)) return false;
                   return true;
                 };
+                const firsts = new Int32Array(rN).fill(-1);
+                const lasts = new Int32Array(rN).fill(-1);
                 for (let u = 0; u < rN; u++) {
-                  let first = -1;
-                  let last = -1;
                   for (let v = 0; v < rN; v++) {
                     if (insidePiece(u / (rN - 1), v / (rN - 1))) {
-                      if (first < 0) first = v;
-                      last = v;
+                      if (firsts[u]! < 0) firsts[u] = v;
+                      lasts[u] = v;
                     }
                   }
-                  if (first >= 0) {
-                    openAll.add(first * rN + u);
-                    openAll.add(last * rN + u);
+                }
+                // v308 (boxy) — une « dernière cellule » tombée en MI-CÔTÉ
+                // (colonnes extrêmes d'une manche fuselée) n'est PAS le
+                // poignet : la laisser ouverte prive la couture miroir du
+                // haut du côté du tube → le tube bâille et ses lambeaux
+                // griffent le bras (mesuré au banc, dos du tee). On n'ouvre
+                // le bas que sur la rangée du vrai poignet (tolérance 1).
+                let lastMax = -1;
+                for (let u = 0; u < rN; u++) if (lasts[u]! > lastMax) lastMax = lasts[u]!;
+                const guardMidSide = loadedPattern === 'boxy';
+                for (let u = 0; u < rN; u++) {
+                  if (firsts[u]! < 0) continue;
+                  openAll.add(firsts[u]! * rN + u);
+                  if (!guardMidSide || lasts[u]! >= lastMax - 1) {
+                    openAll.add(lasts[u]! * rN + u);
                   }
                 }
               }
@@ -6969,6 +6984,9 @@ async function main(): Promise<void> {
                 backWeaveScale: fp.backWeaveScale,
                 // Bord-côte (v307) : maille cousue étirée, tension répartie.
                 weaveScale: fp.weaveScale,
+                // v308 — mêmes lisières adoucies que le corps (les griffes du
+                // dos venaient des dents de coupe du panneau MANCHE).
+                ...(loadedPattern === 'boxy' ? { smoothCutBoundary: true } : {}),
               });
               // Every editable piece owns the same n×n grid. Scale its base
               // inverse masses by physical cell area before material density is

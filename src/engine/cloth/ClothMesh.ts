@@ -206,6 +206,14 @@ export function capSmallBoundaryLoops(
   panelSize: number,
   positions?: Float32Array,
   touchesOpen?: (index: number) => boolean,
+  // v308 — premier panneau du maillage B lors d'un combine : les boucles de
+  // JONCTION (4 panneaux : corps devant/dos + manche devant/dos) doivent être
+  // coupées aux 2 arêtes qui TRAVERSENT la frontière a↔b (les vrais bouts de
+  // la couture), pas aux « 2 ponts les plus longs au spawn » — au spawn les
+  // panneaux du corps sont à ~0,9 m l'un de l'autre et gagnaient toujours,
+  // ce qui zippe les mauvais rails et laisse le rideau déchiré à l'aisselle
+  // et à la pointe d'épaule (défaut D1 mesuré au banc).
+  meshSplitPanel?: number,
 ): { extra: number[]; stats: CapLoopStat[] } {
   const ec = new Map<string, number>();
   const ek = (x: number, y: number): string => (x < y ? x + '|' + y : y + '|' + x);
@@ -320,7 +328,19 @@ export function capSmallBoundaryLoops(
     let e1 = -1;
     let diamV0 = -1; // …ou indices de SOMMET pour la coupure au diamètre
     let diamV1 = -1;
-    if (cuts.length === 2) {
+    // v308 — jonction de combine : si exactement 2 coupures traversent la
+    // frontière maillage a↔b, ce sont les bouts VRAIS de la couture.
+    const crossCuts = meshSplitPanel === undefined
+      ? []
+      : cuts.filter((k) => {
+          const s0 = Math.floor(ring[k]! / panelSize) < meshSplitPanel;
+          const s1 = Math.floor(ring[(k + 1) % ring.length]! / panelSize) < meshSplitPanel;
+          return s0 !== s1;
+        });
+    if (crossCuts.length === 2) {
+      e0 = crossCuts[0]!;
+      e1 = crossCuts[1]!;
+    } else if (cuts.length === 2) {
       e0 = cuts[0]!;
       e1 = cuts[1]!;
     } else if (cuts.length === 0 && positions) {
@@ -815,6 +835,69 @@ export interface SeamedPanelsOptions {
    * Combines multiplicatively with backWeaveScale. 1/absent = no effect.
    */
   weaveScale?: number;
+  /**
+   * v308 — adoucit la lisière de coupe : le demi-déplacement du snap de bord
+   * se diffuse vers la rangée intérieure, ce qui casse l'alternance d'arêtes
+   * 5/23 mm produite par une ligne d'outline RASANTE sur la grille (la ligne
+   * d'épaule du boxy, ~4-8°, donnait un bord en dents de scie qui chiffonnait
+   * toute la bande d'épaule au drapé). Opt-in : absent = bit-à-bit identique.
+   */
+  smoothCutBoundary?: boolean;
+}
+
+/**
+ * v308 — diffusion du snap de bord (voir smoothCutBoundary). Pour chaque
+ * particule de bord snappée, son voisin OPPOSÉ à la coupe (rangée intérieure)
+ * reçoit la moitié du déplacement sur l'axe de la coupe — accumulé puis
+ * clampé à 0,45 maille. Les particules de bord elles-mêmes ne bougent pas
+ * (leur snap reste la lisière exacte du patron).
+ */
+function diffuseSnapIntoInterior(
+  kept: readonly boolean[],
+  uAdj: Float32Array,
+  vAdj: Float32Array,
+  n: number,
+): void {
+  const DIRS = [[-1, 0], [1, 0], [0, -1], [0, 1]] as const;
+  const accU = new Float32Array(n * n);
+  const accV = new Float32Array(n * n);
+  const isBoundary = (u: number, v: number): boolean => {
+    for (const [a, b] of DIRS) {
+      const uu = u + a;
+      const vv = v + b;
+      if (uu < 0 || uu >= n || vv < 0 || vv >= n) continue;
+      if (!kept[vv * n + uu]) return true;
+    }
+    return false;
+  };
+  for (let v = 0; v < n; v++) {
+    for (let u = 0; u < n; u++) {
+      const idx = v * n + u;
+      if (!kept[idx]) continue;
+      const dU = uAdj[idx]! - u / (n - 1);
+      const dV = vAdj[idx]! - v / (n - 1);
+      if (dU === 0 && dV === 0) continue;
+      for (const [a, b] of DIRS) {
+        const cu = u + a;
+        const cv = v + b;
+        if (cu < 0 || cu >= n || cv < 0 || cv >= n) continue;
+        if (kept[cv * n + cu]) continue; // pas de coupe dans cette direction
+        const ou = u - a; // voisin opposé à la coupe (vers l'intérieur)
+        const ov = v - b;
+        if (ou < 0 || ou >= n || ov < 0 || ov >= n) continue;
+        const oidx = ov * n + ou;
+        if (!kept[oidx]) continue;
+        if (isBoundary(ou, ov)) continue; // il porte son propre snap
+        if (b !== 0) accV[oidx] = accV[oidx]! + dV / 2;
+        else accU[oidx] = accU[oidx]! + dU / 2;
+      }
+    }
+  }
+  const lim = 0.45 / (n - 1);
+  for (let i = 0; i < n * n; i++) {
+    if (accU[i] !== 0) uAdj[i] = uAdj[i]! + Math.max(-lim, Math.min(lim, accU[i]!));
+    if (accV[i] !== 0) vAdj[i] = vAdj[i]! + Math.max(-lim, Math.min(lim, accV[i]!));
+  }
 }
 
 type PatternShape = NonNullable<SeamedPanelsOptions['shape']>;
@@ -1108,6 +1191,12 @@ function appendBoundarySeamRibbons(
   };
   // Ribbons already present in an input mesh span two panels. Only ordinary
   // mono-panel triangles define cut boundaries for a new ribbon.
+  // v308 — dédup des jumeaux double-face (même règle que capSmallBoundaryLoops) :
+  // les caps mono-panneau posés par un combine PRÉCÉDENT (le tee enchaîne
+  // 3 combines) comptaient chaque arête de rail 2× de plus → count 3 → arête
+  // « non-bord » → BFS null → intervalle de ruban SAUTÉ → fente visible le
+  // long de la couture (le « rideau déchiré » de l'emmanchure, mesuré v307).
+  const seenFace = new Set<string>();
   for (let t = 0; t < triangles.length; t += 3) {
     const a = triangles[t]!;
     const b = triangles[t + 1]!;
@@ -1119,6 +1208,11 @@ function appendBoundarySeamRibbons(
     ) {
       continue;
     }
+    const faceKey = a < b
+      ? (b < c ? `${a}:${b}:${c}` : a < c ? `${a}:${c}:${b}` : `${c}:${a}:${b}`)
+      : (a < c ? `${b}:${a}:${c}` : b < c ? `${b}:${c}:${a}` : `${c}:${b}:${a}`);
+    if (seenFace.has(faceKey)) continue; // jumeau de winding : une seule face
+    seenFace.add(faceKey);
     add(a, b);
     add(b, c);
     add(c, a);
@@ -1379,6 +1473,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
         }
       }
     }
+    if (opts.smoothCutBoundary) diffuseSnapIntoInterior(kept, uAdj, vAdj, n);
   }
 
   // Independent BACK mask (freeform côte à côte): panel 1 (the −z face) gets its
@@ -1444,6 +1539,7 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
           vAdjB[v * n + u] = sumV / cuts;
         }
       }
+    if (opts.smoothCutBoundary) diffuseSnapIntoInterior(keptB, uAdjB, vAdjB, n);
     const backIslands = countMaskIslands(keptB, n);
     // An intentionally empty back mask is how a pocket/appliqué requests one
     // physical sheet. It is not a disconnected garment and should stay silent.
@@ -2317,7 +2413,16 @@ export function combineClothMeshes(
   // capSmallBoundaryLoops), éventail conservé pour les boucles non ordonnables.
   {
     const HOLE_MAX = 24; // aretes : au dela = ouverture legitime (encolure/ourlet/poignet)
-    const { extra } = capSmallBoundaryLoops(triangles, HOLE_MAX, na * na, positions);
+    // v308 — la frontière a↔b (premier panneau de b) guide la coupure des
+    // boucles de JONCTION : leurs glissières se ferment entre les bons rails.
+    const { extra } = capSmallBoundaryLoops(
+      triangles,
+      HOLE_MAX,
+      na * na,
+      positions,
+      undefined,
+      a.count / (na * na),
+    );
     for (const idx of extra) triangles.push(idx);
   }
   const triangleIndices = new Uint32Array(triangles);

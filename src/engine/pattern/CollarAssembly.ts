@@ -201,7 +201,7 @@ export function fitCollarTubeToNeckline(
  * its real edge, turning the quasi-rigid seam into an inward body pull.
  */
 export function collarCrossSeams(
-  base: Pick<ClothMeshData, 'count' | 'invMasses'>,
+  base: Pick<ClothMeshData, 'count' | 'invMasses' | 'positions'>,
   n: number,
   necklines: CollarNecklineRuns,
 ): AttachmentSeam[] {
@@ -218,6 +218,43 @@ export function collarCrossSeams(
         base.invMasses[panelOffset + local]! > 0,
     );
     if (neckline.length === 0) continue;
+    // v308 — abscisse curviligne RÉELLE de l'encolure (positions de spawn
+    // snappées) : la répartition par INDEX écrasait 2-3 sommets de bande sur
+    // les cellules des zones denses (feed local mesuré 0,66-1,79) et la bande
+    // fronçait en bourrelets ; à l'abscisse, chaque épingle tombe au bon
+    // millimètre du bord et la fronce se répartit uniformément.
+    const s: number[] = [0];
+    for (let c = 1; c < neckline.length; c++) {
+      const a4 = (panelOffset + neckline[c - 1]!) * 4;
+      const b4 = (panelOffset + neckline[c]!) * 4;
+      s.push(
+        s[c - 1]! +
+          Math.hypot(
+            base.positions[b4]! - base.positions[a4]!,
+            base.positions[b4 + 1]! - base.positions[a4 + 1]!,
+            base.positions[b4 + 2]! - base.positions[a4 + 2]!,
+          ),
+      );
+    }
+    const sTotal = s[s.length - 1]!;
+    /** Cellule d'encolure dont l'abscisse est la plus proche de `t·total` —
+     * repli sur l'appariement par index si la polyligne est dégénérée. */
+    const cellAtFraction = (fraction: number): number => {
+      if (!(sTotal > 0)) {
+        return neckline[Math.round(fraction * (neckline.length - 1))]!;
+      }
+      const target = fraction * sTotal;
+      let best = 0;
+      let bestD = Infinity;
+      for (let c = 0; c < neckline.length; c++) {
+        const dAbs = Math.abs(s[c]! - target);
+        if (dAbs < bestD) {
+          bestD = dAbs;
+          best = c;
+        }
+      }
+      return neckline[best]!;
+    };
 
     // The two endpoint vertices belong to the band's own lateral front↔back
     // seams. Attaching each endpoint independently to the front and back body
@@ -237,9 +274,7 @@ export function collarCrossSeams(
     const seamCount = Math.max(availableBandVertices, neckline.length);
     for (let k = 0; k < seamCount; k++) {
       const fraction = seamCount === 1 ? 0.5 : k / (seamCount - 1);
-      const bodyLocal = neckline[
-        Math.round(fraction * (neckline.length - 1))
-      ]!;
+      const bodyLocal = cellAtFraction(fraction);
       const bandU = Math.round(
         firstBandU + fraction * (lastBandU - firstBandU),
       );

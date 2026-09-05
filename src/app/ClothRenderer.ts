@@ -356,18 +356,18 @@ fn shade_fabric(in: VSOut, n: vec3f, visualFront: bool, minimumShade: f32) -> ve
 fn fs(in: VSOut, @builtin(front_facing) front: bool) -> @location(0) vec4f {
   var n = normalize(in.normal);
   if (!front) { n = -n; }
-  // ENDROIT-DEHORS : sur un vêtement porté, la face vue depuis l'EXTÉRIEUR du
-  // corps est l'endroit du tissu, quel que soit l'enroulement du panneau — le
-  // panneau DOS des montages 2 faces montrait son ENVERS assombri, qui se
-  // confondait avec la peau (« dos déshabillé », vu au banc sur le tee natif
-  // comme sur Bella). Test radial au torse (le mannequin est centré) ; près
-  // des crêtes (dessus de manche) on garde la lecture par enroulement.
-  var visualFront = front;
-  let radial = vec3f(in.world.x, 0.0, in.world.z);
-  if (!visualFront && dot(radial, radial) > 1e-6 && dot(n, normalize(radial)) > 0.25) {
-    visualFront = true;
-  }
-  return shade_fabric(in, n, visualFront, 0.0);
+  // ENDROIT-DEHORS (v308) : l'endroit clair sur LES DEUX faces. La rescousse
+  // radiale-torse (v291) échouait partout où l'axe local n'est pas le torse —
+  // sur les MANCHES (tube autour d'un bras horizontal, radiale ≈ le long du
+  // bras, dot ≈ 0) l'envers assombri restait affiché et se confondait avec la
+  // peau : le dos des manches semblait DÉCHIRÉ en lambeaux (mesuré au banc
+  // v308 : les « trous de peau » renvoyaient bien 2 accrocs tissu au rayon —
+  // c'était une illusion de couleur, pas un trou). Un jersey fin montre le
+  // même tissu des deux côtés ; l'envers vrai ne se voit légitimement que par
+  // une ouverture (intérieur de col) — moindre mal très inférieur au faux
+  // déchiré. L'envers sombre reste utilisé par la vue préparation (fsRibbon
+  // et les pièces à plat gardent leur lecture d'enroulement).
+  return shade_fabric(in, n, true, 0.0);
 }
 
 @fragment
