@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TOILE — du brief au patron · v304</title>
+  <title>TOILE — du brief au patron · v307</title>
   <style>
     :root {
       color-scheme: dark;
@@ -24,8 +24,9 @@
     body.atelier-active {
       --toile-toast-bottom: calc(var(--atelier-status-h) + 12px);
     }
-    #view { width: 100vw; height: 100vh; display: block; touch-action: none; cursor: grab; }
+    #view { width: 100vw; height: 100vh; display: block; touch-action: none; cursor: default; }
     #view:active { cursor: grabbing; }
+    #view.fabric-hover { cursor: grab; }
     #view.piece-hover { cursor: grab; }
     #view.piece-dragging,
     #view.piece-dragging:active { cursor: grabbing; }
@@ -1346,7 +1347,7 @@
   <canvas id="view" tabindex="-1" aria-label="Vue 3D du vêtement et du mannequin"></canvas>
   <canvas id="mirror"></canvas>
   <header>
-    <span class="title">TOILE<small>phase 5 — du brief au patron · v304</small></span>
+    <span class="title">TOILE<small>phase 5 — du brief au patron · v307</small></span>
     <span class="hud-col">
       <span id="hud">initialisation…</span>
       <span id="resolution-rebuild-status" role="status" aria-live="polite" hidden></span>

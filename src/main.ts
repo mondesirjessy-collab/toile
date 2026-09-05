@@ -124,6 +124,7 @@ import { exportPatternSvg } from './app/patternSvg';
 import {
   STAGING_PICK_RADIUS,
   STAGING_PICK_RADIUS_PX,
+  nearestMovableParticle,
   pickFrontmostInRanges,
   pickParticle,
   type TaggedParticleRange,
@@ -2194,6 +2195,281 @@ async function main(): Promise<void> {
       out.push({ pid, n, min: mn.map((v) => +v.toFixed(3)), max: mx.map((v) => +v.toFixed(3)) });
     }
     return out;
+  };
+  // Hook dev : plus proche particule tissu de chaque point monde donné —
+  // tranche entre « trou de géométrie » (distances grandes) et « artefact de
+  // rendu » (tissu présent à quelques mm) quand la peau semble traverser.
+  (window as unknown as { __toileProbe?: (pts: readonly (readonly number[])[]) => unknown }).__toileProbe = (pts) => {
+    const pc = posCache;
+    if (!pc) return null;
+    // Triangles par particule : distingue « particule portée par la surface »
+    // de « particule orpheline » (cellule coupée → trou visible au rendu).
+    const tris = currentMesh?.triangleIndices ?? null;
+    let triPer: Uint32Array | null = null;
+    if (tris) {
+      triPer = new Uint32Array(Math.floor(pc.length / 4));
+      for (let i = 0; i < tris.length; i++) {
+        const p = tris[i]!;
+        if (p < triPer.length) triPer[p]!++;
+      }
+    }
+    return pts.map((q) => {
+      let best = Infinity;
+      let bestPid = -1;
+      let bestIdx = -1;
+      for (const [pid, ranges] of pieceParticleRanges) {
+        for (const range of ranges) {
+          for (let i = range.first; i < range.first + range.count; i++) {
+            const dx = pc[i * 4]! - q[0]!;
+            const dy = pc[i * 4 + 1]! - q[1]!;
+            const dz = pc[i * 4 + 2]! - q[2]!;
+            const d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 < best) { best = d2; bestPid = pid; bestIdx = i; }
+          }
+        }
+      }
+      return {
+        at: q,
+        mm: +(Math.sqrt(best) * 1000).toFixed(1),
+        pid: bestPid,
+        tris: triPer && bestIdx >= 0 ? triPer[bestIdx]! : null,
+      };
+    });
+  };
+  // Hook dev : triangles à arête longue dans une bande de hauteur — détecte les
+  // éventails de fermeture de couture qui enjambent le relief du corps (la
+  // corde qui laisse le trapèze transpercer la crête d'épaule).
+  (window as unknown as { __toileLongTris?: (yMin: number, minLenMm?: number) => unknown }).__toileLongTris = (yMin, minLenMm = 18) => {
+    const pc = posCache;
+    const tris = currentMesh?.triangleIndices;
+    if (!pc || !tris) return null;
+    const lim2 = (minLenMm / 1000) ** 2;
+    const flags = currentMesh?.closureTriangles ?? null;
+    const panelSize = currentMesh ? currentMesh.resolution * currentMesh.resolution : 1;
+    let total = 0;
+    let long = 0;
+    let longClosure = 0;
+    let maxMm = 0;
+    let maxIsClosure = false;
+    const samples: { mm: number; closure: boolean; idx: number[]; rc: string[]; panels: number[]; at: number[] }[] = [];
+    for (let t = 0; t + 2 < tris.length; t += 3) {
+      const ia = tris[t]!, ib = tris[t + 1]!, ic = tris[t + 2]!;
+      const ya = pc[ia * 4 + 1]!, yb = pc[ib * 4 + 1]!, yc = pc[ic * 4 + 1]!;
+      if (Math.max(ya, yb, yc) < yMin) continue;
+      total++;
+      let worst = 0;
+      let wa = ia;
+      for (const [p, q] of [[ia, ib], [ib, ic], [ic, ia]] as const) {
+        const dx = pc[p * 4]! - pc[q * 4]!;
+        const dy = pc[p * 4 + 1]! - pc[q * 4 + 1]!;
+        const dz = pc[p * 4 + 2]! - pc[q * 4 + 2]!;
+        const d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 > worst) { worst = d2; wa = p; }
+      }
+      const mm = Math.sqrt(worst) * 1000;
+      const isClosure = !!flags?.[t / 3];
+      if (mm > maxMm) { maxMm = mm; maxIsClosure = isClosure; }
+      if (worst > lim2) {
+        long++;
+        if (isClosure) longClosure++;
+        if (samples.length < 10) {
+          const res = currentMesh?.resolution ?? 64;
+          const rc = (v: number): string => {
+            const local = v % panelSize;
+            return `${Math.floor(v / panelSize)}:${Math.floor(local / res)},${local % res}`;
+          };
+          samples.push({
+            mm: +mm.toFixed(1),
+            closure: isClosure,
+            idx: [ia, ib, ic],
+            rc: [rc(ia), rc(ib), rc(ic)],
+            panels: [...new Set([ia, ib, ic].map((v) => Math.floor(v / panelSize)))],
+            at: [+pc[wa * 4]!.toFixed(3), +pc[wa * 4 + 1]!.toFixed(3), +pc[wa * 4 + 2]!.toFixed(3)],
+          });
+        }
+      }
+    }
+    return { yMin, minLenMm, total, long, longClosure, maxMm: +maxMm.toFixed(1), maxIsClosure, samples };
+  };
+  // Hook dev : tous les triangles TISSU traversés par le rayon du pixel CSS
+  // donné — tranche « trou de couverture » (0 accroc) vs « bug de passe de
+  // rendu » (accrocs présents mais peau affichée quand même).
+  (window as unknown as { __toileRayProbe?: (cssX: number, cssY: number) => unknown }).__toileRayProbe = (cssX, cssY) => {
+    const pc = posCache;
+    const tris = currentMesh?.triangleIndices;
+    if (!pc || !tris) return null;
+    const rect = canvas.getBoundingClientRect();
+    const ndcX = ((cssX - rect.left) / rect.width) * 2 - 1;
+    const ndcY = 1 - ((cssY - rect.top) / rect.height) * 2;
+    const ray = camera.pickRay(ndcX, ndcY, canvas.width / canvas.height);
+    // Le rendu applique la rotation podium au tissu : ramener le rayon dans le
+    // repère physique en le tournant de -podiumAngle.
+    const cs = Math.cos(-podiumAngle);
+    const sn = Math.sin(-podiumAngle);
+    const rot = (v: readonly [number, number, number]): [number, number, number] => [
+      cs * v[0] - sn * v[2],
+      v[1],
+      sn * v[0] + cs * v[2],
+    ];
+    const o = rot(ray.origin);
+    const d = rot(ray.dir);
+    const flags = currentMesh?.closureTriangles ?? null;
+    const hits: { t: number; tri: number; closure: boolean; mmEdgeMax: number }[] = [];
+    for (let t3 = 0; t3 + 2 < tris.length; t3 += 3) {
+      const ia = tris[t3]! * 4;
+      const ib = tris[t3 + 1]! * 4;
+      const ic = tris[t3 + 2]! * 4;
+      // Möller–Trumbore.
+      const ax = pc[ia]!, ay = pc[ia + 1]!, az = pc[ia + 2]!;
+      const e1x = pc[ib]! - ax, e1y = pc[ib + 1]! - ay, e1z = pc[ib + 2]! - az;
+      const e2x = pc[ic]! - ax, e2y = pc[ic + 1]! - ay, e2z = pc[ic + 2]! - az;
+      const px = d[1] * e2z - d[2] * e2y;
+      const py = d[2] * e2x - d[0] * e2z;
+      const pz = d[0] * e2y - d[1] * e2x;
+      const det = e1x * px + e1y * py + e1z * pz;
+      if (Math.abs(det) < 1e-12) continue;
+      const inv = 1 / det;
+      const tx = o[0] - ax, ty = o[1] - ay, tz = o[2] - az;
+      const u = (tx * px + ty * py + tz * pz) * inv;
+      if (u < 0 || u > 1) continue;
+      const qx = ty * e1z - tz * e1y;
+      const qy = tz * e1x - tx * e1z;
+      const qz = tx * e1y - ty * e1x;
+      const v = (d[0] * qx + d[1] * qy + d[2] * qz) * inv;
+      if (v < 0 || u + v > 1) continue;
+      const tt = (e2x * qx + e2y * qy + e2z * qz) * inv;
+      if (tt <= 0) continue;
+      const L = (a1: number, b1: number): number => {
+        const dx = pc[a1]! - pc[b1]!, dy = pc[a1 + 1]! - pc[b1 + 1]!, dz = pc[a1 + 2]! - pc[b1 + 2]!;
+        return Math.sqrt(dx * dx + dy * dy + dz * dz) * 1000;
+      };
+      hits.push({
+        t: +tt.toFixed(4),
+        tri: t3 / 3,
+        closure: !!flags?.[t3 / 3],
+        mmEdgeMax: +Math.max(L(ia, ib), L(ib, ic), L(ic, ia)).toFixed(1),
+      });
+    }
+    hits.sort((h1, h2) => h1.t - h2.t);
+    return { ndc: [+ndcX.toFixed(3), +ndcY.toFixed(3)], hits: hits.slice(0, 8), nHits: hits.length };
+  };
+  // Hook dev : superposer les ARÊTES DE BORD du maillage rendu sur la 3D
+  // pendant quelques secondes (rouge=devant, bleu=dos, jaune=col, vert=manches)
+  // — pour VOIR où courent les lisières autour d'un trou de couverture.
+  let rimDebugUntil = 0;
+  let rimDebugEdges: [number, number][] = [];
+  (window as unknown as { __toileRimsShow?: (seconds?: number, yMin?: number) => unknown }).__toileRimsShow = (seconds = 6, yMin = -10) => {
+    const pc = posCache;
+    const tris = currentMesh?.triangleIndices;
+    if (!pc || !tris) return null;
+    const ec = new Map<string, number>();
+    const ek = (x: number, y: number): string => (x < y ? x + '|' + y : y + '|' + x);
+    for (let t = 0; t + 2 < tris.length; t += 3) {
+      const t0 = tris[t]!, t1 = tris[t + 1]!, t2 = tris[t + 2]!;
+      for (const [x, y] of [[t0, t1], [t1, t2], [t2, t0]] as [number, number][]) {
+        const k = ek(x, y);
+        ec.set(k, (ec.get(k) ?? 0) + 1);
+      }
+    }
+    rimDebugEdges = [];
+    for (const [k, c] of ec) {
+      if (c !== 1) continue;
+      const bar = k.indexOf('|');
+      const x = Number(k.slice(0, bar)), y = Number(k.slice(bar + 1));
+      if (pc[x * 4 + 1]! < yMin && pc[y * 4 + 1]! < yMin) continue;
+      rimDebugEdges.push([x, y]);
+    }
+    rimDebugUntil = performance.now() + seconds * 1000;
+    return { edges: rimDebugEdges.length };
+  };
+  const drawRimDebug = (): void => {
+    if (!mirrorCtx || performance.now() > rimDebugUntil || !posCache) return;
+    const pc = posCache;
+    const panelSize = currentMesh ? currentMesh.resolution * currentMesh.resolution : 4096;
+    const colors = ['rgba(255,60,60,0.95)', 'rgba(80,140,255,0.95)', 'rgba(80,220,120,0.95)', 'rgba(80,220,120,0.95)', 'rgba(255,220,60,0.95)'];
+    const W = mirror.width;
+    const H = mirror.height;
+    mirrorCtx.save();
+    mirrorCtx.lineWidth = Math.max(2, W / 700);
+    const cs = Math.cos(podiumAngle);
+    const sn = Math.sin(podiumAngle);
+    for (const [i, j] of rimDebugEdges) {
+      const proj = (v: number): [number, number] | null => {
+        const lx = pc[v * 4]!;
+        const lz = pc[v * 4 + 2]!;
+        const wx = cs * lx - sn * lz;
+        const wz = sn * lx + cs * lz;
+        const ndc = arrangeNdcOf([wx, pc[v * 4 + 1]!, wz]);
+        return ndc ? [(ndc[0] * 0.5 + 0.5) * W, (1 - (ndc[1] * 0.5 + 0.5)) * H] : null;
+      };
+      const p0 = proj(i);
+      const p1 = proj(j);
+      if (!p0 || !p1) continue;
+      mirrorCtx.strokeStyle = colors[Math.min(4, Math.floor(i / panelSize))]!;
+      mirrorCtx.beginPath();
+      mirrorCtx.moveTo(p0[0], p0[1]);
+      mirrorCtx.lineTo(p1[0], p1[1]);
+      mirrorCtx.stroke();
+    }
+    mirrorCtx.restore();
+  };
+  // Hook dev : boucles de bord du maillage rendu — nombre d'arêtes, bbox et
+  // polyligne échantillonnée de chacune (pour VOIR la langue non cousue).
+  (window as unknown as { __toileLoops?: () => unknown }).__toileLoops = () => {
+    const pc = posCache;
+    const tris = currentMesh?.triangleIndices;
+    if (!pc || !tris) return null;
+    const ec = new Map<string, number>();
+    const ek = (x: number, y: number): string => (x < y ? x + '|' + y : y + '|' + x);
+    for (let t = 0; t + 2 < tris.length; t += 3) {
+      const t0 = tris[t]!, t1 = tris[t + 1]!, t2 = tris[t + 2]!;
+      for (const [x, y] of [[t0, t1], [t1, t2], [t2, t0]] as [number, number][]) {
+        const k = ek(x, y);
+        ec.set(k, (ec.get(k) ?? 0) + 1);
+      }
+    }
+    const adj = new Map<number, number[]>();
+    for (const [k, c] of ec) {
+      if (c !== 1) continue;
+      const bar = k.indexOf('|');
+      const x = Number(k.slice(0, bar)), y = Number(k.slice(bar + 1));
+      (adj.get(x) ?? adj.set(x, []).get(x)!).push(y);
+      (adj.get(y) ?? adj.set(y, []).get(y)!).push(x);
+    }
+    const seen = new Set<number>();
+    const loops: unknown[] = [];
+    for (const s0 of adj.keys()) {
+      if (seen.has(s0)) continue;
+      const comp: number[] = [];
+      const stack = [s0];
+      seen.add(s0);
+      while (stack.length) {
+        const cur = stack.pop()!;
+        comp.push(cur);
+        for (const nb of adj.get(cur)!) if (!seen.has(nb)) { seen.add(nb); stack.push(nb); }
+      }
+      const mn = [Infinity, Infinity, Infinity];
+      const mx = [-Infinity, -Infinity, -Infinity];
+      for (const v of comp) {
+        for (let a = 0; a < 3; a++) {
+          const val = pc[v * 4 + a]!;
+          if (val < mn[a]!) mn[a] = val;
+          if (val > mx[a]!) mx[a] = val;
+        }
+      }
+      const step = Math.max(1, Math.floor(comp.length / 40));
+      loops.push({
+        n: comp.length,
+        min: mn.map((v) => +v.toFixed(3)),
+        max: mx.map((v) => +v.toFixed(3)),
+        pts: comp.filter((_, i) => i % step === 0).map((v) => [
+          +pc[v * 4]!.toFixed(3),
+          +pc[v * 4 + 1]!.toFixed(3),
+          +pc[v * 4 + 2]!.toFixed(3),
+        ]),
+      });
+    }
+    return loops;
   };
   // Hook dev : état de l'éditeur + centroïde réel de la pièce saisie (tests).
   (window as unknown as { __toileAe?: () => unknown }).__toileAe = () =>
@@ -5660,6 +5936,19 @@ async function main(): Promise<void> {
   };
   let dragIndex: number | null = null;
   let dragDepth = 0;
+  // 🫳 Point de prise — le repère qui montre CE QU'ON ATTRAPE. `local` est la
+  // position dans le repère physique (avant la rotation du podium) ; l'écran
+  // est lissé pour que le point glisse d'une maille à l'autre au lieu de
+  // sauter, et `fade`/`grip` animent l'apparition et le serrage de la pince.
+  const grabViz = {
+    local: null as [number, number, number] | null,
+    held: false,
+    x: 0,
+    y: 0,
+    placed: false,
+    fade: 0,
+    grip: 0,
+  };
   type PieceParticleRange = { first: number; count: number; instance: number };
   type StagingPieceIdentity = { pid: number; instance: number };
   // Physical instances generated for each draft piece. Repeated cutting
@@ -6678,6 +6967,8 @@ async function main(): Promise<void> {
                 flattenSeams: fp.wrap ? false : undefined,
                 // Bande asymétrique (col V) : le panneau dos se resserre.
                 backWeaveScale: fp.backWeaveScale,
+                // Bord-côte (v307) : maille cousue étirée, tension répartie.
+                weaveScale: fp.weaveScale,
               });
               // Every editable piece owns the same n×n grid. Scale its base
               // inverse masses by physical cell area before material density is
@@ -6934,8 +7225,16 @@ async function main(): Promise<void> {
                 resolution,
                 (i) => stayOpenIdx.has(i),
                 garment.closureTriangles,
+                garment.positions,
               );
-              if (plugged) garment = { ...garment, ...plugged };
+              // Diagnostic v307 (banc) : structure des boucles bouchées —
+              // 'no-extra' = plugJunctionLeaks n'a rien trouvé à fermer.
+              (window as unknown as { __toilePlugStats?: unknown }).__toilePlugStats =
+                plugged ? plugged.stats : 'no-extra';
+              if (plugged) {
+                const { stats: _stats, ...meshPatch } = plugged;
+                garment = { ...garment, ...meshPatch };
+              }
             }
             // v198 — un zip OUVERT dans le document : l'habillage se fait
             // quand même FERMÉ (les épingles ZipperSeam existent toujours),
@@ -7877,7 +8176,7 @@ async function main(): Promise<void> {
       const pivotY = tPose ? (marm ? marm.y : piece.topY - 0.06) : piece.topY;
       const cosT = Math.cos(theta);
       const sinT = Math.sin(theta);
-      const armX = (tPose && marm ? marm.rootX + 0.06 : lastMeasure.shoulderHalfW) * sign;
+      const armX = (tPose && marm ? marm.rootX + 0.03 : lastMeasure.shoulderHalfW) * sign; // v307 — aligné sur SleeveAssembly (naissance du tube +3 cm)
       const armZ = tPose && marm ? marm.z : 0;
       for (const [u, v] of piece.outline) {
         const px = (u - 0.5) * w;
@@ -7966,7 +8265,7 @@ async function main(): Promise<void> {
       const pivotY = tPose ? (marm ? marm.y : piece.topY - 0.06) : piece.topY;
       const cosT = Math.cos(theta);
       const sinT = Math.sin(theta);
-      const armX = (tPose && marm ? marm.rootX + 0.06 : lastMeasure.shoulderHalfW) * sign;
+      const armX = (tPose && marm ? marm.rootX + 0.03 : lastMeasure.shoulderHalfW) * sign; // v307 — aligné sur SleeveAssembly (naissance du tube +3 cm)
       const armZ = tPose && marm ? marm.z : 0;
       return (u, v) => {
         const px = (u - 0.5) * w;
@@ -8725,6 +9024,116 @@ async function main(): Promise<void> {
       }
     }
   };
+  /**
+   * 🫳 Le point de prise, dessiné par-dessus la 3D. Survolé : un repère clair
+   * et discret posé sur la maille visée — « c'est ici que ça s'attrape ».
+   * Tenu : l'anneau se resserre, quatre mors se referment dessus et la
+   * couleur passe à l'orange de saisie du reste de l'atelier. Le liseré
+   * sombre garde le repère lisible sur un tissu clair comme sur un fond noir.
+   */
+  const drawFabricGrab = (dt: number): void => {
+    if (!mirrorCtx) return;
+    const goal = grabViz.local;
+    let sx = grabViz.x;
+    let sy = grabViz.y;
+    if (goal) {
+      // Le rendu fait tourner tissu ET corps du podium : le repère doit suivre
+      // ce que l'utilisateur VOIT, pas le repère physique.
+      const cs = Math.cos(podiumAngle);
+      const sn = Math.sin(podiumAngle);
+      const wx = cs * goal[0] - sn * goal[2];
+      const wz = sn * goal[0] + cs * goal[2];
+      const m = camera.matrix(canvas.width / Math.max(1, canvas.height));
+      const cw = m[3]! * wx + m[7]! * goal[1] + m[11]! * wz + m[15]!;
+      if (cw > 1e-6) {
+        const cx = (m[0]! * wx + m[4]! * goal[1] + m[8]! * wz + m[12]!) / cw;
+        const cy = (m[1]! * wx + m[5]! * goal[1] + m[9]! * wz + m[13]!) / cw;
+        sx = (cx * 0.5 + 0.5) * mirror.width;
+        sy = (1 - (cy * 0.5 + 0.5)) * mirror.height;
+      }
+    }
+    // Lissages indépendants du framerate (le banc tourne de 15 à 60 fps).
+    const ease = (rate: number): number => 1 - Math.exp(-dt * rate);
+    if (goal) {
+      if (!grabViz.placed) {
+        grabViz.x = sx;
+        grabViz.y = sy;
+        grabViz.placed = true;
+      } else {
+        const k = ease(26);
+        grabViz.x += (sx - grabViz.x) * k;
+        grabViz.y += (sy - grabViz.y) * k;
+      }
+    }
+    grabViz.fade += ((goal ? 1 : 0) - grabViz.fade) * ease(goal ? 22 : 16);
+    grabViz.grip += ((grabViz.held ? 1 : 0) - grabViz.grip) * ease(20);
+    if (!goal && grabViz.fade < 0.01) {
+      grabViz.placed = false;
+      return;
+    }
+    const fade = grabViz.fade;
+    const grip = grabViz.grip;
+    // Tailles en pixels CSS, converties dans le repère du miroir (physique).
+    const px = mirror.width / Math.max(1, canvas.clientWidth);
+    const breathe = 1 + (1 - grip) * 0.035 * Math.sin(performance.now() / 620);
+    // Le halo naît un peu grand et se pose : l'apparition a du corps.
+    const ring = (9.2 - grip * 2.2) * px * breathe * (1.35 - fade * 0.35);
+    // Les mors se referment SANS toucher l'anneau : collés, ils formeraient un
+    // second cercle et le repère deviendrait un bouchon au lieu d'une pince.
+    const jaw = ring * (2.15 - grip * 0.55);
+    const cxp = grabViz.x;
+    const cyp = grabViz.y;
+    const a = fade * (0.55 + grip * 0.45);
+    // Teinte : blanc chaud au survol → orange de saisie une fois tenu.
+    const r = Math.round(255);
+    const g = Math.round(246 - grip * 87);
+    const b = Math.round(236 - grip * 129);
+    const ink = `rgba(${r}, ${g}, ${b}, `;
+    mirrorCtx.save();
+    mirrorCtx.lineCap = 'round';
+    // Halo : donne de l'assise au repère sans masquer le tissu.
+    const halo = mirrorCtx.createRadialGradient(cxp, cyp, 0, cxp, cyp, ring * 2.7);
+    halo.addColorStop(0, `${ink}${(0.13 * a).toFixed(3)})`);
+    halo.addColorStop(1, `${ink}0)`);
+    mirrorCtx.fillStyle = halo;
+    mirrorCtx.beginPath();
+    mirrorCtx.arc(cxp, cyp, ring * 2.7, 0, Math.PI * 2);
+    mirrorCtx.fill();
+    // Liseré sombre : lisibilité sur tissu clair (le tee est écru).
+    mirrorCtx.strokeStyle = `rgba(18, 17, 16, ${(0.5 * a).toFixed(3)})`;
+    mirrorCtx.lineWidth = (2.6 + grip * 0.6) * px;
+    mirrorCtx.beginPath();
+    mirrorCtx.arc(cxp, cyp, ring, 0, Math.PI * 2);
+    mirrorCtx.stroke();
+    // L'anneau de prise.
+    mirrorCtx.strokeStyle = `${ink}${(0.95 * fade).toFixed(3)})`;
+    mirrorCtx.lineWidth = (1.5 + grip * 1.1) * px;
+    mirrorCtx.beginPath();
+    mirrorCtx.arc(cxp, cyp, ring, 0, Math.PI * 2);
+    mirrorCtx.stroke();
+    // Quatre mors en diagonale : écartés au survol, refermés une fois tenu.
+    const jawArc = 0.34 - grip * 0.1; // serré = mors courts et francs
+    mirrorCtx.lineWidth = (1.4 + grip * 1.4) * px;
+    for (let i = 0; i < 4; i++) {
+      const mid = Math.PI / 4 + (i * Math.PI) / 2;
+      mirrorCtx.strokeStyle = `rgba(18, 17, 16, ${(0.42 * a).toFixed(3)})`;
+      mirrorCtx.lineWidth = ((1.4 + grip * 1.4) + 1.6) * px;
+      mirrorCtx.beginPath();
+      mirrorCtx.arc(cxp, cyp, jaw, mid - jawArc, mid + jawArc);
+      mirrorCtx.stroke();
+      mirrorCtx.strokeStyle = `${ink}${((0.5 + grip * 0.45) * fade).toFixed(3)})`;
+      mirrorCtx.lineWidth = (1.4 + grip * 1.4) * px;
+      mirrorCtx.beginPath();
+      mirrorCtx.arc(cxp, cyp, jaw, mid - jawArc, mid + jawArc);
+      mirrorCtx.stroke();
+    }
+    // Le point : l'endroit exact que la main tient.
+    mirrorCtx.fillStyle = `${ink}${(0.95 * fade).toFixed(3)})`;
+    mirrorCtx.beginPath();
+    mirrorCtx.arc(cxp, cyp, (1.5 + grip * 1.3) * px, 0, Math.PI * 2);
+    mirrorCtx.fill();
+    mirrorCtx.restore();
+  };
   // CLO3D-style pointer model: a left press ON the fabric grabs it; a left
   // press on empty space orbits the camera. Returns true when orbit is allowed.
   const tryOrbit = (e: PointerEvent): boolean => {
@@ -9023,10 +9432,27 @@ async function main(): Promise<void> {
       patternView.selectPiece(target.pid);
       return false;
     }
-    // Skip immovable particles (pinned/tacked/cut) so a press on one falls
-    // through to camera orbit instead of a dead click (audit M37); the dblclick
-    // tack picker below stays unfiltered so tacks remain removable.
-    const hit = pickParticle(posCache, count, ray.origin, ray.dir, 0.15, (i) => system.isMovable(i));
+    // Rayon de pick adaptatif : 15 px écran minimum, plafonné à 15 cm monde.
+    const grabSlope = camera.pickSlopeForPixels(15, canvas.height);
+    const isMovable = (i: number): boolean => system.isMovable(i);
+    let hit = pickParticle(posCache, count, ray.origin, ray.dir, 0.15, isMovable, grabSlope);
+    // Si aucune particule mobile trouvée, chercher N'IMPORTE quelle particule
+    // (y compris épinglée) et rediriger vers la voisine mobile la plus proche.
+    if (!hit) {
+      const anyHit = pickParticle(posCache, count, ray.origin, ray.dir, 0.15, undefined, grabSlope);
+      if (anyHit) {
+        const px = posCache[anyHit.index * 4 + 0]!;
+        const py = posCache[anyHit.index * 4 + 1]!;
+        const pz = posCache[anyHit.index * 4 + 2]!;
+        const neighbor = nearestMovableParticle(posCache, count, [px, py, pz], 0.06, isMovable);
+        if (neighbor !== null) {
+          const vx = posCache[neighbor * 4 + 0]! - ray.origin[0];
+          const vy = posCache[neighbor * 4 + 1]! - ray.origin[1];
+          const vz = posCache[neighbor * 4 + 2]! - ray.origin[2];
+          hit = { index: neighbor, depth: vx * ray.dir[0] + vy * ray.dir[1] + vz * ray.dir[2] };
+        }
+      }
+    }
     if (!hit) return true;
     // 🪡 armé : le clic 3D près d'un bord choisit le bord à coudre (même
     // machine que le plan 2D — 1er bord, 2e bord, couture). Marche à plat ET
@@ -12083,6 +12509,28 @@ async function main(): Promise<void> {
         dragIndex = null;
       }
     }
+    // 🫳 Point de prise : où la main attrape le tissu. Tenu, le repère colle
+    // au point tiré (fluide, à la souris) ; au survol, il se pose sur la
+    // maille visée par le MÊME test que le clic — ce qui s'allume s'attrape.
+    const designing = sceneMode === 'atelier' && atelierDesign;
+    grabViz.held = dragIndex !== null;
+    if (dragIndex !== null) {
+      grabViz.local = [
+        ray.origin[0] + ray.dir[0] * dragDepth,
+        ray.origin[1] + ray.dir[1] * dragDepth,
+        ray.origin[2] + ray.dir[2] * dragDepth,
+      ];
+    } else if (!designing && !mouse.leftDown && !pieceDrag && pointerInside3D && posCache) {
+      const hoverSlope = camera.pickSlopeForPixels(15, canvas.height);
+      const hoverCount = Math.min(system.count, posCache.length / 4);
+      const hit = pickParticle(posCache, hoverCount, ray.origin, ray.dir, 0.15, undefined, hoverSlope);
+      grabViz.local = hit
+        ? [posCache[hit.index * 4]!, posCache[hit.index * 4 + 1]!, posCache[hit.index * 4 + 2]!]
+        : null;
+    } else {
+      grabViz.local = null;
+    }
+    canvas.classList.toggle('fabric-hover', !!grabViz.local && !grabViz.held);
 
     // Fenêtre post-réveil : pleine précision (le transitoire d'assemblage ne
     // doit pas dépendre du framerate de l'onglet) ; ensuite, le gouverneur.
@@ -12113,6 +12561,8 @@ async function main(): Promise<void> {
     renderer.render(camera.matrix(aspect), profiler.renderSpan());
     blit();
     drawAtelierOverlay(); // surlignage patronnage (couture 3D, pièce saisie)
+    drawRimDebug(); // (dev) lisières du maillage si __toileRimsShow est actif
+    drawFabricGrab(dt); // 🫳 le point de prise du tissu, par-dessus tout
     profiler.resolve();
 
     frames++;

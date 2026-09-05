@@ -105,7 +105,12 @@ export function placeWrapSleeve(
     }
   }
   const pivotY = tPose ? (body.arm ? body.arm.y : piece.topY - 0.06) : piece.topY;
-  const pivotX = (tPose && body.arm ? body.arm.rootX + 0.06 : body.shoulderHalfW) * sign;
+  // v307 — naissance du tube à rootX + 3 cm (était 6) : née trop dehors, la
+  // manche se coince sur le deltoïde et la couture d'emmanchure ne peut plus
+  // la ramener — elle ARRACHE alors la sangle d'épaule de la crête (trapèze
+  // nu entre col et couture, mesuré au banc : sans manches = crête couverte).
+  // L'équilibre est bistable : le point de départ décide du bon côté.
+  const pivotX = (tPose && body.arm ? body.arm.rootX + 0.03 : body.shoulderHalfW) * sign;
   const pivotZ = tPose && body.arm ? body.arm.z : 0;
   const cos = Math.cos(theta);
   const sin = Math.sin(theta);

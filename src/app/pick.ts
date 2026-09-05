@@ -122,7 +122,9 @@ export function pickParticle(
   dir: readonly [number, number, number],
   maxPickDist = 0.12,
   movable?: (i: number) => boolean,
+  minPickSlope = 0,
 ): Pick | null {
+  const safeSlope = Number.isFinite(minPickSlope) && minPickSlope > 0 ? minPickSlope : 0;
   let best: Pick | null = null;
   let bestPerp2 = maxPickDist * maxPickDist;
   for (let i = 0; i < count; i++) {
@@ -133,10 +135,34 @@ export function pickParticle(
     const t = vx * dir[0] + vy * dir[1] + vz * dir[2];
     if (t <= 0) continue; // behind the camera
     const perp2 = vx * vx + vy * vy + vz * vz - t * t;
-    if (perp2 < bestPerp2) {
+    const screenR = t * safeSlope;
+    const allowed = Math.max(maxPickDist, screenR);
+    if (perp2 < allowed * allowed && perp2 < bestPerp2) {
       bestPerp2 = perp2;
       best = { index: i, depth: t };
     }
+  }
+  return best;
+}
+
+/** Find the nearest movable particle to a 3D position (for redirecting a
+ *  pinned-particle hit to its closest grabbable neighbor). */
+export function nearestMovableParticle(
+  positions: Float32Array,
+  count: number,
+  pos: readonly [number, number, number],
+  maxDist: number,
+  movable: (i: number) => boolean,
+): number | null {
+  let best: number | null = null;
+  let bestD2 = maxDist * maxDist;
+  for (let i = 0; i < count; i++) {
+    if (!movable(i)) continue;
+    const dx = positions[i * 4 + 0]! - pos[0];
+    const dy = positions[i * 4 + 1]! - pos[1];
+    const dz = positions[i * 4 + 2]! - pos[2];
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 < bestD2) { bestD2 = d2; best = i; }
   }
   return best;
 }

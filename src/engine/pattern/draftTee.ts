@@ -280,15 +280,31 @@ export function boxyTee(
     placement: { role: wrap, autoAlign: true },
   });
   // COL : bande wrap 'neck'. La pièce papier fait 64 % du tour d'encolure —
-  // une bande CÔTELÉE cousue étirée. La sim n'a pas de pré-étirement : on pose
-  // la bande à 85 % du tour réel (l'état porté, la recette v116 éprouvée) ;
-  // le 64 % à plat reste documenté dans boxyData (collarLen).
+  // une bande CÔTELÉE cousue étirée ; le 64 % à plat reste documenté dans
+  // boxyData (collarLen). La sim n'a pas de pré-étirement : la recette v116
+  // posait la bande à 85 % du tour (état porté d'un col RAS DU COU). Sur
+  // l'encolure LARGE du boxy, ces 15 % manquants (~8 cm) sont avalés par les
+  // attaches et se concentrent aux coins d'épaule : la ligne d'épaule quitte
+  // la crête et le trapèze se retrouve NU entre col et couture (mesuré v307,
+  // A/B « sans col » = épaules couvertes). v307 : bande posée à 100 % du tour
+  // — l'état porté d'une côte tendue sur une encolure large, sans avalement.
   // Bloc COL échangeable : « montant » = bande ~2,4× plus haute (col
   // cheminée qui se tient), « côte » = bande côtelée ras-du-cou, « sans »
   // retire la bande (l'encolure reste une ouverture finie).
   const collarH = collar === 'montant' ? D.collarH * 2.4 : D.collarH;
-  // Longueur de bande = 0,85 × tour d'encolure (fronce côtelée). L'encolure
-  // en V allonge ce tour : neckRingEff est recalculé plus bas après le V.
+  // Longueur de bande : coupée à 100 % du tour cousu — ZÉRO décalage aux
+  // épingles (une pièce coupée courte concentre tout le cintrage aux coins
+  // d'épaule : à 85 %, recette v116, la bande AVALAIT l'encolure large du
+  // boxy et arrachait la ligne d'épaule de la crête — trapèze nu, mesuré
+  // v307). Le serrage d'une côte réelle vient de la MAILLE, pas de la coupe :
+  // weaveScale (bord-côte) tend la bande uniformément une fois cousue.
+  // L'encolure en V allonge ce tour : neckRingEff est recalculé après le V.
+  const BAND_RATIO = 1.0;
+  // Côte du col : 1,0 = neutre. Mesuré v307 : à 0,86 la maille rétrécie
+  // étrangle l'encolure exactement comme la coupe à 85 % (le col gagne
+  // toujours contre un vêtement posé sans ancrage) — épaules arrachées.
+  // Le serrage réaliste du col attendra un ancrage/friction d'épaule dédié.
+  const BAND_RIB = 1.0;
   let neckRingEff = D.neckRing;
   // Bande ASYMÉTRIQUE (col V) : le panneau dos se resserre pour froncer comme
   // le devant au lieu de gondoler. undefined pour le col rond (symétrique).
@@ -303,13 +319,14 @@ export function boxyTee(
     darts: [],
     seams: [],
     openEdges: [],
-    width: 0.85 * neckRingEff * 0.5,
+    width: BAND_RATIO * neckRingEff * 0.5,
     height: collarH,
     topY: m.neckY - 0.005,
     gap: 0.15,
     wrap: 'neck',
     placement: { role: 'neck', autoAlign: true },
     backWeaveScale: bandBackWeaveScale,
+    weaveScale: BAND_RIB,
   });
   // Encolure en V (DEVANT seul) : on remplace l'arc rond (29→37→0) par deux
   // diagonales droites qui plongent au centre. Les points épaule-encolure 0
@@ -348,6 +365,20 @@ export function boxyTee(
   };
   const frontFace = face(D.front);
   const backFace = face(D.back);
+  // v307 — col ROND : l'arc d'encolure DEVANT du boxy est plus long que le DOS
+  // (S : 24,2 vs 18,2 cm). La bande symétrique (½ tour par panneau) laissait le
+  // panneau avant COURT de ~3 cm : l'avalement se concentrait aux coins
+  // d'épaule et la ligne d'épaule quittait la crête (trapèze nu entre col et
+  // couture). Ici chaque panneau du tube colle à SON arc : largeur = arc
+  // devant, trame dos resserrée au ratio dos/devant (même levier que le V).
+  {
+    const roundFront = frontNeckPerimeter(D.front.outline, D.front.width, D.front.height);
+    const backNeck = D.neckRing - roundFront;
+    if (roundFront > 0 && backNeck > 0) {
+      neckRingEff = 2 * roundFront; // largeur de panneau = arc devant entier
+      bandBackWeaveScale = backNeck / roundFront;
+    }
+  }
   if (neck === 'v') {
     applyVNeck(frontFace.outline);
     // Le V allonge le tour d'encolure : on rallonge la bande d'autant (delta

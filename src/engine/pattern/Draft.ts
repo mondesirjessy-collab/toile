@@ -299,6 +299,15 @@ export interface DraftPiece {
    * lieu de gondoler. Absent/≥1 → aucun effet (bande symétrique).
    */
   backWeaveScale?: number;
+  /**
+   * v307 — bord-côte : facteur (<1) qui raccourcit le rest du tissage
+   * HORIZONTAL des DEUX panneaux du tube. La pièce est coupée à sa longueur
+   * cousue (zéro décalage aux épingles) mais sa maille VEUT être plus courte :
+   * la tension se répartit uniformément, comme une côte réelle cousue étirée
+   * — au lieu de se concentrer aux coins d'épaule avec une pièce coupée
+   * courte. Se cumule avec backWeaveScale. Absent/≥1 → aucun effet.
+   */
+  weaveScale?: number;
   /** Simulation placement metadata. Independent from the movable 2D layout. */
   placement?: PiecePlacement;
   /**

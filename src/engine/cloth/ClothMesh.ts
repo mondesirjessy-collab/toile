@@ -171,17 +171,58 @@ const CONSTRAINT_STRIDE = 16; // bytes: 2×u32 + 2×f32
  * jonction : bouchee en eventail double-face. Rendu seulement — aucune
  * particule, contrainte ou collision modifiee.
  */
-export function plugJunctionLeaks(
-  triangleIndices: Uint32Array,
-  resolution: number,
-  authoredOpen: (index: number) => boolean,
-  closureTriangles?: Uint8Array,
-): { triangleIndices: Uint32Array; closureTriangles: Uint8Array } | null {
-  const HOLE_MAX = Math.round(resolution * 0.875); // 56 @ res 64
+/** Diagnostic d'une boucle vue par capSmallBoundaryLoops ('big' = au-delà du
+ * seuil, jamais bouchée ; 'open' = touche une ouverture dessinée libre). */
+export interface CapLoopStat {
+  edges: number;
+  cuts: number;
+  mode: 'zip' | 'fan' | 'open' | 'big';
+}
+
+/**
+ * v307 — bouchage des petites boucles de bord, GLISSIÈRE d'abord.
+ *
+ * L'éventail à sommet unique (v205/v255) tirait des cordes de 2 à 9 cm en
+ * travers des boucles : tendues sous le bombé du trapèze, elles laissaient le
+ * corps transpercer le tissu au rendu (mesure v306 : cordes jusqu'à 95 mm dans
+ * la bande d'épaule — plages de peau visibles en T-pose ET Bras 45°).
+ *
+ * Ici, toute boucle propre (un anneau : chaque sommet a exactement 2 voisins
+ * de bord) est coupée en DEUX RAILS zippés proportionnellement — chaque
+ * triangle relie deux particules voisines d'un rail à une particule d'en
+ * face, plus de corde longue. Le choix des deux bouts :
+ *  - la boucle longe exactement DEUX panneaux → coupure aux 2 transitions ;
+ *  - boucle entière dans UN panneau (encoche de crête) → coupure au DIAMÈTRE
+ *    en positions de spawn (pièce posée à plat : les bouts de la fente sont
+ *    la paire la plus écartée) ;
+ *  - jonction à 3+ panneaux → coupure aux 2 arêtes les PLUS LONGUES en spawn
+ *    (les ponts entre panneaux dominent : c'est la meilleure paire de rails).
+ * Les boucles non ordonnables (degrés ≠ 2) gardent l'éventail d'origine.
+ * Rendu seulement — aucune particule, contrainte ou collision modifiée.
+ */
+export function capSmallBoundaryLoops(
+  surface: ArrayLike<number>,
+  holeMax: number,
+  panelSize: number,
+  positions?: Float32Array,
+  touchesOpen?: (index: number) => boolean,
+): { extra: number[]; stats: CapLoopStat[] } {
   const ec = new Map<string, number>();
   const ek = (x: number, y: number): string => (x < y ? x + '|' + y : y + '|' + x);
-  for (let t = 0; t < triangleIndices.length; t += 3) {
-    const t0 = triangleIndices[t]!, t1 = triangleIndices[t + 1]!, t2 = triangleIndices[t + 2]!;
+  // v307 — un triangle DOUBLE-FACE (les deux windings d'une même face, posés
+  // par les bouchages et attaches) compte pour UNE face : sans cette
+  // déduplication, le pourtour d'un trou bordé de caps double-face est compté
+  // 2× et le trou devient INVISIBLE au boucheur (mesuré : l'encoche de crête
+  // d'épaule du tee restait ouverte — peau nue à l'écran — parce que ses
+  // lisières étaient consommées par les jumeaux).
+  const seenFace = new Set<string>();
+  for (let t = 0; t + 2 < surface.length; t += 3) {
+    const t0 = surface[t]!, t1 = surface[t + 1]!, t2 = surface[t + 2]!;
+    const faceKey = t0 < t1
+      ? (t1 < t2 ? `${t0}:${t1}:${t2}` : t0 < t2 ? `${t0}:${t2}:${t1}` : `${t2}:${t0}:${t1}`)
+      : (t0 < t2 ? `${t1}:${t0}:${t2}` : t1 < t2 ? `${t1}:${t2}:${t0}` : `${t2}:${t1}:${t0}`);
+    if (seenFace.has(faceKey)) continue; // jumeau de winding : une seule face
+    seenFace.add(faceKey);
     for (const [x, y] of [[t0, t1], [t1, t2], [t2, t0]] as [number, number][]) {
       const k = ek(x, y); ec.set(k, (ec.get(k) ?? 0) + 1);
     }
@@ -206,30 +247,193 @@ export function plugJunctionLeaks(
     const stack = [s0]; compId.set(s0, id);
     while (stack.length) {
       const cur = stack.pop()!; if (cur < apex) apex = cur;
-      if (authoredOpen(cur)) touches = true;
+      if (touchesOpen?.(cur)) touches = true;
       for (const nb of adj.get(cur)!) if (!compId.has(nb)) { compId.set(nb, id); stack.push(nb); }
     }
     compApex.push(apex); compEdgesN.push(0); compTouchesOpen.push(touches);
   }
   for (const [x] of bedgeList) compEdgesN[compId.get(x)!]!++;
   const extra: number[] = [];
+  const zipped = new Set<number>();
+  const stats: CapLoopStat[] = [];
+  const compVerts = new Map<number, number[]>();
+  for (const v of adj.keys()) {
+    const id = compId.get(v)!;
+    (compVerts.get(id) ?? compVerts.set(id, []).get(id)!).push(v);
+  }
+  const dist2 = (p: number, q: number): number => {
+    const pi = p * 4;
+    const qi = q * 4;
+    const dx = positions![pi]! - positions![qi]!;
+    const dy = positions![pi + 1]! - positions![qi + 1]!;
+    const dz = positions![pi + 2]! - positions![qi + 2]!;
+    return dx * dx + dy * dy + dz * dz;
+  };
+  // Zip d'une paire de rails (mêmes bouts, même sens) : Bresenham sur les
+  // longueurs, triangles dégénérés (bouts partagés) sautés.
+  const zipRails = (railA: number[], railB: number[]): void => {
+    const nA = railA.length - 1;
+    const nB = railB.length - 1;
+    let a2 = 0;
+    let b2 = 0;
+    while (a2 < nA || b2 < nB) {
+      const stepA = b2 >= nB || (a2 < nA && (a2 + 1) * Math.max(1, nB) <= (b2 + 1) * Math.max(1, nA));
+      if (stepA) {
+        const p = railA[a2]!, q = railA[a2 + 1]!, r = railB[b2]!;
+        if (p !== q && q !== r && r !== p) extra.push(p, q, r, p, r, q); // double face
+        a2++;
+      } else {
+        const p = railB[b2]!, q = railB[b2 + 1]!, r = railA[a2]!;
+        if (p !== q && q !== r && r !== p) extra.push(p, q, r, p, r, q);
+        b2++;
+      }
+    }
+  };
+  for (const [id, verts] of compVerts) {
+    const edges = compEdgesN[id]!;
+    if (edges < 3) continue;
+    if (edges > holeMax) { stats.push({ edges, cuts: -1, mode: 'big' }); continue; }
+    if (compTouchesOpen[id]!) { stats.push({ edges, cuts: -1, mode: 'open' }); continue; }
+    if (verts.some((v) => adj.get(v)!.length !== 2)) { stats.push({ edges, cuts: -1, mode: 'fan' }); continue; }
+    // Marche de l'anneau depuis l'apex.
+    const start = compApex[id]!;
+    const ring: number[] = [start];
+    let prev = -1;
+    let cur = start;
+    for (let k = 1; k < edges; k++) {
+      const nbs = adj.get(cur)!;
+      const nxt = nbs[0] === prev ? nbs[1]! : nbs[0]!;
+      if (nxt === start) break;
+      ring.push(nxt);
+      prev = cur;
+      cur = nxt;
+    }
+    if (ring.length !== edges) { stats.push({ edges, cuts: -1, mode: 'fan' }); continue; }
+    // Coupures candidates = les arêtes de l'anneau qui changent de panneau.
+    const cuts: number[] = [];
+    for (let k = 0; k < ring.length; k++) {
+      const p0 = Math.floor(ring[k]! / panelSize);
+      const p1 = Math.floor(ring[(k + 1) % ring.length]! / panelSize);
+      if (p0 !== p1) cuts.push(k);
+    }
+    let e0 = -1; // bouts de la glissière : indices d'ARÊTE de l'anneau (entre k et k+1)…
+    let e1 = -1;
+    let diamV0 = -1; // …ou indices de SOMMET pour la coupure au diamètre
+    let diamV1 = -1;
+    if (cuts.length === 2) {
+      e0 = cuts[0]!;
+      e1 = cuts[1]!;
+    } else if (cuts.length === 0 && positions) {
+      let best = -1;
+      for (let i2 = 0; i2 < ring.length; i2++) {
+        for (let j2 = i2 + 1; j2 < ring.length; j2++) {
+          const d2 = dist2(ring[i2]!, ring[j2]!);
+          if (d2 > best) { best = d2; diamV0 = i2; diamV1 = j2; }
+        }
+      }
+    } else if (cuts.length > 2 && positions) {
+      // Jonction multi-panneaux : les 2 ponts les plus longs font les bouts.
+      let b1 = -1;
+      let b1len = -1;
+      let b2i = -1;
+      let b2len = -1;
+      for (const k of cuts) {
+        const len = dist2(ring[k]!, ring[(k + 1) % ring.length]!);
+        if (len > b1len) { b2i = b1; b2len = b1len; b1 = k; b1len = len; }
+        else if (len > b2len) { b2i = k; b2len = len; }
+      }
+      e0 = Math.min(b1, b2i);
+      e1 = Math.max(b1, b2i);
+    }
+    let railA: number[];
+    let railB: number[];
+    if (diamV0 >= 0 && diamV1 > diamV0) {
+      // Coupure au diamètre : les deux bouts (sommets) appartiennent aux DEUX
+      // rails — zipRails saute les triangles dégénérés des bouts partagés.
+      railA = [];
+      for (let k = diamV0; ; k = (k + 1) % ring.length) {
+        railA.push(ring[k]!);
+        if (k === diamV1) break;
+      }
+      railB = [];
+      for (let k = diamV1; ; k = (k + 1) % ring.length) {
+        railB.push(ring[k]!);
+        if (k === diamV0) break;
+      }
+      railB.reverse(); // court désormais de ring[diamV0] vers ring[diamV1]
+    } else if (e0 >= 0 && e1 > e0) {
+      railA = [];
+      for (let k = (e0 + 1) % ring.length; ; k = (k + 1) % ring.length) {
+        railA.push(ring[k]!);
+        if (k === e1) break;
+      }
+      railB = [];
+      for (let k = (e1 + 1) % ring.length; ; k = (k + 1) % ring.length) {
+        railB.push(ring[k]!);
+        if (k === e0) break;
+      }
+      railB.reverse(); // les deux rails courent du même bout vers l'autre
+    } else {
+      stats.push({ edges, cuts: cuts.length, mode: 'fan' });
+      continue;
+    }
+    zipRails(railA, railB);
+    zipped.add(id);
+    stats.push({ edges, cuts: cuts.length, mode: 'zip' });
+  }
+  // Éventail d'origine pour tout ce qui n'a pas pu être zippé.
   for (const [x, y] of bedgeList) {
     const id = compId.get(x)!;
+    if (zipped.has(id)) continue;
     const edges = compEdgesN[id]!;
-    if (edges < 3 || edges > HOLE_MAX) continue;
-    if (compTouchesOpen[id]!) continue; // ouverture dessinee restee libre : jamais bouchee
+    if (edges < 3 || edges > holeMax) continue;
+    if (compTouchesOpen[id]!) continue; // ouverture dessinée restée libre : jamais bouchée
     const apex = compApex[id]!;
     if (x === apex || y === apex) continue;
     extra.push(apex, x, y, apex, y, x); // double face
   }
-  if (!extra.length) return null;
+  return { extra, stats };
+}
+
+export function plugJunctionLeaks(
+  triangleIndices: Uint32Array,
+  resolution: number,
+  authoredOpen: (index: number) => boolean,
+  closureTriangles?: Uint8Array,
+  // v307 — positions de SPAWN (stride 4) : permettent la coupure au diamètre
+  // et aux ponts les plus longs (voir capSmallBoundaryLoops).
+  positions?: Float32Array,
+): {
+  triangleIndices: Uint32Array;
+  closureTriangles: Uint8Array;
+  /** Diagnostic par boucle bouchée : arêtes, transitions de panneau, mode. */
+  stats: CapLoopStat[];
+} | null {
+  const HOLE_MAX = Math.round(resolution * 0.875); // 56 @ res 64
+  const { extra, stats } = capSmallBoundaryLoops(
+    triangleIndices,
+    HOLE_MAX,
+    resolution * resolution,
+    positions,
+    authoredOpen,
+  );
+  if (!extra.length && !stats.length) return null;
+  if (!extra.length) {
+    // Rien à fermer, mais le recensement des boucles (stats) reste utile au
+    // banc — renvoyer le maillage inchangé avec le diagnostic.
+    return {
+      triangleIndices,
+      closureTriangles: closureTriangles ?? new Uint8Array(triangleIndices.length / 3),
+      stats,
+    };
+  }
   const out = new Uint32Array(triangleIndices.length + extra.length);
   out.set(triangleIndices, 0);
   out.set(extra, triangleIndices.length);
   const flags = new Uint8Array(out.length / 3);
   if (closureTriangles) flags.set(closureTriangles, 0);
-  flags.fill(1, triangleIndices.length / 3); // les nouveaux eventails
-  return { triangleIndices: out, closureTriangles: flags };
+  flags.fill(1, triangleIndices.length / 3); // les nouveaux éventails / glissières
+  return { triangleIndices: out, closureTriangles: flags, stats };
 }
 const QUAD_STRIDE = 32; // bytes: 4×u32 + restAngle + softness + warpWeight + baseRestAngle
 const SURFACE_CONTACT_STRIDE = 32;
@@ -603,6 +807,14 @@ export interface SeamedPanelsOptions {
    * 1 = symmetric (every existing piece unchanged).
    */
   backWeaveScale?: number;
+  /**
+   * v307 — bord-côte : scale (<1) applied to the HORIZONTAL weave rest of
+   * BOTH panels. The piece keeps its cut geometry but the weave wants to be
+   * shorter everywhere: sewn stretched, the tension spreads evenly around the
+   * ring (a real ribbed collar) instead of concentrating at sparse pins.
+   * Combines multiplicatively with backWeaveScale. 1/absent = no effect.
+   */
+  weaveScale?: number;
 }
 
 type PatternShape = NonNullable<SeamedPanelsOptions['shape']>;
@@ -1302,6 +1514,8 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
   const reinforceTop = opts.reinforceTop ?? false;
   // Bande asymétrique (col V) : le panneau DOS (p===1) veut être plus étroit.
   const backWeaveScale = opts.backWeaveScale ?? 1;
+  // Bord-côte (v307) : toute la maille horizontale veut être plus courte.
+  const weaveScale = opts.weaveScale ?? 1;
   // Elastic band height in ROWS, floored at 2 (audit M15): `v/(n-1) < 0.06`
   // alone collapses to a single row at n ≤ 17, so grip strength jumps with
   // resolution. round(0.06·(n-1)) is identical at the selectable 32/64/128
@@ -1321,6 +1535,8 @@ export function generateSeamedPanels(opts: SeamedPanelsOptions): ClothMeshData {
           if (elasticTop < 1 && v < elasticRows) e.rest *= elasticTop;
           // Bande asymétrique : le panneau dos du tube se resserre (col V).
           if (backWeaveScale < 1 && p === 1) e.rest *= backWeaveScale;
+          // Bord-côte : cousu étiré, la tension se répartit dans la maille.
+          if (weaveScale < 1) e.rest *= weaveScale;
           if (reinforceTop && v < elasticRows) {
             // An interfaced waistband is governed by its stitched length, not
             // the stretch compliance of the selected shell fabric.
@@ -2095,56 +2311,14 @@ export function combineClothMeshes(
   // Bouchage des petits trous (v205) : apres les rubans de couture, il reste de
   // petites boucles de bord que le zip laisse entre deux epingles (echelle de
   // trous le long de la couture manche<->emmanchure, et aux pointes d epaule).
-  // On les ferme au niveau TOPOLOGIQUE : toute boucle de bord courte (<= HOLE_MAX
-  // aretes) est triangulee en eventail. Les grandes ouvertures legitimes
-  // (encolure, ourlet, poignets ~ 88-132 aretes) restent ouvertes. Robuste pour
-  // tous les vetements : seules les vraies petites fuites sont comblees.
+  // Les grandes ouvertures legitimes (encolure, ourlet, poignets ~ 88-132
+  // aretes) restent ouvertes. v307 : fermeture en GLISSIÈRE d'abord (les
+  // éventails tiraient des cordes de 2-9 cm sous le bombé de l'épaule — voir
+  // capSmallBoundaryLoops), éventail conservé pour les boucles non ordonnables.
   {
     const HOLE_MAX = 24; // aretes : au dela = ouverture legitime (encolure/ourlet/poignet)
-    const ec = new Map<string, number>();
-    const ek = (x: number, y: number) => (x < y ? x + '|' + y : y + '|' + x);
-    for (let t = 0; t < triangles.length; t += 3) {
-      const t0 = triangles[t]!, t1 = triangles[t + 1]!, t2 = triangles[t + 2]!;
-      for (const [x, y] of [[t0, t1], [t1, t2], [t2, t0]] as [number, number][]) {
-        const k = ek(x, y); ec.set(k, (ec.get(k) ?? 0) + 1);
-      }
-    }
-    // Aretes de bord (utilisees 1x) + adjacence.
-    const bedgeList: [number, number][] = [];
-    const adj = new Map<number, number[]>();
-    for (const [k, c] of ec) {
-      if (c !== 1) continue;
-      const bar = k.indexOf('|');
-      const a2 = Number(k.slice(0, bar)), b2 = Number(k.slice(bar + 1));
-      bedgeList.push([a2, b2]);
-      (adj.get(a2) ?? adj.set(a2, []).get(a2)!).push(b2);
-      (adj.get(b2) ?? adj.set(b2, []).get(b2)!).push(a2);
-    }
-    // Composantes connexes = boucles de contour ; id + nb d aretes + sommet mini.
-    const compId = new Map<number, number>();
-    const compApex: number[] = [];
-    for (const s0 of adj.keys()) {
-      if (compId.has(s0)) continue;
-      const id = compApex.length; let apex = s0;
-      const stack = [s0]; compId.set(s0, id);
-      while (stack.length) {
-        const cur = stack.pop()!; if (cur < apex) apex = cur;
-        for (const nb of adj.get(cur)!) if (!compId.has(nb)) { compId.set(nb, id); stack.push(nb); }
-      }
-      compApex.push(apex);
-    }
-    const compEdges = new Array<number>(compApex.length).fill(0);
-    for (const [a2] of bedgeList) compEdges[compId.get(a2)!]!++;
-    // Bouchage en EVENTAIL par aretes : pour chaque petite composante, on relie
-    // son sommet mini a toute arete de bord qui ne le touche pas. Robuste meme
-    // aux jonctions (pas besoin d ordonner la boucle).
-    for (const [a2, b2] of bedgeList) {
-      const id = compId.get(a2)!;
-      if (compEdges[id]! > HOLE_MAX || compEdges[id]! < 3) continue;
-      const apex = compApex[id]!;
-      if (a2 === apex || b2 === apex) continue;
-      triangles.push(apex, a2, b2, apex, b2, a2); // double face : visible des deux cotes
-    }
+    const { extra } = capSmallBoundaryLoops(triangles, HOLE_MAX, na * na, positions);
+    for (const idx of extra) triangles.push(idx);
   }
   const triangleIndices = new Uint32Array(triangles);
   const closureTriangles = new Uint8Array(triangles.length / 3);
